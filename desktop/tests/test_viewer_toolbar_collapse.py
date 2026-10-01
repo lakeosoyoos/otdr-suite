@@ -16,7 +16,9 @@ SRC = (VIEWER_DIR / "viewer.html").read_text(encoding="utf-8")
 
 
 def test_the_handle_is_the_bar_right_under_the_toolbar():
-    after = SRC.split('<div id="readout"></div>\n</div>', 1)[1]
+    # The toolbar's last group (Summary Report) closes the bar, and the handle
+    # follows it at once.  The status line no longer sits in the bar (#34).
+    after = SRC.split('Summary Report…</button>\n  </div>\n</div>', 1)[1]
     assert after.lstrip().startswith('<div id="toolbar-resizer"')
     assert 'btn-toolbar-toggle' not in SRC
 

@@ -53,7 +53,8 @@
   /* The toolbar folds away (the boss: "minimize so we don't see all the
      settings and toggles").  The bar under it is the handle: drag it up to
      fold, down to unfold, double-click to toggle.  Folded, only the Back button
-     and the status line stay; the chart takes the height.
+     and the Fibers box stay (the status line sits on the chart); the chart
+     takes the height.
      Every visit opens unfolded, and the Fibers box stays up even folded. */
   #toolbar.collapsed { padding-top: 3px; padding-bottom: 3px; }
   #toolbar.collapsed .group:not(.keep) { display: none; }
@@ -79,6 +80,16 @@
     border-left: 1px solid var(--border);
   }
   .group:first-of-type { border-left: 0; padding-left: 0; }
+  /* Tighter in the toolbar (demo list #32): embedded in the hub at
+     1184 px with the sidebar open the bar wrapped to three lines, and every
+     line came out of the chart and the table.  Same controls, less padding,
+     so it fits two lines there and one on a wide screen. */
+  #toolbar { gap: 6px; padding: 6px 10px; }
+  #toolbar .group { padding: 2px 6px; }
+  #toolbar button { padding: 4px 7px; }
+  #toolbar .seg button { padding: 4px 8px; }
+  #toolbar .group > label[style] { margin-left: 4px !important; }
+  #toolbar #fiber-input { width: 150px; }
   label { color: var(--text-sec); font-size: 12px; }
   input[type=text], input[type=number] {
     background: #ffffff; color: var(--text);
@@ -89,6 +100,11 @@
   input[type=number] { width: 56px; padding: 4px 2px 4px 6px; }
   input[type=text]:focus, input[type=number]:focus { outline: none; border-color: var(--accent); }
   input[type=number]:disabled { background: #eef1f4; color: var(--text-sec); }
+  /* No files listed: the Fibers box and Add are off, the box grayed with an
+     example in it (Robert 2026-10-01). */
+  #fiber-input:disabled { background: #eef1f4; cursor: not-allowed; }
+  #fiber-input:disabled::placeholder { color: #8a97a6; font-style: italic; }
+  #btn-add:disabled { opacity: 0.45; cursor: not-allowed; }
   label.disabled { opacity: 0.5; }
   button {
     background: var(--chip-bg); border: 1px solid var(--border);
@@ -106,9 +122,17 @@
     padding: 4px 10px; font-size: 12px;
   }
   .seg button.active { background: var(--accent); color: #fff; }
+  /* The status line floats over the top of the chart, centred, clear of the
+     two launch ends.  In the toolbar it took a line of its own whenever it
+     had something to say (360 px wide), and the chart and the table jumped
+     down a line under it (demo list #34). */
   #readout {
-    margin-left: auto; color: var(--text-sec); font-size: 12px;
-    text-align: right; min-width: 360px; white-space: pre;
+    position: absolute; top: 6px; left: 50%; transform: translateX(-50%);
+    max-width: 60%; z-index: 5; box-sizing: border-box;
+    color: var(--text-sec); font-size: 12px; text-align: center;
+    white-space: pre; overflow: hidden; text-overflow: ellipsis;
+    background: rgba(255,255,255,0.94); border: 1px solid var(--border);
+    border-radius: 4px; padding: 2px 8px;
   }
   /* Robert 2026-09-30: the line carries load notes, failures and warnings
      only (no hover numbers), and takes no room while it has nothing to say. */
@@ -199,6 +223,7 @@
   #chip-empty { color: var(--text-sec); font-style: italic; font-size: 11px; align-self: center; }
   /* The FILES panel is a drop target: files, a folder, or a zip. */
   #files-panel.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; background: #f3f7fb; }
+  #canvas-wrap.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; }
   #files-drop-hint { color: var(--text-sec); font-size: 11px; padding: 6px 8px; border-top: 1px dashed var(--border); }
 
   /* Main */
@@ -246,7 +271,7 @@
      left the rows exactly where they were — the boss's "it doesn't give us
      more rows". */
   #event-panel {
-    height: 240px; flex-shrink: 0;
+    height: 240px; flex-shrink: 0;    /* until the script sets its share (#32) */
     background: var(--panel);
     display: flex; flex-direction: column; overflow: hidden;
   }
@@ -522,6 +547,15 @@
     text-align: center; white-space: nowrap; border: 1px solid #c9d5e1;
     padding: 3px 8px;
   }
+  /* Separate borders, each cell owning its right and bottom edge.  With the
+     table's collapsed borders the edges of the pinned header, footer and
+     fiber column stayed where the table painted them, not with the pinned
+     cells, and the rows scrolling under showed through every line between
+     the Minimum, Maximum and Average rows (demo list #32). */
+  table.fr-table { border-collapse: separate; border-spacing: 0; }
+  table.fr-table th, table.fr-table td { border-width: 0 1px 1px 0; }
+  table.fr-table tr > :first-child { border-left-width: 1px; }
+  table.fr-table thead tr:first-child > * { border-top-width: 1px; }
   table.fr-table th.fr-evhdr { background: #e4edf7; color: var(--text); }
   /* The cell a clicked trace label lands on.  Fades so it points, not paints. */
   table.fr-table td.fr-hit { outline: 2px solid var(--accent); outline-offset: -2px;
@@ -708,8 +742,6 @@
   <div class="group">
     <button id="btn-report" title="Summary Report: the chart and the event table, then a page per fibre, as a PDF or an Excel workbook">Summary Report…</button>
   </div>
-
-  <div id="readout"></div>
 </div>
 <div id="toolbar-resizer" title="Drag up to hide the settings and toggles, down to show them; double-click to toggle"></div>
 
@@ -718,6 +750,7 @@
   <div id="canvas-wrap">
     <canvas id="chart"></canvas>
     <div id="marker-readout" style="display:none;"></div>
+    <div id="readout"></div>
   </div>
   <div id="event-resizer" title="Drag to resize the event panel"></div>
   <div id="event-panel">
@@ -841,6 +874,7 @@ let gUniSide = null;
 // 'suite' (OTDR Suite) | 'fr' (FastReporter): the hub's analysis mode, from
 // /api/list.  The table follows the reports' rules; nothing branches on it yet.
 let gAnalysisMode = 'suite';
+let gDropInFlight = false;          // a drop is going up (see pollAnalysisMode)
 let gGateOverride = null;          // set when the tech types their own
 let gTraces = [];                  // [{key, fiber, dir, color, visible, data}]
 // Files the tech took out of the FILES list ("Remove from viewer").  The list
@@ -1343,10 +1377,34 @@ window.addEventListener('resize', resizeCanvas);
     const max = main.clientHeight - bar.offsetHeight - LOAD_MIN_CHART;
     return Math.max(MIN_PANEL, Math.min(saved, max));
   }
+  // The table's SHARE of the column, not a fixed height (demo list
+  // #32).  A fixed 240 px left the hub's embedded table 206 px of scroller,
+  // three and a half rows under the pinned Min/Max/Average, at 1184, 1440 and
+  // 1920 px alike, while the chart took every extra pixel.  The table now
+  // takes TABLE_SHARE of the height until the tech drags the bar; a drag is
+  // kept as a share too, so a bigger or smaller window keeps the same split
+  // (a fixed height also ratcheted down for good when the window shrank).
+  const SHARE_KEY = 'viewer.eventPanelShare';
+  const TABLE_SHARE = 2 / 3;   // the table gets two thirds by default
+  const avail = () => Math.max(0, main.clientHeight - bar.offsetHeight);
+  let share = null;                     // the tech's own split, once dragged
+  try {
+    const s = parseFloat(localStorage.getItem(SHARE_KEY));
+    if (s > 0 && s < 1) share = s;
+  } catch (e) {}
+  function fitShare() {
+    const h = Math.round((share != null ? share : TABLE_SHARE) * avail());
+    panel.style.height = openHeight(h) + 'px';
+  }
   try {
     const saved = parseInt(localStorage.getItem(KEY), 10);
-    if (saved > 0) panel.style.height = openHeight(saved) + 'px';
+    // A height remembered before the share was: kept, as a share from now on.
+    if (saved > 0 && share == null) {
+      panel.style.height = openHeight(saved) + 'px';
+      if (avail() > 0) share = panel.offsetHeight / avail();
+    }
   } catch (e) {}
+  fitShare();
 
   let startY = 0, startH = 0;
   bar.addEventListener('pointerdown', ev => {
@@ -1365,16 +1423,31 @@ window.addEventListener('resize', resizeCanvas);
     if (!bar.classList.contains('dragging')) return;
     bar.classList.remove('dragging');
     document.body.classList.remove('resizing-panel');
-    try { localStorage.setItem(KEY, String(panel.offsetHeight)); } catch (e) {}
+    if (avail() > 0) share = panel.offsetHeight / avail();
+    try {
+      localStorage.setItem(KEY, String(panel.offsetHeight));
+      localStorage.setItem(SHARE_KEY, String(share));
+    } catch (e) {}
   }
   bar.addEventListener('pointerup', stop);
   bar.addEventListener('pointercancel', stop);
   bar.addEventListener('dblclick', () => {
-    panel.style.height = '';
-    try { localStorage.removeItem(KEY); } catch (e) {}
+    share = null;
+    try { localStorage.removeItem(KEY); localStorage.removeItem(SHARE_KEY); } catch (e) {}
+    fitShare();
     resizeCanvas();
   });
-  window.addEventListener('resize', () => apply(panel.offsetHeight));
+  window.addEventListener('resize', () => { fitShare(); resizeCanvas(); });
+  // The toolbar folding or wrapping changes the column's height too.
+  if (window.ResizeObserver) {
+    let lastH = main.clientHeight;
+    new ResizeObserver(() => {
+      if (main.clientHeight === lastH || bar.classList.contains('dragging')) return;
+      lastH = main.clientHeight;
+      fitShare();
+      resizeCanvas();
+    }).observe(main);
+  }
 })();
 
 // ─── Fiber-list parser ────────────────────────────────────────────────
@@ -1400,10 +1473,19 @@ function parseFibers(str) {
 // trace server, which stages the drop into a temp folder, splits it into A
 // and B by filename prefix (the hub's rule) and points itself at it.
 const DROP_EXTS = ['.sor', '.json', '.trc', '.zip'];
+// The folder each dropped file came from (its parent's name, '' for a file
+// dropped on its own), so a staged side can go by the folder the tech dropped
+// rather than its staging name (see trace_server.drop_name).
+const gDropFolder = new WeakMap();
+function _parentName(fullPath) {
+  const parts = String(fullPath || '').split('/').filter(Boolean);
+  return parts.length > 1 ? parts[parts.length - 2] : '';
+}
 function _dropWalk(entry, out) {
   return new Promise((resolve) => {
     if (entry.isFile) {
-      entry.file(f => { out.push(f); resolve(); }, () => resolve());
+      entry.file(f => { gDropFolder.set(f, _parentName(entry.fullPath)); out.push(f); resolve(); },
+                 () => resolve());
     } else if (entry.isDirectory) {
       const rd = entry.createReader();
       const batch = () => rd.readEntries(async (ents) => {
@@ -1430,6 +1512,29 @@ function _dropOk(f) {
 // The server still points at those folders, so without this a drop after
 // removing everything was placed as if they were still loaded (a new span's
 // A went to B, beside the invisible old A).
+// The Fibers box is only for files the FILES list holds.  With no folder on
+// either side, or every listed file removed, there is nothing a typed fiber
+// could load: the box and Add are switched off and the box shows a grayed
+// example instead (Robert 2026-10-01), so the red "no A/B folder is set"
+// cannot come up.  Both come back as soon as a folder lists a file.
+const FIBERS_PLACEHOLDER = '64, 67, 169-180';
+const FIBERS_OFF_PLACEHOLDER = 'e.g. 354, add files first';
+function filesListed() {
+  if (!gInfo) return true;                  // not asked yet: stay usable
+  return ['a', 'b'].some(dir => (gInfo['dir_' + dir] || '')
+    && ((gInfo['fibers_' + dir]) || []).some(f => !gRemovedFiles.has(`${dir}-${f}`)));
+}
+function syncFiberBoxEnabled() {
+  const box = document.getElementById('fiber-input');
+  const add = document.getElementById('btn-add');
+  if (!box || !add) return;
+  const on = filesListed();
+  box.disabled = !on;
+  add.disabled = !on;
+  box.placeholder = on ? FIBERS_PLACEHOLDER : FIBERS_OFF_PLACEHOLDER;
+  box.title = on ? '' : 'Load an A or B folder, or drop files on the Viewer, to type fiber numbers';
+  if (!on) box.value = '';
+}
 function emptiedSides() {
   return ['a', 'b'].filter(dir => {
     const fibers = (gInfo && gInfo['fibers_' + dir]) || [];
@@ -1441,6 +1546,7 @@ function emptiedSides() {
 // server lets go of its folder and the hub's A/B box clears with it.
 async function unloadEmptiedSides() {
   const sides = emptiedSides();
+  syncFiberBoxEnabled();             // off at once when nothing is left listed
   if (!sides) return;
   try {
     const r = await fetch(`/api/unload_sides?sides=${sides}`, { method: 'POST' });
@@ -1543,6 +1649,7 @@ async function handleFilesDrop(dt) {
   const t0 = Date.now();
   const at = { stage: 'begin', file: '', size: 0, index: 0, sent: 0, bytes: 0, busy: 0, failed: false, retries: 0 };
   const total = files.reduce((n, f) => n + (f.size || 0), 0);
+  gDropInFlight = true;
   try {
     const { token } = await post('/api/drop_begin');
     at.stage = 'file';
@@ -1575,7 +1682,14 @@ async function handleFilesDrop(dt) {
     await Promise.all([worker(), worker()]);
     at.stage = 'end';
     const before = { a: (gInfo && gInfo.dir_a) || '', b: (gInfo && gInfo.dir_b) || '' };
-    const j = await post(`/api/drop_end?token=${token}&emptied=${emptiedSides()}`);
+    // Where each file came from, so each side is named after its folder.
+    const from = {};
+    for (const f of files) {
+      const dir = gDropFolder.get(f);
+      if (dir) from[f.name] = dir;
+    }
+    const j = await post(`/api/drop_end?token=${token}&emptied=${emptiedSides()}`,
+                         JSON.stringify({ folders: from }));
     at.stage = 'after';
     // Whatever was loaded off a folder this drop REPLACED is now pointing at
     // another span's fibers, so that side is forgotten.  A side the drop left
@@ -1665,16 +1779,36 @@ async function handleFilesDrop(dt) {
       fail.push(`${j.repeated.length} file(s) not loaded: they arrived under a name already dropped,`
            + ` kept the first: ${shown}. Drop one direction at a time`);
     }
-    renderChips();
-    if (gAutoFit) fit();
-    draw();
-    renderEventTable();
+    // Draw what was dropped (demo list #31): the drop used to list
+    // its files and leave the chart blank, "0 of 4 selected".  Every file of
+    // each side this drop wrote is selected, beside whatever the other side
+    // already had on the chart; a whole cable goes through the overview, as
+    // a Select All does.
+    const want = new Set(gTraces.map(t => t.key));
+    for (const d of ['a', 'b']) {
+      if (!String(j.added || '').toLowerCase().includes(d)) continue;
+      for (const f of ((gInfo && gInfo['fibers_' + d]) || [])) {
+        const key = `${d}-${f}`;
+        if (!gRemovedFiles.has(key)) want.add(key);
+      }
+    }
+    gDropInFlight = false;             // the load below is the page's own, not the drop's
+    const loading = want.size !== gTraces.length;
+    if (loading) {
+      await selectFiles(want);
+    } else {
+      renderChips();
+      if (gAutoFit) fit();
+      draw();
+      renderEventTable();
+    }
+    if (loading) msg += loadFailNote();   // a dropped file that would not load stays red
     setReadout(msg, { warn: warn.join(' · '), fail: fail.join(' · ') });
   } catch (e) {
     setReadout('drop failed: ' + ((e && e.message) || e));
     cnt.textContent = '';
     reportDropFailure(e, at, files.length, total, Date.now() - t0);
-  }
+  } finally { gDropInFlight = false; }
 }
 // A failed drop goes to Slack with where it stopped, so the cause can be read
 // off the report instead of guessed at: which step, which file and how far in,
@@ -1716,6 +1850,13 @@ async function reportDropFailure(e, at, count, total, ms) {
     }
   } catch (e4) { /* reporting must never break the viewer */ }
 }
+// The FILES panel and the chart (with the event table under it) both take a
+// drop; a drop on the chart used to be thrown away in silence (demo
+// list #31).  Only files count: text dragged out of a box is not a drop.
+function _dragHasFiles(ev) {
+  const t = ev.dataTransfer && ev.dataTransfer.types;
+  return !!t && Array.prototype.indexOf.call(t, 'Files') >= 0;
+}
 (() => {
   const panel = document.getElementById('files-panel');
   let depth = 0;
@@ -1725,6 +1866,22 @@ async function reportDropFailure(e, at, count, total, ms) {
   panel.addEventListener('drop', (ev) => {
     ev.preventDefault(); depth = 0; panel.classList.remove('dragging');
     handleFilesDrop(ev.dataTransfer);
+  });
+  // The chart and the event table under it take the same drop.
+  const main = document.getElementById('main'), wrap = document.getElementById('canvas-wrap');
+  let mdepth = 0;
+  main.addEventListener('dragenter', (ev) => {
+    if (!_dragHasFiles(ev)) return;
+    ev.preventDefault(); mdepth += 1; wrap.classList.add('dragging');
+  });
+  main.addEventListener('dragover', (ev) => {
+    if (!_dragHasFiles(ev)) return;
+    ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy';
+  });
+  main.addEventListener('dragleave', () => { mdepth = Math.max(0, mdepth - 1); if (!mdepth) wrap.classList.remove('dragging'); });
+  main.addEventListener('drop', (ev) => {
+    ev.preventDefault(); mdepth = 0; wrap.classList.remove('dragging');
+    if (_dragHasFiles(ev)) handleFilesDrop(ev.dataTransfer);
   });
   // A drop anywhere else must not navigate the page away to the file.
   window.addEventListener('dragover', ev => ev.preventDefault());
@@ -1739,7 +1896,14 @@ async function loadInfo() {
     // the comparison after them can tell whether this poll actually moved it
     // (a second direction arriving moves it too: see oneDirOnly).
     const wasGate = activeGateDb();
+    const wasMode = gAnalysisMode;
     gInfo = await r.json();
+    // The hub's Analysis Mode switch moves CONFIG under a Viewer that already
+    // has traces on screen.  The table is laid out per mode (the Splice
+    // Report's own in OTDR Mode, FastReporter's in FR Mode), so a new mode
+    // lays it out again; before, it kept the old layout until Clear All.
+    gAnalysisMode = gInfo.analysis_mode === 'fr' ? 'fr' : 'suite';
+    const modeMoved = gAnalysisMode !== wasMode;
     gLaunchA = Number(gInfo.launch_a_km) || 0;   // null (no reel) → 0
     gSpanDecl = gInfo.span_decl || { a: null, b: null };
     if (gInfo.thresholds) gThresholds = gInfo.thresholds;
@@ -1754,7 +1918,10 @@ async function loadInfo() {
     // label, so without this the verdict column keeps the previous run's
     // answers until something else happens to re-render — which is the same
     // report/Viewer disagreement, just one click wide.
-    if (gTraces.length && activeGateDb() !== wasGate) renderEventTable();
+    if (gTraces.length && (modeMoved || activeGateDb() !== wasGate)) {
+      renderEventTable();
+      if (modeMoved) draw();     // the chart marks only the events the table prints
+    }
   } catch (e) {
     setReadout('viewer server not ready yet…');
     return false;                       // signal not-ready → the boot loop retries
@@ -1774,7 +1941,6 @@ async function loadInfo() {
     ? '   ⚠ B never reaches the end of the fiber: cable length unknown, so A/B '
       + 'cannot be aligned. Check B is the full-length shot, not the short shot.'
     : '';
-  gAnalysisMode = gInfo.analysis_mode === 'fr' ? 'fr' : 'suite';
   setReadout(`A: ${gInfo.dir_a_name} (${nA} fibers)   ` +
              `B: ${gInfo.dir_b_name} (${nB} fibers)` +
              (gAnalysisMode === 'fr' ? '   ·   FastReporter analysis' : ''));
@@ -1861,6 +2027,24 @@ function frameWarn() {
 }
 const READOUT_FAIL_START = /^(could not |viewer failed|drop failed|nothing written|no [AB/]+ folder is set|F\d+(, F\d+)* (\(\+\d+ more\) )?(is|are) not in the )/;
 const READOUT_FAIL_TAIL = /, (could not load |F\d+(, F\d+)* (\(\+\d+ more\) )?(is|are) not in the )/;
+// The status line floats centred over the top of the chart.  The A/B marker
+// readout holds the top right corner, so while it is up the status moves to
+// the left, between the dB axis and that box, and is cut short to fit rather
+// than run under it.
+function placeReadout() {
+  const el = document.getElementById('readout');
+  const box = document.getElementById('marker-readout');
+  if (!el) return;
+  if (!box || box.style.display === 'none') {
+    el.style.left = el.style.transform = el.style.maxWidth = '';
+    return;
+  }
+  let left = 56;                       // the plot's left margin, M.l
+  try { left = M.l; } catch (e) { /* not set up yet */ }
+  el.style.left = left + 'px';
+  el.style.transform = 'none';
+  el.style.maxWidth = Math.max(60, box.offsetLeft - left - 10) + 'px';
+}
 function setReadout(s, extra = {}) {
   s = String(s || '');
   const el = document.getElementById('readout');
@@ -1879,6 +2063,7 @@ function setReadout(s, extra = {}) {
   parts.push([frameWarn().trim(), 'ro-warn'], [gMirrorNote.trim(), 'ro-warn']);
   const shown = parts.filter(([t]) => t);
   el.textContent = shown.map(([t]) => t).join('   ');
+  placeReadout();
   // One line, cut off at the window edge: hovering it shows the whole text.
   el.title = el.textContent;
   if (!shown.length) return;
@@ -1907,6 +2092,41 @@ window.addEventListener('focus', async () => {
   }
 });
 
+// The hub's Analysis Mode switch reaches the Viewer here.  The embedded
+// Viewer never gets a focus event when the switch beside it is clicked, and
+// a pop-out window beside the hub may not either, so a cheap ask for the mode
+// runs every MODE_POLL_MS (the browser slows it down in a hidden tab, and the
+// tab coming back into view asks at once).  Only a CHANGE costs anything
+// (loadInfo, then the table in the new layout).  One ask at a time, and none
+// while a drop is going up: the server takes one request at a time.
+const MODE_POLL_MS = 1500;
+let gModePollBusy = false;
+async function pollAnalysisMode() {
+  if (gModePollBusy || gDropInFlight || !gInfo) return;
+  gModePollBusy = true;
+  try {
+    const j = await (await fetch('/api/mode', { cache: 'no-store' })).json();
+    const m = j && j.analysis_mode === 'fr' ? 'fr' : 'suite';
+    // The folders can move under the page too: the hub's A/B boxes, or
+    // another window.  A side whose folder changed forgets what this page
+    // pinned to the old one (removed rows, loaded traces), as a drop does.
+    const moved = j && 'dir_a' in j
+      ? ['a', 'b'].filter(d => (j['dir_' + d] || '') !== ((gInfo && gInfo['dir_' + d]) || ''))
+      : [];
+    if (moved.length) {
+      moved.forEach(forgetSide);
+      await loadInfo();
+      renderChips();
+      if (gAutoFit) fit();
+      draw();
+      renderEventTable();
+    } else if (m !== gAnalysisMode) await loadInfo();
+  } catch (e) { /* server busy or restarting: the next tick asks again */ }
+  finally { gModePollBusy = false; }
+}
+setInterval(pollAnalysisMode, MODE_POLL_MS);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) pollAnalysisMode(); });
+
 // ─── Add traces ───────────────────────────────────────────────────────
 async function addFibers() {
   gSelNext = null;                   // the box (or a report jump) is the newer ask
@@ -1921,7 +2141,9 @@ async function addFibers() {
   const tasks = [];
   for (const { f, d } of plan.pairs) {
     const key = `${d}-${f}`;
-    if (gTraces.some(t => t.key === key) || gRemovedFiles.has(key)) continue;
+    // A trace still on its way (a second click on Add while the first is
+    // fetching) is not asked for again: see gLoadingKeys.
+    if (gTraces.some(t => t.key === key) || gRemovedFiles.has(key) || gLoadingKeys.has(key)) continue;
     tasks.push({ key, f, d });
   }
   // Two regimes.
@@ -2183,6 +2405,13 @@ async function loadOverview(tasks) {
 }
 
 let gLoadFailures = [];            // per-addFibers() failure notes for the readout
+// The traces being fetched right now.  A load plans what is missing and then
+// awaits its fetches, so a second Add (a double-click, Enter then Add) used to
+// plan the same keys again and push every trace twice: gTraces a-354, b-354,
+// a-354, b-354, drawn twice, and listed twice in the Summary Report (
+// demo list #33).  A key in here is never planned again, and neither loadOne
+// nor loadOverview pushes a key that is already loaded, however loads overlap.
+const gLoadingKeys = new Set();
 // fetch() that retries a THROWN fetch (connection refused/reset: "Failed to
 // fetch") a few times with a short backoff.  An HTTP error is an answer from
 // the server, so it comes straight back and is never retried.
@@ -2198,6 +2427,8 @@ async function fetchRetry(url, tries = 3) {
 }
 
 async function loadOne(key, fiber, dir) {
+  if (gLoadingKeys.has(key) || gTraces.some(t => t.key === key)) return;
+  gLoadingKeys.add(key);
   try {
     const r = await fetchRetry(`/api/trace?dir=${dir}&fiber=${fiber}`);
     if (!r.ok) {
@@ -2214,12 +2445,15 @@ async function loadOne(key, fiber, dir) {
     if (data.stored_dir && data.stored_dir !== dir) gStoredDir[key] = data.stored_dir;
     else delete gStoredDir[key];
     if (gRemovedFiles.has(key)) return;    // taken out of the list meanwhile
+    if (gTraces.some(t => t.key === key)) return;   // loaded meanwhile: never twice
     const t = { key, fiber, src: dir, dir: effDir(dir, fiber), visible: true, data };
     t.color = traceColor(t);
     gTraces.push(t);
   } catch (e) {
     console.warn(e);
     gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: ${e && e.message || 'fetch failed'}`);
+  } finally {
+    gLoadingKeys.delete(key);
   }
 }
 
@@ -2343,6 +2577,7 @@ function fiberRangeText(fibers) {
 // colour) toggles its visibility.  Hovering a row shows the whole file name,
 // which the column cuts short.
 function renderFilesPanel() {
+  syncFiberBoxEnabled();
   const list = document.getElementById('files-list');
   if (!list) return;
   const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -3664,6 +3899,7 @@ function updateMarkerReadout() {
   const box = document.getElementById('marker-readout');
   if (!gMarkerMode && gMarkers.a == null && gMarkers.b == null) {
     box.style.display = 'none';
+    if (typeof placeReadout === 'function') placeReadout();   // the status keeps clear
     return;
   }
   box.style.display = 'block';
@@ -3720,6 +3956,7 @@ function updateMarkerReadout() {
     html += `<div class="hint">click to place ${a == null ? 'A' : 'B'}</div>`;
   }
   box.innerHTML = html;
+  if (typeof placeReadout === 'function') placeReadout();   // the status keeps clear
 }
 
 const X_LABEL_GAP_PX = 12;         // clear space between two distance labels
@@ -8119,7 +8356,9 @@ function folderLabel(side) {
   if (!gInfo) return '';
   const name = gInfo[`dir_${side}_name`];
   if (!name || name === '(none)') return '';
-  if (!/^[ab]$/i.test(name)) return name;
+  // A dropped side is served under what was dropped (trace_server.drop_name):
+  // its staging folder's parent is a temp name, never a job.
+  if (gInfo[`dir_${side}_dropped`] || !/^[ab]$/i.test(name)) return name;
   const parts = String(gInfo[`dir_${side}`] || '').split(/[\/\\]+/).filter(Boolean);
   return parts.length > 1 ? parts[parts.length - 2] : name;
 }
@@ -8920,6 +9159,12 @@ window.addEventListener('message', function (ev) {
     // a download (the boss, 2026-09-30: A loaded, the B set went to
     // Downloads).
     if (d && d.type === 'otdr-drop' && Array.isArray(d.files)) {
+      // the folder each file came from, for the name its side goes by
+      if (Array.isArray(d.folders)) {
+        d.files.forEach((f, i) => {
+          if (f && typeof d.folders[i] === 'string') gDropFolder.set(f, d.folders[i]);
+        });
+      }
       handleFilesDrop(d.files);
       return;
     }
