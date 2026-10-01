@@ -1180,6 +1180,12 @@ function nextColor(key) {
   COLORS_USED.set(key, c);
   return c;
 }
+// A trace's colour by the direction it is DRAWN as.  FR's scheme colours the
+// A (main) and B (reference) traces, so a file set to the other direction, by
+// its own stamp or the Direction menu, takes that direction's colour.  It was
+// coloured by its folder at load and only by its direction after a toggle, so
+// an A-folder file drawn as B stayed blue until the checkbox was clicked.
+function traceColor(t) { return nextColor(`${t.dir}-${t.fiber}`); }
 // Flip every loaded trace between the 12-colour code and FR's blue/black.
 // The trace's colour is stored on it (chips, table dots and the canvas all
 // read `t.color`), so a toggle recolours in place and repaints everything.
@@ -1187,7 +1193,7 @@ function setFiberColors(on) {
   gFiberColors = !!on;
   try { localStorage.setItem('otdr_viewer_fiber_colors', gFiberColors ? '1' : '0'); } catch (e) {}
   COLORS_USED.clear();
-  for (const t of gTraces) t.color = nextColor(`${t.dir}-${t.fiber}`);
+  for (const t of gTraces) t.color = traceColor(t);
   draw();
   renderChips();
   renderEventTable();
@@ -2104,11 +2110,12 @@ async function loadOverview(tasks) {
       for (const data of (payload.traces || [])) {
         const key = `${dir}-${data.fiber}`;
         if (gTraces.some(t => t.key === key) || gRemovedFiles.has(key)) continue;
-        gTraces.push({
+        const tr = {
           key, fiber: data.fiber, src: dir, dir: effDir(dir, data.fiber), visible: true,
-          color: nextColor(key),
           data, overview: true,
-        });
+        };
+        tr.color = traceColor(tr);
+        gTraces.push(tr);
       }
       // `missing` holds every fiber that did not come back; `failed` is the
       // part whose file is there but would not parse.  Only the rest is
@@ -2182,11 +2189,9 @@ async function loadOne(key, fiber, dir) {
     if (data.stored_dir && data.stored_dir !== dir) gStoredDir[key] = data.stored_dir;
     else delete gStoredDir[key];
     if (gRemovedFiles.has(key)) return;    // taken out of the list meanwhile
-    gTraces.push({
-      key, fiber, src: dir, dir: effDir(dir, fiber), visible: true,
-      color: nextColor(key),
-      data,
-    });
+    const t = { key, fiber, src: dir, dir: effDir(dir, fiber), visible: true, data };
+    t.color = traceColor(t);
+    gTraces.push(t);
   } catch (e) {
     console.warn(e);
     gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: ${e && e.message || 'fetch failed'}`);
@@ -3301,7 +3306,7 @@ function setFilesDirection(keys, dir) {
     if (dir === (gStoredDir[key] || src)) delete gDirOverride[key];
     else gDirOverride[key] = dir;
     const t = gTraces.find(x => x.key === key);
-    if (t) t.dir = effDir(src, fiber);
+    if (t) { t.dir = effDir(src, fiber); t.color = traceColor(t); }
   }
   renderChips();
   if (gAutoFit) fit();
@@ -3658,9 +3663,14 @@ function updateMarkerReadout() {
         let dloss = '-', slope = '-';
         if (va != null && vb != null) {
           // Signal descends with loss; loss over the span (upstream→downstream).
+          // A mirrored B runs right to left on the chart, so its upstream end
+          // is the RIGHT marker: read left to right it printed every B loss
+          // negative beside A's (0.2 dB/km fibre, 10 km: A 2.000, B -2.000),
+          // and the same B alone, drawn as shot, positive.
           const lo = Math.min(a, b), hi = Math.max(a, b);
           const vlo = traceDbAtDispKm(t, lo), vhi = traceDbAtDispKm(t, hi);
-          const d = (vlo != null && vhi != null) ? (vlo - vhi) : null;
+          const d = (vlo != null && vhi != null)
+            ? (isFlipped(t) ? vhi - vlo : vlo - vhi) : null;
           if (d != null) {
             dloss = d.toFixed(3);
             slope = dkm > 1e-6 ? (d / dkm).toFixed(3) : '-';
