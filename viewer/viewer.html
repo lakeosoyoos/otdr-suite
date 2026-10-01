@@ -834,6 +834,10 @@ let gThresholds = { reburn: 0.160, uni_bend: 0.250, single_dir: 0.200,
 // direction's median), which a few fibres in the Viewer cannot reproduce.
 let gEndRefl = [];
 let gSourceReport = null;          // 'sr' | 'uni' | null (standalone)
+// The side ('a' | 'b') of the left panel a Unidirectional report ran on, from
+// its links.  "← Back" hands it to the hub so the page lands on that folder:
+// the popped Viewer holds both of the panel's folders for such a run.
+let gUniSide = null;
 // 'suite' (OTDR Suite) | 'fr' (FastReporter): the hub's analysis mode, from
 // /api/list.  The table follows the reports' rules; nothing branches on it yet.
 let gAnalysisMode = 'suite';
@@ -1820,7 +1824,11 @@ document.getElementById('btn-back').addEventListener('click', () => {
   if (nav) {
     q.set('nav', nav);
     if (gInfo.dir_a) q.set('sra', gInfo.dir_a);
-    if (gInfo.dir_b && nav !== 'uni') q.set('srb', gInfo.dir_b);
+    // A Unidirectional run on one of the panel's folders brings both back,
+    // and the side it ran on; otherwise its one folder is the A box's.
+    const uniSide = nav === 'uni' ? gUniSide : null;
+    if (gInfo.dir_b && (nav !== 'uni' || uniSide)) q.set('srb', gInfo.dir_b);
+    if (uniSide) q.set('pside', uniSide);
     if (gInfo.hub_carry) q.set('cs', gInfo.hub_carry);
   }
   const url = gInfo.hub_url + '/' + (nav ? '?' + q.toString() : '');
@@ -8798,6 +8806,7 @@ async function applyTarget(t) {
   // verdict column judges by, so the Viewer cannot contradict the grid.
   if (t.src) {
     gSourceReport = (t.src === 'uni') ? 'uni' : 'sr';
+    gUniSide = (t.src === 'uni' && (t.dir === 'a' || t.dir === 'b')) ? t.dir : null;
     syncGateUI();
     renderBackButton();
   }
