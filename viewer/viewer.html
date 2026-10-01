@@ -871,6 +871,7 @@ let gDragMarker = null;                // 'a' | 'b' while dragging a placed mark
 let gLabelHits = [];                   // [{x0,y0,x1,y1,t,e}] event numbers drawn this frame
 let gLabelClick = null;                // label under the mouse at mousedown, until mouseup
 let gGridGoTo = null;                  // set by the grid: (trace, event) => scroll to its cell
+let gTableKm = null;                   // set by the grid: trace -> km keys of the events it printed
 let gTableExport = null;               // set by the grid: {table, rows(), headExtra} for the Report
 let gExportDpr = 0;                    // the Report draws the chart at this scale; 0 = the screen's
 const MARKER_HIT_PX = 6;               // grab radius for dragging a marker
@@ -3780,6 +3781,32 @@ function upperBound(arr, v) {
   return lo;
 }
 
+// The chart marks the table's columns and nothing else (Robert 2026-09-30:
+// "closures only in both modes").  Each grid records, per trace, the raw km
+// of every event it printed -- the closures and the two ends in OTDR Suite
+// mode, FastReporter's rows in FR mode -- keyed the way `data-km` is, so a
+// marker and its cell are the same reading.  A trace's other stored events
+// (the per-file KeyEvents a whole cable of them turned into thousands of
+// numbers) are not drawn.  A table being re-read keeps the last one's marks
+// until it paints -- the FastReporter table of a whole cable takes a while,
+// and every setting change re-reads it.  A trace no table has taken yet (or
+// none can be built for) draws every event, as before, rather than none.
+function tableKmKey(km) { return Math.round(Number(km) * 1e4); }
+function tableMarkReset(traces) {
+  gTableKm = new Map();
+  for (const t of traces) gTableKm.set(t, new Set());
+}
+function tableMark(t, km) {
+  if (!t || km == null || !Number.isFinite(Number(km))) return;
+  let s = gTableKm.get(t);
+  if (!s) gTableKm.set(t, s = new Set());
+  s.add(tableKmKey(km));
+}
+function inTable(t, e) {
+  const s = gTableKm && gTableKm.get(t);
+  return !s || s.has(tableKmKey(e.dist_km));
+}
+
 function drawEventMarkers(t, r) {
   const evs = t.data.events || [];
   // Marker labels carry the same numbers as the table's columns: counted from
@@ -3804,6 +3831,10 @@ function drawEventMarkers(t, r) {
     const rawY = t.data.trace_db[Math.min(dataIdx, t.data.trace_db.length - 1)] ?? 0;
     const py = yToPx(dispDb(t, rawY), r);
     const n = nums.get(e);
+    // In the span, only what the table printed (see tableMark).  Outside it
+    // the dim unnumbered tick stays: it is how the tech puts the span start
+    // back on the port or the reel.
+    if (n != null && !inTable(t, e)) continue;
     ctx.strokeStyle = e.is_reflective ? '#b8860b' : t.color;
     ctx.globalAlpha = (n == null ? 0.35 : 0.55) * dimA;
     ctx.beginPath();
@@ -4611,6 +4642,9 @@ function renderFastReporterGrid(traces, host, hint) {
 
   // Cluster into columns; a column holds at most one event per trace.
   const cols = clusterColumns(traces, items, TOL);
+  tableMarkReset(traces);
+  cols.forEach(c => c.ev.forEach((e, ti) => { if (e) tableMark(traces[ti], e.dist_km); }));
+  draw();                                  // the chart may have drawn before the table
 
   // ─── FastReporter event-table layout ────────────────────────────────
   // Mirrors FR3's OTDR > Event Table: leading identity columns, then EVENT
@@ -5173,6 +5207,7 @@ function renderFrBidiGrid(traces, host, hint) {
     .then(res => { if (seq === gFrTableSeq) paintFrBidiGrid(pairs, singles, res || {}, host, hint); })
     .catch(e => {
       if (seq !== gFrTableSeq) return;
+      gTableKm = null; draw();             // no table: every event, as before
       hint.textContent = `FastReporter table unavailable (${(e && e.message) || 'fetch failed'})`;
     });
   return true;
@@ -5185,6 +5220,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const have = pairs.filter(p => Array.isArray(tables[String(p.fiber)]) && tables[String(p.fiber)].length);
   const missing = pairs.filter(p => !have.includes(p)).map(p => p.fiber);
   if (!have.length) {
+    gTableKm = null; draw();             // no table: every event, as before
     hint.textContent = 'FastReporter table: ' + (res.error
       || "no table for these fibres (both directions must be .sor files with EXFO's trace block)");
     return;
@@ -5210,6 +5246,16 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   });
   items.sort((a, b) => a.km - b.km);
   const cols = clusterColumns(have, items, columnTolKm(have.flatMap(p => [p.ta, p.tb])));
+  // A synthesised leg has no event of its own in the file, so it marks nothing.
+  tableMarkReset(have.flatMap(p => [p.ta, p.tb]));
+  cols.forEach(c => c.ev.forEach((x, fi) => {
+    if (!x) return;
+    for (const [w, t] of [['a', have[fi].ta], ['b', have[fi].tb]]) {
+      const leg = x.row[w];
+      if (leg && !leg.synthetic && leg.pos_m != null) tableMark(t, Number(leg.pos_m) / 1000);
+    }
+  }));
+  draw();                                  // painted after a fetch: the chart follows
   // The section a fibre's row carries runs to that fibre's NEXT row; it is
   // printed under column i only when the next row sits in column i + 1.
   const secOf = (fi, i) => {
@@ -5826,6 +5872,15 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   have.forEach((p, fi) => tables[String(p.fiber)].forEach(cell => {
     if (cols[cell.col]) cols[cell.col].ev[fi] = cell;
   }));
+  // The report's columns are the closures and the two ends: the chart marks
+  // each direction's own reading there and nothing else.
+  tableMarkReset(have.flatMap(p => [p.ta, p.tb]));
+  cols.forEach(c => c.ev.forEach((x, fi) => {
+    if (!x) return;
+    if (x.a && x.a.km != null) tableMark(have[fi].ta, x.a.km);
+    if (x.b && x.b.km != null) tableMark(have[fi].tb, x.b.km);
+  }));
+  draw();                                  // painted after a fetch: the chart follows
   const fmt  = v => (v == null || isNaN(v)) ? '---' : v.toFixed(3);
   const fmtR = v => (v == null || isNaN(v)) ? '---' : v.toFixed(1);
   const esc = s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
