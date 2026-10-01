@@ -3738,7 +3738,7 @@ _TRC_STATUS_END = 0x80
 
 # The DataPts a .sor would carry, from the raw samples: (65535 - raw) x
 # 1000 // 1024 thousandths of a dB.  Bit-exact on every sample checked
-# (27,421 of 27,421 on CHEPLA0609); 64 - raw/1024 is 1.4 mdB high.
+# (27,421 of 27,421 on one long-span fixture); 64 - raw/1024 is 1.4 mdB high.
 _TRC_FULL_SCALE = 65535
 
 

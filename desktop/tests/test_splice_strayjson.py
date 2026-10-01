@@ -55,6 +55,6 @@ def test_splice_loader_uses_majority_file_type_not_any_json():
 def test_a_stray_json_does_not_outvote_a_sor_folder():
     sys.path.insert(0, str(SPLICEREPORT_DIR))
     import splicereportmatchexfo as E
-    names = ['SEANOR%03d_1550.sor' % i for i in range(1, 6)] + ['pairs_cache.json',
-                                                               'SEANOR001.json']
+    names = ['SITEASITEB%03d_1550.sor' % i for i in range(1, 6)] + ['pairs_cache.json',
+                                                               'SITEASITEB001.json']
     assert E._trace_ext_order(names)[0][0] == '.sor'
