@@ -791,8 +791,10 @@
           <input id="set-avg-only" type="checkbox"> Show Averages Only</label>
         <label title="Untick to blank every gainer: a single-direction reading with a negative loss (FastReporter's 'Positive').  A hidden gainer is not judged, so it cannot fail its row.  The bidirectional Average is always shown.">
           <input id="set-gainers" type="checkbox" checked> Show Gainers</label>
-        <label title="Draw each event's line and its loss label on the chart: the A / B readings and the Event / end tags.  Off, the chart shows only the traces.">
+        <label title="Label every event of the table on the chart: the A / B losses, the Splice / end tags and their bands.  Off, the chart shows each event's line and number only.">
           <input id="set-event-labels" type="checkbox"> Show Event Labels</label>
+        <label title="Every event keeps its line and number on the chart; only the failed events also get their A / B losses and tag.">
+          <input id="set-failed-labels" type="checkbox"> Show Failed Event Labels</label>
         <label title="Keep the Minimum / Maximum / Average rows pinned to the bottom of the panel.  Off, they sit under the last row and never cover the table.">
           <input id="set-pin-agg" type="checkbox"> Pin Min/Max/Average</label>
         </span>
@@ -913,11 +915,17 @@ let gStoredDir = {};
 let gAddDir = 'both';              // 'a' | 'b' | 'both'
 let gView = null;                  // {x0, x1, y0, y1} in data coords
 let gAutoFit = true;
-// The event lines and their loss labels on the chart.  Off unless the tech
-// turns them on in the gear (the boss, 2026-10-01: an option, not always on);
-// the choice is remembered.
+// Show Event Labels: the event table's marks on the chart (its A / B values,
+// tags and bands) on every event; Show Failed Event Labels: on the failed
+// ones only.  One or the other, both off unless the tech turns one on in the
+// gear (the boss, 2026-10-01: an option, not always on); off, each event
+// keeps its line and number (see draw).  The choice is remembered.
 let gShowEvents = false;
-try { gShowEvents = localStorage.getItem('otdr_viewer_event_labels') === '1'; } catch (e) {}
+let gShowFailedLabels = false;
+try {
+  gShowEvents = localStorage.getItem('otdr_viewer_event_labels') === '1';
+  gShowFailedLabels = !gShowEvents && localStorage.getItem('otdr_viewer_failed_labels') === '1';
+} catch (e) {}
 let gStacked = true;
 // FastReporter's "Y Spacing" ribbon control, and its default.  FR ships this
 // OFF: both directions are drawn on ONE true dB scale, so the gap between an A
@@ -3883,20 +3891,27 @@ function draw() {
   // to change when we hover over it, just give us the box").
   const hovered = hoverTrace();
   ctx.globalAlpha = 1;
-  if (gShowEvents) {
-    // The mode's table marks its own pairing on the traces it covers (see
-    // drawPairing); a trace it does not cover -- a fibre loaded one way, one
-    // the table left out, or every trace while the table is not in -- keeps
-    // its file's own event numbers.
-    const covered = gDrawerMarks.length ? drawPairing(gDrawerMarks, r) : null;
-    // A picked trace's numbers take their spots before the others'.
-    const numOrder = gPickKey
-      ? [...order.filter(t => isPicked(t.key)), ...order.filter(t => !isPicked(t.key))]
-      : order;
-    for (const t of numOrder) {
-      if (!t.visible || (covered && covered.has(t))) continue;
-      drawEventMarkers(t, r);        // dims itself: its ticks set their own alpha
-    }
+  // Every event's line and number is always drawn, as before the drawer
+  // marked the table (Robert 2026-10-01: "unless Display Events is selected
+  // we don't show anything in our chart except the vertical lines and the
+  // event numbers").  With Show Event Labels on, the mode's table marks its
+  // own pairing on the traces it covers instead (see drawPairing): its
+  // bands, tags and A / B values; a trace it does not cover -- a fibre
+  // loaded one way, one the table left out, or every trace while the table
+  // is not in -- keeps its file's own event numbers.  Show Failed Event
+  // Labels keeps every trace's lines and numbers and adds the table's marks
+  // on the failed events only ("with failed on we still want all the event
+  // numbers").
+  let covered = null;
+  if (gShowEvents && gDrawerMarks.length) covered = drawPairing(gDrawerMarks, r);
+  else if (gShowFailedLabels && gDrawerMarks.length) drawPairing(gDrawerMarks, r, true);
+  // A picked trace's numbers take their spots before the others'.
+  const numOrder = gPickKey
+    ? [...order.filter(t => isPicked(t.key)), ...order.filter(t => !isPicked(t.key))]
+    : order;
+  for (const t of numOrder) {
+    if (!t.visible || (covered && covered.has(t))) continue;
+    drawEventMarkers(t, r);        // dims itself: its ticks set their own alpha
   }
   ctx.globalAlpha = 1;
   ctx.restore();
@@ -4308,7 +4323,7 @@ function eventNumberSpots(px, py, tw) {
 // cursor while it is over that label's tick.  The tick's click still goes to
 // its cell.
 function drawLabelTip() {
-  if (!gShowEvents || gMarkerMode || gDragging) return;
+  if (gMarkerMode || gDragging) return;
   const h = labelHit(gMouse.px, gMouse.py);
   if (!h || !h.hiddenText) return;
   ctx.font = "600 11px 'Segoe UI', sans-serif";
@@ -4424,11 +4439,25 @@ function drawEventMarkers(t, r) {
 // there keep theirs -- the ones the tag counts, what the tech is hunting --
 // which also keeps a whole cable cheap to redraw.  A picked
 // trace (click its row) gets the full per-fibre marks on top of the summary.
+//
+// Show Failed Event Labels marks only what fails (Robert 2026-10-01: "Show
+// Event Labels is all and Failed is only failed"; "with failed on we still
+// want all the event numbers").  Every event keeps its file's line and
+// number (see draw); the drawer adds its band, ticks, values and tag on the
+// failed cells only, and a column none of whose fibres fails gets nothing.
 const DRAWER_DETAIL_MAX = 3;       // fibres drawn in full, labels and all
 const DRAWER_TICK_MAX = 24;        // fibres whose every leg keeps a tick
 const DRAWER_LANES = 3;            // rows of tags before a tag shortens
 const DRAWER_COLOR = { fail: '#e74c3c', warn: '#ffeb00', pass: '#2f6fb3', gray: '#8a97a6' };
 let gDrawerMarks = [];             // [{mode, single, have, cols, goCell}], one per table shown
+
+// Whether a cell fails, for Show Failed Event Labels: its Average fails (a
+// one-direction table's own loss).  One direction over the gate on its own
+// does not count: on a cable nearly every splice has a fibre like that, so
+// every event would keep its label.  The tags' FAIL counts the same way.
+function drawerCellFailed(cell) {
+  return !!cell.avgFail;
+}
 
 // One column's summary over its fibres' cells: how many, how many fail or
 // warn on the Average, the worst Average and which fibre holds it (a failing
@@ -4487,8 +4516,11 @@ function layoutDrawerTags(tags, w, lo, hi, lanes = DRAWER_LANES) {
 }
 
 // Draw the marks of every table in the panel (`sets`, see gDrawerMarks);
-// returns the traces they covered.
-function drawPairing(sets, r) {
+// returns the traces they covered.  `failedOnly` marks only the cells that
+// fail (Show Failed Event Labels); the rest are left to the files' own
+// event numbers.
+function drawPairing(sets, r, failedOnly = false) {
+  const marked = cell => !failedOnly || drawerCellFailed(cell);
   const covered = new Set();
   const colorOf = (fail, warn) => fail ? DRAWER_COLOR.fail : warn ? DRAWER_COLOR.warn : DRAWER_COLOR.pass;
   const yAt = (t, km) => {
@@ -4610,6 +4642,7 @@ function drawPairing(sets, r) {
     // One fibre at one column, in full: band, labeled ticks, its own tag.
     // A one-direction reading's number is on its tag, so its tick is bare.
     const fullCell = (col, cell, many) => {
+      if (!marked(cell)) return;
       const p = D.have[cell.fi];
       const qs = ['a', 'b'].map(w => legAt(p, cell, w)).filter(Boolean);
       const xs = qs.map(q => q.dx);
@@ -4633,10 +4666,14 @@ function drawPairing(sets, r) {
         continue;
       }
       // The column as one: a band over its fibres' readings, their ticks,
-      // one tag.  The picked fibre is drawn in full on top.
+      // one tag.  The picked fibre is drawn in full on top.  With Show
+      // Failed Event Labels only the failing fibres are marked, and a column
+      // with none is skipped; the tag still counts every fibre ("1/24 FAIL").
+      const drawn = col.cells.filter(marked);
+      if (!drawn.length) continue;
       let lo = Infinity, hi = -Infinity;
       const legs = [];
-      for (const cell of col.cells) {
+      for (const cell of drawn) {
         if (cell.fi === pickFi) continue;
         for (const w of ['a', 'b']) {
           const q = legAt(D.have[cell.fi], cell, w);
@@ -8888,7 +8925,7 @@ canvas.addEventListener('mousedown', (ev) => {
   }
   // An event number is a link to its row in the table: pressing on one
   // does not start a pan.
-  if (!gMarkerMode && gShowEvents) {
+  if (!gMarkerMode) {
     const lh = labelHit(ev.offsetX, ev.offsetY);
     if (lh) { gLabelClick = { hit: lh, x: ev.offsetX, y: ev.offsetY }; return; }
   }
@@ -8937,7 +8974,7 @@ canvas.addEventListener('mousemove', (ev) => {
   }
   // The trace under the cursor, for the hover box: the nearest one, none
   // while dragging, and none over an event number (a link of its own).
-  const overLabel = gShowEvents && !gMarkerMode && labelHit(ev.offsetX, ev.offsetY);
+  const overLabel = !gMarkerMode && labelHit(ev.offsetX, ev.offsetY);
   const near = (gDragging || gLabelClick || overLabel) ? []
     : traceHits(ev.offsetX, ev.offsetY, plotRect());
   gHoverKey = near.length ? near[0].t.key : null;
@@ -9023,7 +9060,6 @@ canvas.addEventListener('dblclick', () => { if (!gMarkerMode) fit(); });
 // the same menu a right-click on the grid cell opens, fed the same way (the
 // trace names the direction, the event its own raw km).
 canvas.addEventListener('contextmenu', (ev) => {
-  if (!gShowEvents) return;
   const lh = labelHit(ev.offsetX, ev.offsetY);
   if (!lh || !lh.t) return;          // a tag or a filled-in leg is no event
   ev.preventDefault();
@@ -9077,13 +9113,23 @@ document.getElementById('btn-zoom-out').onclick = () => { const r = plotRect(); 
 document.getElementById('btn-markers').onclick = toggleMarkerMode;
 document.getElementById('btn-markers-clear').onclick = clearMarkers;
 document.getElementById('btn-report').onclick = showReportDialog;
-// Not counted on the gear, like the pin: it hides nothing in the table.
-document.getElementById('set-event-labels').checked = gShowEvents;
-document.getElementById('set-event-labels').onchange = (e) => {
-  gShowEvents = e.target.checked;
-  try { localStorage.setItem('otdr_viewer_event_labels', gShowEvents ? '1' : '0'); } catch (e2) {}
+// Not counted on the gear, like the pin: they hide nothing in the table.
+// One or the other: ticking one unticks the other.
+function setEventLabels(all, failed) {
+  gShowEvents = all;
+  gShowFailedLabels = failed && !all;
+  document.getElementById('set-event-labels').checked = gShowEvents;
+  document.getElementById('set-failed-labels').checked = gShowFailedLabels;
+  try {
+    localStorage.setItem('otdr_viewer_event_labels', gShowEvents ? '1' : '0');
+    localStorage.setItem('otdr_viewer_failed_labels', gShowFailedLabels ? '1' : '0');
+  } catch (e2) {}
   draw();
-};
+}
+document.getElementById('set-event-labels').checked = gShowEvents;
+document.getElementById('set-failed-labels').checked = gShowFailedLabels;
+document.getElementById('set-event-labels').onchange = (e) => setEventLabels(e.target.checked, false);
+document.getElementById('set-failed-labels').onchange = (e) => setEventLabels(false, e.target.checked);
 document.getElementById('cb-colors').checked = gFiberColors;
 document.getElementById('cb-colors').onchange = (e) => setFiberColors(e.target.checked);
 document.getElementById('set-failcells').checked = gFailCellsOnly;
