@@ -48,9 +48,9 @@ ROUTES = list(dict.fromkeys(re.findall(r"'(/api/[a-z_]+)'", DO_POST)))
 REPORT_ROUTES = ('/api/report_begin', '/api/report_image', '/api/report', '/api/report_open')
 # What the routes do once a request is let in.  Each is swapped for a recorder,
 # so a refusal that let a request through shows as a call.
-ACTIONS = ('report_error', 'span_decl_set', 'drop_begin', 'drop_file', 'drop_end',
+ACTIONS = ('report_error', 'span_decl_set', 'drop_begin', 'drop_file', 'drop_files', 'drop_end',
            'pick_folder_native', 'report_begin', 'report_put_image', 'write_viewer_report',
-           'open_report', 'locate_originals', 'rename_files', 'edit_traces',
+           'open_report', 'find_originals', 'locate_originals', 'rename_files', 'edit_traces',
            'unload_sides')
 
 

@@ -56,6 +56,8 @@ APP_URL      = f"http://{HOST}:{PORT}"
 #   2. fetch manifest.sig (a detached Ed25519 signature over the EXACT
 #      manifest bytes),
 #   3. VERIFY that signature against UPDATE_PUBLIC_KEY_HEX (baked below),
+#      and stop there when manifest.version is not newer than the cached
+#      version (nothing to download; step 5 would refuse it anyway),
 #   4. fetch each ENGINE_FILE and check its SHA-256 against the manifest,
 #   5. refuse the swap unless manifest.version > the cached version
 #      (anti-rollback), then atomically swap into ~/.otdrSuite/engine.
@@ -518,6 +520,16 @@ def _try_auto_update(staging: Path):
         print(f"auto-update: {reason} — rejecting")
         os.environ[NEEDS_INSTALL_ENV] = reason
         _report_install_needed(reason)
+        return None
+
+    # 3b. Nothing newer than the cache: the swap in _prepare_engine refuses an
+    #     older-or-equal version (anti-rollback), so do not download 43 files
+    #     just to throw them away.  Same predicate, checked before the fetch.
+    #     That download was 7-13 s of every boot with no new publish.  A
+    #     damaged or missing cache reports version 0, so a repair still fetches.
+    cur = _cached_version()
+    if version <= cur:
+        print(f"auto-update: version {version} <= cached {cur}, nothing to fetch")
         return None
 
     # 4. fetch each file into staging and check its SHA-256 against the manifest

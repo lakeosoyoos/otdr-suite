@@ -326,7 +326,7 @@ def test_the_page_and_hub_are_wired():
     assert 'webkitGetAsEntry' in h                      # folders, not just files
     assert 'id="files-drop-hint"' in h
     s = open(os.path.join(ROOT, 'viewer', 'trace_server.py'), encoding='utf-8').read()
-    body = s.split("u.path in ('/api/drop_begin', '/api/drop_file', '/api/drop_end')", 1)[1].split('return', 1)[0]
+    body = s.split("u.path in ('/api/drop_begin', '/api/drop_file', '/api/drop_files', '/api/drop_end')", 1)[1].split('return', 1)[0]
     assert '_origin_is_local' in body
     a = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
     assert "trace_server.CONFIG.get('dropped_at')" in a
@@ -398,27 +398,28 @@ def test_the_repeat_is_caught_whatever_case_the_name_arrives_in():
     assert out['a_count'] == 1
 
 
-def test_a_dragged_parent_folder_keeps_the_first_direction():
+def test_a_dragged_parent_folder_loads_both_directions():
     """The reported case, with the real fixture spans: both direction folders
     name their traces alike, so the B files arrive under the A files' names.
-    Every survivor is an A file, and every name that came twice is reported.
-
-    (What the SPLIT then makes of letterless names is its own question, below:
-    nothing can tell them apart, so the survivors stay together on one side.
-    This pins only that the first direction's bytes are still there.)"""
+    The first of each name is staged; the repeat used to be thrown away and
+    reported.  Since 2026-09-29 (the boss: files mislabeled for direction
+    still load) a repeat whose direction stamp differs from its twin goes on
+    the OTHER side, so the parent folder loads as A and B, each file on the
+    side its own Direction names."""
     a_side = _unnamed(_real('a', 3))
     b_side = _unnamed(_real('b', 3))
     assert [n for n, _ in a_side] == [n for n, _ in b_side]      # one name set
     out = _drop_real(a_side, b_side)
-    assert sorted(set(out['repeated'])) == ['0001_1550.sor', '0002_1550.sor',
-                                            '0003_1550.sor']
-    assert len(out['repeated']) == 3                  # one per file not staged
-    staged = _staged(out)
-    assert staged                                     # something landed
-    # the A bytes, file for file, and nothing from the B folder
+    assert out['repeated'] == []                      # nothing left behind
+    assert out['repeats_placed'] == ['0001_1550.sor', '0002_1550.sor',
+                                     '0003_1550.sor']
+    assert out['added'] == 'AB' and out['a_count'] == 3 and out['b_count'] == 3
     by_name = dict(a_side)
-    assert all(v == by_name[n] for n, v in staged.items())
-    assert {TS.read_direction(v) for v in staged.values()} == {'a'}
+    got_a = _staged({'dir_a': out['dir_a'], 'dir_b': None})
+    assert all(v == by_name[n] for n, v in got_a.items())    # the A bytes on A
+    assert {TS.read_direction(v) for v in got_a.values()} == {'a'}
+    got_b = _staged({'dir_a': None, 'dir_b': out['dir_b']})
+    assert {TS.read_direction(v) for v in got_b.values()} == {'b'}
 
 
 def test_a_zip_of_a_parent_folder_keeps_the_first_of_each_name():
@@ -466,15 +467,18 @@ def test_the_same_folder_again_is_recognised_after_a_collided_drop():
 
 
 def test_the_readout_says_which_names_arrived_twice():
+    """A repeat that was not loaded is a failure: bold red (#401's rule)."""
     h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
     fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
     assert 'if (j.repeated && j.repeated.length) {' in fn
-    assert 'arrived under a name already dropped' in fn
+    assert 'not loaded: they arrived under a name already dropped' in fn
     assert 'Drop one direction at a time' in fn
     # named once each, and a 288-fiber cable cannot flood the one-line readout
     assert '[...new Set(j.repeated)].sort()' in fn
     assert 'uniq.slice(0, 6)' in fn and 'more)`' in fn
-    assert fn.index('j.ignored') < fn.index('j.repeated') < fn.index('setReadout(msg)')
+    assert fn.index('j.ignored') < fn.index('j.repeated') < fn.index("setReadout(msg, { warn: warn.join(' · '), fail: fail.join(' · ') });")
+    rep = fn.split('if (j.repeated && j.repeated.length) {', 1)[1].split('\n    }', 1)[0]
+    assert 'fail.push(' in rep
 
 
 # ── names that carry no site at all ─────────────────────────────────────
@@ -834,11 +838,16 @@ def test_three_shared_letters_are_not_one_name():
     assert out['name_variants'] == []
 
 
-def test_names_without_a_stamp_are_not_folded():
+def test_names_without_a_stamp_are_not_folded_but_one_run_of_fibres_stays_whole():
     """A synthetic .sor carries no direction, and the names alone are not
-    evidence that two spellings are one direction."""
+    evidence that two spellings are one direction, so merge_name_variants
+    leaves them apart.  But fibre 1 under one name and 2-3 under another fill
+    each other's holes: that is one folder with names wrong, and it stays on
+    one side (the boss, 2026-09-29: a mislabeled file still loads, and its
+    direction is fixed in the Viewer)."""
     out = _drop('ROMTUC001_1550.sor', 'ROMTUCLS002_1550.sor', 'ROMTUCLS003_1550.sor')
-    assert out['split_by'] == 'prefix' and out['added'] == 'AB'
+    assert out['split_by'] == 'prefix' and out['added'] == 'A'
+    assert out['a_count'] == 3 and out['kept_whole'] == ['ROMTUC']
     assert out['name_variants'] == []
 
 
@@ -872,6 +881,131 @@ def test_the_readout_says_which_spellings_were_kept_together():
     assert fn.index('j.name_variants') < fn.index('j.ignored')
 
 
+# ── a failed drop reports where it stopped ──────────────────────────────
+#
+# 2026-09-30: the boss's 432-file drops failed with nothing but "Failed to
+# fetch" (a few files went through).  The failure now goes to Slack with the
+# step, the file and how far in, and whether the server still answers.
+
+def test_a_failed_drop_is_reported_with_where_it_stopped():
+    h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
+    fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
+    assert 'reportDropFailure(e, at, files.length, total, Date.now() - t0);' in fn
+    assert fn.index("setReadout('drop failed: '") < fn.index('reportDropFailure(')
+    # the file that failed is recorded, and the other uploads stop after it
+    assert "Object.assign(at, { failed: true, file: first.name + more, size: job.bytes, index: job.start });" in fn
+    assert 'while (q.length && !at.failed)' in fn
+    assert "at.stage = 'file';" in fn and "at.stage = 'end';" in fn
+    rep = h.split('async function reportDropFailure(', 1)[1].split('\n}', 1)[0]
+    assert "fetch('/api/list'" in rep                      # is the server alive?
+    assert "fetch('/api/jserror'" in rep                   # -> Slack
+    assert 'for (let i = 0; i < 4; i++)' in rep            # retried if busy
+    assert 'navigator.userAgent' in rep
+
+
+# ── a refused connection is tried again ─────────────────────────────────
+#
+# 2026-09-30, the boss's Windows machine: the Viewer's server stopped taking
+# connections for a few seconds after about 430 uploads in a row (file 430,
+# then 431 of 432) and answered again seconds later.  The page now retries a
+# failed connection, marked retry=1, and a retry of a file the first try did
+# deliver is taken as sent, not reported as a name dropped twice.
+
+def test_a_retried_upload_is_not_a_repeat(tmp_path):
+    src = os.path.join(HERE, 'fixtures', 'continuous')
+    name = sorted(f for f in os.listdir(src) if f.lower().endswith('.sor'))[0]
+    data = open(os.path.join(src, name), 'rb').read()
+    tok = TS.drop_begin()
+    assert TS.drop_file(tok, name, data)['files'] == 1
+    again = TS.drop_file(tok, name, data, retry=True)       # answer was lost
+    assert again['files'] == 1 and again.get('retried')
+    out = TS.drop_end(tok)
+    assert out['repeated'] == []
+    # a real second copy (no retry mark) is still a repeat
+    tok = TS.drop_begin()
+    TS.drop_file(tok, name, data)
+    assert TS.drop_file(tok, name, data)['files'] == 0
+    assert TS.drop_end(tok)['repeated'] == [name]
+
+
+def test_a_retried_drop_end_gets_the_first_answer():
+    src = os.path.join(HERE, 'fixtures', 'continuous')
+    name = sorted(f for f in os.listdir(src) if f.lower().endswith('.sor'))[0]
+    tok = TS.drop_begin()
+    TS.drop_file(tok, name, open(os.path.join(src, name), 'rb').read())
+    first = TS.drop_end(tok)
+    assert TS.drop_end(tok, retry=True) == first
+    with pytest.raises(ValueError):
+        TS.drop_end(tok)                                  # no retry mark: finished
+
+
+def test_the_page_retries_only_a_failed_connection():
+    h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
+    fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
+    assert 'const RETRY_WAITS_MS = [500, 1000, 2000, 4000, 8000];' in fn
+    assert "if (!(e instanceof TypeError) || i >= RETRY_WAITS_MS.length) throw e;" in fn
+    assert "'retry=1'" in fn
+    s = open(os.path.join(ROOT, 'viewer', 'trace_server.py'), encoding='utf-8').read()
+    assert "retry=bool(q.get('retry'))" in s
+
+
+# ── trace files go up in batches ────────────────────────────────────────
+#
+# One request per file was 432 connections in about a second for one
+# direction of a 432-fiber cable; the boss's Windows machine stopped taking
+# them after about 430 (2026-09-30).  The page now packs up to 32 files or
+# 4 MB per request (a .zip still goes alone) and the server unpacks them.
+
+def _pack(items):
+    out = b''
+    for name, data in items:
+        n = name.encode('utf-8')
+        out += len(n).to_bytes(4, 'big') + n + len(data).to_bytes(4, 'big') + data
+    return out
+
+
+def _fixture_sors(k):
+    src = os.path.join(HERE, 'fixtures', 'continuous')
+    names = sorted(f for f in os.listdir(src) if f.lower().endswith('.sor'))[:k]
+    return [(n, open(os.path.join(src, n), 'rb').read()) for n in names]
+
+
+def test_a_batch_stages_every_file_in_it():
+    items = _fixture_sors(3)
+    tok = TS.drop_begin()
+    got = TS.drop_files(tok, _pack(items + [('notes.txt', b'hi')]))
+    assert got == {'files': 3, 'names': 4, 'skipped': ['notes.txt']}
+    out = TS.drop_end(tok)
+    assert out['a_count'] + out['b_count'] == 3 and out['repeated'] == []
+
+
+def test_a_retried_batch_is_not_a_repeat_and_a_bad_one_stages_nothing():
+    items = _fixture_sors(2)
+    tok = TS.drop_begin()
+    TS.drop_files(tok, _pack(items))
+    assert TS.drop_files(tok, _pack(items), retry=True)['files'] == 2   # answer was lost
+    body = _pack(_fixture_sors(3)[2:])
+    with pytest.raises(ValueError):
+        TS.drop_files(tok, body[:-10])                                  # cut short
+    assert TS.drop_end(tok)['repeated'] == []
+    assert len(TS._DROPS_ENDED[tok]['repeated']) == 0
+
+
+def test_the_page_packs_files_as_the_server_reads_them():
+    h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
+    assert 'const DROP_BATCH_FILES = 32;' in h
+    assert 'const DROP_BATCH_BYTES = 4 * 1024 * 1024;' in h
+    pack = h.split('function _packDropBatch(files) {', 1)[1].split('\n}', 1)[0]
+    assert 'head.setUint32(0, name.length);' in pack
+    assert 'head.setUint32(4 + name.length, f.size || 0);' in pack
+    assert 'parts.push(head.buffer, f);' in pack
+    fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
+    assert 'const q = _dropBatches(files);' in fn
+    assert "await post(`/api/drop_files?token=${token}`, _packDropBatch(job.files));" in fn
+    assert 'await Promise.all([worker(), worker()]);' in fn
+    s = open(os.path.join(ROOT, 'viewer', 'trace_server.py'), encoding='utf-8').read()
+    assert "'/api/drop_files'" in s and 'DROP_BATCH_MAX' in s
+
 # ─── sides the tech emptied with Remove in the Viewer ───────────────────
 # Removing every file on the FILES panel hides the rows in the page and
 # leaves the server pointing at the folder.  The page sends those sides as
@@ -884,7 +1018,7 @@ def _drop_real_emptied(emptied, *groups):
     for g in groups:
         for name, data in g:
             TS.drop_file(tok, name, data)
-    return TS.drop_end(tok, emptied)
+    return TS.drop_end(tok, emptied=emptied)
 
 
 def test_a_new_a_after_removing_the_only_side_lands_on_a():
