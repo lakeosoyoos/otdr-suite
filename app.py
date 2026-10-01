@@ -1780,6 +1780,125 @@ def _install_sidebar_drag_fix():
         pass
 
 
+# Trace files dropped on the hub page itself, not on the Viewer.  Nothing on
+# the hub took a dropped file, so Chrome did what it does with one: it saved it
+# to Downloads.  The boss (2026-09-30, on a 432-fiber job): the A folder loaded on the
+# Viewer and the B folder "goes straight to downloads and isn't populating".
+# The Viewer frame is a box in the middle of the hub page; a second folder let
+# go of a little off it (the sidebar's B box, the settings box above, the
+# header) was a download.  So the hub page catches every file drop: on the
+# Viewer page the files go on to the Viewer, which loads them as a drop on its
+# FILES panel; on any other page the drop is refused (no download either).
+# A file box of a page (st.file_uploader) still takes its own drops.
+#
+# The page's frames are covered too: the settings box and the other boxes
+# drawn by the hub are frames of the hub's own address, and a drop on one of
+# them was a download in the same way.  The Viewer frame is another address
+# and takes its own drops.
+#
+# The code runs in the hub page itself, put there as a <script>: a listener
+# left behind by this zero-height frame would stop working once Streamlit
+# removed the frame.
+HUB_DROP_CATCH_JS = r"""
+<script>
+(function(){
+  var w; try { w = window.parent; void w.document; } catch (e) { return; }
+  if (!w || w.__otdrDropCatch) return;
+  w.__otdrDropCatch = true;
+  var s = w.document.createElement('script');
+  s.textContent = '(' + function(){
+    var EXTS = ['.sor', '.json', '.trc', '.zip'];
+    function isFiles(ev) {
+      var t = ev.dataTransfer && ev.dataTransfer.types;
+      return !!t && Array.prototype.indexOf.call(t, 'Files') >= 0;
+    }
+    function viewerFrame() {
+      var fs = document.querySelectorAll('iframe');
+      for (var i = 0; i < fs.length; i++) {
+        var src = fs[i].getAttribute('src') || '';
+        if (/^https?:\/\/(127\.0\.0\.1|localhost):\d+\/\?(.*&)?b=\d+/.test(src)) return fs[i];
+      }
+      return null;
+    }
+    function walk(entry, out) {
+      return new Promise(function(resolve){
+        if (entry.isFile) {
+          entry.file(function(f){ out.push(f); resolve(); }, function(){ resolve(); });
+        } else if (entry.isDirectory) {
+          var rd = entry.createReader();
+          var page = function(){
+            rd.readEntries(function(ents){
+              if (!ents.length) { resolve(); return; }
+              ents.reduce(function(p, e){ return p.then(function(){ return walk(e, out); }); },
+                          Promise.resolve()).then(page);
+            }, function(){ resolve(); });
+          };
+          page();
+        } else resolve();
+      });
+    }
+    function collect(dt) {
+      var items = dt.items ? Array.prototype.slice.call(dt.items) : [];
+      var ents = items.map(function(i){ return i.webkitGetAsEntry && i.webkitGetAsEntry(); })
+                      .filter(Boolean);
+      var out = [];
+      var done = ents.length
+        ? ents.reduce(function(p, e){ return p.then(function(){ return walk(e, out); }); },
+                      Promise.resolve())
+        : Promise.resolve(Array.prototype.push.apply(out, dt.files || []));
+      return done.then(function(){
+        return out.filter(function(f){
+          var n = (f.name || '').toLowerCase();
+          return n.charAt(0) !== '.' && EXTS.some(function(x){ return n.slice(-x.length) === x; });
+        });
+      });
+    }
+    function onOver(ev) {
+      if (ev.defaultPrevented || !isFiles(ev)) return;   // a file box's own
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = viewerFrame() ? 'copy' : 'none';
+    }
+    function onDrop(ev) {
+      if (ev.defaultPrevented || !isFiles(ev)) return;
+      ev.preventDefault();
+      var fr = viewerFrame();
+      if (!fr) return;
+      var origin = new URL(fr.getAttribute('src')).origin;
+      collect(ev.dataTransfer).then(function(files){
+        if (files.length && fr.contentWindow)
+          fr.contentWindow.postMessage({ type: 'otdr-drop', files: files }, origin);
+      });
+    }
+    function hook(win) {
+      try {
+        var doc = win.document;
+        if (!doc || doc.__otdrDropHooked) return;
+        doc.__otdrDropHooked = true;
+        win.addEventListener('dragover', onOver);
+        win.addEventListener('drop', onDrop);
+      } catch (e) { /* another address: the Viewer, which takes its own */ }
+    }
+    hook(window);
+    // Frames come and go with every rerun, so look again now and then.
+    setInterval(function(){
+      var fs = document.querySelectorAll('iframe');
+      for (var i = 0; i < fs.length; i++) if (fs[i].contentWindow) hook(fs[i].contentWindow);
+    }, 1000);
+  } + ')();';
+  w.document.head.appendChild(s);
+})();
+</script>
+"""
+
+
+def _install_hub_drop_catch():
+    """Render the zero-height script above (best effort, never fatal)."""
+    try:
+        st_components_html(HUB_DROP_CATCH_JS, height=0)
+    except Exception:
+        pass
+
+
 # ─── Background trace server (started once) ──────────────────────────────
 def ensure_trace_server():
     if 'trace_port' not in st.session_state:
@@ -3978,6 +4097,7 @@ _PROJECT_MODE = (st.session_state.get('app_mode') == 'project'
 if _PROJECT_MODE:
     _project_seed_tools()
 _install_sidebar_drag_fix()
+_install_hub_drop_catch()
 
 # No "Deploy" button in the header (Robert, 2026-09-29): it is Streamlit's
 # developer menu and means nothing to a tech.  New builds turn the whole
@@ -4618,6 +4738,10 @@ with st.sidebar:
             st.session_state['view_drop_seen'] = _drop_at
             st.session_state['view_dir_a_input'] = trace_server.CONFIG.get('dir_a') or ''
             st.session_state['view_dir_b_input'] = trace_server.CONFIG.get('dir_b') or ''
+            # The Viewer that took the drop already shows these folders: its
+            # frame must not reload for them (see page_viewer).
+            st.session_state['_viewer_drop_dirs'] = (
+                trace_server.CONFIG.get('dir_a') or '', trace_server.CONFIG.get('dir_b') or '')
             st.session_state.pop('_panel_restore', None)
             st.session_state.pop('_ss_nav_folder', None)
             _trace_folders_changed()
@@ -5078,6 +5202,10 @@ def page_viewer():
                 st.session_state['view_drop_seen'] = _drop_at
                 st.session_state['view_dir_a_input'] = trace_server.CONFIG['dir_a'] or ''
                 st.session_state['view_dir_b_input'] = trace_server.CONFIG['dir_b'] or ''
+                # The Viewer that took the drop already shows these folders: its
+                # frame must not reload for them (the b= below).
+                st.session_state['_viewer_drop_dirs'] = (
+                    trace_server.CONFIG.get('dir_a') or '', trace_server.CONFIG.get('dir_b') or '')
 
         if not _PANEL_DRAWN:
             # In a project there is no left-panel Trace Folders: the Viewer
@@ -5203,15 +5331,32 @@ document.getElementById("vpop2").addEventListener("click", function(){
 </script>
 """.replace('__ORIGIN__', f'http://127.0.0.1:{port}')
     st_components_html(theme_recolor(_pop_doc), height=42)
+    # The note above the frame keeps ONE slot whether it shows or not:
+    # Streamlit places the frame by its position on the page, so this note
+    # going away after the first drop moved the frame up a place and rebuilt
+    # it, and the Viewer lost the traces it had just loaded.
+    _note = st.empty()
     if not dir_a and not dir_b:
-        st.info('Pick an A and/or B folder of OTDR `.sor` / `.json` files in the '
+        _note.info('Pick an A and/or B folder of OTDR `.sor` / `.json` files in the '
                 'sidebar, then type fiber numbers in the viewer to plot them.')
     # Embed the canvas viewer.  Cache-bust on folder change so the iframe
     # re-reads /api/list.  A deep-link target is appended so the viewer
     # auto-loads:  a single fiber + km (Splice Report cell), OR a pair of
     # fibers overlaid (Duplicate Check "Stay in app").
     from urllib.parse import urlencode
-    q = {'b': abs(hash((dir_a, dir_b))) % 100000}
+    # Not after a drop on the Viewer, though: the Viewer pointed the server at
+    # the dropped folders itself and shows them, and a reload on the next
+    # rerun threw away every trace it had loaded, while a second folder
+    # dropped as the frame came back went to Chrome's Downloads (the boss,
+    # 2026-09-30: A loaded, then B went to Downloads).
+    _key = ((dir_a or ''), (dir_b or ''))
+    if (_key == st.session_state.get('_viewer_drop_dirs')
+            and '_viewer_b' in st.session_state):
+        _b = st.session_state['_viewer_b']
+    else:
+        _b = abs(hash(_key)) % 100000
+    st.session_state['_viewer_b'] = _b
+    q = {'b': _b}
     # PERSISTENT deep-link target (read, NOT consumed).  Keeping the last
     # clicked/loaded fiber in the iframe URL makes the src STABLE across
     # Streamlit reruns.  Consuming it with .pop made the very next rerun rebuild
@@ -5226,7 +5371,7 @@ document.getElementById("vpop2").addEventListener("click", function(){
         q['fibers'] = tgt['fibers']
         q['dir'] = tgt.get('dir', 'a')
         if announce:
-            st.caption(f"Overlaying duplicate-pair fibers {tgt['fibers']} "
+            _note.caption(f"Overlaying duplicate-pair fibers {tgt['fibers']} "
                        f"(direction {q['dir'].upper()})")
     elif tgt and tgt.get('fiber'):
         q['fiber'] = tgt['fiber']
@@ -5236,7 +5381,7 @@ document.getElementById("vpop2").addEventListener("click", function(){
         if tgt.get('src'):
             q['src'] = tgt['src']
         if announce:
-            st.caption(f"Jumped to fiber {tgt['fiber']}"
+            _note.caption(f"Jumped to fiber {tgt['fiber']}"
                        + (f" @ {tgt['km']} km" if tgt.get('km') else ''))
     # Use the whole window (Robert, 2026-09-29: blank space at every edge).
     # Streamlit's wide layout keeps ~5rem each side and 6rem / 10rem above and
