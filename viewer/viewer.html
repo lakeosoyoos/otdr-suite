@@ -3655,6 +3655,7 @@ function updateMarkerReadout() {
   box.innerHTML = html;
 }
 
+const X_LABEL_GAP_PX = 12;         // clear space between two distance labels
 function drawGrid(r) {
   ctx.fillStyle = '#000000';
   ctx.font = "11px 'Segoe UI', sans-serif";
@@ -3664,7 +3665,19 @@ function drawGrid(r) {
   // event); xToPx still takes raw km.
   const z = axisZeroKm();
   const uf = distU().f;
-  const xTicks = niceTicks((gView.x0 - z) * uf, (gView.x1 - z) * uf, 10).map(v => v / uf + z);
+  const xDigits = gDistUnit === 'ft' || gDistUnit === 'm' ? 0 : 2;
+  const xLabel = x => fmtDist(x - z, xDigits);
+  // As many labels as fit: never so many that two run together, at any width
+  // (Robert 2026-10-01).  Ask for ten, and ask for fewer until the space
+  // between two labels' centres clears the widest label plus a gap.
+  let xTicks = [];
+  for (let want = 10; want >= 1; want--) {
+    xTicks = niceTicks((gView.x0 - z) * uf, (gView.x1 - z) * uf, want).map(v => v / uf + z);
+    if (xTicks.length < 2) break;
+    const gapPx = Math.abs(xToPx(xTicks[1], r) - xToPx(xTicks[0], r));
+    const widest = Math.max(...xTicks.map(x => ctx.measureText(xLabel(x)).width));
+    if (gapPx >= widest + X_LABEL_GAP_PX) break;
+  }
   ctx.strokeStyle = '#e6edf4';
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -3676,8 +3689,14 @@ function drawGrid(r) {
   ctx.stroke();
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
+  // A plot too narrow for even two labels: a label that would touch the one
+  // before it is left out, so none ever run together.
+  let lastRight = -Infinity;
   for (const x of xTicks) {
-    ctx.fillText(fmtDist(x - z, gDistUnit === 'ft' || gDistUnit === 'm' ? 0 : 2), xToPx(x, r), r.y + r.h + 6);
+    const txt = xLabel(x), w = ctx.measureText(txt).width, cx = xToPx(x, r);
+    if (cx - w / 2 < lastRight + X_LABEL_GAP_PX) continue;
+    ctx.fillText(txt, cx, r.y + r.h + 6);
+    lastRight = cx + w / 2;
   }
 
   // Y ticks
