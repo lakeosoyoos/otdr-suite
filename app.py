@@ -2374,6 +2374,15 @@ def _handle_nav():
                 st.session_state['uni_folder_input'] = _sra
         if _srb and os.path.isdir(_srb):
             st.session_state['view_dir_b_input'] = _srb
+        # A Unidirectional report run on the panel's B folder comes back on
+        # the B folder: the popped Viewer holds both of the panel's folders
+        # and says which side the report ran on (`pside`).
+        _pside = qp.get('pside')
+        if qp.get('nav') == 'uni' and _pside in ('a', 'b'):
+            st.session_state['uni_panel_side'] = 'A folder' if _pside == 'a' else 'B folder'
+            _run = _srb if _pside == 'b' else _sra
+            if _run and os.path.isdir(_run):
+                st.session_state['uni_folder_input'] = _run
         st.session_state['nav_radio'] = _back_pages[qp.get('nav')]
         st.query_params.clear()
         return
@@ -7617,8 +7626,15 @@ def page_unidirectional():
                        'break': '#c00000', 'reflective': '#6c3483',
                        'connector': '#0e6655', 'end': '#595959'}
         _uni_port = ensure_trace_server()
-        if folder and os.path.isdir(folder):
+        if _uni_pside and (_pa or _pb):
+            # Run on one of the left panel's folders: the popped Viewer keeps
+            # BOTH of them and opens the fibre on the side the report ran on,
+            # as a click into the Viewer tab does (_handle_nav).  Pointing A at
+            # the report's folder loaded a B-folder run's files as A->B.
+            trace_server.set_dirs(_pa or None, _pb or None)
+        elif folder and os.path.isdir(folder):
             trace_server.set_dirs(folder, None)   # popped Viewer reads this span
+        _uni_dir = _uni_pside or 'a'              # the side its links open on
         # Same as the Splice Report grid: the Viewer judges by THIS run's gates.
         # The uni settings panel moves UNI_BEND_THRESHOLD off its 0.250 default
         # and that never reached the Viewer either.
@@ -7670,10 +7686,10 @@ def page_unidirectional():
                                 else f" {c['loss']:.3f}")
                     _km = round(c['km'] + off, 4)
                     links.append(_cell_markup(
-                        _uni_popout, c['fiber'], _km, 'a', color, '',
+                        _uni_popout, c['fiber'], _km, _uni_dir, color, '',
                         f"F{c['fiber']}{loss}",
                         href=(f"?nav=viewer&fiber={c['fiber']}&km={_km}"
-                              f"&dir=a&sra={_fq}&src=uni{_uni_pq}")))
+                              f"&dir={_uni_dir}&sra={_fq}&src=uni{_uni_pq}")))
                 html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;"
                             "white-space:nowrap'>" + "<br>".join(links) + "</td>")
             html.append('</tr>')
