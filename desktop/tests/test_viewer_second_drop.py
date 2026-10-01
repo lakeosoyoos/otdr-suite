@@ -127,3 +127,48 @@ def test_the_hub_page_hands_a_stray_drop_to_the_viewer():
     assert "d.type === 'otdr-drop' && Array.isArray(d.files)" in html
     assert 'handleFilesDrop(d.files)' in html
     assert 'Array.isArray(dt) ? dt.filter(_dropOk) : await _dropCollect(dt)' in html
+
+
+def test_a_viewer_opened_from_a_report_cell_keeps_its_frame_through_both_drops():
+    """The boss again, 2026-10-01 (after #466): B still went to Downloads.
+    The Viewer had been opened from a report cell, so its address carried
+    that cell's fiber.  The first drop is a new span and lets go of the
+    cell's link, and the address without it reloaded the frame; the hub now
+    reruns by itself just after a drop, so the reload came as B was dropped."""
+    at = run_streamlit().run()
+    at.session_state['viewer_target'] = {'fiber': '354', 'km': '12.3', 'dir': 'both'}
+    at.run()
+    assert not at.exception, at.exception
+    before = _viewer_frame(at)
+    assert 'fiber=354' in before[1]
+
+    _drop('ROMTUC')
+    at.run()
+    assert not at.exception, at.exception
+    assert 'viewer_target' not in at.session_state    # the old span's link goes
+    assert _viewer_frame(at) == before                 # but the frame stays put
+    _drop('TUCROM')
+    at.run()
+    assert _viewer_frame(at) == before
+    at.run()
+    assert _viewer_frame(at) == before
+
+    # A cell clicked after the drop still moves the Viewer.
+    at.session_state['viewer_target'] = {'fiber': '12', 'dir': 'a'}
+    at.run()
+    path, src = _viewer_frame(at)
+    assert path == before[0] and 'fiber=12' in src and 'fiber=354' not in src
+
+
+def test_back_on_the_viewer_after_a_drop_the_old_cell_link_is_gone():
+    at = run_streamlit().run()
+    at.session_state['viewer_target'] = {'fiber': '354', 'km': '12.3', 'dir': 'both'}
+    at.run()
+    _drop('ROMTUC')
+    at.run()
+    assert 'fiber=354' in _viewer_frame(at)[1]
+    at.sidebar.radio(key='nav_radio').set_value('Splice Report').run()
+    assert not at.exception, at.exception
+    at.sidebar.radio(key='nav_radio').set_value('Viewer').run()
+    assert not at.exception, at.exception
+    assert 'fiber=' not in _viewer_frame(at)[1]
