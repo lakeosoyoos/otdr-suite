@@ -10,6 +10,7 @@ into the pytest process (they ship their own sor_reader copy).
 """
 import ast
 import os
+import site
 import subprocess
 import sys
 
@@ -22,6 +23,9 @@ def _import_runner(home, frozen, preset=None):
     """Import run_secretsauce as the frozen exe would, and report what
     matplotlib will use for its cache."""
     env = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
+    # Python finds its per-user packages (~/Library/Python/... on a Mac,
+    # where matplotlib may live) from HOME; keep them where they are.
+    env.setdefault("PYTHONUSERBASE", site.getuserbase())
     env.pop("MPLCONFIGDIR", None)
     if preset:
         env["MPLCONFIGDIR"] = str(preset)     # what pyi_rth_mplconfig leaves
