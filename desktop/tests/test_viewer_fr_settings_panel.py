@@ -104,9 +104,9 @@ def test_the_dialog_prints_every_fr_row_in_frs_order():
     assert 'Test Parameters</th>' in body and 'Test Settings</th>' in body
     rows = ["'Wavelength'", "'Range'", "'Pulse'", "'Duration'",
             "'Resolution'", "'IOR'", "'Backscatter'",
-            "'Helix factor'", "'Splice loss detection threshold'",
-            'Splitter loss (SM Only)', "'Reflectance detection threshold'",
-            "'End-of-fiber detection threshold'", "'Fiber core size'"]
+            "'Helix Factor'", "'Splice Loss Detection Threshold'",
+            'Splitter Loss (SM Only)', "'Reflectance Detection Threshold'",
+            "'End-of-Fiber Detection Threshold'", "'Fiber Core Size'"]
     at = [body.find(r) for r in rows]
     assert all(i >= 0 for i in at), [r for r, i in zip(rows, at) if i < 0]
     assert at == sorted(at)
