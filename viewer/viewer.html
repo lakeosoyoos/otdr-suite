@@ -819,7 +819,7 @@ try { gFiberColors = localStorage.getItem('otdr_viewer_fiber_colors') !== '0'; }
 let gInfo = null;                  // {dir_a_name, dir_b_name, fibers_a, fibers_b}
 let gLaunchA = 0;                  // A-folder launch-reel length, km (0 = none)
 let gSpanDecl = { a: null, b: null };  // the tech's own span, when they set one
-let gFrameWarn = '';               // sticky note when A/B cannot share a frame
+let gFrameWarn = '';               // the B folder is a short shot (see frameWarn)
 // The REPORT's gate, and which report it came from.  A cell that flags in the
 // report the tech clicked through from has to flag here too, so the verdict
 // column follows the engine's threshold rather than the browse filter below.
@@ -1771,7 +1771,7 @@ async function loadInfo() {
   // OPPOSITE ends of the cable and cannot be put on one frame — mirroring
   // would fold B about wherever the acquisition happened to stop, which looks
   // completely plausible and is wrong by however much cable is missing.  Say
-  // so rather than draw it.
+  // so wherever it is drawn (frameWarn).
   gFrameWarn = (nB && gInfo.cable_end_known_b === false)
     ? '   ⚠ B never reaches the end of the fiber: cable length unknown, so A/B '
       + 'cannot be aligned. Check B is the full-length shot, not the short shot.'
@@ -1861,6 +1861,15 @@ function openHubByName(url) {
 // absentNote()'s "F999 is not in the A/B folder" / "F1, F2, F3 (+4 more) are
 // not in the A folder" / "no B folder is set" are failures too, whole or as the
 // tail of a load readout.
+// The B folder's short-shot warning, only while one of its traces is drawn
+// lined up against A (stacked, A loaded): that is the one picture it is about.
+// It used to follow the folder alone, so it sat on every readout and Summary
+// Report of an A-only load, and of a short shot loaded by itself and drawn
+// as shot, where nothing is aligned.
+function frameWarn() {
+  return gFrameWarn && gTraces.some(t => t.visible && t.src === 'b' && isFlipped(t))
+    ? gFrameWarn : '';
+}
 const READOUT_FAIL_START = /^(could not |viewer failed|drop failed|nothing written|no [AB/]+ folder is set|F\d+(, F\d+)* (\(\+\d+ more\) )?(is|are) not in the )/;
 const READOUT_FAIL_TAIL = /, (could not load |F\d+(, F\d+)* (\(\+\d+ more\) )?(is|are) not in the )/;
 function setReadout(s, extra = {}) {
@@ -1878,7 +1887,7 @@ function setReadout(s, extra = {}) {
   // handleFilesDrop): those are a failure and a warning whatever they say.
   if (extra.fail) parts.push([extra.fail, 'ro-fail']);
   if (extra.warn) parts.push([extra.warn, 'ro-warn']);
-  parts.push([gFrameWarn.trim(), 'ro-warn'], [gMirrorNote.trim(), 'ro-warn']);
+  parts.push([frameWarn().trim(), 'ro-warn'], [gMirrorNote.trim(), 'ro-warn']);
   const shown = parts.filter(([t]) => t);
   el.textContent = shown.map(([t]) => t).join('   ');
   // One line, cut off at the window edge: hovering it shows the whole text.
@@ -8179,7 +8188,7 @@ async function reportPayload(opt, token, progress) {
             .filter(Boolean).join(', ')]);
       }
     }
-    if (gFrameWarn) meta.push(['Note', gFrameWarn]);
+    if (frameWarn()) meta.push(['Note', frameWarn()]);
 
     const H = probe.add({ bg: '#e4edf7', fg: '#1f2d3d', b: true, al: 'c' });
     const B = probe.add({ bg: null, fg: '#1f2d3d', b: false, al: 'l' });
