@@ -7517,6 +7517,25 @@ def _uni_pick_direction(folder):
     return split[side]
 
 
+def _uni_end_cell(entries, ribbon_fibers):
+    """The Cable End cell of one ribbon, exactly as the workbook prints it
+    (uni_format_end_cell in splicereportmatchexfo, which the hub cannot
+    import: it would load an engine's reader into the hub).  `entries` are
+    (fiber, end reflectance or None) for the ribbon's fibers that reach the
+    end.  Every fiber of the ribbon there: the strongest reflectance
+    ('REFL-45.8dB', or 'end' when none is stored).  Some broke upstream:
+    the fibers that do reach it, then that tag.  test_uni_end_cells holds
+    the two copies to the same text."""
+    if not entries:
+        return ''
+    members = sorted(f for f, _ in entries)
+    refls = [v for _, v in entries if v is not None]
+    tag = f"REFL{max(refls):.1f}dB" if refls else "end"
+    if set(members) >= set(ribbon_fibers):
+        return tag
+    return ','.join(f"F{f}" for f in members) + " " + tag
+
+
 def page_unidirectional():
     st.markdown('#### Unidirectional')
 
@@ -7930,20 +7949,26 @@ def page_unidirectional():
                 if not cell:
                     html.append("<td style='padding:3px 6px;border:1px solid #eef2f6'></td>")
                     continue
+                if gc.get('kind') == 'end':
+                    # Cable End: the workbook's one cell for the ribbon, not
+                    # a line per fiber (432 lines made every row ~150 px
+                    # tall).  It opens the fiber with the strongest end
+                    # reflectance, or the ribbon's first fiber at the end.
+                    _top = min(cell, key=lambda c: (c['loss'] is None,
+                                                    -(c['loss'] or 0), c['fiber']))
+                    shown = [(_top, _uni_end_cell(
+                        [(c['fiber'], c['loss']) for c in cell],
+                        range(f0, min(f0 + rs, max_f + 1))))]
+                else:
+                    shown = [(c, f"F{c['fiber']}" + (' ✕ broke' if c['loss'] is None
+                                                     else f" {c['loss']:.3f}"))
+                             for c in sorted(cell, key=lambda x: x['fiber'])]
                 links = []
-                for c in sorted(cell, key=lambda x: x['fiber']):
+                for c, text in shown:
                     color = _KIND_COLOR.get(c['kind'], '#000000')
-                    if c['kind'] == 'end':
-                        # Cable End cell: the fiber's stored end reflectance.
-                        loss = (' end' if c['loss'] is None
-                                else f" REFL{c['loss']:.1f}dB")
-                    else:
-                        loss = (' ✕ broke' if c['loss'] is None
-                                else f" {c['loss']:.3f}")
                     _km = round(c['km'] + off, 4)
                     links.append(_cell_markup(
-                        _uni_popout, c['fiber'], _km, _uni_dir, color, '',
-                        f"F{c['fiber']}{loss}",
+                        _uni_popout, c['fiber'], _km, _uni_dir, color, '', text,
                         href=(f"?nav=viewer&fiber={c['fiber']}&km={_km}"
                               f"&dir={_uni_dir}&sra={_fq}&src=uni{_uni_pq}")))
                 html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;"
