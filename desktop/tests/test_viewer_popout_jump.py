@@ -70,7 +70,10 @@ def _render_grid(src, table=CELL, port=8771):
         seen['doc'] = doc
 
     mod = types.ModuleType('grid')
-    mod.__dict__.update(json=json, st_components_html=fake_components_html)
+    # theme_recolor: the Light / Dark helper the grid's frame goes through;
+    # Light (the default) leaves the HTML exactly as written.
+    mod.__dict__.update(json=json, st_components_html=fake_components_html,
+                        theme_recolor=lambda html, name=None: html)
     exec(compile(ast.Module(body=[fn], type_ignores=[]), 'app.py', 'exec'),
          mod.__dict__)
     mod._render_clickable_grid(table, port, src=src)
