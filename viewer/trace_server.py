@@ -1508,6 +1508,15 @@ class Handler(BaseHTTPRequestHandler):
                                  'error': str(e)})
             return
 
+        if u.path == '/api/mode':
+            # The Viewer asks this every second or two (pollAnalysisMode) so
+            # the hub's Analysis Mode switch reaches a Viewer that already has
+            # traces on screen.  Kept to one dict lookup: no folder listing.
+            self._send_json({'analysis_mode': (CONFIG.get('analysis_mode')
+                                               if CONFIG.get('analysis_mode') in ('suite', 'fr')
+                                               else 'suite')})
+            return
+
         if u.path == '/api/report_defaults':
             # Where the Report dialog's "Save to" starts: the Downloads folder,
             # like every other thing the suite saves.

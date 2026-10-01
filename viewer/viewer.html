@@ -832,6 +832,7 @@ let gSourceReport = null;          // 'sr' | 'uni' | null (standalone)
 // 'suite' (OTDR Suite) | 'fr' (FastReporter): the hub's analysis mode, from
 // /api/list.  The table follows the reports' rules; nothing branches on it yet.
 let gAnalysisMode = 'suite';
+let gDropInFlight = false;          // a drop is going up (see pollAnalysisMode)
 let gGateOverride = null;          // set when the tech types their own
 let gTraces = [];                  // [{key, fiber, dir, color, visible, data}]
 // Files the tech took out of the FILES list ("Remove from viewer").  The list
@@ -1509,6 +1510,7 @@ async function handleFilesDrop(dt) {
   const t0 = Date.now();
   const at = { stage: 'begin', file: '', size: 0, index: 0, sent: 0, bytes: 0, busy: 0, failed: false, retries: 0 };
   const total = files.reduce((n, f) => n + (f.size || 0), 0);
+  gDropInFlight = true;
   try {
     const { token } = await post('/api/drop_begin');
     at.stage = 'file';
@@ -1640,7 +1642,7 @@ async function handleFilesDrop(dt) {
     setReadout('drop failed: ' + ((e && e.message) || e));
     cnt.textContent = '';
     reportDropFailure(e, at, files.length, total, Date.now() - t0);
-  }
+  } finally { gDropInFlight = false; }
 }
 // A failed drop goes to Slack with where it stopped, so the cause can be read
 // off the report instead of guessed at: which step, which file and how far in,
@@ -1705,7 +1707,14 @@ async function loadInfo() {
     // the comparison after them can tell whether this poll actually moved it
     // (a second direction arriving moves it too: see oneDirOnly).
     const wasGate = activeGateDb();
+    const wasMode = gAnalysisMode;
     gInfo = await r.json();
+    // The hub's Analysis Mode switch moves CONFIG under a Viewer that already
+    // has traces on screen.  The table is laid out per mode (the Splice
+    // Report's own in OTDR Mode, FastReporter's in FR Mode), so a new mode
+    // lays it out again; before, it kept the old layout until Clear All.
+    gAnalysisMode = gInfo.analysis_mode === 'fr' ? 'fr' : 'suite';
+    const modeMoved = gAnalysisMode !== wasMode;
     gLaunchA = Number(gInfo.launch_a_km) || 0;   // null (no reel) → 0
     gSpanDecl = gInfo.span_decl || { a: null, b: null };
     if (gInfo.thresholds) gThresholds = gInfo.thresholds;
@@ -1720,7 +1729,10 @@ async function loadInfo() {
     // label, so without this the verdict column keeps the previous run's
     // answers until something else happens to re-render — which is the same
     // report/Viewer disagreement, just one click wide.
-    if (gTraces.length && activeGateDb() !== wasGate) renderEventTable();
+    if (gTraces.length && (modeMoved || activeGateDb() !== wasGate)) {
+      renderEventTable();
+      if (modeMoved) draw();     // the chart marks only the events the table prints
+    }
   } catch (e) {
     setReadout('viewer server not ready yet…');
     return false;                       // signal not-ready → the boot loop retries
@@ -1740,7 +1752,6 @@ async function loadInfo() {
     ? '   ⚠ B never reaches the end of the fiber: cable length unknown, so A/B '
       + 'cannot be aligned. Check B is the full-length shot, not the short shot.'
     : '';
-  gAnalysisMode = gInfo.analysis_mode === 'fr' ? 'fr' : 'suite';
   setReadout(`A: ${gInfo.dir_a_name} (${nA} fibers)   ` +
              `B: ${gInfo.dir_b_name} (${nB} fibers)` +
              (gAnalysisMode === 'fr' ? '   ·   FastReporter analysis' : ''));
@@ -1859,6 +1870,28 @@ window.addEventListener('focus', async () => {
     draw();
   }
 });
+
+// The hub's Analysis Mode switch reaches the Viewer here.  The embedded
+// Viewer never gets a focus event when the switch beside it is clicked, and
+// a pop-out window beside the hub may not either, so a cheap ask for the mode
+// runs every MODE_POLL_MS (the browser slows it down in a hidden tab, and the
+// tab coming back into view asks at once).  Only a CHANGE costs anything
+// (loadInfo, then the table in the new layout).  One ask at a time, and none
+// while a drop is going up: the server takes one request at a time.
+const MODE_POLL_MS = 1500;
+let gModePollBusy = false;
+async function pollAnalysisMode() {
+  if (gModePollBusy || gDropInFlight || !gInfo) return;
+  gModePollBusy = true;
+  try {
+    const j = await (await fetch('/api/mode', { cache: 'no-store' })).json();
+    const m = j && j.analysis_mode === 'fr' ? 'fr' : 'suite';
+    if (m !== gAnalysisMode) await loadInfo();
+  } catch (e) { /* server busy or restarting: the next tick asks again */ }
+  finally { gModePollBusy = false; }
+}
+setInterval(pollAnalysisMode, MODE_POLL_MS);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) pollAnalysisMode(); });
 
 // ─── Add traces ───────────────────────────────────────────────────────
 async function addFibers() {
