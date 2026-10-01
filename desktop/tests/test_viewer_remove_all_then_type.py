@@ -223,3 +223,33 @@ def test_the_hub_runs_itself_when_the_viewer_moves_the_folders():
     assert "trace_server.CONFIG.get('dropped_at')" in body and "view_drop_seen" in body
     assert 'st.rerun()' in body and "scope='fragment'" not in body
     assert re.search(r'^    _follow_viewer_folders\(\)', app, re.M)   # drawn in the sidebar
+
+
+@needs_jsc
+def test_the_status_line_keeps_clear_of_the_marker_readout(tmp_path):
+    """The A/B marker readout holds the chart's top right corner; a status
+    message centred over the chart ran under it.  With the readout up the
+    status moves left, between the dB axis and the readout, and is cut to
+    fit; with it down the status is centred again."""
+    js = r"""
+    var M = { l: 56, r: 16, t: 12, b: 36 };
+    var ro = { style: { left: '', transform: '', maxWidth: '' } };
+    var mk = { style: { display: 'none' }, offsetLeft: 455 };
+    var document = { getElementById: function (id) { return id === 'readout' ? ro : mk; } };
+    var out = {};
+    placeReadout(); out.off = [ro.style.left, ro.style.transform, ro.style.maxWidth];
+    mk.style.display = 'block';
+    placeReadout(); out.on = [ro.style.left, ro.style.transform, ro.style.maxWidth];
+    mk.style.display = 'none';
+    placeReadout(); out.back = [ro.style.left, ro.style.transform, ro.style.maxWidth];
+    print('OUT ' + JSON.stringify(out));
+    """
+    path = tmp_path / 'ro.js'
+    path.write_text(_js_func('placeReadout') + '\n' + js, encoding='utf-8')
+    r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
+    out = json.loads((r.stdout + r.stderr).split('OUT ', 1)[1].strip())
+    assert out['off'] == ['', '', '']
+    assert out['on'] == ['56px', 'none', f'{455 - 56 - 10}px']
+    assert out['back'] == ['', '', '']
+    assert 'placeReadout();' in _js_func('setReadout')
+    assert _js_func('updateMarkerReadout').count('placeReadout();') == 2

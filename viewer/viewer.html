@@ -2010,6 +2010,24 @@ document.getElementById('btn-back').addEventListener('click', () => {
 // tail of a load readout.
 const READOUT_FAIL_START = /^(could not |viewer failed|drop failed|nothing written|no [AB/]+ folder is set|F\d+(, F\d+)* (\(\+\d+ more\) )?(is|are) not in the )/;
 const READOUT_FAIL_TAIL = /, (could not load |F\d+(, F\d+)* (\(\+\d+ more\) )?(is|are) not in the )/;
+// The status line floats centred over the top of the chart.  The A/B marker
+// readout holds the top right corner, so while it is up the status moves to
+// the left, between the dB axis and that box, and is cut short to fit rather
+// than run under it.
+function placeReadout() {
+  const el = document.getElementById('readout');
+  const box = document.getElementById('marker-readout');
+  if (!el) return;
+  if (!box || box.style.display === 'none') {
+    el.style.left = el.style.transform = el.style.maxWidth = '';
+    return;
+  }
+  let left = 56;                       // the plot's left margin, M.l
+  try { left = M.l; } catch (e) { /* not set up yet */ }
+  el.style.left = left + 'px';
+  el.style.transform = 'none';
+  el.style.maxWidth = Math.max(60, box.offsetLeft - left - 10) + 'px';
+}
 function setReadout(s, extra = {}) {
   s = String(s || '');
   const el = document.getElementById('readout');
@@ -2028,6 +2046,7 @@ function setReadout(s, extra = {}) {
   parts.push([gFrameWarn.trim(), 'ro-warn'], [gMirrorNote.trim(), 'ro-warn']);
   const shown = parts.filter(([t]) => t);
   el.textContent = shown.map(([t]) => t).join('   ');
+  placeReadout();
   // One line, cut off at the window edge: hovering it shows the whole text.
   el.title = el.textContent;
   if (!shown.length) return;
@@ -3858,6 +3877,7 @@ function updateMarkerReadout() {
   const box = document.getElementById('marker-readout');
   if (!gMarkerMode && gMarkers.a == null && gMarkers.b == null) {
     box.style.display = 'none';
+    if (typeof placeReadout === 'function') placeReadout();   // the status keeps clear
     return;
   }
   box.style.display = 'block';
@@ -3914,6 +3934,7 @@ function updateMarkerReadout() {
     html += `<div class="hint">click to place ${a == null ? 'A' : 'B'}</div>`;
   }
   box.innerHTML = html;
+  if (typeof placeReadout === 'function') placeReadout();   // the status keeps clear
 }
 
 const X_LABEL_GAP_PX = 12;         // clear space between two distance labels
