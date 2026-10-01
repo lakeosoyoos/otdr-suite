@@ -651,6 +651,10 @@ def main():
                     direction=args.direction,
                     landmarks=_lms,
                     analysis=args.analysis,
+                    # The A-end / B-end names the tech typed; the 'A' / 'B'
+                    # defaults mean "none typed", as on the Splice Report.
+                    site_a=(args.site_a if args.site_a not in ('', 'A') else None),
+                    site_b=(args.site_b if args.site_b not in ('', 'B') else None),
                 )
             except Exception as exc:
                 report_error('unidirectional (subprocess)', exc,

@@ -15656,6 +15656,17 @@ def uni_shot_direction(fibers):
     return 'A', loc_a, loc_b
 
 
+def uni_shot_direction_named(fibers, typed_a=None, typed_b=None):
+    """uni_shot_direction with the tech's own names for the cable's A end
+    and B end swapped in: (side, origin, far).  An empty name keeps the
+    stored one."""
+    side, origin, far = uni_shot_direction(fibers)
+    a_end, b_end = (origin, far) if side == 'A' else (far, origin)
+    a_end = (typed_a or '').strip() or a_end
+    b_end = (typed_b or '').strip() or b_end
+    return (side,) + ((a_end, b_end) if side == 'A' else (b_end, a_end))
+
+
 def uni_short_code(location_str):
     """3-letter site code from a GenParams location ('LA Media Rd MH' → LAM)."""
     letters = ''.join(ch for ch in (location_str or '') if ch.isalpha())
@@ -16210,11 +16221,15 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
 
 
 def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
-                 landmarks=None, analysis='suite'):
+                 landmarks=None, analysis='suite', site_a=None, site_b=None):
     """Full unidirectional pipeline: load one direction → normalize →
     discover/validate closures → trace-measured pre-break damage →
     off-splice + breaks → landmarks → ZK workbook.
-    Returns a summary dict for the hub manifest.  Raises on empty input."""
+    Returns a summary dict for the hub manifest.  Raises on empty input.
+
+    `site_a` / `site_b` are the names the tech typed for the cable's A end
+    and B end (the Splice Report's two site boxes); either left empty keeps
+    the stored GenParams name.  They print in the direction of the shot."""
     rs = ribbon_size or RIBBON_SIZE
     fibers, chosen, counts, merged_sigs, coverage = uni_load_dir(
         input_dir, direction=direction)
@@ -16371,7 +16386,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     grid = uni_build_ribbon_grid(fibers, columns, rs)
     grid, columns = uni_apply_show_filter(grid, columns)
 
-    side, site_a, site_b = uni_shot_direction(fibers)
+    side, site_a, site_b = uni_shot_direction_named(fibers, site_a, site_b)
 
     wrote = uni_write_xlsx(grid, columns, n_fibers, rs, span, output_path,
                            site_a=site_a, site_b=site_b, fibers=fibers,

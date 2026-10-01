@@ -104,3 +104,52 @@ def test_uni_b_why_flagged_says_b_side():
         print(json.dumps({'why': rows[0]['reason']}))
     """)
     assert "B-side event" in out["why"] and "A-side" not in out["why"], out
+
+
+# ── #3 Site names ──────────────────────────────────────────────────────────
+
+def test_uni_typed_site_names_print_in_the_direction_of_the_shot(tmp_path):
+    """The names typed for the A end and the B end (WEST, EAST) print in the
+    workbook and in the hub's summary line, ordered by the shot: a B shot
+    reads "EAST → WEST"."""
+    import openpyxl
+    from conftest import FIXTURE_A_DIR, FIXTURE_B_DIR
+    got = {}
+    for side, folder in (("A", FIXTURE_A_DIR), ("B", FIXTURE_B_DIR)):
+        out = tmp_path / f"uni_{side}.xlsx"
+        m = _uni(folder, out, "--site-a", "WEST", "--site-b", "EAST")
+        got[side] = (openpyxl.load_workbook(out)["Unidir Events"]["A1"].value,
+                     m["uni"].get("direction_label"))
+    assert got["A"] == ("WEST → EAST:", "WEST → EAST"), got
+    assert got["B"] == ("EAST → WEST:", "EAST → WEST"), got
+
+
+def test_sr_typed_site_names_print_everywhere_the_site_appears(tmp_path):
+    """Pin: the Splice Report's two typed names reach the A-End / B-End
+    header cells, the acquisition sheet, the Viewer table's end columns and
+    the manifest the hub prints and names the file from.  (This already
+    held before group 2; the test keeps it.)"""
+    import openpyxl
+    from conftest import FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR
+    out = tmp_path / "sr.xlsx"
+    vt = tmp_path / "vt.json"
+    proc = subprocess.run([sys.executable, str(RUNNER),
+                           "--dir-a", str(FIXTURE_SPLICE_A_DIR),
+                           "--dir-b", str(FIXTURE_SPLICE_B_DIR),
+                           "--out", str(out), "--site-a", "WEST",
+                           "--site-b", "EAST", "--viewer-table", str(vt)],
+                          cwd=str(SPLICEREPORT_DIR), capture_output=True,
+                          text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    m = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert (m["site_a"], m["site_b"]) == ("WEST", "EAST")
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Splice Report"]
+    assert ws.cell(3, 2).value == "A-End ILA: WEST"
+    assert ws.cell(3, ws.max_column).value == "B-End ILA: EAST"
+    acq = [c.value for row in wb["Acquisition Parameters"].iter_rows()
+           for c in row if isinstance(c.value, str)]
+    assert "A-dir WEST" in acq and "B-dir EAST" in acq
+    cols = json.loads(vt.read_text())["columns"]
+    assert cols[0]["title"] == "A-End ILA: WEST"
+    assert cols[-1]["title"] == "B-End ILA: EAST"
