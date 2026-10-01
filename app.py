@@ -1670,12 +1670,23 @@ st.set_page_config(page_title='OTDR Suite', layout='wide',
 # Light / Dark: every new session starts Dark, and the session's choice is
 # applied before anything draws.  Streamlit sends the theme at the START of a
 # run, so when this run changed it the page on screen still has the old one:
-# rerun once to paint the right one.
+# rerun once to paint the right one.  Fail-safe (boss, 2026-10-01): at most
+# one such rerun per theme change, so a Streamlit that does not keep the
+# setting draws the page in whatever theme it has instead of rerunning for
+# ever; and a theme error leaves Streamlit's own look rather than no page.
 if 'ui_theme' not in st.session_state:
     st.session_state['ui_theme'] = THEME_DEFAULT
-if apply_streamlit_theme(st.session_state['ui_theme']):
+try:
+    _theme_changed = apply_streamlit_theme(st.session_state['ui_theme'])
+except Exception:
+    _theme_changed = False
+if _theme_changed and st.session_state.get('_theme_rerun_for') != st.session_state['ui_theme']:
+    st.session_state['_theme_rerun_for'] = st.session_state['ui_theme']
     st.rerun()
-st.markdown(theme_css_vars(), unsafe_allow_html=True)
+try:
+    st.markdown(theme_css_vars(), unsafe_allow_html=True)
+except Exception:
+    pass
 try:
     trace_server.CONFIG['theme'] = st.session_state['ui_theme']
 except Exception:
@@ -2457,21 +2468,30 @@ _handle_nav()
 # switch: once a browser has chosen Light or Dark there, Streamlit keeps it
 # and ignores the theme the hub sends, so the switch does nothing.  ("Use
 # system setting" removes Streamlit's entry instead, so it never blocks.)  The menu is hidden below; this clears a pick already made, once,
-# and reloads so the hub's theme takes.  Streamlit stores its own theme as
-# "Custom Theme", which is left alone.
+# and reloads so the hub's theme takes.  Only that pick is removed: an
+# entry {"name": "Light"} or {"name": "Dark"}.  Everything else is left
+# alone, above all what Streamlit writes by itself on every page load
+# ("Custom Theme" up to 1.50, a bare "System"/"Light"/"Dark" from 1.6x on,
+# which the hub's theme beats anyway).  Removing that one reloaded the page
+# for ever on the 1.64 build (boss, 2026-10-01, run 1416), so the reload
+# also happens at most once per window.
 THEME_PICK_CLEAR_JS = """
 <script>
 (function () {
   var w; try { w = window.parent; void w.document; } catch (e) { return; }
   try {
+    var ss = null; try { ss = w.sessionStorage; } catch (e) {}
+    if (ss && ss.getItem('otdrThemePickCleared')) return;
     var ls = w.localStorage, gone = false;
     for (var i = ls.length - 1; i >= 0; i--) {
       var k = ls.key(i);
       if (!k || k.indexOf('stActiveTheme') !== 0) continue;
       var v = null; try { v = JSON.parse(ls.getItem(k)); } catch (e) {}
-      if (!v || v.name !== 'Custom Theme') { ls.removeItem(k); gone = true; }
+      if (v && typeof v === 'object' && (v.name === 'Light' || v.name === 'Dark')) {
+        ls.removeItem(k); gone = true;
+      }
     }
-    if (gone) w.location.reload();
+    if (gone && ss) { ss.setItem('otdrThemePickCleared', '1'); w.location.reload(); }
   } catch (e) { /* no storage: nothing was picked */ }
 })();
 </script>
