@@ -662,6 +662,10 @@ def main():
                     direction=args.direction,
                     landmarks=_lms,
                     analysis=args.analysis,
+                    # The A-end / B-end names the tech typed; the 'A' / 'B'
+                    # defaults mean "none typed", as on the Splice Report.
+                    site_a=(args.site_a if args.site_a not in ('', 'A') else None),
+                    site_b=(args.site_b if args.site_b not in ('', 'B') else None),
                     # the Viewer's Suite table for a one-direction load
                     viewer_leg=(args.viewer_leg
                                 if args.viewer_table and args.analysis != 'fr'
@@ -1156,6 +1160,13 @@ def main():
                       file=sys.stderr)
                 span_stats = None
 
+        # The fibers actually loaded, and the ribbons that hold one (0-based).
+        # `n_fibers` above is the HIGHEST fiber number, which lays the grid
+        # out; ribbon 30 loaded alone is 12 fibers in one ribbon, not "360
+        # fibers" over thirty rows.
+        _loaded = sorted(set(fa) | set(fb))
+        _ribbons = sorted({(f - 1) // ribbon_size for f in _loaded})
+
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
         print("Writing the Excel report…", file=sys.stderr, flush=True)
         E.write_xlsx(cells, splices, n_fibers, ribbon_size, args.out,
@@ -1163,7 +1174,7 @@ def main():
                      launch_cells_a=lca, launch_cells_b=lcb,
                      fibers_a=fa, fibers_b=fb, all_results=all_results,
                      fiber_avgs=fiber_avgs,
-                     span_stats=span_stats)
+                     span_stats=span_stats, ribbons=_ribbons)
 
         # ── Grid JSON for the clickable Splice Report page ──
         def sp_km(si):
@@ -1210,15 +1221,22 @@ def main():
         # which splits one splice in two when A and B place it apart.
         if _want_table:
             try:
+                # The end columns name their sites.  The Viewer runs this
+                # report itself (no site boxes on its screen) and sends none,
+                # so its table read a bare "A-End ILA"; with none typed, each
+                # end takes the name its own direction's files store
+                # (E.uni_shot_direction: GenParams, in the shot's direction).
+                _tsa = args.site_a if args.site_a != 'A' else (
+                    E.uni_shot_direction(fa)[1] or None)
+                _tsb = args.site_b if args.site_b != 'B' else (
+                    E.uni_shot_direction(fb)[1] or None)
                 _tbl = E.suite_viewer_table(
                     fa, fb, splices, all_results,
                     population=_population, pre_split=_pre_split,
                     hidden={k: v for k, v in _pre_show.items()
                             if k not in all_results},
                     launch_issues=launch_issues, readings=_readings,
-                    span_km=span_km,
-                    site_a=(args.site_a if args.site_a != 'A' else None),
-                    site_b=(args.site_b if args.site_b != 'B' else None))
+                    span_km=span_km, site_a=_tsa, site_b=_tsb)
                 _tbl.update({'dir_a': os.path.abspath(a),
                              'dir_b': os.path.abspath(b),
                              'sig_a': _sigs[0], 'sig_b': _sigs[1],
@@ -1241,7 +1259,11 @@ def main():
             'xlsx': args.out,
             'site_a': args.site_a, 'site_b': args.site_b,
             'site_src': site_src,
-            'span_km': span_km, 'n_fibers': n_fibers, 'ribbon_size': ribbon_size,
+            # n_fibers: how many fibers were loaded; max_fiber and ribbons
+            # (0-based, the ones holding a loaded fiber) lay out the grid.
+            'span_km': span_km, 'n_fibers': len(_loaded),
+            'max_fiber': n_fibers, 'ribbons': _ribbons,
+            'ribbon_size': ribbon_size,
             'launch_a_km': round(launch_a_km, 4),
             'n_splices': sum(1 for c in col if c['kind'] == 'splice'),
             'n_columns': len(col),

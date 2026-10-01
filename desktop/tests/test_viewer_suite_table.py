@@ -115,8 +115,9 @@ def test_the_columns_are_the_report_s_between_its_two_ends(splice):
     cols = table["columns"]
     assert [c["kind"] for c in cols] == (
         ["end"] + [c["kind"] for c in man["columns"]] + ["end"])
-    assert (cols[0]["title"], cols[0]["end"]) == ("A-End ILA", "A")
-    assert (cols[-1]["title"], cols[-1]["end"]) == ("B-End ILA", "B")
+    # no site typed: each end takes the name its own files store
+    assert (cols[0]["title"], cols[0]["end"]) == ("A-End ILA: ELMDALE", "A")
+    assert (cols[-1]["title"], cols[-1]["end"]) == ("B-End ILA: MILLER", "B")
     # named as the report's header row names them
     titles = [c["title"] for c in cols[1:-1]]
     nums = [c["num"] for c in man["columns"] if c["kind"] == "splice"]
