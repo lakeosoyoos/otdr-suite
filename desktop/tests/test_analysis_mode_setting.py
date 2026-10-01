@@ -111,7 +111,10 @@ def test_the_sidebar_control_sits_under_the_tool_list():
     body = SRC.split("def _render_analysis_mode_control():", 1)[1].split("\ndef ", 1)[0]
     assert "load_analysis_mode()" in body and "save_analysis_mode(_mode)" in body
     # FR Mode | switch | OTDR Mode (2026-09-24): knob right = OTDR Mode.
-    assert ".toggle(" in body and "key='analysis_switch'" in body and "st.rerun()" in body
+    assert ".toggle(" in body and "value=not _on" in body and "st.rerun()" in body
+    # Keyless on purpose: a keyed switch came back from the App's home screen
+    # in its old position and flipped OTDR Mode to FR Mode on the next run.
+    assert "m.toggle('Analysis mode', value=not _on, label_visibility='collapsed')" in body
     assert "st.radio(" not in body                      # a switch, not a radio
     # the radio's key holds the label; the mode lives in its own slot
     assert "st.session_state['analysis_mode'] = _mode" in body
@@ -131,6 +134,16 @@ def test_the_mode_in_use_has_a_green_halo_and_the_switch_is_always_on(hub):
     assert ".st-key-analysis_mode_box" in css and css.count(".st-key-") == css.count(".st-key-analysis_mode_box")
     assert 'class="mode-on">FR Mode<' in hub._mode_name("FR Mode", True)
     assert 'class="mode-off">OTDR Mode<' in hub._mode_name("OTDR Mode", False)
+
+
+def test_the_halo_styling_stays_on_the_switch():
+    # #410 once changed every text-align:center / white-space:nowrap in app.py
+    # along with the switch's own: the ribbon grids' cells wrapped.  Only the
+    # two switch names keep words whole; the grid cells stay on one line.
+    assert SRC.count("word-break:keep-all") == 2
+    assert SRC.count(".st-key-analysis_mode_box .mode-o") == 2
+    assert "f\"white-space:nowrap'>F{f0}–{f1}</td>\")" in SRC
+    assert "\"white-space:nowrap'>\" + \"<br>\".join(links)" in SRC
 
 
 # ── the runners accept it, set it, echo it ────────────────────────────────

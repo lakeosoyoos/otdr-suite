@@ -140,31 +140,30 @@ def _render_analysis_mode_control():
     """The OTDR Suite / FastReporter switch, right under the Tool list so
     it is visible on every page.  Seeded from settings.json on the first run of a
     session and written back on every change, so a tech's choice survives a
-    restart.  Same key= discipline as the profile picker: the toggle's own
-    key holds the switch position, session_state.analysis_mode holds the mode."""
+    restart.  session_state.analysis_mode holds the mode; the toggle has no
+    key and starts at the mode (value=)."""
     if 'analysis_mode' not in st.session_state:
         st.session_state['analysis_mode'] = load_analysis_mode()
     _on = st.session_state['analysis_mode'] == 'fr'
     # A toggle, not a radio (Robert, 2026-09-22): the setting is one of two
     # states and reads as a switch -- off is OTDR Suite, on is FastReporter.
-    # The widget's own key holds the switch position; session_state.
-    # analysis_mode holds the mode, and a stale key from an older build is
-    # dropped before the widget is drawn so value= never fights key=.
+    # session_state.analysis_mode holds the mode.
     # Robert, 2026-09-24: both modes on show, FR Mode on the left and OTDR
     # Mode on the right, the switch between them; the knob points at the
-    # mode in use and that name is bold.  Knob right = OTDR Mode.  A new key
-    # (the old 'analysis_toggle' meant the opposite), and value= only when the
-    # key is not already set, so value= never fights key=.
+    # mode in use and that name is bold.  Knob right = OTDR Mode.
     box = st.container(key='analysis_mode_box')
     box.markdown(_MODE_SWITCH_CSS, unsafe_allow_html=True)
     box.markdown('**Analysis Mode**')
-    if not isinstance(st.session_state.get('analysis_switch'), bool):
-        st.session_state['analysis_switch'] = not _on
+    # No key (2026-09-30): with key='analysis_switch', the App's home screen
+    # (no sidebar) and back redrew the knob in its old position while the
+    # mode stayed put, and the next page change silently switched OTDR Mode
+    # to FR Mode.  Keyless, the knob starts at the mode itself (value=) and
+    # is a new widget after every change.
     l, m, r = box.columns([5, 3, 5], vertical_alignment='center')
     l.markdown(_mode_name('FR Mode', _on), unsafe_allow_html=True,
                help=("FR Mode: reproduce EXFO FastReporter's analysis from the same "
                      "files, to the digit, with only your pass/fail thresholds on top."))
-    _right = m.toggle('Analysis mode', key='analysis_switch', label_visibility='collapsed')
+    _right = m.toggle('Analysis mode', value=not _on, label_visibility='collapsed')
     r.markdown(_mode_name('OTDR Mode', not _on), unsafe_allow_html=True,
                help=("OTDR Mode: our own analysis, the numbers and columns we can "
                      "defend from the trace."))
@@ -1053,7 +1052,7 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
       "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;"
       + "background:" + bg + ";color:" + fg + ";font-family:inherit;"
       + "display:flex;flex-direction:column;align-items:center;"
-      + "justify-content:center;text-align:center;overflow-wrap:normal;word-break:keep-all;padding:24px";
+      + "justify-content:center;text-align:center;padding:24px";
     el.innerHTML =
         '<style>@keyframes otdrspin{to{transform:rotate(360deg)}}</style>'
       + '<div id="otdr-restart-spin" style="width:26px;height:26px;'
@@ -2124,23 +2123,75 @@ def _panel_qs():
             f"&cs={st.session_state.get('_carry_id', '')}")
 
 
+def _files_sig(paths):
+    """What a staged copy was built from: every file's path, size, mtime and
+    inode.  A count plus the newest mtime missed a file swapped for an older
+    one (an Explorer zip extraction keeps the archive's timestamps)."""
+    out = []
+    for f in paths:
+        st_ = os.stat(f)
+        out.append((f, st_.st_size, st_.st_mtime_ns, st_.st_ino))
+    return tuple(out)
+
+
 def _panel_ss_folder(dir_a, dir_b):
     """The ONE folder Secret Sauce reads for the left panel's A and B folders:
-    every trace of both, flat.  The same two folders holding the same files
+    every trace of both, flat.  Returns (folder, renamed): `renamed` is
+    [(name, new_name)] for the B files that went in under a name of their
+    own because an A file has their name (folder_intake.combined_names).
+
+    The folder is named after exactly what it holds: the two folders and
+    every trace's path, size, time and inode (_files_sig).  The same traces
     always give the SAME folder, because a report is saved under the folder
     it ran on.  A new session is started by every click into the Viewer tab;
     a folder built fresh each time would cost the report on the way back, and
-    a copy of the whole span where the traces cannot be hard-linked."""
+    a copy of the whole span where the traces cannot be hard-linked.  Any
+    change gives a NEW folder, built whole, and the report saved for the old
+    traces stays with the old one.  The name used to come from the file count
+    and the newest time, and a name already in the folder was never placed
+    again: a trace swapped for another of the same size with an older time
+    (as an Explorer zip extraction leaves it) kept Secret Sauce on the old
+    trace, in every session."""
     import hashlib
     import folder_intake as fi
-    files = fi.find_otdr_files(dir_a) + fi.find_otdr_files(dir_b)
-    sig = '|'.join([os.path.normcase(os.path.abspath(dir_a)),
-                    os.path.normcase(os.path.abspath(dir_b)), str(len(files)),
-                    repr(max((os.path.getmtime(f) for f in files), default=0))])
+    files_a, files_b = fi.find_otdr_files(dir_a), fi.find_otdr_files(dir_b)
+    placed, renamed = fi.combined_names(files_a, files_b)
+    sig = repr((os.path.normcase(os.path.abspath(dir_a)),
+                os.path.normcase(os.path.abspath(dir_b)),
+                _files_sig(files_a), _files_sig(files_b),
+                [_n for _f, _n in placed]))
     dest = os.path.join(
         tempfile.gettempdir(),
         'otdr_span_all_' + hashlib.sha1(sig.encode('utf-8')).hexdigest()[:16])
-    return fi.materialize_all(files, dest)
+    return fi.materialize_combined(placed, dest), renamed
+
+
+def _take_panel_ss_folder(dir_a, dir_b):
+    """Build (or find) the left panel's Secret Sauce folder and put it where
+    the page, Clear Report and Clear Traces look for it.  Returns what
+    _panel_ss_folder returns."""
+    folder, renamed = _panel_ss_folder(dir_a, dir_b)
+    ss = st.session_state
+    ss['_ss_from_ab'] = (dir_a, dir_b)
+    ss['ss_folder_input'] = folder
+    # ...and in a slot no widget owns, for the page to read when it draws no
+    # folder box (the left panel is loaded).
+    ss['_ss_panel_folder'] = folder
+    return folder, renamed
+
+
+def _renamed_note(renamed, limit=3):
+    """One line for the page: which B files went in under a new name."""
+    n = len(renamed)
+    shown = [f'{_old} as {_new}' for _old, _new in renamed[:limit]]
+    more = f' and {n - limit} more' if n > limit else ''
+    if n == 1:
+        return (f'1 B-direction file has the same name as an A-direction '
+                f'file. It goes in as {renamed[0][1]}, so both directions '
+                f'are checked.')
+    return (f'{n} B-direction files have the same name as an A-direction '
+            f'file. Each goes in under a new name, so both directions are '
+            f'checked: {", ".join(shown)}{more}.')
 
 
 _SAVED_REPORTS = {'sr': ('.sr_grid_cache.json',),
@@ -2647,10 +2698,7 @@ with st.sidebar:
             and st.session_state.get('_ss_from_ab') != (_pa, _pb)):
         st.session_state['_ss_from_ab'] = (_pa, _pb)
         try:
-            st.session_state['ss_folder_input'] = _panel_ss_folder(_pa, _pb)
-            # ...and in a slot no widget owns, for the page to read when it
-            # draws no folder box (the left panel is loaded).
-            st.session_state['_ss_panel_folder'] = st.session_state['ss_folder_input']
+            _take_panel_ss_folder(_pa, _pb)
         except Exception as _exc:
             report_error('sidebar trace folders: Secret Sauce folder', _exc)
     st.divider()
@@ -2682,13 +2730,69 @@ if _ask_clear_traces:
 # ═════════════════════════════════════════════════════════════════════════
 #  PAGE: Viewer
 # ═════════════════════════════════════════════════════════════════════════
-# Per-session cache: a Viewer folder input that is a .zip (or a folder holding
-# zips) is extracted ONCE to a temp dir, keyed on the source path, so the Viewer
-# doesn't re-unzip on every Streamlit rerun.
-_VIEWER_DIR_CACHE = {}
+@st.cache_resource(show_spinner=False)
+def _rerun_caches():
+    """Dicts that must outlive a rerun.  Streamlit runs this script in a fresh
+    module on every rerun, so a plain module-level {} was empty again on the
+    next pass: every click re-read every trace header of a one-folder tool
+    (165 MB on a 1,728-file folder), re-copied a folder holding foreign files,
+    and re-unzipped a zipped Viewer input (which also reloaded the Viewer).
+    Process-wide, so every browser tab shares them: each key and signature
+    names exactly what its entry was built from."""
+    return {'viewer_dir': {}, 'foreign': {}, 'drop': {}}
 
 
-_FOREIGN_STAGE_CACHE = {}
+_RERUN_CACHE_KEPT = 50
+
+
+def _remember(cache, key, value):
+    """Store an entry and keep only the newest _RERUN_CACHE_KEPT, so a hub
+    left open for days does not collect one entry per folder ever opened.
+    A dropped entry only costs a re-read the next time that input is used;
+    its temp copy is left where it is (an engine may be reading it)."""
+    cache.pop(key, None)                  # re-insert as the newest
+    cache[key] = value
+    for old in list(cache)[:-_RERUN_CACHE_KEPT]:
+        cache.pop(old, None)
+
+
+# A Viewer folder input that is a .zip (or a folder holding zips) is extracted
+# ONCE to a temp dir, keyed on the source path and a signature of the zip(s),
+# so the Viewer doesn't re-unzip on every Streamlit rerun.
+_VIEWER_DIR_CACHE = _rerun_caches()['viewer_dir']
+
+
+_FOREIGN_STAGE_CACHE = _rerun_caches()['foreign']
+
+
+def _stable_dir(prefix, source, *version):
+    """<temp>/<prefix><hash>/all for one input and one version of it, so the
+    same input always stages to the same folder (in every session and after
+    a restart) and a changed input gets a new one.  '' when the version is
+    unknown: then nothing may be reused."""
+    import hashlib
+    if any(v is None for v in version):
+        return ''
+    tag = '|'.join([os.path.normcase(os.path.abspath(source))]
+                   + [repr(v) for v in version])
+    return os.path.join(tempfile.gettempdir(), prefix + hashlib.sha1(
+        tag.encode('utf-8')).hexdigest()[:16], 'all')
+
+
+def _settle(built, final):
+    """Move a freshly built folder to its stable name, whole or not at all
+    (a rename).  Keeps the built folder where it is when there is no stable
+    name or the name is taken (another session got there first, or an older
+    copy that failed its check): a folder we did not just build is never
+    handed out from here."""
+    if not final:
+        return built
+    try:
+        os.makedirs(os.path.dirname(final), exist_ok=True)
+        os.rename(built, final)
+        return final
+    except OSError:
+        return built
 
 
 def _exclude_foreign_files(folder, exts=None):
@@ -2700,18 +2804,31 @@ def _exclude_foreign_files(folder, exts=None):
     any failure returns the folder untouched."""
     import folder_intake as fi
     try:
-        files = fi.find_otdr_files(folder, exts or fi.OTDR_EXTS)
-        sig = (len(files), max((os.path.getmtime(f) for f in files), default=0))
-        cached = _FOREIGN_STAGE_CACHE.get(folder)
+        exts = tuple(exts or fi.OTDR_EXTS)
+        files = fi.find_otdr_files(folder, exts)
+        sig = _files_sig(files)
+        # Keyed on the file types too: Secret Sauce also reads .trc, so the
+        # same folder is a different input there than in Unidirectional.
+        key = (folder, exts)
+        cached = _FOREIGN_STAGE_CACHE.get(key)
         if cached and cached[0] == sig and (cached[1] == folder or os.path.isdir(cached[1])):
             staged, foreign = cached[1], cached[2]
         else:
             kept, foreign = fi.audit_foreign_files(files)
             staged = folder
             if foreign:
-                staged = fi.materialize_all(
-                    kept, os.path.join(tempfile.mkdtemp(prefix='otdr_clean_'), 'all'))
-            _FOREIGN_STAGE_CACHE[folder] = (sig, staged, foreign)
+                # A stable name for this folder, these file types and these
+                # files: the Uni report and its saved copy are keyed on the
+                # folder a run used, so a restarted hub must find it again.
+                final = _stable_dir('otdr_clean_', folder, exts, sig)
+                if (final and os.path.isdir(final)
+                        and len(fi.find_otdr_files(final, exts)) == len(kept)):
+                    staged = final
+                else:
+                    staged = _settle(fi.materialize_all(
+                        kept, os.path.join(tempfile.mkdtemp(prefix='otdr_clean_'), 'all')),
+                        final)
+            _remember(_FOREIGN_STAGE_CACHE, key, (sig, staged, foreign))
     except Exception as exc:
         report_error('foreign-file audit', exc, {'folder': folder})
         return folder, []
@@ -2745,32 +2862,28 @@ def _resolve_viewer_dir(raw_path):
         has_inner_zip = False
     if not (is_zip or has_inner_zip):
         return p, None            # nothing to extract; page_viewer validates/warns
+    # What the extraction was built from: the zip itself, or, for a folder,
+    # every zip and trace file in it, each by path, size, mtime and inode, so
+    # a zip replaced or overwritten in place is extracted again.
     try:
-        _zsig = os.path.getmtime(p) if is_zip else None
+        if is_zip:
+            _zsig = _files_sig([p])
+        else:
+            _zsig = _files_sig(fi.zip_paths(p) + fi.find_otdr_files(p))
     except OSError:
         _zsig = None
-    cached = _VIEWER_DIR_CACHE.get(p)
-    if isinstance(cached, tuple):
-        _csig, cached_dir = cached
-    else:                                   # legacy entry
-        _csig, cached_dir = None, cached
-    if (cached_dir and os.path.isdir(cached_dir)
-            and trace_server.list_fibers(cached_dir)
-            and _csig == _zsig):
+    cached_sig, cached_dir = _VIEWER_DIR_CACHE.get(p) or (None, None)
+    if (_zsig is not None and cached_sig == _zsig
+            and cached_dir and os.path.isdir(cached_dir)
+            and trace_server.list_fibers(cached_dir)):
         return cached_dir, 'viewing from .zip'
-    # One folder per zip (and per version of it), named after both: the
-    # dict above starts empty on every Streamlit rerun (app.py is run afresh
-    # each time), so a folder made fresh each time re-extracted the zip on
-    # every click and handed every tool a different folder.  The report pages
-    # read these boxes too now (_panel_dirs), and a report is saved under the
-    # folders it ran on.
-    import hashlib
-    _ver = _zsig if is_zip else trace_server._folder_sig(p)
-    final = os.path.join(tempfile.gettempdir(), 'viewer_zip_' + hashlib.sha1(
-        f'{os.path.normcase(os.path.abspath(p))}|{_ver}'.encode('utf-8')).hexdigest()[:16],
-        'all')
-    if os.path.isdir(final) and trace_server.list_fibers(final):
-        _VIEWER_DIR_CACHE[p] = (_zsig, final)
+    # One folder per zip (and per version of it), named after both, so every
+    # tool, every session and a restarted hub get the same folder for the same
+    # zip: the report pages read these boxes too (_panel_dirs), and a report
+    # is saved under the folders it ran on.
+    final = _stable_dir('viewer_zip_', p, _zsig)
+    if final and os.path.isdir(final) and trace_server.list_fibers(final):
+        _remember(_VIEWER_DIR_CACHE, p, (_zsig, final))
         return final, 'viewing from .zip'
     try:
         dest = tempfile.mkdtemp(prefix='viewer_zip_')
@@ -2780,14 +2893,8 @@ def _resolve_viewer_dir(raw_path):
             return p, None        # nothing extractable; fall through to the folder
         # Flatten everything discoverable into one dir the trace server can list
         # (extract_zip / find_otdr_files_with_zips may leave files in subfolders).
-        flat = fi.materialize_all(files, os.path.join(dest, 'all'))
-        try:                      # whole, or not at all: a rename
-            os.makedirs(os.path.dirname(final), exist_ok=True)
-            os.rename(flat, final)
-            flat = final
-        except OSError:           # already there (another session), or no rename
-            pass
-        _VIEWER_DIR_CACHE[p] = (_zsig, flat)
+        flat = _settle(fi.materialize_all(files, os.path.join(dest, 'all')), final)
+        _remember(_VIEWER_DIR_CACHE, p, (_zsig, flat))
         return flat, 'viewing from .zip'
     except Exception as exc:                           # bad zip / IO
         return '', f'could not read that .zip ({exc})'
@@ -3081,19 +3188,30 @@ def page_duplicate_check():
         # own and runs on those (Robert 2026-09-28).  Both directions go in
         # as the one folder the sidebar built from them; after a pair click
         # the A box IS that folder (see _handle_nav).
+        _renamed = []
         if _pa == st.session_state.get('_ss_nav_folder'):
             folder = _pa
         elif _pa and _pb:
-            folder = st.session_state.get('_ss_panel_folder') or ''
-            if st.session_state.get('_ss_from_ab') != (_pa, _pb) or not os.path.isdir(folder):
-                folder = _panel_ss_folder(_pa, _pb)
-                st.session_state['_ss_panel_folder'] = folder
+            # Signed again on every pass, not only when the pair changes: a
+            # trace swapped on disk since the sidebar built the folder gets a
+            # new folder now (see _panel_ss_folder).
+            try:
+                folder, _renamed = _take_panel_ss_folder(_pa, _pb)
+            except Exception as _exc:
+                report_error('secret sauce: A and B folder', _exc,
+                             {'dir_a': _pa, 'dir_b': _pb})
+                st.warning('The A and B folders could not be read just now '
+                           f'({type(_exc).__name__}: {_exc}). If files are '
+                           'still being copied in, try again when that is done.')
+                return
         else:
             folder = _pa or _pb
         st.caption('Traces: ' + ('the A and B folders' if _pa and _pb
                                  and folder not in (_pa, _pb)
                                  else f"the {'A' if folder == _pa else 'B'} folder")
                    + ' loaded in the left panel.')
+        if _renamed:
+            st.caption(_renamed_note(_renamed))
     else:
         c1, c2 = st.columns([1, 2])
         with c1:
@@ -3154,6 +3272,9 @@ def page_duplicate_check():
         out_dir = _ss_dest
         st.session_state['ss_pending_cmd'] = secretsauce_cmd(folder, out_dir, fmt)
         st.session_state['ss_out_dir'] = out_dir
+        # The report is saved under the folder it RAN on: the page may build
+        # a new one from the panel's folders while the run is going.
+        st.session_state['ss_run_folder'] = folder
         st.session_state.pop('ss_result', None)        # clear any prior result
         st.session_state.pop('ss_pairs_result', None)
         st.rerun()
@@ -3216,7 +3337,7 @@ def page_duplicate_check():
             return
 
         # Stash the folder so the in-app pair links can point the viewer at it.
-        manifest['_folder'] = folder
+        manifest['_folder'] = st.session_state.pop('ss_run_folder', None) or folder
         if manifest.get('mode') == 'pairs':
             st.session_state['ss_pairs_result'] = manifest
             # Cache to disk so "← Back" from the Viewer (which reset session_state
@@ -3500,7 +3621,7 @@ def _render_mating_top(res):
             cell = f"<span title='not viewable: {p.get('reason','')}' style='color:#888'>{label}</span>"
         rows.append(
             "<tr>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center;overflow-wrap:normal;word-break:keep-all'>{i}</td>"
+            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center'>{i}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6'>{cell}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['mating_p']*100:.1f}%</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['mating_lr']:.0f}x</td>"
@@ -3581,7 +3702,7 @@ def _render_pairs_report(res):
         rows.append(
             "<tr>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6'>{pair_cell}</td>"
-            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center;overflow-wrap:normal;word-break:keep-all;"
+            f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:center;"
             f"font-weight:600;color:{color}'>{pct}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{p['score']:.4f}</td>"
             f"<td style='padding:4px 10px;border:1px solid #eef2f6;text-align:right'>{r_txt}</td>"
@@ -6080,7 +6201,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
             '<table style="border-collapse:collapse;font-size:11px;font-family:Consolas,monospace">',
             '<thead><tr><th style="position:sticky;top:0;left:0;z-index:2;background:#eef3f8;padding:4px 8px;border:1px solid #dbe4ee">Ribbon</th>']
     for col in cols:
-        html.append(f"<th style='position:sticky;top:0;z-index:1;padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;text-align:center;overflow-wrap:normal;word-break:keep-all'>{hdr(col)}</th>")
+        html.append(f"<th style='position:sticky;top:0;z-index:1;padding:4px 8px;border:1px solid #dbe4ee;background:#eef3f8;white-space:nowrap'>{hdr(col)}</th>")
     html.append('</tr></thead><tbody>')
     # Viewer frame conversion (the manifest is the report on screen).
     _mani = res
@@ -6097,7 +6218,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     _dirs_qs += _panel_qs()
     for ri in range(n_ribbons):
         f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
-        html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;text-align:center;overflow-wrap:normal;word-break:keep-all'>F{f0}–{f1}</td>")
+        html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
         for ci, col in enumerate(cols):
             cell = by_rc.get((ri, ci), [])
             if not cell:
@@ -6112,7 +6233,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
                     c['label'], f"F{c['fiber']}{loss}",
                     href=(f"?nav=viewer&fiber={c['fiber']}&km={_vkm(c['km'])}"
                           f"&dir=both{_dirs_qs}&src={_p}")))
-            html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;text-align:center;overflow-wrap:normal;word-break:keep-all'>"
+            html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;white-space:nowrap'>"
                         + "<br>".join(links) + "</td>")
         html.append('</tr>')
     html.append('</tbody></table></div>')
@@ -6509,7 +6630,8 @@ _UNI_ROWS = [
     {'key': 'min_pop', 'label': 'Min fibers for a splice column', 'unit': 'fibers',
      'kind': 'scalar', 'globals': {'value': 'UNI_MIN_POP_SPLICE'},
      'defaults': {'value': 20}, 'min': 2, 'max': 500, 'step': 1, 'int': True,
-     'help': 'Population in a 1 km bin needed to call a candidate closure.'},
+     'help': 'Population in a 1 km bin needed to call a candidate closure. '
+             'A job of 50 fibers or fewer lists its events instead.'},
 
     {'key': 'closure_radius', 'label': 'At-splice radius', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'UNI_CLOSURE_MATCH_KM'},
@@ -6680,10 +6802,12 @@ def _render_uni_settings_panel():
     return dict(cur)
 
 
-# Per-session staging dirs for drag-and-dropped inputs, keyed on the drop's
-# (name, size) signature so Streamlit reruns reuse the dir instead of
-# re-writing hundreds of files every rerun.
-_DROP_STAGE_CACHE = {}
+# Staging dirs for drag-and-dropped inputs, keyed on the drop's upload ids
+# (name and size only when a file has no id) so Streamlit reruns reuse the
+# dir instead of re-writing hundreds of files every rerun.  An upload id is
+# new for every drop, so dropping different files that share names and sizes
+# never gets an older drop's staging back.
+_DROP_STAGE_CACHE = _rerun_caches()['drop']
 
 
 def _stage_dropped(files):
@@ -6702,7 +6826,8 @@ def _stage_dropped(files):
     (staging_dir, n_trace_files, dupes)."""
     import tempfile
     import folder_intake as fi
-    sig = tuple(sorted((f.name, getattr(f, 'size', 0)) for f in files))
+    sig = tuple(sorted((getattr(f, 'file_id', '') or '', f.name,
+                        getattr(f, 'size', 0)) for f in files))
     hit = _DROP_STAGE_CACHE.get(sig)
     if hit and os.path.isdir(hit[0]):
         return hit
@@ -6727,7 +6852,7 @@ def _stage_dropped(files):
         n += sum(1 for x in _files
                  if not x.startswith('.')
                  and x.lower().endswith(('.sor', '.trc', '.json')))
-    _DROP_STAGE_CACHE[sig] = (td, n, dupes)
+    _remember(_DROP_STAGE_CACHE, sig, (td, n, dupes))
     return td, n, dupes
 
 
@@ -7125,7 +7250,7 @@ def page_unidirectional():
                   if gc.get('landmark') else '')
             html.append(f"<th style='position:sticky;top:0;z-index:1;"
                         f"padding:4px 8px;border:1px solid #dbe4ee;"
-                        f"background:#eef3f8;text-align:center;overflow-wrap:normal;word-break:keep-all'>"
+                        f"background:#eef3f8;white-space:nowrap'>"
                         f"<div style='font-weight:600'>{gc['label']}</div>"
                         f"<div style='font-size:10px;color:#000000'>{gc['km']:.2f} km</div>"
                         f"{lm}</th>")
@@ -7134,7 +7259,7 @@ def page_unidirectional():
             f0, f1 = ri * rs + 1, min((ri + 1) * rs, max_f)
             html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;"
                         f"padding:3px 8px;border:1px solid #e3e9f0;"
-                        f"text-align:center;overflow-wrap:normal;word-break:keep-all'>F{f0}–{f1}</td>")
+                        f"white-space:nowrap'>F{f0}–{f1}</td>")
             for ci, gc in enumerate(gcols):
                 cell = by_rc.get((ri, ci), [])
                 if not cell:
@@ -7157,7 +7282,7 @@ def page_unidirectional():
                         href=(f"?nav=viewer&fiber={c['fiber']}&km={_km}"
                               f"&dir=a&sra={_fq}&src=uni{_uni_pq}")))
                 html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;"
-                            "text-align:center;overflow-wrap:normal;word-break:keep-all'>" + "<br>".join(links) + "</td>")
+                            "white-space:nowrap'>" + "<br>".join(links) + "</td>")
             html.append('</tr>')
         html.append('</tbody></table></div>')
         if _uni_popout:

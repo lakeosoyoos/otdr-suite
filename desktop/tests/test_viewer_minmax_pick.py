@@ -58,20 +58,20 @@ def test_clicking_the_same_cell_again_lets_go():
 
 
 def test_the_picked_row_survives_a_repaint():
-    assert "const pick = (t.key === gPickKey) ? ' class=\"fr-pick\"' : '';" in GRID
+    assert "const pick = isPicked(t.key) ? ' class=\"fr-pick\"' : '';" in GRID
     assert "table.fr-table tr.fr-pick td { background:" in SRC
 
 
 def test_the_chart_draws_the_picked_trace_bold_and_dims_the_rest():
     draw = SRC.split("function draw() {", 1)[1].split("\nfunction ", 1)[0]
     # picked LAST, so it lies over the others
-    assert "sort((a, b) => (a.key === gPickKey) - (b.key === gPickKey))" in draw
-    assert "ctx.globalAlpha = (gPickKey && t.key !== gPickKey) ? 0.22 : 1;" in draw
+    assert "sort((a, b) => isPicked(a.key) - isPicked(b.key))" in draw
+    assert "ctx.globalAlpha = (gPickKey && !isPicked(t.key)) ? 0.22 : 1;" in draw
     tr = SRC.split("function drawTrace(t, r) {", 1)[1].split("\nfunction ", 1)[0]
-    assert "const lw = (gPickKey && t.key === gPickKey) ? 2.6 : 1.2;" in tr
+    assert "const lw = isPicked(t.key) ? 2.6 : 1.2;" in tr
     assert "ctx.lineWidth = lw + 1.8;" in tr            # the light-colour edge scales too
     # the markers set their own alpha, so they fold the dimming in themselves
     mk = SRC.split("function drawEventMarkers(t, r) {", 1)[1].split("\nfunction ", 1)[0]
-    assert "const dimA = (gPickKey && t.key !== gPickKey) ? 0.22 : 1;" in mk
+    assert "const dimA = (gPickKey && !isPicked(t.key)) ? 0.22 : 1;" in mk
     assert "ctx.globalAlpha = (n == null ? 0.35 : 0.55) * dimA;" in mk
     assert "ctx.lineWidth = 1.2;" in mk                 # stated, not inherited from a bold trace

@@ -427,11 +427,12 @@ def test_the_table_follows_the_analysis_mode():
     # paired or not (the call sits above the no-traces return)
     assert "suiteTableReset();" in body[:body.index("if (visible.length === 0) {")]
     reset = _fn('suiteTableReset')
-    assert "gSuiteTableSeq++;" in reset and "gSuiteNote = '';" in reset
+    assert "gSuiteTableSeq++;" in reset
     assert "if (gSuitePoll) { clearTimeout(gSuitePoll); gSuitePoll = null; }" in reset
-    # no report table: the files' own tables stand in, and the hint says so
+    # no report table: the files' own tables stand in, with no caption note
+    # saying so (Robert 2026-09-30)
     assert "if (!renderFrBidiGrid(traces, host, hint)) renderFastReporterGrid(traces, host, hint);" in ask
-    assert "(gSuiteNote ? ` · ${gSuiteNote}` : '')" in _fn('paintFrBidiGrid')
+    assert 'gSuiteNote' not in VIEWER
 
 
 def test_the_suite_table_is_the_report_s_columns_and_three_rows_per_fibre():
@@ -676,7 +677,8 @@ def test_the_suite_table_filters_and_collapses_like_the_other_two():
     assert ("const lossKept = (c, x, which) => which === 'avg'\n"
             "    ? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))\n"
             "    : oneDir ? gFailCellsOnly && lossFails(c, x, which)\n"
-            "    : gFailCellsOnly && (x.reflective ? lossFails(c, x, which) : !!(x[which] && x[which].flag));") in body
+            "    : gFailCellsOnly && (x.reflective ? lossFails(c, x, which)\n"
+            "                                      : !!(x[which] && x[which].flag && !gainerHidden(x[which].loss)));") in body
     assert ("const cellKept = (c, x, which) => lossKept(c, x, which)"
             " || (gFailCellsOnly && reflFlagged(x, which));") in body
     assert "if (cellFilterOn() && !lossKept(c, x, which)) return `<td${attrs}></td>`;" in body

@@ -33,9 +33,15 @@ import ast
 import importlib.util
 import json
 
+import pytest
+
 from conftest import REPO_ROOT
 
 LAUNCHER = REPO_ROOT / "desktop" / "launcher.py"
+
+# Every test here runs the launcher's cache code, which reads and deletes
+# ~/.otdrSuite/engine.meta.json: never the real one.
+pytestmark = pytest.mark.usefixtures("temp_home")
 
 # The file the tech's machine lost.
 LOST = "viewer/sor_reader324802a.py"
