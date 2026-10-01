@@ -46,7 +46,9 @@ def test_grid_only_clusters_events_inside_the_declared_span():
 
 def test_grid_distances_read_from_the_declared_start():
     grid = SRC.split("function renderFastReporterGrid")[1]
-    assert "const zeroKm = zeroT ? dispKm(zeroT, ownSpanWindow(zeroT).lo) : 0;" in grid
+    assert "const zeroKm = oneDirTableZeroKm(traces);" in grid
+    zero = SRC.split("function oneDirTableZeroKm(traces) {")[1].split("\n}\n")[0]
+    assert "if (zeroT) return dispKm(zeroT, ownSpanWindow(zeroT).lo);" in zero
     # The header prints km and feet in one cell (kmFt); what matters here is
     # that it is measured from the declared start.
     assert "kmFt(c.km - zeroKm)" in grid
