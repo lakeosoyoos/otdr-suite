@@ -79,6 +79,16 @@
     border-left: 1px solid var(--border);
   }
   .group:first-of-type { border-left: 0; padding-left: 0; }
+  /* Tighter in the toolbar (demo list #32): embedded in the hub at
+     1184 px with the sidebar open the bar wrapped to three lines, and every
+     line came out of the chart and the table.  Same controls, less padding,
+     so it fits two lines there and one on a wide screen. */
+  #toolbar { gap: 6px; padding: 6px 10px; }
+  #toolbar .group { padding: 2px 6px; }
+  #toolbar button { padding: 4px 7px; }
+  #toolbar .seg button { padding: 4px 8px; }
+  #toolbar .group > label[style] { margin-left: 4px !important; }
+  #toolbar #fiber-input { width: 150px; }
   label { color: var(--text-sec); font-size: 12px; }
   input[type=text], input[type=number] {
     background: #ffffff; color: var(--text);
@@ -247,7 +257,7 @@
      left the rows exactly where they were — the boss's "it doesn't give us
      more rows". */
   #event-panel {
-    height: 240px; flex-shrink: 0;
+    height: 240px; flex-shrink: 0;    /* until the script sets its share (#32) */
     background: var(--panel);
     display: flex; flex-direction: column; overflow: hidden;
   }
@@ -519,6 +529,15 @@
     text-align: center; white-space: nowrap; border: 1px solid #c9d5e1;
     padding: 3px 8px;
   }
+  /* Separate borders, each cell owning its right and bottom edge.  With the
+     table's collapsed borders the edges of the pinned header, footer and
+     fiber column stayed where the table painted them, not with the pinned
+     cells, and the rows scrolling under showed through every line between
+     the Minimum, Maximum and Average rows (demo list #32). */
+  table.fr-table { border-collapse: separate; border-spacing: 0; }
+  table.fr-table th, table.fr-table td { border-width: 0 1px 1px 0; }
+  table.fr-table tr > :first-child { border-left-width: 1px; }
+  table.fr-table thead tr:first-child > * { border-top-width: 1px; }
   table.fr-table th.fr-evhdr { background: #e4edf7; color: var(--text); }
   /* The cell a clicked trace label lands on.  Fades so it points, not paints. */
   table.fr-table td.fr-hit { outline: 2px solid var(--accent); outline-offset: -2px;
@@ -1311,10 +1330,34 @@ window.addEventListener('resize', resizeCanvas);
     const max = main.clientHeight - bar.offsetHeight - LOAD_MIN_CHART;
     return Math.max(MIN_PANEL, Math.min(saved, max));
   }
+  // The table's SHARE of the column, not a fixed height (demo list
+  // #32).  A fixed 240 px left the hub's embedded table 206 px of scroller,
+  // three and a half rows under the pinned Min/Max/Average, at 1184, 1440 and
+  // 1920 px alike, while the chart took every extra pixel.  The table now
+  // takes TABLE_SHARE of the height until the tech drags the bar; a drag is
+  // kept as a share too, so a bigger or smaller window keeps the same split
+  // (a fixed height also ratcheted down for good when the window shrank).
+  const SHARE_KEY = 'viewer.eventPanelShare';
+  const TABLE_SHARE = 0.5;
+  const avail = () => Math.max(0, main.clientHeight - bar.offsetHeight);
+  let share = null;                     // the tech's own split, once dragged
+  try {
+    const s = parseFloat(localStorage.getItem(SHARE_KEY));
+    if (s > 0 && s < 1) share = s;
+  } catch (e) {}
+  function fitShare() {
+    const h = Math.round((share != null ? share : TABLE_SHARE) * avail());
+    panel.style.height = openHeight(h) + 'px';
+  }
   try {
     const saved = parseInt(localStorage.getItem(KEY), 10);
-    if (saved > 0) panel.style.height = openHeight(saved) + 'px';
+    // A height remembered before the share was: kept, as a share from now on.
+    if (saved > 0 && share == null) {
+      panel.style.height = openHeight(saved) + 'px';
+      if (avail() > 0) share = panel.offsetHeight / avail();
+    }
   } catch (e) {}
+  fitShare();
 
   let startY = 0, startH = 0;
   bar.addEventListener('pointerdown', ev => {
@@ -1333,16 +1376,31 @@ window.addEventListener('resize', resizeCanvas);
     if (!bar.classList.contains('dragging')) return;
     bar.classList.remove('dragging');
     document.body.classList.remove('resizing-panel');
-    try { localStorage.setItem(KEY, String(panel.offsetHeight)); } catch (e) {}
+    if (avail() > 0) share = panel.offsetHeight / avail();
+    try {
+      localStorage.setItem(KEY, String(panel.offsetHeight));
+      localStorage.setItem(SHARE_KEY, String(share));
+    } catch (e) {}
   }
   bar.addEventListener('pointerup', stop);
   bar.addEventListener('pointercancel', stop);
   bar.addEventListener('dblclick', () => {
-    panel.style.height = '';
-    try { localStorage.removeItem(KEY); } catch (e) {}
+    share = null;
+    try { localStorage.removeItem(KEY); localStorage.removeItem(SHARE_KEY); } catch (e) {}
+    fitShare();
     resizeCanvas();
   });
-  window.addEventListener('resize', () => apply(panel.offsetHeight));
+  window.addEventListener('resize', () => { fitShare(); resizeCanvas(); });
+  // The toolbar folding or wrapping changes the column's height too.
+  if (window.ResizeObserver) {
+    let lastH = main.clientHeight;
+    new ResizeObserver(() => {
+      if (main.clientHeight === lastH || bar.classList.contains('dragging')) return;
+      lastH = main.clientHeight;
+      fitShare();
+      resizeCanvas();
+    }).observe(main);
+  }
 })();
 
 // ─── Fiber-list parser ────────────────────────────────────────────────
