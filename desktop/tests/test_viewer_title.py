@@ -27,7 +27,7 @@ def test_readout_keeps_warnings_and_takes_no_room_when_empty():
     assert "#readout:empty { display: none; }" in SRC
     assert '<div id="readout"></div>' in SRC
     fn = SRC.split("function setReadout(s, extra = {}) {", 1)[1].split("\n}\n", 1)[0]
-    assert "gFrameWarn" in fn and "gMirrorNote" in fn
+    assert "frameWarn()" in fn and "gMirrorNote" in fn
 
 
 def test_failures_bold_red_warnings_bold_orange_no_plain_notes():
@@ -46,7 +46,7 @@ def test_failures_bold_red_warnings_bold_orange_no_plain_notes():
     assert "parts.push([s, 'ro-fail'])" in fn
     assert "const cut = s.search(READOUT_FAIL_TAIL);" in fn
     assert "parts.push([s.slice(cut + 2), 'ro-fail'])" in fn
-    assert "parts.push([gFrameWarn.trim(), 'ro-warn'], [gMirrorNote.trim(), 'ro-warn']);" in fn
+    assert "parts.push([frameWarn().trim(), 'ro-warn'], [gMirrorNote.trim(), 'ro-warn']);" in fn
     # a drop hands over its own failure and warning text (handleFilesDrop)
     assert "if (extra.fail) parts.push([extra.fail, 'ro-fail']);" in fn
     assert "if (extra.warn) parts.push([extra.warn, 'ro-warn']);" in fn
