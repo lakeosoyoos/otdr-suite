@@ -132,8 +132,10 @@ def test_clicks_on_drawer_marks():
     assert "if (!gShowEvents) return;" in menu
 
 
-def test_events_checkbox_still_hides_every_mark():
-    assert re.search(r"cb-events'\)\.onchange = \(e\) => \{ gShowEvents = e\.target\.checked; draw\(\); \}", SRC)
+def test_event_labels_switch_still_hides_every_mark():
+    i = SRC.index("getElementById('set-event-labels').onchange")
+    assert "gShowEvents = e.target.checked;" in SRC[i:i + 300]
+    assert "draw();" in SRC[i:i + 300]
     fn = _fn("draw")
     assert fn.index("if (gShowEvents) {") < fn.index("drawEventMarkers(t, r)")
 

@@ -105,7 +105,7 @@ def test_the_toolbar_carries_a_y_spacing_control():
     assert 'type="number"' in tag, 'FR uses a stepper; give the tech one too'
     assert 'step=' in tag
     # it belongs beside the stack checkbox, in the same toolbar group
-    grp = src[src.index('id="cb-stack"'):src.index('id="cb-events"')]
+    grp = src[src.index('id="cb-stack"'):src.index('id="cb-colors"')]
     assert 'num-yspace' in grp, 'the control must sit with stack A/B'
 
 
