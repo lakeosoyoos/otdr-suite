@@ -9,9 +9,12 @@ it said 0.0000 km, and the A/B marker readout and the Summary Report caption
 were off by the same 38 m.  A B reel with no A reel would put B a whole reel
 out.
 
-axisZeroKm() now uses B's declared start, or else the B folder's launch reel,
-whenever B is loaded and A is not.  A alone, A+B (stacked or not) and an
-empty chart keep A's zero.
+axisZeroKm() now uses B's declared start, or else the launch reel of the
+folder the B trace came from, whenever B is loaded and A is not.  An A-folder
+file set to B->A with Direction is still drawn in the A folder's frame, so its
+zero stays the A folder's reel (the first cut of this fix took the B folder's
+and put that file 38 m out, a whole reel with an empty B folder).  A alone,
+A+B (stacked or not) and an empty chart keep A's zero.
 
 Checked by running the real axisZeroKm / declaredEdgeKm in JavaScriptCore
 when the Mac's jsc is there.
@@ -47,10 +50,12 @@ def _const(name):
 
 def test_b_alone_zero_comes_from_b():
     fn = _fn("axisZeroKm")
-    assert "gInfo.launch_b_km" in fn
+    assert "'launch_b_km'" in fn
     assert "gSpanDecl.b" in fn
+    # the reel follows the folder the trace came from, not its drawn direction
+    assert "bT.src === 'a'" in fn
     # the B branch runs before A's declared start or A's reel is looked at
-    assert fn.index("gInfo.launch_b_km") < fn.index("return gLaunchA")
+    assert fn.index("'launch_b_km'") < fn.index("return gLaunchA")
 
 
 def test_every_printed_distance_reads_the_one_zero():
@@ -68,8 +73,8 @@ def _zero(tmp_path, cases):
 var gTraces = [], gSpanDecl = {a: null, b: null}, gInfo = null, gLaunchA = 0;
 var gStacked = true, gHaveA = false;
 function isFlipped(t) { return gStacked && gHaveA && t.dir === 'b'; }
-function trace(dir, evKm) {
-  return {key: dir + '-1', dir: dir, fiber: 1, visible: true,
+function trace(dir, evKm, src) {
+  return {key: (src || dir) + '-1', dir: dir, src: src || dir, fiber: 1, visible: true,
           data: {events: evKm.map(function (k) { return {dist_km: k}; })}};
 }
 var out = {};
@@ -78,6 +83,7 @@ function run(name, c) {
   gLaunchA = Number(c.la) || 0;
   gSpanDecl = c.decl || {a: null, b: null};
   gTraces = (c.dirs || []).map(function (d) {
+    if (d === 'a_as_b') return trace('b', [0, 1.0383, 1.1001, 2.1017], 'a');
     return d === 'a' ? trace('a', [0, 1.0383, 1.1001, 2.1017])
                      : trace('b', [0, 1.0001, 1.0615]);
   });
@@ -103,10 +109,15 @@ def test_b_alone_launch_connector_is_zero(tmp_path):
         "b_alone_no_b_reel": {"dirs": ["b"], "la": 1.0383, "lb": None},
         "b_alone_declared": {"dirs": ["b"], "la": 1.0383, "lb": 1.00005,
                              "decl": {"a": {"start_km": 1.0383}, "b": {"start_km": 1.0003}}},
+        "a_file_set_to_b": {"dirs": ["a_as_b"], "la": 1.0383, "lb": 1.00005},
+        "a_file_set_to_b_empty_b": {"dirs": ["a_as_b"], "la": 1.0383, "lb": None},
     })
     assert z["b_alone"] == 1.00005          # was 1.0383: B's connector at -38 m
     assert z["b_alone_no_b_reel"] == 0      # drawn as shot, port at 0 km
     assert z["b_alone_declared"] == 1.0001  # snapped to this fiber's own event
+    # an A-folder file drawn as B keeps its own folder's reel
+    assert z["a_file_set_to_b"] == 1.0383
+    assert z["a_file_set_to_b_empty_b"] == 1.0383
 
 
 @needs_jsc
