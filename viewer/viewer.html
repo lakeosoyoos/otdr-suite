@@ -5249,6 +5249,23 @@ function clusterColumns(traces, items, tolKm) {
   return out;
 }
 
+// Where a single-direction table's distances read from: the first unflipped
+// trace's own declared start, in the frame the columns are laid out in.  A B
+// trace mirrored onto A's frame -- a fibre loaded B only, under the A+B table
+// -- has no start of its own on that frame, so it read from A's OTDR port
+// while the A+B table above it and the chart's axis read from A's declared
+// start: on a tie panel with the start declared on A's 1.0383 km reel, a
+// column the A+B table printed at 0.0617 km printed 1.0383 km further on in
+// the B-only table under it.  A's declared start is its zero too.
+// With nothing declared the zero is the port, as FR's own table prints.
+function oneDirTableZeroKm(traces) {
+  const zeroT = traces.find(t => !isFlipped(t) && ownSpanWindow(t) && ownSpanWindow(t).lo != null);
+  if (zeroT) return dispKm(zeroT, ownSpanWindow(zeroT).lo);
+  const A = gSpanDecl && gSpanDecl.a;
+  if (A && A.start_km != null && traces.some(isFlipped)) return axisZeroKm();
+  return 0;
+}
+
 // FastReporter-style grid for 1–2 traces (a fiber's A/B, OR two fibers of a
 // duplicate pair): events matched by DISPLAYED km into columns; each trace is
 // its own row; Average / Minimum / Maximum (loss) across the traces below.
@@ -5273,12 +5290,9 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   }));
   items.sort((p, q) => p.km - q.km);
   // Distances in the table read from the declared start, as FR's do once a
-  // span is set: the start event prints 0.0000 km.  The zero is the first
-  // unflipped trace's own start, in the frame the columns are laid out in.
-  // Zoom targets (`data-km`, the header title) stay in raw km on purpose,
-  // because the canvas axis does.
-  const zeroT = traces.find(t => !isFlipped(t) && ownSpanWindow(t) && ownSpanWindow(t).lo != null);
-  const zeroKm = zeroT ? dispKm(zeroT, ownSpanWindow(zeroT).lo) : 0;
+  // span is set: the start event prints 0.0000 km.  Zoom targets (`data-km`,
+  // the header title) stay in raw km on purpose, because the canvas axis does.
+  const zeroKm = oneDirTableZeroKm(traces);
 
   // Cluster into columns; a column holds at most one event per trace.
   const cols = clusterColumns(traces, items, TOL);
