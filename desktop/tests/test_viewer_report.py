@@ -1,10 +1,13 @@
-"""The Viewer's Report: the chart and the event panel as a PDF or an Excel
-workbook (Robert, 2026-09-28: "create a report that shows the traces and the
-event panel from viewer ... an option to do it in pdf or excel sheet").
+"""The Viewer's Summary Report: the event panel, then a page per fibre, as a
+PDF or an Excel workbook (Robert, 2026-09-28: "create a report that shows the
+traces and the event panel from viewer ... an option to do it in pdf or excel
+sheet"; 2026-09-30: "get rid of the page that has all the traces shown at
+once ... start with the full event panel that has all traces and then move
+right into the fiber by fiber").
 
-The browser hands the server the chart as a PNG and the event table as plain
-cells (text, colours resolved from the page's CSS, colspan / rowspan); the
-server lays them out.  These tests pin the server half end to end and the
+The browser hands the server each fibre's chart as a PNG and the event table
+as plain cells (text, colours resolved from the page's CSS, colspan /
+rowspan); the server lays them out.  These tests pin the server half end to end and the
 browser half's contract with the three event grids."""
 import json
 import os
@@ -84,8 +87,6 @@ def _payload(fmt, **kw):
     p = {'format': fmt, 'dest': '', 'name': 'Viewer Report F64',
          'title': 'OTDR Viewer Report: TESTJOB', 'subtitle': 'Generated today',
          'meta': [['Mode', 'OTDR Suite'], ['Fibres', '64-65 (2 fibres, 4 traces)']],
-         'images': [{'caption': 'Traces', 'png': _data_url(_png()), 'note': 'Distance 0 to 1 km'}],
-         'key': [{'label': 'F64 A→B', 'color': '#1f77b4'}],
          'styles': STYLES, 'tables': [_suite_like_table()]}
     p.update(kw)
     return p
@@ -130,7 +131,6 @@ def test_the_workbook_keeps_numbers_colours_merges_and_a_frozen_header(downloads
     assert wb.sheetnames == ['Report', 'Event Table']
     rep = wb['Report']
     assert rep['A1'].value == 'OTDR Viewer Report: TESTJOB'
-    assert len(rep._images) == 1                        # the chart is IN the sheet
     ws = wb['Event Table']
     # title row 1, note row 2, the table from row 4: three header rows, then
     # the body; frozen below the header and right of the four identifiers
@@ -340,20 +340,56 @@ def _page_sizes(path):
             re.findall(rb'/MediaBox \[ 0 0 ([\d.]+) ([\d.]+) \]', raw)]
 
 
-def test_a_page_per_fibre_follows_the_combined_report_in_portrait(downloads):
+def test_the_report_opens_on_the_event_table_with_no_chart_of_every_trace(downloads):
+    """Robert, 2026-09-30: "get rid of the page that has all the traces shown
+    at once ... start with the full event panel that has all traces".  The
+    event table sits under the report's facts on page one, and a chart of
+    every trace (as a page from before this change still sends) is drawn in
+    neither format."""
+    from openpyxl import load_workbook
+    stale = {'images': [{'caption': 'Traces', 'png': _data_url(_png()), 'note': 'Distance 0 to 1 km'}],
+             'key': [{'label': 'F64 A→B', 'color': '#1f77b4'}]}
+    pdf = T.write_viewer_report(_payload('pdf', **stale))
+    assert _page_sizes(pdf['path']) == [(792.0, 612.0)]       # facts + event table: one page
+    wb = load_workbook(T.write_viewer_report(_payload('xlsx', **stale))['path'])
+    assert wb.sheetnames == ['Report', 'Event Table']
+    rep = wb['Report']
+    assert len(rep._images) == 0
+    assert [rep.cell(r, 1).value for r in range(1, rep.max_row + 1)] == \
+        ['OTDR Viewer Report: TESTJOB', 'Generated today', None, 'Mode', 'Fibres']
+
+
+def test_a_tall_event_table_still_starts_under_the_facts(downloads, monkeypatch):
+    """The browser check, 2026-10-01: 24 fibres A+B left page one with the
+    facts alone.  The heading kept with its table carried a table that fits a
+    page, but not the rest of page one, over whole.  The table starts under
+    the facts and carries on over the page; a table after it still gets a
+    page of its own."""
+    from reportlab.platypus import BaseDocTemplate, Paragraph
+    drawn = []
+    monkeypatch.setattr(BaseDocTemplate, 'afterFlowable', lambda self, f: drawn.append(
+        (self.page, f.getPlainText())) if isinstance(f, Paragraph) else None)
+    tall = _suite_like_table(fibres=range(1, 15))          # 42 rows: a page, not under the facts
+    later = dict(_suite_like_table(), title='Traces', note='')
+    pdf = T.write_viewer_report(_payload('pdf', tables=[tall, later]))
+    page = {t: p for p, t in drawn}
+    assert page['OTDR Viewer Report: TESTJOB'] == 1
+    assert page['Event Table'] == 1
+    assert page['Traces'] == 3                               # table over pages 1-2, then its own
+    assert len(_page_sizes(pdf['path'])) == 3
+
+
+def test_a_page_per_fibre_follows_the_event_table_in_portrait(downloads):
     """Robert, 2026-09-28: the combined table, then a page per fibre as
-    FastReporter prints them.  The combined part stays landscape, each fibre
-    gets a portrait page of its own: chart, files, events down the page."""
+    FastReporter prints them; 2026-09-30: "move right into the fiber by
+    fiber".  The event table stays landscape and the first fibre's portrait
+    page comes straight after it: chart, files, events down the page."""
     tok = T.report_begin()
     T.report_put_image(tok, 'fibre-65', _png())
     out = T.write_viewer_report(_payload('pdf', token=tok,
                                          fibres=[_fibre(64, _data_url(_png())), _fibre(65, 'ref:fibre-65')]))
     sizes = _page_sizes(out['path'])
-    land = [s for s in sizes if s[0] > s[1]]
-    port = [s for s in sizes if s[0] < s[1]]
-    assert land and len(port) == 2, sizes                      # one page each, 18 events fit
-    assert sizes.index(port[0]) == len(land)                   # all after the combined part
-    assert port[0] == (612.0, 792.0)
+    assert sizes == [(792.0, 612.0), (612.0, 792.0), (612.0, 792.0)], sizes   # table, F64, F65
     assert tok not in T._REPORT_UPLOADS                        # the charts sent ahead are gone
 
 
@@ -456,12 +492,30 @@ def test_the_chart_is_drawn_at_print_scale_and_put_back():
     # would have put it back) and never carries the crosshair
     snap = _fn('snapChart')
     assert snap.index('fit();') < snap.index('draw();') and 'gMouse = null;' in snap
-    assert 'withPrintCanvas(REPORT_CHART_W, REPORT_CHART_H, 2,' in _fn('reportChartPng')
+    assert 'withPrintCanvas(REPORT_FIBRE_W, REPORT_FIBRE_H, 1.5,' in _fn('reportFibreCharts')
     # plotRect and draw measure the canvas at the export scale while it runs
     assert 'canvas.width  / canvasDpr()' in _fn('plotRect')
     assert 'canvas.width / canvasDpr()' in _fn('draw')
     # declared with the other globals, long before the first draw can run
     assert SRC.index('let gExportDpr = 0;') < SRC.index("const canvas = document.getElementById('chart');")
+
+
+def test_the_page_sends_the_event_table_first_and_no_chart_of_every_trace():
+    """Robert, 2026-09-30: no page of every trace at once; the event panel
+    first, then straight into the fibre pages.  The only chart the page draws
+    is a fibre's own, and the zoomed-in "whole span too" box went with the
+    chart it added to.  The trace list stays after the event table, fibre
+    pages or not (Robert, 2026-10-01: "we can keep that table")."""
+    pay = _fn('reportPayload')
+    assert 'images' not in pay and 'reportChartPng' not in SRC and 'REPORT_CHART_W' not in SRC
+    assert 'rpt-whole' not in SRC and 'reportWholeView' not in SRC and 'opt.whole' not in SRC
+    ev, mk, tr = (pay.index('tables.push(ev ||'), pay.index('if (mk) tables.push(mk);'),
+                  pay.index("    tables.push({\n      title: 'Traces',"))
+    assert ev < mk < tr
+    assert re.findall(r'withPrintCanvas\((\w+)', SRC) == ['w', 'REPORT_FIBRE_W']   # its definition, one caller
+    dlg = _fn('showReportDialog')
+    assert '<div class="sub">The event table as it is on screen, every row of it.</div>' in dlg
+    assert 'After the event table, one page per fiber' in dlg
 
 
 def test_each_fibre_is_drawn_alone_and_sent_ahead():
