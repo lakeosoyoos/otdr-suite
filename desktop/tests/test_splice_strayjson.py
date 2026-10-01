@@ -43,7 +43,18 @@ def test_load_all_ignores_a_stray_json_in_a_direction_folder():
 
 def test_splice_loader_uses_majority_file_type_not_any_json():
     src = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
-    assert "use_json = _n_json > 0 and _n_json >= _n_sor" in src, \
+    # The majority rule lives in _trace_ext_order since .trc joined (shared by
+    # load_all and uni_load_dir).
+    assert "first = '.json' if n['.json'] > 0 and n['.json'] >= n['.sor'] else '.sor'" in src, \
         "load_all no longer picks the file type by majority — a stray .json can hide .sor"
+    assert "order, _counts = _trace_ext_order(names)" in src
     assert "use_json = _dir_has_json(d)" not in src, \
         "the any-.json-wins logic is back in load_all"
+
+
+def test_a_stray_json_does_not_outvote_a_sor_folder():
+    sys.path.insert(0, str(SPLICEREPORT_DIR))
+    import splicereportmatchexfo as E
+    names = ['SEANOR%03d_1550.sor' % i for i in range(1, 6)] + ['pairs_cache.json',
+                                                               'SEANOR001.json']
+    assert E._trace_ext_order(names)[0][0] == '.sor'

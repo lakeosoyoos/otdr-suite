@@ -752,9 +752,10 @@ def _trc_f64(stream, name):
 
 
 def trc_header(path, _first_chunk_only=False):
-    """{'loc_ordered', 'loc_pair', 'pulse_ns', 'acq_range', 'date_utc'} from an
-    EXFO .trc, whichever are readable -- {} on anything that is not one.
-    loc_ordered is (LocationA, LocationB) upper-cased; loc_pair is that pair
+    """{'loc_ordered', 'loc_stored', 'loc_pair', 'pulse_ns', 'acq_range',
+    'date_utc'} from an EXFO .trc, whichever are readable -- {} on anything
+    that is not one.  loc_ordered is (LocationA, LocationB) upper-cased,
+    loc_stored the same pair as the tech typed it; loc_pair is that pair
     sorted, as sor_header returns it.  date_utc is the shot time as the file
     stores it, 'YYYY-MM-DDTHH:MM:SS' in UTC.  Values are the file's first
     wavelength's; a .trc shoots every wavelength with one setup."""
@@ -773,6 +774,7 @@ def trc_header(path, _first_chunk_only=False):
     a, b = _trc_text(stream, 'LocationA'), _trc_text(stream, 'LocationB')
     if a or b:
         pair = ((a or '').upper(), (b or '').upper())
+        out['loc_stored'] = (a or '', b or '')
         out['loc_ordered'] = pair
         out['loc_pair'] = tuple(sorted(pair))
     if not _first_chunk_only:

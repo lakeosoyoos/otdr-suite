@@ -3297,8 +3297,8 @@ def suite_tables(fibers, direction=None):
 
 
 def fr_tables(fibers):
-    """{'tables': {'17': rows, ...}, 'missing': [fibers with no .sor pair or
-    no table], 'error': str | None} -- FastReporter's bidirectional table for
+    """{'tables': {'17': rows, ...}, 'missing': [fibers with no .sor/.trc
+    pair or no table], 'error': str | None} -- FastReporter's bidirectional table for
     each fibre of the current span, from the engine runner's --fr-table."""
     out, missing, jobs = {}, [], []
     # FastReporter mode's table.  OTDR Suite mode prints the report's own
@@ -3308,8 +3308,8 @@ def fr_tables(fibers):
     for f in fibers:
         pa = _fiber_path(CONFIG['dir_a'], f) if CONFIG['dir_a'] else None
         pb = _fiber_path(CONFIG['dir_b'], f) if CONFIG['dir_b'] else None
-        if (not pa or not pb or not pa.lower().endswith('.sor')
-                or not pb.lower().endswith('.sor')):
+        if (not pa or not pb or not pa.lower().endswith(('.sor', '.trc'))
+                or not pb.lower().endswith(('.sor', '.trc'))):
             missing.append(f)
             continue
         try:
