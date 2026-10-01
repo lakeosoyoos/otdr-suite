@@ -1584,7 +1584,11 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 if facts_only:
                     t = {k: v for k, v in t.items() if k not in ('dist_km', 'trace_db')}
-                out.append({'direction': direction.upper(), 'fiber': f, **t})
+                # The same per-file stamp /api/trace sends.  Without it a file
+                # saved the other way was drawn as its folder past 48 files
+                # and as itself below, and the FILES list said the same.
+                out.append({'direction': direction.upper(), 'fiber': f,
+                            'stored_dir': stored_direction(direction, f), **t})
             self._send_json({'direction': direction.upper(), 'maxpts': max_pts,
                              'requested': len(fibers), 'traces': out,
                              'missing': missing, 'failed': failed})
@@ -1649,24 +1653,8 @@ class Handler(BaseHTTPRequestHandler):
             if t is None:
                 self._send_json({'error': f'fiber {fiber} not found in dir {direction}'}, status=404)
                 return
-            # The file's own LocationsDirection, so a copy saved with the
-            # other direction is drawn that way when it is opened again.
-            stored = None
-            try:
-                d = CONFIG['dir_a'] if direction == 'a' else CONFIG['dir_b']
-                path = _fiber_path(d, fiber)
-                if path and path.lower().endswith('.sor'):
-                    stored = read_direction(open(path, 'rb').read())
-                    # A folder whose files mostly say the OTHER direction is
-                    # not saying anything: the tech shot the whole side with
-                    # the OTDR left on A (a real 864-fiber job: 864 of 864
-                    # stamped A in the B folder).  The folder decides then.
-                    if stored and not folder_stamps_mean_direction(d, direction):
-                        stored = None
-            except Exception:                              # noqa: BLE001
-                stored = None                              # optional extra
             self._send_json({'direction': direction.upper(), 'fiber': fiber,
-                             'stored_dir': stored, **t})
+                             'stored_dir': stored_direction(direction, fiber), **t})
             return
         self.send_error(404, 'unknown route')
 
@@ -4039,11 +4027,24 @@ def set_ior(data: bytes, new_ior: float, proprietary: bool = True) -> bytes:
 _LOCDIR = {'a': 1, 'b': 2}
 
 
+_LOCDIR_NAME = b'LocationsDirection\x00'
+
+
 def _prop_locdir(stream: bytes):
-    """Stream offset of the LocationsDirection int32 payload, or None."""
-    for r in _prop_records(stream):
-        if r['name'] == 'LocationsDirection' and r['tc'] == 1 and r['size'] == 4:
-            return r['pay']
+    """Stream offset of the LocationsDirection int32 payload, or None.
+
+    Found by its name and proven by the same descriptor test _prop_records
+    applies to every record (its descriptor, 16 bytes before the name, points
+    back at the name and at the payload right after it), plus the int32
+    shape.  Walking every record to reach this one cost ~34 ms a file, which
+    kept the stamp out of the bulk load: 1152 files would have waited ~40 s.
+    Same offset as the walk on every file checked, a few microseconds each."""
+    i = stream.find(_LOCDIR_NAME, 16)
+    while i >= 0:
+        so, tc, sz, pay = struct.unpack_from('<IIII', stream, i - 16)
+        if so == i and pay == i + len(_LOCDIR_NAME) and tc == 1 and sz == 4:
+            return pay
+        i = stream.find(_LOCDIR_NAME, i + 1)
     return None
 
 
@@ -4082,6 +4083,30 @@ def folder_stamps_mean_direction(directory, side):
     ok = disagree <= agree
     _stamp_cache[key] = ok
     return ok
+
+
+def stored_direction(direction, fiber):
+    """The direction this fiber's file stamps ('a' | 'b'), or None when it
+    has no stamp or the stamp is not to be believed: the file's own
+    LocationsDirection, so a copy saved with the other direction is drawn that
+    way when it is opened again.
+
+    A folder whose files mostly say the OTHER direction is not saying
+    anything: the tech shot the whole side with the OTDR left on A (a real
+    864-fiber job: 864 of 864 stamped A in the B folder).  The folder decides
+    then.  Shared by /api/trace and the bulk /api/traces so a file reads the
+    same way at any load size.  Never raises: the stamp is an optional extra."""
+    try:
+        d = CONFIG['dir_a'] if direction == 'a' else CONFIG['dir_b']
+        path = _fiber_path(d, fiber)
+        if not (path and path.lower().endswith('.sor')):
+            return None
+        stored = read_direction(open(path, 'rb').read())
+        if stored and not folder_stamps_mean_direction(d, direction):
+            return None
+        return stored
+    except Exception:                                      # noqa: BLE001
+        return None
 
 
 def read_direction(data: bytes):
