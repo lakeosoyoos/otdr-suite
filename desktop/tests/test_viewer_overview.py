@@ -317,7 +317,12 @@ def test_popout_viewer_links_back_to_its_report():
     html = open(VIEWER_HTML, encoding='utf-8').read()
     assert 'id="btn-back"' in html and 'function renderBackButton(' in html
     fn = html[html.index("getElementById('btn-back').addEventListener('click'"):][:1400]
-    assert "window.open('', 'otdr_hub')" in fn, 'must reuse the hub tab, not open a second hub'
+    # OTDR Suite App: Back first asks the App to raise its own hub window
+    # (/api/raise_hub) and only without one takes the named route, which
+    # lives in openHubByName (the regular OTDR Suite's tabs).
+    assert "fetch('/api/raise_hub'" in fn and 'openHubByName(url)' in fn
+    hub = html[html.index('function openHubByName('):][:800]
+    assert "window.open('', 'otdr_hub')" in hub, 'must reuse the hub tab, not open a second hub'
     for nav in ("'uni'", "'sr'"):
         assert nav in fn
     assert 'srfr' not in fn, 'the FR (beta) page is retired'
