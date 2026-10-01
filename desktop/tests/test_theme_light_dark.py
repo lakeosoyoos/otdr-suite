@@ -212,17 +212,22 @@ def test_the_three_dot_menu_is_hidden():
 def test_a_theme_picked_in_the_menu_is_cleared_once(tmp_path):
     """A Light or Dark pick from the ⋮ menu made Streamlit ignore the
     hub's theme for good.  It is removed and the page reloads once; the
-    theme Streamlit keeps for the hub ("Custom Theme") is left alone."""
+    theme Streamlit keeps for the hub ("Custom Theme" up to 1.50, a bare
+    "System"/"Light"/"Dark" from 1.6x) is left alone: removing that one
+    reloaded the page for ever on the 1.64 build (boss, run 1416)."""
     body = SRC.split('THEME_PICK_CLEAR_JS = """', 1)[1].split('"""', 1)[0]
     script = body.split('<script>', 1)[1].split('</script>', 1)[0]
     js = r"""
-function run(store) {
+function run(store, session) {
   var reloads = 0, keys = Object.keys(store);
+  session = session || {};
+  var ss = { getItem: function (k) { return session[k] || null; },
+             setItem: function (k, v) { session[k] = v; } };
   var ls = { get length() { return keys.length; },
              key: function (i) { return keys[i]; },
              getItem: function (k) { return store[k]; },
              removeItem: function (k) { delete store[k]; keys = Object.keys(store); } };
-  var window = { parent: { document: {}, localStorage: ls,
+  var window = { parent: { document: {}, localStorage: ls, sessionStorage: ss,
                            location: { reload: function () { reloads++; } } } };
 """ + script + r"""
   return [Object.keys(store).sort(), reloads];
@@ -233,6 +238,10 @@ print('OUT ' + JSON.stringify([
   run({ 'stActiveTheme-/-v1': JSON.stringify({ name: 'Dark' }) }),
   run({ 'stActiveTheme-/-v1': custom }),
   run({}),
+  run({ 'stActiveTheme-/-v1': JSON.stringify('System') }),
+  run({ 'stActiveTheme-/-v1': JSON.stringify('Dark') }),
+  run({ 'stActiveTheme-/-v1': JSON.stringify({ name: 'Dark' }) },
+      { otdrThemePickCleared: '1' }),
 ]));
 """
     path = tmp_path / 'pick.js'
@@ -241,4 +250,15 @@ print('OUT ' + JSON.stringify([
     out = r.stdout + r.stderr
     assert 'OUT ' in out, out[-2000:]
     assert json.loads(out.split('OUT ', 1)[1].strip()) == [
-        [['other'], 1], [[], 1], [['stActiveTheme-/-v1'], 0], [[], 0]]
+        [['other'], 1], [[], 1], [['stActiveTheme-/-v1'], 0], [[], 0],
+        [['stActiveTheme-/-v1'], 0], [['stActiveTheme-/-v1'], 0],
+        [['stActiveTheme-/-v1'], 0]]
+
+
+def test_the_theme_rerun_happens_once_per_change():
+    """Fail-safe (boss, 2026-10-01): a Streamlit that does not keep the theme
+    setting must not rerun the page for ever; a theme error must not stop it."""
+    block = SRC.split("if 'ui_theme' not in st.session_state:", 1)[1].split('trace_server.CONFIG', 1)[0]
+    assert "st.session_state.get('_theme_rerun_for') != st.session_state['ui_theme']" in block
+    assert block.index("['_theme_rerun_for'] = ") < block.index('st.rerun()')
+    assert 'except Exception:\n    _theme_changed = False' in block
