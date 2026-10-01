@@ -4530,7 +4530,7 @@ function drawPairing(sets, r) {
       ctx.globalAlpha = 1;
       // A reading is a real event of the file: the span menu works on it as
       // on the file's own event number.  A filled-in leg is not one.
-      const rec = { ...hit, go: () => D.goCell(fi, q.w, ci),
+      const rec = { ...hit, go: () => D.goCell(fi, q.w, ci), pick: q.t,
                     t: q.leg.hollow ? null : q.t,
                     e: q.leg.hollow ? null : { dist_km: q.raw } };
       gLabelHits.push(rec);
@@ -8897,10 +8897,19 @@ window.addEventListener('mouseup', (ev) => {
     const c = gLabelClick; gLabelClick = null;
     const still = ev.target === canvas
       && Math.abs(ev.offsetX - c.x) <= 3 && Math.abs(ev.offsetY - c.y) <= 3;
+    if (!still) return;
+    // A mark or event number on a trace picks that trace too (bold, the rest
+    // faint), as a click on the line does (Robert 2026-10-01: a click there
+    // found the cell but left the fiber unselected).  On the picked trace it
+    // lets go, as the line and the row do: a picked fiber's marks cover most
+    // of its line, so this is where a second click lands (#503).
+    const pt = c.hit.pick || c.hit.t;
+    if (pt) gPickKey = isPicked(pt.key) ? null : pt.key;
     // The drawer's marks name their own cell; a file's event number is found
     // by its km in the table on screen.
-    if (still && c.hit.go) c.hit.go();
-    else if (still && gGridGoTo) gGridGoTo(c.hit.t, c.hit.e);
+    if (c.hit.go) c.hit.go();
+    else if (gGridGoTo) gGridGoTo(c.hit.t, c.hit.e);
+    draw();
     return;
   }
   if (gTraceClick) {
