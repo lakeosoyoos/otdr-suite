@@ -60,8 +60,10 @@ def _setup(L, tmp_path, monkeypatch, cached_version=500):
 def _github(L, monkeypatch, version, files):
     """A fake GitHub serving a signed manifest for `version` and every engine
     file.  Returns the list of URLs asked for."""
+    # OTDR Suite App: its launcher refuses a manifest whose channel is not its
+    # own ("app") before anything else, as in test_autoupdate.py.
     body = json.dumps({"version": version, "commit": COMMIT,
-                       "files": files}).encode()
+                       "files": files, "channel": L.UPDATE_CHANNEL}).encode()
     urls = []
 
     def fetch(url, timeout=15):
