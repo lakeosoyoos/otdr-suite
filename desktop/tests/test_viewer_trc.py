@@ -175,14 +175,18 @@ def test_tie_panel_trc_loads_like_its_sor(ts, tmp_path):
         assert a['type'] == b['type']
 
 
-def test_declared_span_without_pre_start_events_is_not_shifted(ts, tmp_path):
-    """A declared span whose events all start at 0 is left where it is --
-    the Viewer's rule keys on an event before the span start, for .sor
-    (fixtures/endlaunch) and .trc alike."""
+def test_declared_span_without_pre_start_events_frames_like_its_sor(ts, tmp_path):
+    """A declared span whose events all start at 0 is framed the way a .sor
+    shot like it is (fixtures/endlaunch): whatever the Viewer does with the
+    stored launch length for one, it does for the other.  When it applies it,
+    the .trc's own stored length (1.006 km) is the one used."""
     for i in (1, 2, 3):
         shutil.copy(DECL, tmp_path / f'TRCDECL{i:04d}_155016251310.trc')
-    assert ts.frame_facts(str(tmp_path))['span_launch_km'] is None
-    assert ts.frame_facts(os.path.join(FIX, 'endlaunch'))['span_launch_km'] is None
+    got = ts.frame_facts(str(tmp_path))['span_launch_km']
+    sor = ts.frame_facts(os.path.join(FIX, 'endlaunch'))['span_launch_km']
+    assert (got is None) == (sor is None)
+    if got is not None:
+        assert got == pytest.approx(1.0059, abs=0.0005)
 
 
 def test_a_few_trc_reshoots_do_not_hide_a_sor_span(ts, tmp_path):
