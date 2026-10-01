@@ -1421,7 +1421,8 @@ async function handleFilesDrop(dt) {
     // direction, so the drop is kept whole and lands on one side instead of
     // loading fiber 1 against fiber 2 as if they were the two directions.
     if (j.split_by === 'unnamed') {
-      msg += ` · the names carry no site, so the drop was kept whole`
+      // unless the files' own Direction split a parent folder (repeats_placed)
+      if (j.added !== 'AB') msg += ` · the names carry no site, so the drop was kept whole`
            + `. Drop each direction's folder on its own`;
     } else if (j.split_by === 'location') {
       msg += ' · split by the locations in the file headers';
@@ -1431,10 +1432,15 @@ async function handleFilesDrop(dt) {
     // One direction with a block of fibers whose header names the two sites
     // the other way round.  That used to split the drop and put those fibers
     // on B; every file's own Direction agrees, so they stay together.
+    // What the readout SHOWS (Robert 2026-09-30): a file moved to the other
+    // side, or kept on one side against what its name or header says, is a
+    // warning (bold orange); a file that did not load is a failure (bold
+    // red).  The rest of `msg` is a plain note and is not shown.
+    const warn = [], fail = [];
     if (j.sites_swapped) {
-      msg += ` · kept as one direction: ${j.sites_swapped} file(s) list the two sites`
+      warn.push(`kept as one direction: ${j.sites_swapped} file(s) list the two sites`
            + ` the other way round, but every file's Direction says`
-           + ` ${j.stamped === 'b' ? 'B→A' : 'A→B'}`;
+           + ` ${j.stamped === 'b' ? 'B→A' : 'A→B'}`);
     }
     // One direction under several spellings of its name (long shots, short
     // shots and plain names of one span).  Each spelling used to count as a
@@ -1443,23 +1449,45 @@ async function handleFilesDrop(dt) {
       msg += ` · ${v.keys.join(', ')} kept together as ${v.as}:`
            + ` every file's Direction says ${v.stamped === 'b' ? 'B→A' : 'A→B'}`;
     }
-    if (j.ignored && j.ignored.length) msg += ` · ignored ${j.ignored.join(', ')}`;
-    // A dragged PARENT folder arrives FLAT, without its subfolders, so a crew
-    // that names its traces without a site prefix hands us both directions
-    // under one set of names.  The first file of each name is kept and the
-    // rest are not staged; say so, or half the span goes missing in silence.
+    // Files mislabeled for direction still load (the boss, 2026-09-29); the
+    // tech fixes their direction from the Files panel.  Say where they went.
+    let moved = false;
+    if (j.kept_whole && j.kept_whole.length) {
+      const on = j.added === 'B' ? j.b_prefix : j.a_prefix;
+      warn.push(`${j.kept_whole.join(', ')} files kept with ${on || 'the rest'}:`
+           + ` their fibers fill its gaps, so they were read as one direction with the names wrong`);
+      moved = true;
+    }
+    for (const f of (j.folded || [])) {
+      warn.push(`${f.key} files loaded with ${f.into}, the side their fibers were missing from`);
+      moved = true;
+    }
+    if (j.repeats_placed && j.repeats_placed.length) {
+      const n = j.repeats_placed.length;
+      const shown = j.repeats_placed.slice(0, 6).join(', ') + (n > 6 ? `, … (+${n - 6} more)` : '');
+      warn.push(`${n} file(s) share a name with a file of the other direction,`
+           + ` so they went on the other side: ${shown}`);
+      moved = true;
+    }
+    if (moved) warn.push('to change a file\'s direction, right-click it > Direction');
+    if (j.ignored && j.ignored.length) {
+      fail.push(`not loaded: ${j.ignored.join(', ')} (their fibers are already on both sides)`);
+    }
+    // A dragged PARENT folder arrives FLAT, without its subfolders.  A repeat
+    // the drop could not put on the other side (see _place_repeats) is not
+    // loaded; say so, or those files go missing in silence.
     if (j.repeated && j.repeated.length) {
       const uniq = [...new Set(j.repeated)].sort();
       const shown = uniq.slice(0, 6).join(', ')
                   + (uniq.length > 6 ? `, … (+${uniq.length - 6} more)` : '');
-      msg += ` · ${j.repeated.length} file(s) arrived under a name already dropped,`
-           + ` kept the first: ${shown}. Drop one direction at a time`;
+      fail.push(`${j.repeated.length} file(s) not loaded: they arrived under a name already dropped,`
+           + ` kept the first: ${shown}. Drop one direction at a time`);
     }
     renderChips();
     if (gAutoFit) fit();
     draw();
     renderEventTable();
-    setReadout(msg);
+    setReadout(msg, { warn: warn.join(' · '), fail: fail.join(' · ') });
   } catch (e) {
     setReadout('drop failed: ' + ((e && e.message) || e));
     cnt.textContent = '';
@@ -1638,7 +1666,7 @@ document.getElementById('btn-back').addEventListener('click', () => {
 // tail of a load readout.
 const READOUT_FAIL_START = /^(could not |viewer failed|drop failed|nothing written|no [AB/]+ folder is set|F\d+(, F\d+)* (\(\+\d+ more\) )?(is|are) not in the )/;
 const READOUT_FAIL_TAIL = /, (could not load |F\d+(, F\d+)* (\(\+\d+ more\) )?(is|are) not in the )/;
-function setReadout(s) {
+function setReadout(s, extra = {}) {
   s = String(s || '');
   const el = document.getElementById('readout');
   const parts = [];
@@ -1649,9 +1677,15 @@ function setReadout(s) {
     const cut = s.search(READOUT_FAIL_TAIL);
     if (cut >= 0) parts.push([s.slice(cut + 2), 'ro-fail']);
   }
+  // A drop hands over what it could not load and what it moved (see
+  // handleFilesDrop): those are a failure and a warning whatever they say.
+  if (extra.fail) parts.push([extra.fail, 'ro-fail']);
+  if (extra.warn) parts.push([extra.warn, 'ro-warn']);
   parts.push([gFrameWarn.trim(), 'ro-warn'], [gMirrorNote.trim(), 'ro-warn']);
   const shown = parts.filter(([t]) => t);
   el.textContent = shown.map(([t]) => t).join('   ');
+  // One line, cut off at the window edge: hovering it shows the whole text.
+  el.title = el.textContent;
   if (!shown.length) return;
   el.replaceChildren(...shown.map(([t, c], i) => {
     const sp = document.createElement('span');
