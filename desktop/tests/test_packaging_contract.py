@@ -207,8 +207,9 @@ def test_specs_bundle_engine_dirs_as_data():
 #  6. TOOLCHAIN PIN — setuptools must be pinned EXACTLY
 # ═════════════════════════════════════════════════════════════════════════
 def test_setuptools_pinned_exactly():
-    """requirements-desktop.txt must pin setuptools==65.5.1 — the version
-    whose pkg_resources keeps the frozen exe from crashing at launch."""
+    """requirements-desktop.txt must pin setuptools==65.5.1, the version the
+    build venv is proven with (its pkg_resources kept the frozen exe from
+    crashing at launch while the exe still bundled pkg_resources)."""
     text = _read(REQS_DESKTOP)
     assert "setuptools==65.5.1" in text, (
         "requirements-desktop.txt must pin setuptools==65.5.1 exactly"

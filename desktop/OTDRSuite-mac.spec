@@ -13,9 +13,7 @@
 # self-test in build-windows.yml is the authoritative check.
 
 import os
-from PyInstaller.utils.hooks import (
-    collect_all, collect_submodules, collect_data_files,
-)
+from PyInstaller.utils.hooks import collect_all
 
 APP_NAME  = "OTDRSuite"
 SPEC_DIR  = os.path.dirname(os.path.abspath(SPEC))
@@ -30,21 +28,24 @@ datas, binaries, hiddenimports = [], [], []
 _to_collect = ["streamlit", "altair", "numpy", "openpyxl", "reportlab", "matplotlib",
                "cryptography", "certifi"]
 _optional   = ["pyarrow", "pandas", "scipy", "qrcode"]
+# Same slimming as OTDRSuite.spec (see the comment there).
+_SLIM = dict(
+    include_py_files=False,
+    filter_submodules=lambda mod: ".tests" not in mod and not mod.endswith(".conftest"),
+    exclude_datas=["**/tests/**", "**/*.pyi", "**/*.pxd", "**/*.pyx", "**/*.h",
+                   "**/*.c", "**/*.f90", "**/*.lib", "**/*.a"],
+)
 for name in _to_collect + _optional:
     try:
-        d, b, h = collect_all(name)
+        d, b, h = collect_all(name, **_SLIM)
         datas += d; binaries += b; hiddenimports += h
     except Exception as e:
         print(f"[spec] skip collect_all({name}): {e}")
 
-hiddenimports += collect_submodules("pkg_resources")
-hiddenimports += collect_submodules("setuptools")
-datas += collect_data_files("pkg_resources")
-for name in ("jaraco.text", "jaraco.functools", "jaraco.context",
-             "more_itertools", "packaging", "platformdirs", "appdirs",
-             "ordered_set"):
+# pkg_resources / setuptools are not bundled (see OTDRSuite.spec).
+for name in ("packaging", "tzdata"):
     try:
-        d, b, h = collect_all(name)
+        d, b, h = collect_all(name, **_SLIM)
         datas += d; binaries += b; hiddenimports += h
     except Exception as e:
         print(f"[spec] skip collect_all({name}): {e}")
@@ -127,7 +128,10 @@ if os.path.exists(_version):
     datas += [(_version, ".")]
 
 excludes = ["weasyprint", "cairocffi", "pango", "gobject",
-            "PyQt5", "PyQt6", "PySide2", "PySide6"]
+            "PyQt5", "PyQt6", "PySide2", "PySide6",
+            # build and test tools, never run by the app
+            "pkg_resources", "setuptools", "_distutils_hack",
+            "pytest", "_pytest", "pluggy", "PyInstaller"]
 
 a = Analysis(
     [os.path.join(SPEC_DIR, "launcher.py")],
