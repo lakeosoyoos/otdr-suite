@@ -1,13 +1,16 @@
-# Light theme for the OTDR Suite hub — matches the viewer's FastReporter-style
-# light palette so the Streamlit chrome (sidebar, pages, pairs table) isn't dark.
+# The hub starts in Dark (Robert, 2026-10-01), so the server does too and the
+# first page is not painted Light and switched after.  Must equal app.py's
+# THEME_STREAMLIT['dark'] (test_theme_light_dark.py checks).  The Theme
+# switch sets Light at run time.
 [theme]
-base = "light"
-primaryColor = "#2c5b8a"
-backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#eef3f8"
-# Black lettering (2026-09-22): the grey-blue read badly on the hub's
-# white pages.  Every Streamlit-drawn word follows this.
-textColor = "#000000"
+base = "dark"
+primaryColor = "#3b82f6"
+backgroundColor = "#0c0a09"
+secondaryBackgroundColor = "#1c1917"
+textColor = "#fafaf9"
+borderColor = "#292524"
+dataframeBorderColor = "#292524"
+dataframeHeaderBackgroundColor = "#1c1917"
 # Windows' own font (Robert, 2026-09-24): Segoe UI, as Windows, Outlook and
 # Excel use.  Nothing ships with the app; elsewhere it falls back to sans-serif.
 font = "Segoe UI, sans-serif"

@@ -2112,12 +2112,24 @@ window.addEventListener('focus', async () => {
 // while a drop is going up: the server takes one request at a time.
 const MODE_POLL_MS = 1500;
 let gModePollBusy = false;
+// The hub's Light / Dark arrives the same way: the page is served marked with
+// the theme of the moment, and this keeps it in step when the switch moves.
+// The plot is painted, not styled, so it is drawn again.
+function applyHubTheme(t) {
+  const el = document.documentElement;
+  const dark = t === 'dark';
+  if ((el.getAttribute('data-theme') === 'dark') === dark) return;
+  if (dark) el.setAttribute('data-theme', 'dark');
+  else el.removeAttribute('data-theme');
+  draw();
+}
 async function pollAnalysisMode() {
   if (gModePollBusy || gDropInFlight || !gInfo) return;
   gModePollBusy = true;
   try {
     const j = await (await fetch('/api/mode', { cache: 'no-store' })).json();
     const m = j && j.analysis_mode === 'fr' ? 'fr' : 'suite';
+    if (j && j.theme) applyHubTheme(j.theme);
     // The folders can move under the page too: the hub's A/B boxes, or
     // another window.  A side whose folder changed forgets what this page
     // pinned to the old one (removed rows, loaded traces), as a drop does.
