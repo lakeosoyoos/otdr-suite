@@ -26,6 +26,62 @@ permissions:
   contents: write    # to publish / update the permanent Release
 
 jobs:
+  # ── TESTS ─ the suite, split into 4 parts by recorded run time
+  #    (desktop/ci_test_shard.py), each on its own runner, running at the same
+  #    time as the build below.  One after another they took over 30 minutes.
+  #    Each runner has its own checkout and home folder, so nothing the build
+  #    job writes (the injected update key, the boot self-test on port 8510)
+  #    can reach a test.  The publish job further down needs every part to
+  #    pass: a failing test still stops the manifest and the Release.
+  #    PYTHONIOENCODING=utf-8 because windows-latest defaults to cp1252 and
+  #    any non-ASCII char (e.g. the arrows) crashes the run.
+  tests:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [0, 1, 2, 3]
+    defaults:
+      run:
+        working-directory: desktop
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5        # node24-native (v4 ran on the now-forced-off node20)
+
+      # Toolchain pins: see desktop/OTDRSuite.spec top-of-file for WHY.
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6    # node24-native
+        with:
+          python-version: "3.11"
+          architecture: "x64"
+          cache: pip
+          cache-dependency-path: desktop/constraints-desktop.txt
+
+      - name: Upgrade pip + wheel
+        run: python -m pip install --upgrade pip wheel
+
+      - name: Install desktop requirements
+        run: pip install -r requirements-desktop.txt -c constraints-desktop.txt
+
+      - name: Re-pin setuptools 65.5.1 LAST so it wins
+        run: pip install --force-reinstall "setuptools==65.5.1"
+
+      # Every installed package must be in constraints-desktop.txt at its
+      # locked version: a new dependency must not slip in at its newest.
+      - name: Installed packages match the lock
+        run: python check_lock.py
+
+      - name: Run test suite (pytest), part ${{ matrix.part }} of 4
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          $files = @(python ci_test_shard.py ${{ matrix.part }} 4)
+          if ($LASTEXITCODE -ne 0 -or $files.Count -eq 0) { Write-Error "could not split the test files"; exit 1 }
+          Write-Host "$($files.Count) test files in this part"
+          python -m pytest @files -v
+
   build:
     runs-on: windows-latest
     defaults:
@@ -42,6 +98,8 @@ jobs:
         with:
           python-version: "3.11"
           architecture: "x64"
+          cache: pip
+          cache-dependency-path: desktop/constraints-desktop.txt
 
       - name: Upgrade pip + wheel
         run: python -m pip install --upgrade pip wheel
@@ -56,18 +114,6 @@ jobs:
       # locked version: a new dependency must not slip in at its newest.
       - name: Installed packages match the lock
         run: python check_lock.py
-
-      # ── TEST SUITE ─ runs ahead of the bundle step so a regression fails
-      #    in seconds instead of after the multi-minute build.  Covers: hub
-      #    pages render (AppTest), viewer engine SOR parse + contract,
-      #    Secret Sauce runner (subprocess), and packaging/port contracts.
-      #    PYTHONIOENCODING=utf-8 because windows-latest defaults to cp1252
-      #    and any non-ASCII char (e.g. the → arrows) crashes the run.
-      - name: Run test suite (pytest)
-        shell: pwsh
-        env:
-          PYTHONIOENCODING: utf-8
-        run: python -m pytest tests/ -v
 
       # Bake the Slack error-report webhook into the build from the repo SECRET
       # (never committed — the repo is public and Slack auto-revokes leaked
@@ -120,9 +166,9 @@ jobs:
           Write-Host "version.json: $stamp"
 
       # ── INJECT UPDATE-SIGNING PUBLIC KEY ─ turn auto-update ON for this build.
-      #    Runs AFTER pytest (so the guardrail tests still see the fail-closed
-      #    placeholder in source) and BEFORE PyInstaller (so the bundled exe
-      #    carries the real key).  Derives the PUBLIC key from the SAME
+      #    The tests run on their own runners (the tests job), so they still
+      #    see the fail-closed placeholder in source.  Runs BEFORE PyInstaller
+      #    (so the bundled exe carries the real key).  Derives the PUBLIC key from the SAME
       #    OTDR_UPDATE_SIGNING_KEY secret that signs the manifest, so the exe
       #    trusts exactly the key that signs — the two halves cannot drift.
       #    Secret unset (PRs / forks) → no-op → launcher stays fail-closed.
@@ -481,7 +527,13 @@ jobs:
       #    boot self-test, so we never wrap a DOA app in an installer.
       - name: Install Inno Setup
         shell: pwsh
-        run: choco install innosetup -y --no-progress
+        run: |
+          # windows-latest usually has it; choco took about 2 min to say so.
+          if (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe") {
+            Write-Host "Inno Setup is already installed."
+          } else {
+            choco install innosetup -y --no-progress
+          }
 
       - name: Build installer (Inno Setup)
         shell: pwsh
@@ -547,6 +599,51 @@ jobs:
             desktop/dist/OTDRSuiteApp-Setup.exe
             desktop/dist/OTDRSuite-Windows.zip
           retention-days: 14
+
+  # ── PUBLISH ─ only once every test part and the build have passed.  The
+  #    manifest is generated from this job's own checkout (the engine files
+  #    are the same at this commit; the build job's injected launcher key is
+  #    not one of them), and the Release takes the installer and portable zip
+  #    the build job uploaded.
+  publish:
+    needs: [tests, build]
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          architecture: "x64"
+          cache: pip
+          cache-dependency-path: desktop/constraints-desktop.txt
+
+      # The manifest tools need only cryptography (Ed25519), at its locked version.
+      - name: Install the manifest tools
+        run: pip install cryptography -c constraints-desktop.txt
+
+      - name: Download the build
+        uses: actions/download-artifact@v7    # node24-native
+        with:
+          name: OTDRSuite-Windows
+          path: desktop/dist
+
+      # Branch builds never upload a Release; check here instead that the
+      # files it would upload came through from the build job.
+      - name: Rehearse the Release files (branch builds)
+        if: github.ref != 'refs/heads/main'
+        shell: pwsh
+        run: |
+          foreach ($f in "dist\OTDRSuite-Setup.exe", "dist\OTDRSuite-Windows.zip") {
+            if (-not (Test-Path $f) -or (Get-Item $f).Length -eq 0) { Write-Error "$f missing from the build artifact"; exit 1 }
+            Write-Host ("{0}: {1:N0} bytes" -f $f, (Get-Item $f).Length)
+          }
 
       # ── SIGNED UPDATE MANIFEST ─ generate + sign the auto-update manifest
       #    AFTER the boot self-test (so a manifest only ever points at a build

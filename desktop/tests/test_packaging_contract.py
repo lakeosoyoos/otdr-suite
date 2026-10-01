@@ -249,27 +249,26 @@ def test_ci_invokes_pyinstaller():
     )
 
 
-# TODO(parent): CI currently runs `python test_ui.py` (a smoke script) before
-# the PyInstaller build, NOT a literal `pytest` invocation.  The desired state
-# is a `pytest` step gating the build so this whole contract suite runs in CI
-# BEFORE the (expensive) frozen build.  Wire `pytest` into build-windows.yml
-# ahead of the "PyInstaller build" step, then flip this to a normal passing
-# test.  Until then it is a strict xfail documenting the gap.
 import pytest  # noqa: E402  (stdlib-adjacent test dep; no engine import)
 
 
-def test_ci_runs_pytest_before_pyinstaller():
-    """DESIRED: a literal `pytest` invocation must precede the pyinstaller
-    build step so this contract suite gates the build."""
+def test_ci_tests_gate_the_publish():
+    """pytest runs in CI, and nothing is published until it has passed.  The
+    suite runs in its own job (split over several runners, alongside the
+    build), so it no longer comes before the bundle step in time; it gates
+    the publish job instead, which needs both the tests and the build."""
     text = _read(CI_WORKFLOW)
     lower = text.lower()
     idx_pytest = lower.find("pytest")
     idx_pyinstaller = lower.find("pyinstaller")
     assert idx_pytest != -1, "CI must invoke pytest"
     assert idx_pyinstaller != -1, "CI must invoke pyinstaller"
-    assert idx_pytest < idx_pyinstaller, (
-        "pytest must run BEFORE pyinstaller so a failing contract blocks the build"
-    )
+    assert idx_pytest < idx_pyinstaller, "the tests job comes first in the workflow"
+    publish = text[text.index("\n  publish:\n"):]
+    assert "needs: [tests, build]" in publish
+    for step in ("Generate + sign update manifest", "Publish signed manifest to main",
+                 "Publish to permanent Release"):
+        assert f"- name: {step}" in publish, step
 
 
 def test_webhook_cfg_is_gitignored():
