@@ -107,7 +107,8 @@ def test_both_tables_name_their_rows_and_wire_the_drawer():
         fn = _fn(name)
         assert 'data-row="${fi}-${which}"' in fn, name
         assert "marks.goCell = (fi, which, col) => gridGoCell(" in fn, name
-        assert "gridPickFibers(tb, have)" in fn, name
+        # a click anywhere on a row, its fibre name included, picks it
+        assert "pickRow(tr.dataset.avg ? [p.ta.key, p.tb.key]" in fn, name
         # a fibre loaded one way among paired ones gets its own table
         assert "appendOneDirGrid(singles, host);" in fn, name
     one = _fn("renderFastReporterGrid")
@@ -217,7 +218,7 @@ var R = {x: 56, y: 12, w: 1100, h: 600};
         _const("DRAWER_DETAIL_MAX"), _const("DRAWER_TICK_MAX"), _const("DRAWER_LANES"),
         _const("DRAWER_COLOR"),
         _fn("lowerBound"), _fn("drawerColumnSummary"), _fn("layoutDrawerTags"),
-        _fn("drawPairing"),
+        _fn("chartLabels"), _fn("drawPairing"),
         body,
     ])
     p = tmp_path / "drawer.js"

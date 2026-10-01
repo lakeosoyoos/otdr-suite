@@ -453,7 +453,8 @@ def test_the_suite_table_is_the_report_s_columns_and_three_rows_per_fibre():
     assert "`${esc(c.title)} (${n}/${have.length})</th>`" in body
     assert '<span class="fr-km">${kmFt(c.km)}</span>' in body
     # zoom lands on the file's frame: the report's km plus A's launch length
-    assert "viewKm: (Number(c.km) || 0) + launchA," in body
+    # (a one-direction table's km goes on through its trace to the chart)
+    assert "viewKm: toView((Number(c.km) || 0) + launchA)," in body
     # three rows per fibre, as in the FastReporter table
     assert "['a', 'b', 'avg']" in body
     assert "which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average'" in body

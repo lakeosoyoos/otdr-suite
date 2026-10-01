@@ -1145,7 +1145,8 @@ function dispDb(t, v) { return v + yOffsetFor(t); }
 // load's own launch connector at -38 m on a 1.0383 / 1.0000 km reel pair while
 // the event table under it said 0.0000 km, and a B reel with no A reel would
 // sit a whole reel out.  The reel is the one of the folder the trace came
-// FROM: an A-folder file set to B→A is still drawn in the A folder's frame.
+// FROM: an A-folder file set to B→A is still drawn in the A folder's frame,
+// and a B-folder file set to A→B in the B folder's (it read 38 m out).
 function axisZeroKm() {
   if (!gTraces.some(t => t.dir === 'a') && gTraces.some(t => t.dir === 'b')) {
     const bT = gTraces.find(x => x.dir === 'b' && x.data);
@@ -1161,6 +1162,8 @@ function axisZeroKm() {
     const aT = gTraces.find(x => x.dir === 'a' && x.data && !isFlipped(x));
     return aT ? declaredEdgeKm(aT, Number(A.start_km)) : Number(A.start_km);
   }
+  const aT = gTraces.find(x => x.dir === 'a' && x.data);
+  if (aT && aT.src === 'b') return Number(gInfo && gInfo.launch_b_km) || 0;
   return gLaunchA;
 }
 
@@ -1180,6 +1183,12 @@ function nextColor(key) {
   COLORS_USED.set(key, c);
   return c;
 }
+// A trace's colour by the direction it is DRAWN as.  FR's scheme colours the
+// A (main) and B (reference) traces, so a file set to the other direction, by
+// its own stamp or the Direction menu, takes that direction's colour.  It was
+// coloured by its folder at load and only by its direction after a toggle, so
+// an A-folder file drawn as B stayed blue until the checkbox was clicked.
+function traceColor(t) { return nextColor(`${t.dir}-${t.fiber}`); }
 // Flip every loaded trace between the 12-colour code and FR's blue/black.
 // The trace's colour is stored on it (chips, table dots and the canvas all
 // read `t.color`), so a toggle recolours in place and repaints everything.
@@ -1187,7 +1196,7 @@ function setFiberColors(on) {
   gFiberColors = !!on;
   try { localStorage.setItem('otdr_viewer_fiber_colors', gFiberColors ? '1' : '0'); } catch (e) {}
   COLORS_USED.clear();
-  for (const t of gTraces) t.color = nextColor(`${t.dir}-${t.fiber}`);
+  for (const t of gTraces) t.color = traceColor(t);
   draw();
   renderChips();
   renderEventTable();
@@ -2104,11 +2113,12 @@ async function loadOverview(tasks) {
       for (const data of (payload.traces || [])) {
         const key = `${dir}-${data.fiber}`;
         if (gTraces.some(t => t.key === key) || gRemovedFiles.has(key)) continue;
-        gTraces.push({
+        const tr = {
           key, fiber: data.fiber, src: dir, dir: effDir(dir, data.fiber), visible: true,
-          color: nextColor(key),
           data, overview: true,
-        });
+        };
+        tr.color = traceColor(tr);
+        gTraces.push(tr);
       }
       // `missing` holds every fiber that did not come back; `failed` is the
       // part whose file is there but would not parse.  Only the rest is
@@ -2182,11 +2192,9 @@ async function loadOne(key, fiber, dir) {
     if (data.stored_dir && data.stored_dir !== dir) gStoredDir[key] = data.stored_dir;
     else delete gStoredDir[key];
     if (gRemovedFiles.has(key)) return;    // taken out of the list meanwhile
-    gTraces.push({
-      key, fiber, src: dir, dir: effDir(dir, fiber), visible: true,
-      color: nextColor(key),
-      data,
-    });
+    const t = { key, fiber, src: dir, dir: effDir(dir, fiber), visible: true, data };
+    t.color = traceColor(t);
+    gTraces.push(t);
   } catch (e) {
     console.warn(e);
     gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: ${e && e.message || 'fetch failed'}`);
@@ -3301,7 +3309,7 @@ function setFilesDirection(keys, dir) {
     if (dir === (gStoredDir[key] || src)) delete gDirOverride[key];
     else gDirOverride[key] = dir;
     const t = gTraces.find(x => x.key === key);
-    if (t) t.dir = effDir(src, fiber);
+    if (t) { t.dir = effDir(src, fiber); t.color = traceColor(t); }
   }
   renderChips();
   if (gAutoFit) fit();
@@ -3502,8 +3510,9 @@ function draw() {
   const r = plotRect();
   gLabelHits = [];
   if (r.w <= 0 || r.h <= 0) return;      // folded away behind the event panel
+  chartLabels(r);                        // this frame's empty label pool
 
-  // Grid + axes
+  // Grid + axes (their labels take their boxes in the pool first)
   drawGrid(r);
 
   // Clip traces to plot area
@@ -3534,7 +3543,11 @@ function draw() {
     // the table left out, or every trace while the table is not in -- keeps
     // its file's own event numbers.
     const covered = gDrawerMarks.length ? drawPairing(gDrawerMarks, r) : null;
-    for (const t of order) {
+    // A picked trace's numbers take their spots before the others'.
+    const numOrder = gPickKey
+      ? [...order.filter(t => isPicked(t.key)), ...order.filter(t => !isPicked(t.key))]
+      : order;
+    for (const t of numOrder) {
       if (!t.visible || (covered && covered.has(t))) continue;
       drawEventMarkers(t, r);        // dims itself: its ticks set their own alpha
     }
@@ -3566,6 +3579,7 @@ function draw() {
   // Crosshair + readout values for each visible trace at cursor x
   if (gMouse) drawCrosshair(r);
   if (gMouse && hovered) drawHoverBox(hovered);
+  if (gMouse && !hovered) drawLabelTip();   // a label left off, over its tick
 }
 
 // ─── A/B measurement markers ──────────────────────────────────────────
@@ -3658,9 +3672,14 @@ function updateMarkerReadout() {
         let dloss = '-', slope = '-';
         if (va != null && vb != null) {
           // Signal descends with loss; loss over the span (upstream→downstream).
+          // A mirrored B runs right to left on the chart, so its upstream end
+          // is the RIGHT marker: read left to right it printed every B loss
+          // negative beside A's (0.2 dB/km fibre, 10 km: A 2.000, B -2.000),
+          // and the same B alone, drawn as shot, positive.
           const lo = Math.min(a, b), hi = Math.max(a, b);
           const vlo = traceDbAtDispKm(t, lo), vhi = traceDbAtDispKm(t, hi);
-          const d = (vlo != null && vhi != null) ? (vlo - vhi) : null;
+          const d = (vlo != null && vhi != null)
+            ? (isFlipped(t) ? vhi - vlo : vlo - vhi) : null;
           if (d != null) {
             dloss = d.toFixed(3);
             slope = dkm > 1e-6 ? (d / dkm).toFixed(3) : '-';
@@ -3682,6 +3701,7 @@ function updateMarkerReadout() {
 }
 
 const X_LABEL_GAP_PX = 12;         // clear space between two distance labels
+const Y_LABEL_GAP_PX = 2;          // and between two dB labels (11 px tall)
 function drawGrid(r) {
   ctx.fillStyle = '#000000';
   ctx.font = "11px 'Segoe UI', sans-serif";
@@ -3716,13 +3736,17 @@ function drawGrid(r) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   // A plot too narrow for even two labels: a label that would touch the one
-  // before it is left out, so none ever run together.
+  // before it is left out, so none ever run together.  Each axis label drawn
+  // takes its box in the chart's label pool first (chartLabels), so no label
+  // on the chart is ever placed on one.
+  const labels = chartLabels(r);
   let lastRight = -Infinity;
   for (const x of xTicks) {
     const txt = xLabel(x), w = ctx.measureText(txt).width, cx = xToPx(x, r);
     if (cx - w / 2 < lastRight + X_LABEL_GAP_PX) continue;
     ctx.fillText(txt, cx, r.y + r.h + 6);
     lastRight = cx + w / 2;
+    labels.take({ x0: cx - w / 2, x1: cx + w / 2, y0: r.y + r.h + 6, y1: r.y + r.h + 6 + 11 });
   }
 
   // Y ticks
@@ -3736,8 +3760,15 @@ function drawGrid(r) {
   ctx.stroke();
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
+  // A plot too short for every one: a label that would touch the one below
+  // it is left out, as on the distance axis.
+  let lastTop = Infinity;
   for (const y of yTicks) {
-    ctx.fillText(y.toFixed(1), r.x - 6, yToPx(y, r));
+    const txt = y.toFixed(1), w = ctx.measureText(txt).width, cy = yToPx(y, r);
+    if (cy + 5.5 + Y_LABEL_GAP_PX > lastTop) continue;
+    ctx.fillText(txt, r.x - 6, cy);
+    lastTop = cy - 5.5;
+    labels.take({ x0: r.x - 6 - w, x1: r.x - 6, y0: cy - 5.5, y1: cy + 5.5 });
   }
 
   // Axis labels
@@ -3865,6 +3896,91 @@ function inTable(t, e) {
   return !s || s.has(tableKmKey(e.dist_km));
 }
 
+// ─── Labels on the chart never run together ───────────────────────────
+// Every label the chart prints takes its box from one pool per frame, in
+// this order: the axis labels (drawGrid), the drawer's tags, the drawer's
+// values ("A 0.175"), then the files' own event numbers (a picked trace's
+// first).  A label goes at the first of its candidate spots that lies inside
+// the plot and keeps GAP (2 px) from every box already taken; with
+// no such spot it is left off, its tick stays, and its hit record keeps the
+// text (hiddenText, hiddenColor) for the hover tip (drawLabelTip).  The pool
+// belongs to the frame's gLabelHits: draw() makes a new array each frame,
+// so the first call of a frame starts an empty pool.  Boxes are kept in
+// x buckets so a whole cable's numbers stay cheap to redraw.
+function chartLabels(r) {
+  const cur = chartLabels.frame;
+  if (cur && cur.hits === gLabelHits) return cur;
+  const GAP = 2, B = 32, cols = new Map();
+  const free = b => {
+    for (let k = Math.floor((b.x0 - GAP) / B), k1 = Math.floor((b.x1 + GAP) / B); k <= k1; k++) {
+      const list = cols.get(k);
+      if (list && list.some(o => b.x0 < o.x1 + GAP && b.x1 + GAP > o.x0
+                              && b.y0 < o.y1 + GAP && b.y1 + GAP > o.y0)) return false;
+    }
+    return true;
+  };
+  const take = b => {
+    for (let k = Math.floor(b.x0 / B), k1 = Math.floor(b.x1 / B); k <= k1; k++) {
+      if (!cols.has(k)) cols.set(k, []);
+      cols.get(k).push(b);
+    }
+  };
+  const clearOf = b => b.x0 >= r.x && b.x1 <= r.x + r.w && b.y0 >= r.y && b.y1 <= r.y + r.h
+    && free(b);
+  // The first clear spot of `spots` ({box, ...}, in order of preference) is
+  // taken and returned; none clear: null.
+  const place = spots => {
+    for (const s of spots) if (clearOf(s.box)) { take(s.box); return s; }
+    return null;
+  };
+  return (chartLabels.frame = { hits: gLabelHits, free, take, clearOf, place });
+}
+
+// An event number's candidate spots round its tick at (px, py): above it
+// (where it always sat), below it, then the corners above and below on the
+// right and the left; then the same six one line further out.
+const EVENT_NUM_H = 10;            // the numbers' 10 px font
+function eventNumberSpots(px, py, tw) {
+  const out = [];
+  for (const off of [0, EVENT_NUM_H + 2]) {
+    for (const [align, up] of [['center', true], ['center', false], ['left', true],
+                               ['right', true], ['left', false], ['right', false]]) {
+      const tx = align === 'left' ? px + 3 : align === 'right' ? px - 3 : px;
+      const ty = up ? py - 11 - off : py + 11 + off;
+      const x0 = align === 'left' ? tx : align === 'right' ? tx - tw : tx - tw / 2;
+      const y0 = up ? ty - EVENT_NUM_H : ty;
+      out.push({ align, base: up ? 'bottom' : 'top', tx, ty,
+                 box: { x0, x1: x0 + tw, y0, y1: y0 + EVENT_NUM_H } });
+    }
+  }
+  return out;
+}
+
+// The text of a label left off for want of room, in a small box beside the
+// cursor while it is over that label's tick.  The tick's click still goes to
+// its cell.
+function drawLabelTip() {
+  if (!gShowEvents || gMarkerMode || gDragging) return;
+  const h = labelHit(gMouse.px, gMouse.py);
+  if (!h || !h.hiddenText) return;
+  ctx.font = "600 11px 'Segoe UI', sans-serif";
+  const PAD = 5, BH = 18, OFF = 12;
+  const bw = ctx.measureText(h.hiddenText).width + PAD * 2;
+  const cw = canvas.width / canvasDpr();
+  let bx = gMouse.px + OFF, by = gMouse.py - OFF - BH;
+  if (bx + bw > cw - 2) bx = gMouse.px - OFF - bw;
+  bx = Math.max(2, bx); by = Math.max(2, by);
+  ctx.fillStyle = 'rgba(255,255,255,0.96)';
+  ctx.fillRect(bx, by, bw, BH);
+  ctx.strokeStyle = '#93a6ba';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, BH - 1);
+  ctx.fillStyle = h.hiddenColor || '#1d2733';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(h.hiddenText, bx + PAD, by + BH / 2 + 0.5);
+}
+
 function drawEventMarkers(t, r) {
   const evs = t.data.events || [];
   // Marker labels carry the same numbers as the table's columns: counted from
@@ -3881,6 +3997,7 @@ function drawEventMarkers(t, r) {
   // The numbers are click targets: each one's box is kept for the mouse
   // handlers, which take the tech to that event's cell in the table below.
   const LABEL_PAD = 3;
+  const labels = chartLabels(r);
   for (const e of evs) {
     const dx = dispKm(t, e.dist_km);
     if (dx < gView.x0 || dx > gView.x1) continue;
@@ -3907,13 +4024,25 @@ function drawEventMarkers(t, r) {
       gLabelHits.push({ x0: px - 4, x1: px + 4, y0: py - 10, y1: py + 10, t, e });
       continue;
     }
-    ctx.fillStyle = LIGHT_EDGE[t.color] || t.color;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'bottom';
-    ctx.fillText(String(n), px, py - 11);
+    // The number takes the first clear spot round its tick (above it, where
+    // it always sat, when there is room).  None clear: it is left off and
+    // the tick keeps it for the hover tip.
+    const txt = String(n);
     const tw = ctx.measureText(String(n)).width;
-    gLabelHits.push({ x0: px - tw / 2 - LABEL_PAD, x1: px + tw / 2 + LABEL_PAD,
-                      y0: py - 11 - 10 - LABEL_PAD, y1: py - 11 + LABEL_PAD, t, e });
+    const color = LIGHT_EDGE[t.color] || t.color;
+    const spot = labels.place(eventNumberSpots(px, py, tw));
+    if (!spot) {
+      gLabelHits.push({ x0: px - 4, x1: px + 4, y0: py - 10, y1: py + 10, t, e,
+                        hiddenText: txt, hiddenColor: color });
+      continue;
+    }
+    ctx.fillStyle = color;
+    ctx.textAlign = spot.align;
+    ctx.textBaseline = spot.base;
+    ctx.fillText(txt, spot.tx, spot.ty);
+    const b = spot.box;
+    gLabelHits.push({ x0: b.x0 - LABEL_PAD, x1: b.x1 + LABEL_PAD,
+                      y0: b.y0 - LABEL_PAD, y1: b.y1 + LABEL_PAD, t, e });
   }
   ctx.globalAlpha = 1;
 }
@@ -4019,14 +4148,11 @@ function drawPairing(sets, r) {
     return yToPx(dispDb(t, t.data.trace_db[Math.min(i, t.data.trace_db.length - 1)] ?? 0), r);
   };
   const tags = [];
-  // Every value label drawn this frame, so the next one never lands on it
-  // (Robert 2026-10-01: labels must never run together, at any width).
-  const placedLabels = [];
+  // Every label this frame takes its box from the chart's one pool (see
+  // chartLabels), so a value never lands on a tag, an axis label or another
+  // value (Robert 2026-10-01: labels must never run together, at any width).
+  const labels = chartLabels(r);
   const pendingValues = [];         // value labels, placed after the tags
-  const LABEL_PAD = 2;
-  const clearOf = b => b.x0 >= r.x && b.x1 <= r.x + r.w && b.y0 >= r.y && b.y1 <= r.y + r.h
-    && !placedLabels.some(o => b.x0 < o.x1 + LABEL_PAD && b.x1 + LABEL_PAD > o.x0
-                            && b.y0 < o.y1 + LABEL_PAD && b.y1 + LABEL_PAD > o.y0);
   // A value label's own spot first (A above and right, B below and right,
   // a filled-in leg on the other side), then the other three corners round
   // its tick, then the same four one line further out.  A label with no
@@ -4040,23 +4166,26 @@ function drawPairing(sets, r) {
       const tw = ctx.measureText(txt).width;
       const left0 = q.leg.hollow, up0 = (q.w === 'a') !== left0;
       const near = q.leg.hollow ? 6 : 13;
-      let spot = null;
+      const spots = [];
       for (const out of [0, th]) {
         for (const [left, up] of [[left0, up0], [left0, !up0], [!left0, up0], [!left0, !up0]]) {
           const ty = up ? py - near - out : py + near + out;
-          const box = { x0: left ? q.px - 5 - tw : q.px + 4, x1: left ? q.px - 5 : q.px + 4 + tw,
-                        y0: up ? ty - th : ty, y1: up ? ty : ty + th };
-          if (clearOf(box)) { spot = { left, up, ty, box }; break; }
+          spots.push({ left, up, ty,
+                       box: { x0: left ? q.px - 5 - tw : q.px + 4, x1: left ? q.px - 5 : q.px + 4 + tw,
+                              y0: up ? ty - th : ty, y1: up ? ty : ty + th } });
         }
-        if (spot) break;
       }
-      if (!spot) continue;
-      placedLabels.push(spot.box);
+      const fill = q.leg.hollow ? DRAWER_COLOR.gray
+        : color === DRAWER_COLOR.warn ? '#8a7400' : color;
+      const spot = labels.place(spots);
+      if (!spot) {                    // the hover tip shows it (drawLabelTip)
+        v.rec.hiddenText = txt; v.rec.hiddenColor = fill;
+        continue;
+      }
       ctx.globalAlpha = v.dim;
       ctx.textAlign = spot.left ? 'right' : 'left';
       ctx.textBaseline = spot.up ? 'bottom' : 'top';
-      ctx.fillStyle = q.leg.hollow ? DRAWER_COLOR.gray
-        : color === DRAWER_COLOR.warn ? '#8a7400' : color;
+      ctx.fillStyle = fill;
       ctx.fillText(txt, spot.left ? q.px - 5 : q.px + 4, spot.ty);
       const b = spot.box, h = v.rec;
       h.x0 = Math.min(h.x0, b.x0 - 2); h.x1 = Math.max(h.x1, b.x1 + 2);
@@ -4211,7 +4340,7 @@ function drawPairing(sets, r) {
   // The tags are down: they and every value placed so far are taken space.
   placed.forEach(g => {
     const y = r.y + r.h - 6 - (g.lane + 1) * (TAG_H + 3);
-    placedLabels.push({ x0: g.x0, x1: g.x1, y0: y, y1: y + TAG_H });
+    labels.take({ x0: g.x0, x1: g.x1, y0: y, y1: y + TAG_H });
   });
   placeValueLabels();
   return covered;
@@ -4232,22 +4361,6 @@ function appendOneDirGrid(singles, host) {
   box.appendChild(cap);
   host.appendChild(box);
   renderFastReporterGrid(traces, box, document.createElement('div'), { oneDir: true });
-}
-
-// A click on a fibre's name in an A+B table picks that fibre: its traces
-// are drawn over the rest, which dim, and the drawer marks it in full
-// however many fibres are loaded.  A second click lets go.
-function gridPickFibers(tb, have) {
-  tb.addEventListener('click', (ev) => {
-    const td = ev.target.closest('td.fr-rowlab');
-    const tr = td && td.closest('tr[data-row]');
-    if (!tr) return;
-    const p = have[parseInt(tr.dataset.row, 10)];
-    if (!p) return;
-    const keys = [p.ta.key, p.tb.key];
-    gPickKey = keys.includes(gPickKey) ? null : (p.ta.visible ? p.ta.key : p.tb.key);
-    draw();
-  });
 }
 
 // Take the panel to one cell: row `fi`'s line for `which` ('a', 'b' or
@@ -6156,7 +6269,6 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     marks.goCell = (fi, which, col) => gridGoCell({ scroller, table, tb, descs, paintRows }, fi, which, col);
     gDrawerMarks.push(marks);
   }
-  gridPickFibers(tb, have);
   appendOneDirGrid(singles, host);
   draw();
   requestAnimationFrame(() => {
@@ -6480,11 +6592,23 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // The report's km is measured from A's panel; the chart draws the file as
   // it was shot, a launch length further along.
   const launchA = Number(res.launch_a_km) || 0;
+  // A one-direction table (the Unidirectional report's): one row per fibre,
+  // judged by that report's flag and its own loss gate; no Average row.
+  const oneDir = (res.direction === 'a' || res.direction === 'b') ? res.direction : null;
+  // Its km is in that direction's OWN frame (`launch_a_km` is then the run's
+  // own launch), and a B trace is mirrored onto the chart whenever an A trace
+  // is loaded, shown or hidden.  So a one-direction km reaches the chart
+  // through the trace: with A loaded but hidden, B's columns zoomed to their
+  // mirror image (0.000 km on a 62 m panel tie went to 1.000 km, B's
+  // connector drawn at 1.1006 km).  An A+B table's km is already A's frame.
+  const legOf = p => oneDir === 'b' ? p.tb : p.ta;
+  const leadT = oneDir ? have.map(legOf).find(Boolean) : null;
+  const toView = (km, t) => (oneDir && (t || leadT)) ? dispKm(t || leadT, km) : km;
   // Columns: the report's, in its order; ev[fi] is fibre fi's cell there.
   const cols = (res.columns || []).map(c => ({
     title: String(c.title || ''), kind: c.kind, km: Number(c.km) || 0,
     isEnd: c.kind === 'end' || !!c.end,
-    viewKm: (Number(c.km) || 0) + launchA,
+    viewKm: toView((Number(c.km) || 0) + launchA),
     eventKind: c.event_kind ? String(c.event_kind) : '',
     eventTip: c.event_kind_tip ? String(c.event_kind_tip) : '',
     ev: have.map(() => null),
@@ -6510,9 +6634,6 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const rawKm = km => Math.round(km * 1e4) / 1e4;
   // A stored reading; a leg the report measured itself is never judged.
   const legOk = leg => !!leg && !leg.grey && leg.loss != null;
-  // A one-direction table (the Unidirectional report's): one row per fibre,
-  // judged by that report's flag and its own loss gate; no Average row.
-  const oneDir = (res.direction === 'a' || res.direction === 'b') ? res.direction : null;
   const LEGS = oneDir ? [oneDir] : ['a', 'b', 'avg'];
   const oneGate = oneDir && res.gate_db != null ? Number(res.gate_db) : null;
 
@@ -6576,7 +6697,8 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   };
   const marks = { mode: 'suite', single: !!oneDir, have, goCell: () => {},
     cols: cols.map((c, i) => ({ i, title: c.title, km: c.viewKm, cells: keepCol[i]
-      ? c.ev.map((x, fi) => x && { fi, avg: x.loss, km: x.km != null ? x.km + launchA : c.viewKm,
+      ? c.ev.map((x, fi) => x && { fi, avg: x.loss,
+                                   km: x.km != null ? toView(x.km + launchA, oneDir && legOf(have[fi])) : c.viewKm,
                                    // A one-direction table has no Average: its tag carries that
                                    // direction's own verdict, as its one row does.
                                    avgFail: lossFails(c, x, oneDir || 'avg'), avgWarn: lossWarns(c, x, oneDir || 'avg'),
@@ -6768,7 +6890,6 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     marks.goCell = (fi, which, col) => gridGoCell({ scroller, table, tb, descs, paintRows }, fi, which, col);
     gDrawerMarks.push(marks);
   }
-  gridPickFibers(tb, have);
   appendOneDirGrid(singles, host);
   draw();
   requestAnimationFrame(() => {
@@ -8235,7 +8356,27 @@ async function submitReport() {
   d.querySelector('#rpt-done').onclick = closeReportDialog;
 }
 
-// Zoom the chart to ±half km around an A-frame km, refitting Y to the window.
+// A report link's km as a chart position.  The Splice Report hands it in A's
+// raw frame (app.py's `_vkm` adds launch_a_km), the Unidirectional report in
+// the raw frame of the direction it ran on.  The chart is A's frame whenever
+// an A trace is loaded, B mirrored onto it; with no A trace B is drawn as it
+// was shot.  A Splice Report link to a fibre whose A file is missing loaded
+// only B and zoomed to the A-frame km on B's own axis -- the far end of the
+// span on a long cable.
+function linkDispKm(km, src, dir, fiber) {
+  const traceOf = d => gTraces.find(x => x.dir === d && x.data && String(x.fiber) === String(fiber))
+                    || gTraces.find(x => x.dir === d && x.data);
+  if (src === 'uni' && (dir === 'a' || dir === 'b')) {
+    const t = traceOf(dir);
+    return t ? dispKm(t, km) : km;
+  }
+  if (gTraces.some(x => x.dir === 'a')) return km;
+  const b = traceOf('b');
+  return b ? mirrorOriginKm(b) - km : km;   // the metre B's own frame has there
+}
+
+// Zoom the chart to ±half km around a chart position (A's frame while an A
+// trace is loaded), refitting Y to the window.
 function zoomToKm(aKm, half = 2) {
   if (!gView) return;
   const x0 = Math.max(0, aKm - half), x1 = aKm + half;
@@ -8663,7 +8804,7 @@ async function applyTarget(t) {
     setAddDir(t.dir || 'both');
     await addFibers();
     const km = parseFloat(t.km);
-    if (!isNaN(km)) zoomToKm(km, 2.5);
+    if (!isNaN(km)) zoomToKm(linkDispKm(km, t.src, t.dir || 'both', fiber), 2.5);
     return;
   }
   await autoloadDefault();

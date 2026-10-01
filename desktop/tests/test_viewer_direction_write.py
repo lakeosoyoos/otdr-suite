@@ -174,8 +174,9 @@ def test_setting_the_direction_a_file_already_declares_still_shows_it():
     fn = _html().split('function setFilesDirection(keys, dir) {', 1)[1].split('\n}', 1)[0]
     assert "if (dir === (gStoredDir[key] || src)) delete gDirOverride[key];" in fn
     assert "else gDirOverride[key] = dir;" in fn
-    # the loaded trace is redrawn as what effDir now says, not as the raw pick
-    assert "if (t) t.dir = effDir(src, fiber);" in fn
+    # the loaded trace is redrawn as what effDir now says, not as the raw pick,
+    # and takes that direction's colour
+    assert "if (t) { t.dir = effDir(src, fiber); t.color = traceColor(t); }" in fn
     assert "`${keys.length} files set to ${arrow}`" in fn
 
 
