@@ -1583,12 +1583,15 @@ class Handler(BaseHTTPRequestHandler):
             # the hub's Analysis Mode switch reaches a Viewer that already has
             # traces on screen.  Kept to one dict lookup: no folder listing.
             # The folders as well, so a page sees the hub's A/B boxes (or a
-            # Remove in another window) move without a focus event.
+            # Remove in another window) move without a focus event.  And the
+            # hub's Light / Dark, so an open Viewer follows the Theme switch
+            # (it was only read when the page loaded).
             self._send_json({'analysis_mode': (CONFIG.get('analysis_mode')
                                                if CONFIG.get('analysis_mode') in ('suite', 'fr')
                                                else 'suite'),
                              'dir_a': CONFIG.get('dir_a') or '',
-                             'dir_b': CONFIG.get('dir_b') or ''})
+                             'dir_b': CONFIG.get('dir_b') or '',
+                             'theme': 'dark' if CONFIG.get('theme') == 'dark' else 'light'})
             return
 
         if u.path == '/api/report_defaults':

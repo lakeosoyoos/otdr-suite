@@ -122,8 +122,7 @@ def analysis_mode():
 # ─── Light / Dark theme ─────────────────────────────────────────────────
 # Robert, 2026-09-29: the boss asked for a dark look, after a dark dashboard
 # he liked (warm near-black page, dark grey panels, off-white lettering, a
-# blue accent).  Light is the palette the hub has always had and the
-# default, so a tech who never touches the switch sees no change.  The
+# blue accent).  Light is the palette the hub has always had.  The
 # Viewer's trace plot and event panel stay light (a very light grey) in
 # Dark, so the FastReporter trace colours read as always.
 #
@@ -131,14 +130,21 @@ def analysis_mode():
 # installed exe refuse the next signed update (the launcher only takes a
 # manifest whose file set matches its own ENGINE_FILES).
 #
-# The choice sits in settings.json beside the analysis mode.  Streamlit reads
-# its theme from config, so apply_streamlit_theme() writes the palette into
-# the running server's config; the browser takes it on the next run.  What
+# Every start is Dark, fully: the first frame included (Robert, 2026-10-01:
+# "start up in dark mode ... it needs to start fully in dark").  Light lasts
+# until the hub is closed or the page reloads, and nothing is saved.  The
+# server starts in Dark too (desktop/launcher.py's STREAMLIT_THEME_* and
+# .streamlit/config.toml = THEME_STREAMLIT['dark']), so a new page is not
+# painted Light first and switched after.  Streamlit reads its theme from
+# config, so apply_streamlit_theme() writes the palette into the running
+# server's config; the browser takes it on the next run.  What
 # the hub draws itself uses the --otdr-* CSS variables (theme_css_vars());
 # HTML inside a components.html iframe cannot see them and goes through
-# theme_recolor().  The Viewer learns the theme from trace_server.CONFIG.
+# theme_recolor().  The Viewer learns the theme from trace_server.CONFIG,
+# when it loads and again on every /api/mode ask, so an open Viewer follows
+# the switch.
 THEMES = ('light', 'dark')
-THEME_DEFAULT = 'light'
+THEME_DEFAULT = 'dark'
 
 # What Streamlit itself draws: pages, sidebar, widgets, st.dataframe.
 THEME_STREAMLIT = {
@@ -216,45 +222,6 @@ THEME_VARS = {
 }
 
 _theme_current = THEME_DEFAULT
-
-
-def _theme_settings_path():
-    """Same file as the analysis mode (~/.otdrSuite/settings.json)."""
-    d = os.environ.get('OTDR_SETTINGS_DIR') or os.environ.get(
-        'OTDR_SUITE_APP_DIR') or os.path.join(os.path.expanduser('~'), '.otdrSuite')
-    return os.path.join(d, 'settings.json')
-
-
-def load_theme():
-    """The saved theme, or Light.  Never raises."""
-    try:
-        with open(_theme_settings_path(), encoding='utf-8') as fh:
-            name = json.load(fh).get('theme')
-    except (OSError, ValueError, AttributeError):
-        return THEME_DEFAULT
-    return name if name in THEMES else THEME_DEFAULT
-
-
-def save_theme(name):
-    """Persist the theme; other keys in settings.json are kept.  A write
-    failure is not fatal (this session still shows the chosen theme)."""
-    if name not in THEMES:
-        raise ValueError(name)
-    path = _theme_settings_path()
-    try:
-        with open(path, encoding='utf-8') as fh:
-            data = json.load(fh)
-        if not isinstance(data, dict):
-            data = {}
-    except (OSError, ValueError):
-        data = {}
-    data['theme'] = name
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as fh:
-            json.dump(data, fh)
-    except OSError:
-        pass
 
 
 def theme_current():
@@ -374,7 +341,6 @@ def _render_theme_control(where):
     name = 'light' if _right else 'dark'
     if name != st.session_state.get('ui_theme'):
         st.session_state['ui_theme'] = name
-        save_theme(name)
         st.rerun()
 
 
@@ -1728,11 +1694,12 @@ TRACE_PORT_BASE = 8771
 
 st.set_page_config(page_title='OTDR Suite', layout='wide',
                    initial_sidebar_state='expanded')
-# Light / Dark: the saved choice is applied before anything draws.  Streamlit
-# sends the theme at the START of a run, so when this run changed it the page
-# on screen still has the old one: rerun once to paint the right one.
+# Light / Dark: every new session starts Dark, and the session's choice is
+# applied before anything draws.  Streamlit sends the theme at the START of a
+# run, so when this run changed it the page on screen still has the old one:
+# rerun once to paint the right one.
 if 'ui_theme' not in st.session_state:
-    st.session_state['ui_theme'] = load_theme()
+    st.session_state['ui_theme'] = THEME_DEFAULT
 if apply_streamlit_theme(st.session_state['ui_theme']):
     st.rerun()
 st.markdown(theme_css_vars(), unsafe_allow_html=True)
@@ -1754,6 +1721,47 @@ st.markdown('<style>[data-testid="stToolbarActions"],'
             'transform-origin:left top}'
             '[data-testid="stExpandSidebarButton"] *{color:var(--otdr-accent)!important}'
             '</style>', unsafe_allow_html=True)
+
+# Streamlit's own theme pick (the ⋮ menu's Settings) beats the hub's Theme
+# switch: once a browser has chosen Light or Dark there, Streamlit keeps it
+# and ignores the theme the hub sends, so the switch does nothing.  ("Use
+# system setting" removes Streamlit's entry instead, so it never blocks.)  The menu is hidden above; this clears a pick already made, once,
+# and reloads so the hub's theme takes.  Streamlit stores its own theme as
+# "Custom Theme", which is left alone.
+THEME_PICK_CLEAR_JS = """
+<script>
+(function () {
+  var w; try { w = window.parent; void w.document; } catch (e) { return; }
+  try {
+    var ls = w.localStorage, gone = false;
+    for (var i = ls.length - 1; i >= 0; i--) {
+      var k = ls.key(i);
+      if (!k || k.indexOf('stActiveTheme') !== 0) continue;
+      var v = null; try { v = JSON.parse(ls.getItem(k)); } catch (e) {}
+      if (!v || v.name !== 'Custom Theme') { ls.removeItem(k); gone = true; }
+    }
+    if (gone) w.location.reload();
+  } catch (e) { /* no storage: nothing was picked */ }
+})();
+</script>
+"""
+
+
+def _install_theme_pick_clear():
+    """Render the script above out of the page's flow: a zero-height frame
+    still takes a gap between elements, which moved every page down."""
+    try:
+        box = st.container(key='theme_pick_clear')
+        box.markdown('<style>[data-testid="stLayoutWrapper"]:has(> .st-key-theme_pick_clear)'
+                     '{position:absolute;width:0;height:0;overflow:hidden}</style>',
+                     unsafe_allow_html=True)
+        with box:
+            st_components_html(THEME_PICK_CLEAR_JS, height=0)
+    except Exception:
+        pass
+
+
+_install_theme_pick_clear()
 
 
 # ─── Sidebar drag-to-widen must not close the sidebar ────────────────────
