@@ -2280,7 +2280,12 @@ _CARRIED_SETTINGS = ('otdr_profile', 'otdr_settings', 'conn_settings',
                      # clicks open and where reports are saved came back as
                      # the defaults after "This tab" -> "← Back" (2026-09-29).
                      'sr_click_target_saved', 'uni_click_target_saved',
-                     'sr_report_dest', 'uni_report_dest', 'fec_report_dest')
+                     'sr_report_dest', 'uni_report_dest', 'fec_report_dest',
+                     # ...and the copy each "Save reports to" box keeps: a
+                     # box on a page the tech is not on has no value of its
+                     # own by then, and came back empty (2026-10-01).
+                     'sr_report_dest_saved', 'uni_report_dest_saved',
+                     'ss_report_dest_saved')
 _CARRY_ID_RE = re.compile(r'[0-9a-f]{12}')
 _CARRY_KEPT = 50
 

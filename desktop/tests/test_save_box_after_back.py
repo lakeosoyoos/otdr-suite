@@ -88,6 +88,24 @@ def test_back_from_a_cell_click_shows_the_folder(tmp_path, page, prefix):
     assert view.session_state[f"{prefix}_report_dest"] == keep
 
 
+def test_the_other_page_s_folder_survives_a_cell_click_too(tmp_path):
+    """The Splice Report's box is not on screen when a Unidirectional cell
+    is clicked: its folder rides the click in the box's kept copy."""
+    keep_sr, keep_uni = str(tmp_path / "sr reports"), str(tmp_path / "uni reports")
+    at = _typed("Splice Report", keep_sr)
+    _open(at, "Unidirectional")
+    _box(at).input(keep_uni).run()
+    view = run_streamlit(default_timeout=180)
+    for k, v in {"nav": "viewer", "fiber": "3", "km": "1.0", "dir": "a",
+                 "sra": A, "src": "uni", "cs": at.session_state["_carry_id"]}.items():
+        view.query_params[k] = v
+    view.run()
+    next(b for b in view.button if b.label == "← Back to Unidirectional").click().run()
+    assert _on_screen(view) == keep_uni
+    _open(view, "Splice Report")
+    assert _on_screen(view) == keep_sr
+
+
 @pytest.mark.parametrize("page,prefix", PAGES)
 def test_a_viewer_trip_keeps_the_folder(tmp_path, page, prefix):
     keep = str(tmp_path / "my reports")
