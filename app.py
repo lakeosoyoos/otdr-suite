@@ -121,8 +121,7 @@ def analysis_mode():
 # ─── Light / Dark theme ─────────────────────────────────────────────────
 # Robert, 2026-09-29: the boss asked for a dark look, after a dark dashboard
 # he liked (warm near-black page, dark grey panels, off-white lettering, a
-# blue accent).  Light is the palette the hub has always had and the
-# default, so a tech who never touches the switch sees no change.  The
+# blue accent).  Light is the palette the hub has always had.  The
 # Viewer's trace plot and event panel stay light (a very light grey) in
 # Dark, so the FastReporter trace colours read as always.
 #
@@ -130,17 +129,21 @@ def analysis_mode():
 # installed exe refuse the next signed update (the launcher only takes a
 # manifest whose file set matches its own ENGINE_FILES).
 #
-# Every start is Light (Robert, 2026-10-01: "we want to start in light mode
-# always"); Dark lasts until the hub is closed or the page reloads, and is
-# not saved.  Streamlit reads its theme from config, so apply_streamlit_theme() writes the palette into
-# the running server's config; the browser takes it on the next run.  What
+# Every start is Dark, fully: the first frame included (Robert, 2026-10-01:
+# "start up in dark mode ... it needs to start fully in dark").  Light lasts
+# until the hub is closed or the page reloads, and nothing is saved.  The
+# server starts in Dark too (desktop/launcher.py's STREAMLIT_THEME_* and
+# .streamlit/config.toml = THEME_STREAMLIT['dark']), so a new page is not
+# painted Light first and switched after.  Streamlit reads its theme from
+# config, so apply_streamlit_theme() writes the palette into the running
+# server's config; the browser takes it on the next run.  What
 # the hub draws itself uses the --otdr-* CSS variables (theme_css_vars());
 # HTML inside a components.html iframe cannot see them and goes through
 # theme_recolor().  The Viewer learns the theme from trace_server.CONFIG,
 # when it loads and again on every /api/mode ask, so an open Viewer follows
 # the switch.
 THEMES = ('light', 'dark')
-THEME_DEFAULT = 'light'
+THEME_DEFAULT = 'dark'
 
 # What Streamlit itself draws: pages, sidebar, widgets, st.dataframe.
 THEME_STREAMLIT = {
@@ -1664,7 +1667,7 @@ TRACE_PORT_BASE = 8771
 
 st.set_page_config(page_title='OTDR Suite', layout='wide',
                    initial_sidebar_state='expanded')
-# Light / Dark: every new session starts Light, and the session's choice is
+# Light / Dark: every new session starts Dark, and the session's choice is
 # applied before anything draws.  Streamlit sends the theme at the START of a
 # run, so when this run changed it the page on screen still has the old one:
 # rerun once to paint the right one.

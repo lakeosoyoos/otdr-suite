@@ -1,7 +1,8 @@
 """Light / Dark theme (the sidebar's Theme switch).
 
 Light must be exactly the palette the hub always had, every start must be
-Light (Dark is not saved), the Viewer must arrive marked dark only when the
+Dark from the first frame (the server starts in Dark; nothing is saved), the
+Viewer must arrive marked dark only when the
 hub is dark with its trace plot and event panel kept light, an open Viewer
 must follow the switch, and the theme must add NO engine file (an installed
 exe refuses any signed update whose file set differs from its own).
@@ -35,14 +36,31 @@ def _theme():
 TH = _theme()
 
 
-def test_light_is_the_config_toml_palette():
-    """Nobody who leaves the switch alone sees a change."""
+def test_light_is_the_palette_the_hub_always_had():
+    assert TH['THEME_STREAMLIT']['light'] == {
+        'base': 'light', 'primaryColor': '#2c5b8a', 'backgroundColor': '#ffffff',
+        'secondaryBackgroundColor': '#eef3f8', 'textColor': '#000000',
+        'borderColor': '#d5dde6', 'dataframeBorderColor': '#dbe4ee',
+        'dataframeHeaderBackgroundColor': '#eef3f8'}
+
+
+def _camel_to_env(key):
+    return 'STREAMLIT_THEME_' + re.sub(r'([A-Z])', r'_\1', key).upper()
+
+
+def test_the_server_starts_in_the_start_theme():
+    """Robert, 2026-10-01: "it needs to start fully in dark".  The exe's
+    launcher (and config.toml for a dev run) start the server in exactly the
+    start theme, so the first page is never painted Light and switched after:
+    the first run finds nothing to change and does not rerun."""
+    want = TH['THEME_STREAMLIT'][TH['THEME_DEFAULT']]
     toml = (REPO_ROOT / '.streamlit' / 'config.toml').read_text(encoding='utf-8')
-    for key in ('base', 'primaryColor', 'backgroundColor',
-                'secondaryBackgroundColor', 'textColor'):
+    launcher = (REPO_ROOT / 'desktop' / 'launcher.py').read_text(encoding='utf-8')
+    for key, val in want.items():
         m = re.search(r'^%s\s*=\s*"([^"]+)"' % key, toml, re.M)
-        assert m, key
-        assert TH['THEME_STREAMLIT']['light'][key] == m.group(1), key
+        assert m and m.group(1) == val, ('config.toml', key)
+        m = re.search(r'os\.environ\.setdefault\("%s", "([^"]+)"\)' % _camel_to_env(key), launcher)
+        assert m and m.group(1) == val, ('launcher', key)
 
 
 def test_both_themes_name_the_same_colours():
@@ -50,11 +68,11 @@ def test_both_themes_name_the_same_colours():
     assert set(TH['THEME_STREAMLIT']['light']) == set(TH['THEME_STREAMLIT']['dark'])
 
 
-def test_every_start_is_light_and_dark_is_not_saved():
-    """Robert, 2026-10-01: "we want to start in light mode always".  The boss
-    started the Suite after an update with Dark saved and it came up only part
-    dark until he flipped the switch back and forth."""
-    assert TH['THEME_DEFAULT'] == 'light'
+def test_every_start_is_dark_and_nothing_is_saved():
+    """Robert, 2026-10-01: start up in Dark, every time; nothing remembered.
+    The boss started the Suite after an update with Dark saved and it came up
+    only part dark until he flipped the switch back and forth."""
+    assert TH['THEME_DEFAULT'] == 'dark'
     assert "st.session_state['ui_theme'] = THEME_DEFAULT" in SRC
     for gone in ('load_theme', 'save_theme', '_theme_settings_path'):
         assert gone not in SRC, gone
