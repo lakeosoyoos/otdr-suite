@@ -494,6 +494,10 @@
      below.  Pinning the strip is the point: FR prints it at the bottom of the
      table, which on 2,304 rows means nobody ever sees it. */
   .fr-scroll { overflow: auto; flex: 1; min-height: 0; }
+  /* the one-direction fibres' own table, under the A+B one */
+  .onedir-box { flex: 0 1 auto; max-height: 45%; min-height: 0; display: flex;
+                flex-direction: column; border-top: 2px solid #b0bdcc; }
+  .onedir-cap { font-size: 11px; padding: 3px 8px; color: #56657a; background: #f3f6f9; }
   /* Columns fit their contents (fitColumns); the table no longer stretches
      to the panel's width and spreads the spare room across every column. */
   table.fr-table { font-size: 11px; width: max-content; }
@@ -559,6 +563,7 @@
   table.fr-table td.fr-hi   { background: #e74c3c; color: #ffffff; font-weight: 700; }
   /* Warning: over the OTDR Settings Warning, under Fail.  Bright yellow. */
   table.fr-table td.fr-warn { background: #ffeb00; color: #3d3300; font-weight: 600; }
+.suite-err { margin: 10px 12px; padding: 8px 10px; border: 1px solid #d93025; border-radius: 4px; background: #fdecea; color: #7a1c14; font-size: 12px; }
   /* A break fails too, so it wears the same solid red.  Nothing else in the
      event panel is shaded: red fails, yellow warns, and a passing reading --
      a gainer included -- prints plain (Robert 2026-09-26). */
@@ -816,7 +821,7 @@ let gFrameWarn = '';               // sticky note when A/B cannot share a frame
 // The REPORT's gate, and which report it came from.  A cell that flags in the
 // report the tech clicked through from has to flag here too, so the verdict
 // column follows the engine's threshold rather than the browse filter below.
-let gThresholds = { reburn: 0.160, uni_bend: 0.100, single_dir: 0.200,
+let gThresholds = { reburn: 0.160, uni_bend: 0.250, single_dir: 0.200,
                     connector: 0.500, refl: -50.0, refl_floor: -80.0,
                     refl_ceil: 0.0, dead_km: 3.0, dead_frac: 0.25,
                     connector_uni: 0.649,
@@ -868,7 +873,7 @@ let gMouse = null;                 // {px, py}
 let gMarkerMode = false;
 let gMarkers = { a: null, b: null };   // display-km of each marker, or null
 let gDragMarker = null;                // 'a' | 'b' while dragging a placed marker
-let gLabelHits = [];                   // [{x0,y0,x1,y1,t,e}] event numbers drawn this frame
+let gLabelHits = [];                   // [{x0,y0,x1,y1,t,e,go?}] event numbers and drawer marks drawn this frame
 let gLabelClick = null;                // label under the mouse at mousedown, until mouseup
 let gGridGoTo = null;                  // set by the grid: (trace, event) => scroll to its cell
                                        // (event null: just the trace's row)
@@ -3508,8 +3513,13 @@ function draw() {
   ctx.globalAlpha = 1;
   if (hovered) drawTrace(hovered, r, true);
   if (gShowEvents) {
+    // The mode's table marks its own pairing on the traces it covers (see
+    // drawPairing); a trace it does not cover -- a fibre loaded one way, one
+    // the table left out, or every trace while the table is not in -- keeps
+    // its file's own event numbers.
+    const covered = gDrawerMarks.length ? drawPairing(gDrawerMarks, r) : null;
     for (const t of order) {
-      if (!t.visible) continue;
+      if (!t.visible || (covered && covered.has(t))) continue;
       drawEventMarkers(t, r);        // dims itself: its ticks set their own alpha
     }
   }
@@ -3891,6 +3901,332 @@ function drawEventMarkers(t, r) {
   }
   ctx.globalAlpha = 1;
 }
+// ─── The drawer follows the analysis mode ─────────────────────────────
+// Robert, 2026-09-30: "we need to have suite and FR mode in Viewer for drawer
+// and event panel".  The event panel prints one mode's table; the drawer
+// marks the SAME table's pairing on the traces, so a splice that OTDR Suite
+// reads as one event and FastReporter splits in two looks that way above the
+// panel too.  Per column of the panel: a tick on each direction's reading the
+// table used, a band joining the A and B readings of the same event, and a
+// tag with the column's name and Average, colored by the panel's own verdict
+// on that cell (red fail, yellow warning, blue otherwise).  A leg the table
+// filled in itself -- the Splice Report's gray leg, FastReporter's
+// transplanted one -- is a hollow gray ring, never a tick: it is not a
+// reading.  The panel's tables build `gDrawerMarks` from the cells they
+// print (nothing here judges a number), and it is empty while the mode's
+// table is not in: the drawer then draws each file's own events, as before.
+//
+// One direction is not a fallback (Robert, 2026-09-30: "it has to work for
+// one direction OR bidi, equally").  An A-only or B-only load gets the
+// single-direction table, and a fibre loaded one way among paired ones gets
+// its own single-direction table under the A+B one; either way the drawer
+// marks that table's columns with its verdicts, a tick and a tag per event.
+//
+// Many fibres.  A tag per fibre per column is unreadable past a handful (a
+// ribbon is 12 tags stacked on every splice) and a label per leg is worse,
+// so past DRAWER_DETAIL_MAX fibres each column gets ONE tag -- its worst
+// Average and how many fibres fail -- and one band over where its fibres'
+// readings sit.  The ticks stay (unlabeled) while they can still be told
+// apart; past DRAWER_TICK_MAX fibres only the fibres whose Average fails
+// there keep theirs -- the ones the tag counts, what the tech is hunting --
+// which also keeps a whole cable cheap to redraw.  A picked
+// trace (click its row) gets the full per-fibre marks on top of the summary.
+const DRAWER_DETAIL_MAX = 3;       // fibres drawn in full, labels and all
+const DRAWER_TICK_MAX = 24;        // fibres whose every leg keeps a tick
+const DRAWER_LANES = 3;            // rows of tags before a tag shortens
+const DRAWER_COLOR = { fail: '#e74c3c', warn: '#ffeb00', pass: '#2f6fb3', gray: '#8a97a6' };
+let gDrawerMarks = [];             // [{mode, single, have, cols, goCell}], one per table shown
+
+// One column's summary over its fibres' cells: how many, how many fail or
+// warn on the Average, the worst Average and which fibre holds it (a failing
+// fibre before a passing one, then the highest loss).
+function drawerColumnSummary(col) {
+  const out = { n: 0, nFail: 0, nWarn: 0, worst: null, worstFi: -1 };
+  let rank = -1;
+  for (const cell of col.cells) {
+    out.n++;
+    if (cell.avgFail) out.nFail++;
+    else if (cell.avgWarn) out.nWarn++;
+    const r = cell.avgFail ? 2 : cell.avgWarn ? 1 : 0;
+    const v = cell.avg != null && !isNaN(cell.avg) ? cell.avg : -Infinity;
+    if (r > rank || (r === rank && (out.worst == null || v > out.worst))) {
+      rank = r;
+      out.worst = v === -Infinity ? null : v;
+      out.worstFi = cell.fi;
+    }
+  }
+  return out;
+}
+
+// Place tags along the bottom of the chart without covering one another.
+// Each tag {x, full, short} goes on the first lane its full text fits, then
+// the first its short text fits; failing both it is a small dot on the row
+// above the lanes (lane === lanes; dots may touch, text never does, and a
+// dot is still a click target).  `w(text)` measures; `lo`/`hi` bound the
+// plot.  Returns [{lane, text, x0, x1}] in the tags' order.
+function layoutDrawerTags(tags, w, lo, hi, lanes = DRAWER_LANES) {
+  const GAP = 4, DOT = 8;
+  const ends = new Array(lanes).fill(-Infinity);
+  const order = tags.map((_t, i) => i).sort((a, b) => tags[a].x - tags[b].x);
+  const out = new Array(tags.length);
+  const place = (x, width) => {
+    const x0 = Math.min(Math.max(lo, x - width / 2), Math.max(lo, hi - width));
+    return [x0, x0 + width];
+  };
+  for (const i of order) {
+    const t = tags[i];
+    let got = null;
+    for (const text of [t.full, t.short]) {
+      if (text == null) continue;
+      const [x0, x1] = place(t.x, w(text));
+      const lane = ends.findIndex(e => x0 >= e + GAP);
+      if (lane >= 0) { got = { lane, text, x0, x1 }; break; }
+    }
+    if (!got) {
+      const [x0, x1] = place(t.x, DOT);
+      out[i] = { lane: lanes, text: null, x0, x1 };
+      continue;
+    }
+    ends[got.lane] = Math.max(ends[got.lane], got.x1);
+    out[i] = got;
+  }
+  return out;
+}
+
+// Draw the marks of every table in the panel (`sets`, see gDrawerMarks);
+// returns the traces they covered.
+function drawPairing(sets, r) {
+  const covered = new Set();
+  const colorOf = (fail, warn) => fail ? DRAWER_COLOR.fail : warn ? DRAWER_COLOR.warn : DRAWER_COLOR.pass;
+  const yAt = (t, km) => {
+    const i = lowerBound(t.data.dist_km, km);
+    return yToPx(dispDb(t, t.data.trace_db[Math.min(i, t.data.trace_db.length - 1)] ?? 0), r);
+  };
+  const tags = [];
+  const inView = (lo, hi) => hi >= gView.x0 && lo <= gView.x1;
+  const band = (lo, hi, color, alpha) => {
+    const x0 = xToPx(lo, r), x1 = xToPx(hi, r);
+    ctx.globalAlpha = alpha; ctx.fillStyle = color;
+    ctx.fillRect(x0 - 2, r.y, Math.max(4, x1 - x0 + 4), r.h);
+    ctx.globalAlpha = 1;
+  };
+  const fmtV = v => v != null && !isNaN(v) ? v.toFixed(3) : null;
+  for (const D of sets) {
+    D.have.forEach(p => { if (p.ta) covered.add(p.ta); if (p.tb) covered.add(p.tb); });
+    const pickFi = gPickKey ? D.have.findIndex(p => (p.ta && p.ta.key === gPickKey)
+                                                 || (p.tb && p.tb.key === gPickKey)) : -1;
+    // Counted over the fibres ON SCREEN, not the table's: the Report draws
+    // each fibre's page by hiding the rest, and that page is drawn in full.
+    const shown = new Set();
+    D.have.forEach((p, fi) => {
+      if ((p.ta && p.ta.visible) || (p.tb && p.tb.visible)) shown.add(fi);
+    });
+    const detail = shown.size <= DRAWER_DETAIL_MAX;
+    const allTicks = shown.size <= DRAWER_TICK_MAX;
+    // What a cell's value is called on its tag: the A+B tables' Average, or
+    // a one-direction table's own loss.
+    const word = D.single ? 'loss' : 'avg';
+    // A leg's place: its own km on its own trace, or -- a gray leg the report
+    // gave no km of its own -- the cell's km on that trace.
+    const legAt = (p, cell, w) => {
+      const leg = cell.legs[w];
+      const t = w === 'a' ? p.ta : p.tb;
+      if (!leg || !t || !t.visible) return null;
+      const raw = leg.km != null ? leg.km
+        : (leg.hollow && cell.km != null ? dataKmFromDisp(t, cell.km) : null);
+      if (raw == null) return null;
+      const dx = dispKm(t, raw);
+      return { t, leg, w, raw, dx, px: xToPx(dx, r) };
+    };
+    // One leg's mark.  `label` prints "A 0.175" beside it: A above, B below,
+    // so the two directions' numbers never sit on one another.  A filled-in
+    // leg's goes to the other side and the LEFT of its ring, clear of the
+    // readings beside it (FastReporter copies a leg onto the other
+    // direction's reading, a band's width away from its own).
+    const legMark = (q, fi, ci, label, dim) => {
+      const py = yAt(q.t, q.raw);
+      const color = q.leg.hollow ? DRAWER_COLOR.gray : colorOf(q.leg.fail, q.leg.warn);
+      ctx.globalAlpha = dim;
+      ctx.strokeStyle = color === DRAWER_COLOR.warn ? '#b8a000' : color;
+      ctx.lineWidth = label ? 1.8 : 1.2;
+      if (q.leg.hollow) {
+        ctx.beginPath(); ctx.arc(q.px, py, 4, 0, 2 * Math.PI); ctx.stroke();
+      } else {
+        ctx.beginPath(); ctx.moveTo(q.px, py - 12); ctx.lineTo(q.px, py + 12); ctx.stroke();
+      }
+      let hit = { x0: q.px - 4, x1: q.px + 4, y0: py - 12, y1: py + 12 };
+      // An end or launch row has no loss to print: its mark alone says where.
+      if (label && q.leg.loss != null && !isNaN(q.leg.loss)) {
+        const txt = (q.w === 'a' ? 'A ' : 'B ') + q.leg.loss.toFixed(3);
+        ctx.font = "600 11px 'Segoe UI', sans-serif";
+        const left = q.leg.hollow;
+        ctx.textAlign = left ? 'right' : 'left';
+        const up = (q.w === 'a') !== left;
+        ctx.textBaseline = up ? 'bottom' : 'top';
+        ctx.fillStyle = q.leg.hollow ? DRAWER_COLOR.gray
+          : color === DRAWER_COLOR.warn ? '#8a7400' : color;
+        const ty = up ? py - (left ? 6 : 13) : py + (left ? 6 : 13);
+        ctx.fillText(txt, left ? q.px - 5 : q.px + 4, ty);
+        const tw = ctx.measureText(txt).width;
+        hit = { x0: left ? q.px - 7 - tw : q.px - 4, x1: left ? q.px + 4 : q.px + 6 + tw,
+                y0: Math.min(py - 12, up ? ty - 13 : ty),
+                y1: Math.max(py + 12, up ? ty : ty + 13) };
+      }
+      ctx.globalAlpha = 1;
+      // A reading is a real event of the file: the span menu works on it as
+      // on the file's own event number.  A filled-in leg is not one.
+      gLabelHits.push({ ...hit, go: () => D.goCell(fi, q.w, ci),
+                        t: q.leg.hollow ? null : q.t,
+                        e: q.leg.hollow ? null : { dist_km: q.raw } });
+    };
+    // One fibre at one column, in full: band, labeled ticks, its own tag.
+    // A one-direction reading's number is on its tag, so its tick is bare.
+    const fullCell = (col, cell, many) => {
+      const p = D.have[cell.fi];
+      const qs = ['a', 'b'].map(w => legAt(p, cell, w)).filter(Boolean);
+      const xs = qs.map(q => q.dx);
+      const lo = xs.length ? Math.min(...xs) : col.km, hi = xs.length ? Math.max(...xs) : col.km;
+      if (!inView(lo, hi)) return;
+      const color = colorOf(cell.avgFail, cell.avgWarn);
+      band(lo, hi, color, 0.13);
+      qs.forEach(q => legMark(q, cell.fi, col.i, !D.single, 1));
+      const v = fmtV(cell.avg);
+      const who = many ? `F${p.fiber}${D.single ? ((p.ta ? ' A' : ' B')) : ''} ` : '';
+      tags.push({ x: (xToPx(lo, r) + xToPx(hi, r)) / 2, color,
+                  full: `${who}${col.title}${v ? `  ${word} ${v}` : ''}${cell.avgFail ? '  FAIL' : ''}`,
+                  short: `${who}${v || col.title}`,
+                  go: () => D.goCell(cell.fi, D.single ? (p.ta ? 'a' : 'b') : 'avg', col.i) });
+    };
+    for (const col0 of D.cols) {
+      const col = { ...col0, cells: col0.cells.filter(c => shown.has(c.fi)) };
+      if (!col.cells.length) continue;
+      if (detail) {
+        col.cells.forEach(cell => fullCell(col, cell, shown.size > 1));
+        continue;
+      }
+      // The column as one: a band over its fibres' readings, their ticks,
+      // one tag.  The picked fibre is drawn in full on top.
+      let lo = Infinity, hi = -Infinity;
+      const legs = [];
+      for (const cell of col.cells) {
+        if (cell.fi === pickFi) continue;
+        for (const w of ['a', 'b']) {
+          const q = legAt(D.have[cell.fi], cell, w);
+          if (!q) continue;
+          if (q.dx < lo) lo = q.dx;
+          if (q.dx > hi) hi = q.dx;
+          if (allTicks || cell.avgFail) legs.push([q, cell.fi]);
+        }
+      }
+      if (lo > hi) lo = hi = col.km;           // no leg on screen: the column's own km
+      const s = drawerColumnSummary(col);
+      const color = colorOf(s.nFail > 0, s.nWarn > 0);
+      if (inView(lo, hi)) {
+        band(lo, hi, color, 0.09);
+        const dim = pickFi >= 0 ? 0.3 : 0.75;
+        legs.forEach(([q, fi]) => legMark(q, fi, col.i, false, dim));
+        const worst = fmtV(s.worst);
+        const count = s.nFail ? `  ${s.nFail}/${s.n} FAIL` : s.nWarn ? `  ${s.nWarn}/${s.n} warn` : '';
+        const wp = D.have[s.worstFi];
+        tags.push({ x: (xToPx(lo, r) + xToPx(hi, r)) / 2, color,
+                    full: `${col.title}${worst ? `  max ${worst}` : ''}${count}`,
+                    short: s.nFail ? `${s.nFail}/${s.n}` : (worst || col.title),
+                    go: () => D.goCell(s.worstFi, D.single && wp ? (wp.ta ? 'a' : 'b') : 'avg', col.i) });
+      }
+      const picked = col.cells.find(c => c.fi === pickFi);
+      if (picked) fullCell(col, picked, true);
+    }
+  }
+  // Tags last, over every band and tick, from the bottom of the chart up.
+  ctx.font = "600 12px 'Segoe UI', sans-serif";
+  const TAG_H = 18;
+  const placed = layoutDrawerTags(tags, s => ctx.measureText(s).width + 12, r.x + 2, r.x + r.w - 2);
+  placed.forEach((g, k) => {
+    const t = tags[k];
+    const y = r.y + r.h - 6 - (g.lane + 1) * (TAG_H + 3);
+    ctx.fillStyle = t.color;
+    if (g.text == null) {
+      ctx.fillRect(g.x0, y + TAG_H - 8, g.x1 - g.x0, 8);
+      gLabelHits.push({ x0: g.x0 - 2, x1: g.x1 + 2, y0: y + TAG_H - 10, y1: y + TAG_H + 2,
+                        go: t.go, t: null, e: null });
+      return;
+    }
+    ctx.fillRect(g.x0, y, g.x1 - g.x0, TAG_H);
+    ctx.fillStyle = t.color === DRAWER_COLOR.warn ? '#3d3300' : '#ffffff';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(g.text, (g.x0 + g.x1) / 2, y + TAG_H / 2 + 0.5);
+    gLabelHits.push({ x0: g.x0, x1: g.x1, y0: y, y1: y + TAG_H, go: t.go, t: null, e: null });
+  });
+  return covered;
+}
+
+// A fibre loaded one way among paired ones has no A+B table in either mode
+// (FastReporter builds none for it either), but it is not left out: its own
+// single-direction table sits under the A+B one, judged at the report's
+// single-direction gate, and the drawer marks it as it marks an A-only load.
+function appendOneDirGrid(singles, host) {
+  const traces = gTraces.filter(t => t.visible && singles.includes(t.fiber));
+  if (!traces.length) return;
+  const box = document.createElement('div');
+  box.className = 'onedir-box';
+  const cap = document.createElement('div');
+  cap.className = 'onedir-cap';
+  cap.textContent = `One direction only: F${[...new Set(traces.map(t => t.fiber))].join(', F')}`;
+  box.appendChild(cap);
+  host.appendChild(box);
+  renderFastReporterGrid(traces, box, document.createElement('div'), { oneDir: true });
+}
+
+// A click on a fibre's name in an A+B table picks that fibre: its traces
+// are drawn over the rest, which dim, and the drawer marks it in full
+// however many fibres are loaded.  A second click lets go.
+function gridPickFibers(tb, have) {
+  tb.addEventListener('click', (ev) => {
+    const td = ev.target.closest('td.fr-rowlab');
+    const tr = td && td.closest('tr[data-row]');
+    if (!tr) return;
+    const p = have[parseInt(tr.dataset.row, 10)];
+    if (!p) return;
+    const keys = [p.ta.key, p.tb.key];
+    gPickKey = keys.includes(gPickKey) ? null : (p.ta.visible ? p.ta.key : p.tb.key);
+    draw();
+  });
+}
+
+// Take the panel to one cell: row `fi`'s line for `which` ('a', 'b' or
+// 'avg'; the fibre's Average when that line is filtered away), column `col`.
+// `g` is the grid's {scroller, table, tb, descs, paintRows, topExtra?}; rows
+// carry data-row="<fi>-<which>" and loss cells data-col, in every table.
+// `topExtra()` is a pinned strip above the rows (the one-direction table's
+// statistics names).
+function gridGoCell(g, fi, which, col) {
+  const { scroller, table, tb, descs } = g;
+  let k = descs.findIndex(d => d[0] === fi && d[1] === which);
+  if (k < 0) k = descs.findIndex(d => d[0] === fi && d[1] === 'avg');
+  if (k < 0) k = descs.findIndex(d => d[0] === fi);
+  if (k < 0) return;
+  const headH = (table.tHead ? table.tHead.offsetHeight : 0) + (g.topExtra ? g.topExtra() : 0);
+  const rowTop = headH + k * FR_ROW_H;
+  const view = scroller.clientHeight - headH - pinnedFootH(table);
+  const winTop = scroller.scrollTop + headH, winBot = winTop + view;
+  if (rowTop < winTop || rowTop + FR_ROW_H > winBot) {
+    scroller.scrollTop = Math.max(0, rowTop - headH - Math.max(0, (view - FR_ROW_H) / 2));
+  }
+  g.paintRows(k);
+  const tr = tb.querySelector(`tr[data-row="${descs[k][0]}-${descs[k][1]}"]`);
+  const td = tr && tr.querySelector(`td[data-col="${col}"]`);
+  if (!td) return;
+  table.querySelectorAll('td.fr-hit').forEach(x => x.classList.remove('fr-hit', 'fading'));
+  const sr = scroller.getBoundingClientRect(), cr = td.getBoundingClientRect();
+  const leadW = tr.cells[0].offsetWidth;
+  const dxL = cr.left - (sr.left + leadW) - 8;
+  const dxR = cr.right - sr.right + 8;
+  if (dxL < 0) scroller.scrollLeft += dxL;
+  else if (dxR > 0) scroller.scrollLeft += dxR;
+  td.classList.add('fr-hit');
+  setTimeout(() => td.classList.add('fading'), 1500);
+  setTimeout(() => td.classList.remove('fr-hit', 'fading'), 2200);
+}
 function labelHit(px, py) {
   // Last drawn is on top, so search from the end.
   for (let i = gLabelHits.length - 1; i >= 0; i--) {
@@ -4045,16 +4381,18 @@ function activeGateDb() {
   if (gGateOverride != null) return gGateOverride;
   return reportGateDb();
 }
-// Nothing paired on screen: every loss shown is a single-direction reading
-// and the gate is the Unidir. splice loss row, not the bidirectional one.
-// Grading it at the bidir gate kept flagging with that row switched off
-// (Robert 2026-09-29).  It follows the TABLE, not the folders: with A and B
-// folders both set but only A traces added, the single-direction grid is
-// what renders and it was still graded at the bidir 0.160 (audit 2026-09-29,
-// F2 A->B -0.199 failing on a 1152-fibre job).  A fibre is paired exactly as the bidir
-// grids pair it (renderSuiteBidiGrid / renderFrBidiGrid): a visible trace in
-// each direction.  With no trace on screen the folders stand in, so the box
-// and label show the gate the first load will be judged at.
+// Nothing paired on screen: every loss shown is a single-direction reading,
+// a unidirectional job, graded as the Uni report grades it, at that report's
+// Flag threshold (Robert 2026-09-30: "use 0.250 for one-direction loads"),
+// the same gate its one-direction table carries.  Before that it was the
+// Splice Report's Unidir. splice loss row (0.200, Robert 2026-09-29).  It
+// follows the TABLE, not the folders: with A and B folders both set but only
+// A traces added, the single-direction grid is what renders and it was still
+// graded at the bidir 0.160 (audit 2026-09-29, F2 A->B -0.199 failing on a
+// 1152-fibre job).  A fibre is paired exactly as the bidir grids pair it
+// (renderSuiteBidiGrid / renderFrBidiGrid): a visible trace in each
+// direction.  With no trace on screen the folders stand in, so the box and
+// label show the gate the first load will be judged at.
 function oneDirOnly() {
   const visible = gTraces.filter(t => t.visible);
   if (visible.length) {
@@ -4074,8 +4412,7 @@ function oneDirOnly() {
 // The gate the report (or the OTDR Settings) sets, before the loss box's
 // override.
 function reportGateDb() {
-  if (gSourceReport === 'uni') return gThresholds.uni_bend;
-  if (oneDirOnly()) return gThresholds.single_dir;
+  if (gSourceReport === 'uni' || oneDirOnly()) return gThresholds.uni_bend;
   return gThresholds.reburn;
 }
 // The hub turns a detection OFF by sending the engine an unreachable
@@ -4090,7 +4427,7 @@ function gateLabel() {
   if (gGateOverride != null) return `overridden ${gGateOverride.toFixed(3)} dB`;
   // Opened on its own with no report on screen, the gates are the hub's
   // OTDR Settings.
-  const src = gSourceReport === 'uni' ? 'Uni report'
+  const src = (gSourceReport === 'uni' || oneDirOnly()) ? 'Uni report'
             : gSourceReport === 'sr'  ? 'Splice Report'
             : (gInfo && gInfo.gate_source === 'settings') ? 'OTDR Settings'
             : 'Splice Report';
@@ -4127,7 +4464,8 @@ function gateFor(reflective, leg) {
 // "failing cells only" empties it with the passing cells.
 function warnFor(reflective, leg) {
   if (flagsOff()) return null;
-  if (gSourceReport === 'uni') return null;
+  // A one-direction load is graded as the Uni report grades it: no Warning.
+  if (gSourceReport === 'uni' || oneDirOnly()) return null;
   if (!reflective && !leg && gGateOverride != null) return null;
   const T = gThresholds;
   const w = Number(reflective ? (leg ? T.connector_uni_warn : T.connector_warn)
@@ -4303,6 +4641,7 @@ function renderEventTable() {
   host.innerHTML = '';
   gGridGoTo = null;
   gTableExport = null;
+  gDrawerMarks = [];                 // the drawer waits for the mode's table
   suiteTableReset();
 
   syncGateUI();   // the gate follows what is on screen (see oneDirOnly)
@@ -4743,8 +5082,14 @@ function clusterColumns(traces, items, tolKm) {
 // FastReporter-style grid for 1–2 traces (a fiber's A/B, OR two fibers of a
 // duplicate pair): events matched by DISPLAYED km into columns; each trace is
 // its own row; Average / Minimum / Maximum (loss) across the traces below.
-function renderFastReporterGrid(traces, host, hint) {
+// `opts.oneDir`: these are the fibres loaded ONE way among paired ones,
+// shown under the A+B table (see appendOneDirGrid).  They are judged as the
+// report judges a single direction, at its single-direction gate, and the
+// A+B table keeps the event-number clicks and the Report's rows.
+function renderFastReporterGrid(traces, host, hint, opts = {}) {
   const TOL = columnTolKm(traces);
+  const overGate = opts.oneDir ? (v => clearsAt(v, gateFor(false, true))) : clearsGate;
+  const warnGate = warnFor(false, !!opts.oneDir);
   const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';
 
   // Collect every event tagged with its trace index, at its displayed km
@@ -4806,8 +5151,8 @@ function renderFastReporterGrid(traces, host, hint) {
     let cls = '';
     if (v != null && !isNaN(v)) {
       if (isBreak && !flagsOff()) cls = ' class="fr-brk"';
-      else if (clearsGate(v)) cls = ' class="fr-hi"';   // the REPORT's verdict
-      else if (clearsAt(v, warnFor(false, false))) cls = ' class="fr-warn"';
+      else if (overGate(v)) cls = ' class="fr-hi"';   // the REPORT's verdict
+      else if (clearsAt(v, warnGate)) cls = ' class="fr-warn"';
     }
     // Flagged means the report's own verdict: over the gate, or a break.
     const keep = (gFailCellsOnly && (cls === ' class="fr-hi"' || cls === ' class="fr-brk"'))
@@ -4883,12 +5228,30 @@ function renderFastReporterGrid(traces, host, hint) {
   // Statistics columns leave (the filter empties them anyway).  Event
   // numbers keep their full-table numbering so a column is findable.
   // "Show warning cells only" collapses the same way around the yellow cells.
-  const warnsGate = v => !clearsGate(v) && clearsAt(v, warnFor(false, false));
-  const keeps = v => (gFailCellsOnly && clearsGate(v)) || (gWarnCellsOnly && warnsGate(v));
+  const warnsGate = v => !overGate(v) && clearsAt(v, warnGate);
+  const keeps = v => (gFailCellsOnly && overGate(v)) || (gWarnCellsOnly && warnsGate(v));
   const collapse = cellFilterOn();
   const keepCol = cols.map(c => !collapse
     || traces.some((_t, ti) => keeps(evLoss(c.ev[ti]))));
   const showSec = gShowSections && !collapse;
+  // The drawer marks this table too, in either mode: a tick on each event a
+  // column holds and a tag with its loss, at the same verdicts as the cells
+  // (see drawPairing).  One row per trace, so a "fibre" here is a trace.
+  const marks = { mode: gAnalysisMode, single: true, goCell: () => {},
+    have: traces.map(t => ({ fiber: t.fiber, ta: t.dir === 'a' ? t : null, tb: t.dir === 'b' ? t : null })),
+    cols: cols.map((c, i) => {
+      const present = c.ev.filter(x => x);
+      const title = present.length > 0 && present.every(x => x.is_end) ? 'End' : `Event ${i + 1}`;
+      return { i, title, km: c.km, cells: keepCol[i]
+        ? c.ev.map((e, ti) => {
+          if (!e) return null;
+          const v = evLoss(e), fail = overGate(v), warn = !fail && clearsAt(v, warnGate);
+          const leg = { km: e.dist_km, loss: v, hollow: false, fail, warn };
+          return { fi: ti, avg: v, km: c.km, avgFail: fail, avgWarn: warn,
+                   legs: { a: traces[ti].dir === 'a' ? leg : null, b: traces[ti].dir === 'b' ? leg : null } };
+        }).filter(Boolean)
+        : [] };
+    }) };
 
   // ── Header: three rows (group / kind+distance / units) ──
   const LEAD = [['Identifiers', 'fr-rowlab'], ['P/F', ''], ['λ (nm)', ''], ['Dir.', '']];
@@ -4949,7 +5312,7 @@ function renderFastReporterGrid(traces, host, hint) {
   // the P/F column, and for "flagged rows", which at a whole cable is the
   // difference between reading the grid and scrolling it.  Arithmetic only, no
   // DOM, so it costs nothing next to the render it saves.
-  const rowFails = traces.map((_t, ti) => cols.some(c => clearsGate(evLoss(c.ev[ti]))));
+  const rowFails = traces.map((_t, ti) => cols.some(c => overGate(evLoss(c.ev[ti]))));
   const rowKept = traces.map((_t, ti) => cols.some(c => keeps(evLoss(c.ev[ti]))));
   const shown = traces.map((_t, i) => i)
     .filter(i => (!gFlaggedOnly || rowFails[i]) && (!collapse || rowKept[i]));
@@ -5019,7 +5382,7 @@ function renderFastReporterGrid(traces, host, hint) {
     });
     const pick = isPicked(t.key) ? ' class="fr-pick"' : '';
     return `<tr${pick} data-dir="${t.dir}" data-src="${t.src || t.dir}" `
-         + `data-fiber="${t.fiber}">${cells.join('')}</tr>`;
+         + `data-fiber="${t.fiber}" data-row="${ti}-${t.dir}">${cells.join('')}</tr>`;
   };
 
   // ── Minimum / Maximum / Average across the loaded traces ──
@@ -5105,7 +5468,7 @@ function renderFastReporterGrid(traces, host, hint) {
     + `<tfoot>${aggRows.join('')}</tfoot>`;
   const tb = table.querySelector('tbody');
   // Every row, for the Report: the body on screen is only a slice.
-  gTableExport = { table, headExtra: statNameRow, rows: () => shown.map(rowHtml) };
+  if (!opts.oneDir) gTableExport = { table, headExtra: statNameRow, rows: () => shown.map(rowHtml) };
   scroller.appendChild(table);
   host.appendChild(scroller);
 
@@ -5149,6 +5512,13 @@ function renderFastReporterGrid(traces, host, hint) {
   });
   fitColumns(table, shown.map(rowHtml), statNameRow);   // widths from every row
   paintRows();
+  // A click on the drawer's mark for a cell comes here (drawPairing).
+  marks.goCell = (ti, which, col) => gridGoCell({ scroller, table, tb, paintRows,
+    descs: shown.map(k => [k, traces[k].dir]),
+    topExtra: () => { const n = tb.querySelector('tr.fr-statnames'); return n ? n.offsetHeight : 0; } },
+    ti, which, col);
+  gDrawerMarks.push(marks);
+  draw();
 
   // Pin the three header rows.  The offsets are measured after the first paint
   // because the header's height depends on which event kinds are present; the
@@ -5190,7 +5560,7 @@ function renderFastReporterGrid(traces, host, hint) {
   // A click on an event number on the trace lands here: scroll the row into
   // the window (the body is virtual, so paint it first), then the cell into
   // view sideways, and mark it for a moment.
-  gGridGoTo = (t, e) => {
+  if (!opts.oneDir) gGridGoTo = (t, e) => {
     const ti = traces.indexOf(t);
     const k = shown.indexOf(ti);
     if (k < 0) return;                       // hidden by "flagged rows"
@@ -5531,6 +5901,26 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const collapse = cellFilterOn();
   const keepCol = cols.map(c => !collapse
     || have.some((_p, fi) => c.ev[fi] && ['a', 'b', 'avg'].some(w => cellKept(c.ev[fi], w))));
+  // FastReporter mode's drawer marks FR's pairing: these columns, these
+  // verdicts, FR's transplanted legs as hollow rings (see drawPairing).  In
+  // OTDR Suite mode this table only stands in for the report's, and the
+  // drawer keeps the files' own events.
+  let marks = null;
+  if (gAnalysisMode === 'fr') {
+    const drawerLeg = (x, w) => {
+      const leg = x.row[w];
+      if (!leg || leg.pos_m == null) return null;
+      return { km: rawKm(leg.pos_m), loss: leg.loss, hollow: !legOk(leg),
+               fail: cellFails(x, w), warn: cellWarns(x, w) };
+    };
+    marks = { mode: 'fr', have, goCell: () => {},
+      cols: cols.map((c, i) => ({ i, title: `Event ${i + 1}`, km: c.km, cells: keepCol[i]
+        ? c.ev.map((x, fi) => x && { fi, avg: x.row.loss, km: c.km,
+                                     avgFail: cellFails(x, 'avg'), avgWarn: cellWarns(x, 'avg'),
+                                     legs: { a: drawerLeg(x, 'a'), b: drawerLeg(x, 'b') } })
+               .filter(Boolean)
+        : [] })) };
+  }
   const showSec = gShowSections && !collapse;
 
   // ── Header: three rows (group / kind+distance / units) ──
@@ -5613,8 +6003,9 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     // The picked row is marked: a direction's row for its own trace, the
     // Average row when both of its fibre's traces are the pick.
     const pk = which === 'avg' ? samePick([p.ta.key, p.tb.key]) : gPickKey === t.key;
-    const attrs = which === 'avg' ? ` class="fr-avg${pk ? ' fr-pick' : ''}" data-avg="1" data-fiber="${p.fiber}"`
-      : `${pk ? ' class="fr-pick"' : ''} data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${p.fiber}"`;
+    const attrs = (which === 'avg' ? ` class="fr-avg${pk ? ' fr-pick' : ''}" data-avg="1" data-fiber="${p.fiber}"`
+      : `${pk ? ' class="fr-pick"' : ''} data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${p.fiber}"`)
+      + ` data-row="${fi}-${which}"`;           // the drawer's way in (gridGoCell)
     return `<tr${attrs}>${cells.join('')}</tr>`;
   };
 
@@ -5702,6 +6093,15 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   });
   fitColumns(table, descs.map(rowHtml));   // widths from every row
   paintRows();
+  // A click on the drawer's mark for a cell comes here (drawPairing), and a
+  // click on a fibre's name picks it on the chart.
+  if (marks) {
+    marks.goCell = (fi, which, col) => gridGoCell({ scroller, table, tb, descs, paintRows }, fi, which, col);
+    gDrawerMarks.push(marks);
+  }
+  gridPickFibers(tb, have);
+  appendOneDirGrid(singles, host);
+  draw();
   requestAnimationFrame(() => {
     const hrows = table.tHead ? [...table.tHead.rows] : [];
     let off = 0;
@@ -5956,15 +6356,37 @@ function renderSuiteBidiGrid(traces, host, hint) {
     if (g.a != null && g.b != null) pairs.push({ fiber, ta: traces[g.a], tb: traces[g.b] });
     else singles.push(fiber);
   }
-  if (!pairs.length) return false;
+  // Every fibre from one direction only (Robert 2026-09-30: "it has to work
+  // for one direction OR bidi, equally"): that direction's own report, the
+  // Unidirectional one, supplies the table, in that direction's frame.
+  let oneDir = null;
+  if (!pairs.length) {
+    const dirs = new Set(traces.map(t => t.dir));
+    if (dirs.size !== 1) return false;
+    oneDir = [...dirs][0];
+    if (oneDir !== 'a' && oneDir !== 'b') return false;
+    for (const [fiber, g] of byFiber) {
+      pairs.push({ fiber, ta: oneDir === 'a' ? traces[g.a] : null,
+                          tb: oneDir === 'b' ? traces[g.b] : null });
+    }
+    singles.length = 0;
+  }
   const seq = ++gSuiteTableSeq;
-  hint.textContent = `OTDR Suite table: reading ${pairs.length} fibre pair${pairs.length === 1 ? '' : 's'}…`;
-  // No report table: the files' own tables in the FastReporter layout stand
-  // in, as before (the caption no longer says so, Robert 2026-09-30).
-  const standIn = () => {
-    if (!renderFrBidiGrid(traces, host, hint)) renderFastReporterGrid(traces, host, hint);
+  hint.textContent = oneDir
+    ? `OTDR Suite table: reading ${pairs.length} fibre${pairs.length === 1 ? '' : 's'} from one direction…`
+    : `OTDR Suite table: reading ${pairs.length} fibre pair${pairs.length === 1 ? '' : 's'}…`;
+  // No report table: say so and why.  FastReporter's table never stands in
+  // for it (Robert 2026-09-30: "Error, no FR stand-in"), so a tech can never
+  // read FR's pairing as OTDR Suite's; FastReporter mode shows that table.
+  // The drawer keeps the files' own event numbers (no marks were set).
+  const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const noTable = (why) => {
+    host.innerHTML = `<div class="suite-err" role="alert"><b>OTDR Suite table could not be built.</b> `
+      + `${esc(why)}. The traces and their own events still show above; `
+      + `switch to FastReporter mode for FastReporter's table.</div>`;
+    hint.textContent = 'OTDR Suite table unavailable';
   };
-  const ask = () => fetch(`/api/suite_table?fibers=${pairs.map(p => p.fiber).join(',')}`)
+  const ask = () => fetch(`/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`)
     .then(r => r.json())
     .then(res => {
       if (seq !== gSuiteTableSeq) return;
@@ -5977,14 +6399,14 @@ function renderSuiteBidiGrid(traces, host, hint) {
       }
       const tables = res.tables || {};
       if (res.error || !pairs.some(p => Array.isArray(tables[String(p.fiber)]))) {
-        standIn();
+        noTable(res.error || 'The report has no table for these fibers');
         return;
       }
       paintSuiteBidiGrid(pairs, singles, res, host, hint);
     })
     .catch(e => {
       if (seq !== gSuiteTableSeq) return;
-      standIn();
+      noTable(`The Viewer could not reach the report (${(e && e.message) || 'request failed'})`);
     });
   ask();
   return true;
@@ -6029,6 +6451,11 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const rawKm = km => Math.round(km * 1e4) / 1e4;
   // A stored reading; a leg the report measured itself is never judged.
   const legOk = leg => !!leg && !leg.grey && leg.loss != null;
+  // A one-direction table (the Unidirectional report's): one row per fibre,
+  // judged by that report's flag and its own loss gate; no Average row.
+  const oneDir = (res.direction === 'a' || res.direction === 'b') ? res.direction : null;
+  const LEGS = oneDir ? [oneDir] : ['a', 'b', 'avg'];
+  const oneGate = oneDir && res.gate_db != null ? Number(res.gate_db) : null;
 
   // ── Verdicts ──
   // The report's flag first.  A loss is also judged at the report's gates,
@@ -6040,19 +6467,23 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     }
     const leg = x[which];
     if (!leg || gainerHidden(leg.loss)) return false;
+    if (oneDir) {
+      return !!leg.flag || (!c.isEnd && !x.reflective && oneGate != null
+                            && legOk(leg) && clearsAt(leg.loss, oneGate));
+    }
     return !!leg.flag
         || (!c.isEnd && legOk(leg) && clearsAt(leg.loss, gateFor(!!x.reflective, true)));
   };
   const reflFlagged = (x, which) => which !== 'avg' && !!(x[which] && x[which].flag_refl);
   const cellFails = (c, x, which) => lossFails(c, x, which) || reflFlagged(x, which);
   const lossWarns = (c, x, which) => {
-    if (c.isEnd || lossFails(c, x, which)) return false;
+    if (oneDir || c.isEnd || lossFails(c, x, which)) return false;
     if (which === 'avg') return clearsAt(x.loss, warnFor(!!x.reflective, false));
     const leg = x[which];
     return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, warnFor(!!x.reflective, true));
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c, c.ev[fi], which));
-  const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));
+  const rowFails = have.map((_p, fi) => LEGS.some(w => legFails(fi, w)));
   // What the cell filters keep of a loss (the boss, 2026-09-29: "we only
   // need to see if it's failing Bidi Average"): the Average row's verdict
   // alone, never a direction at the single-direction gate.  A direction
@@ -6065,6 +6496,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // the report's own per-direction flag, mid-span the one-direction gate.
   const lossKept = (c, x, which) => which === 'avg'
     ? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))
+    : oneDir ? gFailCellsOnly && lossFails(c, x, which)
     : gFailCellsOnly && (x.reflective ? lossFails(c, x, which)
                                       : !!(x[which] && x[which].flag && !gainerHidden(x[which].loss)));
   const cellKept = (c, x, which) => lossKept(c, x, which) || (gFailCellsOnly && reflFlagged(x, which));
@@ -6074,7 +6506,24 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // kept leaves; each fibre that stays keeps its Average row.
   const collapse = cellFilterOn();
   const keepCol = cols.map(c => !collapse
-    || have.some((_p, fi) => c.ev[fi] && ['a', 'b', 'avg'].some(w => cellKept(c, c.ev[fi], w))));
+    || have.some((_p, fi) => c.ev[fi] && LEGS.some(w => cellKept(c, c.ev[fi], w))));
+  // The drawer marks these columns with these verdicts (see drawPairing).
+  // A gray leg the report gave no km of its own sits at the column's cell.
+  const drawerLeg = (c, x, w) => {
+    const leg = x[w];
+    if (!leg || (leg.km == null && !leg.grey)) return null;
+    return { km: leg.km, loss: leg.loss, hollow: !!leg.grey,
+             fail: cellFails(c, x, w), warn: lossWarns(c, x, w) };
+  };
+  const marks = { mode: 'suite', single: !!oneDir, have, goCell: () => {},
+    cols: cols.map((c, i) => ({ i, title: c.title, km: c.viewKm, cells: keepCol[i]
+      ? c.ev.map((x, fi) => x && { fi, avg: x.loss, km: x.km != null ? x.km + launchA : c.viewKm,
+                                   // A one-direction table has no Average: its tag carries that
+                                   // direction's own verdict, as its one row does.
+                                   avgFail: lossFails(c, x, oneDir || 'avg'), avgWarn: lossWarns(c, x, oneDir || 'avg'),
+                                   legs: { a: drawerLeg(c, x, 'a'), b: drawerLeg(c, x, 'b') } })
+             .filter(Boolean)
+      : [] })) };
 
   // What the report said about a cell, for its tooltip: the row's own
   // reason first (an end connector's rows are judged one by one), then the
@@ -6123,10 +6572,10 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   });
 
   const shown = have.map((_p, i) => i).filter(i => (!gFlaggedOnly || rowFails[i])
-    && (!collapse || ['a', 'b', 'avg'].some(w => legKept(i, w))));
-  const descs = shown.flatMap(fi => ['a', 'b', 'avg']
-    .filter(w => (!collapse || w === 'avg' || legKept(fi, w))
-              && (collapse || !gAvgOnly || w === 'avg')).map(w => [fi, w]));
+    && (!collapse || LEGS.some(w => legKept(i, w))));
+  const descs = shown.flatMap(fi => LEGS
+    .filter(w => oneDir || ((!collapse || w === 'avg' || legKept(fi, w))
+              && (collapse || !gAvgOnly || w === 'avg'))).map(w => [fi, w]));
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
@@ -6163,8 +6612,9 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     // The picked row is marked: a direction's row for its own trace, the
     // Average row when both of its fibre's traces are the pick.
     const pk = which === 'avg' ? samePick([p.ta.key, p.tb.key]) : gPickKey === t.key;
-    const attrs = which === 'avg' ? ` class="fr-avg${pk ? ' fr-pick' : ''}" data-avg="1" data-fiber="${p.fiber}"`
-      : `${pk ? ' class="fr-pick"' : ''} data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${p.fiber}"`;
+    const attrs = (which === 'avg' ? ` class="fr-avg${pk ? ' fr-pick' : ''}" data-avg="1" data-fiber="${p.fiber}"`
+      : `${pk ? ' class="fr-pick"' : ''} data-dir="${t.dir}" data-src="${t.src || t.dir}" data-fiber="${p.fiber}"`)
+      + ` data-row="${fi}-${which}"`;           // the drawer's way in (gridGoCell)
     return `<tr${attrs}>${cells.join('')}</tr>`;
   };
 
@@ -6189,7 +6639,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const NCELL = LEAD.length + kept.length * 2;
   // Said after the caption, not inside it, so it reads right whichever
   // wording the caption has.  With a cell filter on, the filter decides.
-  if (gAvgOnly && !cellFilterOn())
+  if (gAvgOnly && !cellFilterOn() && !oneDir)
     hint.textContent = [hint.textContent, 'averages only'].filter(Boolean).join(' · ');
   // ── Minimum / Maximum / Average down the column, over the fibres'
   // AVERAGE rows (every fibre loaded, not just the rows on screen).
@@ -6247,6 +6697,15 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   });
   fitColumns(table, descs.map(rowHtml));   // widths from every row
   paintRows();
+  // A click on the drawer's mark for a cell comes here (drawPairing), and a
+  // click on a fibre's name picks it on the chart.
+  if (marks) {
+    marks.goCell = (fi, which, col) => gridGoCell({ scroller, table, tb, descs, paintRows }, fi, which, col);
+    gDrawerMarks.push(marks);
+  }
+  gridPickFibers(tb, have);
+  appendOneDirGrid(singles, host);
+  draw();
   requestAnimationFrame(() => {
     const hrows = table.tHead ? [...table.tHead.rows] : [];
     let off = 0;
@@ -7872,7 +8331,10 @@ window.addEventListener('mouseup', (ev) => {
     const c = gLabelClick; gLabelClick = null;
     const still = ev.target === canvas
       && Math.abs(ev.offsetX - c.x) <= 3 && Math.abs(ev.offsetY - c.y) <= 3;
-    if (still && gGridGoTo) gGridGoTo(c.hit.t, c.hit.e);
+    // The drawer's marks name their own cell; a file's event number is found
+    // by its km in the table on screen.
+    if (still && c.hit.go) c.hit.go();
+    else if (still && gGridGoTo) gGridGoTo(c.hit.t, c.hit.e);
     return;
   }
   if (gTraceClick) {
@@ -7913,7 +8375,7 @@ canvas.addEventListener('dblclick', () => { if (!gMarkerMode) fit(); });
 canvas.addEventListener('contextmenu', (ev) => {
   if (!gShowEvents) return;
   const lh = labelHit(ev.offsetX, ev.offsetY);
-  if (!lh) return;
+  if (!lh || !lh.t) return;          // a tag or a filled-in leg is no event
   ev.preventDefault();
   gLabelClick = null;
   showSpanMenu(ev.clientX, ev.clientY, lh.t.dir, lh.e.dist_km, lh.t.fiber, lh.t.src || lh.t.dir);

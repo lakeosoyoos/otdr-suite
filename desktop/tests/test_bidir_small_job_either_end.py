@@ -11,6 +11,10 @@ the fibres (under 80), so the 20-fibre bar stays but counts fibres, not one
 end's events.  With it the 24-fibre run matched the full 1,152-fibre cable
 cell for cell.  Jobs of 80+ fibres never reach the branch.
 
+Robert 2026-09-30 ("we need it to work no matter how many traces we drop
+in"): the bar is half the fibres loaded, capped at those 20.  A 20-fibre job
+needed all 20 and found no closure on a 55 km route.
+
 Engine tests run in a clean subprocess (3-engine sor_reader isolation).
 """
 import subprocess
@@ -68,17 +72,52 @@ def test_24_fibres_find_a_closure_seen_by_21_from_either_end():
     """)
 
 
-def test_either_end_still_needs_twenty_fibres():
-    """The bar is unchanged: 21 fibres from either end on a 24-fibre job,
-    but cut B's share so only 19 fibres see it and it stays out."""
-    _run("""
+def _keep_only(fibres_a, fibres_b):
+    return f"""
     fa, fb = job(24)
-    for f in (20, 21):
-        fb[f]['events'] = [e for e in fb[f]['events']
-                           if abs(e['dist_km'] - (SPAN - 10.0)) > 0.1]
+    for f in fa:
+        if f not in {fibres_a!r}:
+            fa[f]['events'] = [e for e in fa[f]['events']
+                               if abs(e['dist_km'] - 10.0) > 0.1]
+        if f not in {fibres_b!r}:
+            fb[f]['events'] = [e for e in fb[f]['events']
+                               if abs(e['dist_km'] - (SPAN - 10.0)) > 0.1]
+    cand, _ = E.discover_splices(fa, return_subgate=True, fibers_b=fb)
+    got = sorted(round(c['position_km']) for c in cand)
+    """
+
+
+def test_either_end_needs_half_the_fibres_loaded():
+    """Robert 2026-09-30 (the Viewer on any number of traces): the bar on a
+    job under 80 is half the fibres loaded, capped at 20.  20 was every
+    fibre of a 20-fibre job, and a 55 km route loaded 20 fibres at a time
+    found no closure at all.  On 24 fibres: 12 from either end is a
+    closure, 11 is not."""
+    _run(_keep_only(set(range(1, 9)), set(range(10, 14))) + """
+    assert got == [10, 25], got
+    print('OK')
+    """)
+    _run(_keep_only(set(range(1, 9)), set(range(10, 13))) + """
+    assert got == [25], got
+    print('OK')
+    """)
+
+
+def test_seventy_nine_fibre_job_still_needs_twenty():
+    """Half of 79 is over 20: the bar stays MIN_POP_SPLICE, as before."""
+    _run("""
+    fa, fb = job(79)
+    for f in fa:
+        if f > 19:
+            fb[f]['events'] = [e for e in fb[f]['events']
+                               if abs(e['dist_km'] - (SPAN - 10.0)) > 0.1]
     cand, _ = E.discover_splices(fa, return_subgate=True, fibers_b=fb)
     got = sorted(round(c['position_km']) for c in cand)
     assert got == [25], got
+    fb[20]['events'].append(ev(SPAN - 10.0))
+    cand, _ = E.discover_splices(fa, return_subgate=True, fibers_b=fb)
+    got = sorted(round(c['position_km']) for c in cand)
+    assert got == [10, 25], got
     print('OK')
     """)
 
