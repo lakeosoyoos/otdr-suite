@@ -35,7 +35,9 @@ def _github(L, monkeypatch, *, delay=0.0, broken=None, poisoned=None):
     """A fake GitHub serving a newer signed manifest and every engine file.
     `broken` fails one file's fetch, `poisoned` serves wrong bytes for one."""
     files = {rel: hashlib.sha256(_body(rel)).hexdigest() for rel in L.ENGINE_FILES}
-    body = json.dumps({"version": 9_999_999, "commit": COMMIT, "files": files}).encode()
+    # OTDR Suite App: the launcher takes only a manifest for its own channel.
+    body = json.dumps({"version": 9_999_999, "commit": COMMIT, "files": files,
+                       "channel": L.UPDATE_CHANNEL}).encode()
     state = {"urls": [], "now": 0, "peak": 0}
     lock = threading.Lock()
 
@@ -113,7 +115,9 @@ def test_a_failure_does_not_wait_for_downloads_in_flight(tmp_path, monkeypatch):
     left to finish on their own and thrown away."""
     L = _load_launcher()
     files = {rel: hashlib.sha256(_body(rel)).hexdigest() for rel in L.ENGINE_FILES}
-    body = json.dumps({"version": 9_999_999, "commit": COMMIT, "files": files}).encode()
+    # OTDR Suite App: the launcher takes only a manifest for its own channel.
+    body = json.dumps({"version": 9_999_999, "commit": COMMIT, "files": files,
+                       "channel": L.UPDATE_CHANNEL}).encode()
     first = L.ENGINE_FILES[0]                 # submitted first, so it starts at once
 
     def fetch(url, timeout=15):
