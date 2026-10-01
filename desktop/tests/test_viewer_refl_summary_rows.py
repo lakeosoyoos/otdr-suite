@@ -31,7 +31,8 @@ def test_one_direction_summary_rows_carry_reflectance():
     agg = _agg("renderFastReporterGrid")
     assert ("const rs = c.ev.map(e => e ? e.reflection : null)"
             ".filter(r => r != null && !isNaN(r) && r !== 0);") in agg
-    assert "`<td>${cellText(fmtR(rs.length ? fn(rs) : null))}</td>`" in agg
+    assert "const r = rs.length ? fn(rs) : null;" in agg
+    assert "`<td${rOwn}>${cellText(fmtR(r))}</td>`" in agg
     assert "`<td>${cellText('-')}</td>`" not in agg
 
 
@@ -39,7 +40,8 @@ def test_fr_bidi_summary_rows_take_reflectance_from_both_directions():
     agg = _agg("renderFrBidiGrid")
     assert "flatMap(x => ['a', 'b'].map(w => x.row[w]))" in agg
     assert ".filter(leg => leg && !leg.synthetic).map(leg => leg.refl).filter(num);" in agg
-    assert "`<td>${cellText(rs.length ? fmtR(fn(rs)) : '---')}</td>`" in agg
+    assert "const r = rs.length ? fn(rs) : null;" in agg
+    assert "`<td${aggOwnAttrs(have, reflFi, reflW, i, true)}>${cellText(rs.length ? fmtR(r) : '---')}</td>`" in agg
     assert "+ '<td></td>');" not in agg
 
 
@@ -47,7 +49,8 @@ def test_suite_bidi_summary_rows_take_reflectance_from_both_directions():
     agg = _agg("renderSuiteBidiGrid")
     assert "const rs = xs.flatMap(x => [x.a, x.b]).filter(leg => leg && !leg.grey)" in agg
     assert ".map(leg => leg.refl).filter(num);" in agg
-    assert "`<td>${cellText(rs.length ? fmtR(fn(rs)) : '---')}</td>`" in agg
+    assert "const r = rs.length ? fn(rs) : null;" in agg
+    assert "`<td${aggOwnAttrs(have, reflFi, reflW, i, true)}>${cellText(rs.length ? fmtR(r) : '---')}</td>`" in agg
     assert "+ '<td></td>');" not in agg
 
 
@@ -55,4 +58,4 @@ def test_the_same_statistic_as_the_loss_cell():
     # Minimum / Maximum / Average of reflectance uses the row's own `fn`, so the
     # Refl. cell can never say a different statistic than the Loss beside it.
     for name in ("renderFastReporterGrid", "renderFrBidiGrid", "renderSuiteBidiGrid"):
-        assert "fn(rs)" in _agg(name), name
+        assert "const r = rs.length ? fn(rs) : null;" in _agg(name), name

@@ -4627,8 +4627,10 @@ function appendOneDirGrid(singles, host) {
 // `g` is the grid's {scroller, table, tb, descs, paintRows, topExtra?}; rows
 // carry data-row="<fi>-<which>" and loss cells data-col, in every table.
 // `topExtra()` is a pinned strip above the rows (the one-direction table's
-// statistics names).
-function gridGoCell(g, fi, which, col) {
+// statistics names).  `opts.centre` puts the row in the middle of the window
+// even when it is already on screen; `opts.refl` flashes the Refl. cell beside
+// the loss cell (it follows it in every table) when the row is `which`'s own.
+function gridGoCell(g, fi, which, col, opts = {}) {
   const { scroller, table, tb, descs } = g;
   let k = descs.findIndex(d => d[0] === fi && d[1] === which);
   if (k < 0) k = descs.findIndex(d => d[0] === fi && d[1] === 'avg');
@@ -4638,12 +4640,13 @@ function gridGoCell(g, fi, which, col) {
   const rowTop = headH + k * FR_ROW_H;
   const view = scroller.clientHeight - headH - pinnedFootH(table);
   const winTop = scroller.scrollTop + headH, winBot = winTop + view;
-  if (rowTop < winTop || rowTop + FR_ROW_H > winBot) {
+  if (opts.centre || rowTop < winTop || rowTop + FR_ROW_H > winBot) {
     scroller.scrollTop = Math.max(0, rowTop - headH - Math.max(0, (view - FR_ROW_H) / 2));
   }
   g.paintRows(k);
   const tr = tb.querySelector(`tr[data-row="${descs[k][0]}-${descs[k][1]}"]`);
-  const td = tr && tr.querySelector(`td[data-col="${col}"]`);
+  const loss = tr && tr.querySelector(`td[data-col="${col}"]`);
+  const td = (opts.refl && descs[k][1] === which && loss && loss.nextElementSibling) || loss;
   if (!td) return;
   table.querySelectorAll('td.fr-hit').forEach(x => x.classList.remove('fr-hit', 'fading'));
   const sr = scroller.getBoundingClientRect(), cr = td.getBoundingClientRect();
@@ -4655,6 +4658,41 @@ function gridGoCell(g, fi, which, col) {
   td.classList.add('fr-hit');
   setTimeout(() => td.classList.add('fading'), 1500);
   setTimeout(() => td.classList.remove('fr-hit', 'fading'), 2200);
+}
+// The two A+B tables' Minimum and Maximum cells, like the one-direction
+// table's (#274): the number is one fibre's, so a click picks that row (the
+// Average row for a loss, the direction's row for a reflectance), centres it,
+// flashes the cell it came from and draws its trace bold.  Again lets go.
+// `fi` is the fibre's index in `have`; -1 (nobody, or a blank cell) gives none.
+function aggOwnAttrs(have, fi, which, col, refl) {
+  if (fi < 0) return '';
+  const p = have[fi];
+  const dir = which === 'a' ? ' A→B' : which === 'b' ? ' B→A' : '';
+  return ` class="fr-own" data-own-fi="${fi}" data-own-w="${which}" data-own-col="${col}"`
+       + (refl ? ' data-own-refl="1"' : '') + ` title="F${p.fiber}${dir}: click to find it"`;
+}
+function wireAggJump(g, have) {
+  const footer = g.table.tFoot;
+  if (!footer) return;
+  footer.addEventListener('click', (ev) => {
+    const td = ev.target.closest('td.fr-own');
+    if (!td) return;
+    const fi = +td.dataset.ownFi, which = td.dataset.ownW, p = have[fi];
+    if (!p) return;
+    const keys = (which === 'avg' ? [p.ta, p.tb] : [which === 'b' ? p.tb : p.ta])
+      .filter(Boolean).map(t => t.key);
+    const dir = which === 'a' ? ' A→B' : which === 'b' ? ' B→A' : '';
+    if (samePick(keys)) { gPickKey = null; g.paintRows(); draw(); setReadout(''); return; }
+    gPickKey = keys.length === 1 ? keys[0] : keys;
+    if (!g.descs.some(d => d[0] === fi)) {   // its rows are filtered out of the grid
+      g.paintRows(); draw();
+      setReadout(`F${p.fiber}${dir} holds it. Its row is hidden by "Show only flagged rows"`);
+      return;
+    }
+    gridGoCell(g, fi, which, +td.dataset.ownCol, { centre: true, refl: !!td.dataset.ownRefl });
+    draw();                                  // bold above, the rest dimmed
+    setReadout(`F${p.fiber}${dir} holds it. Click the cell again to let go`);
+  });
 }
 function labelHit(px, py) {
   // Last drawn is on top, so search from the end.
@@ -5872,8 +5910,16 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
       // (fmtR prints a 0 as "-", so a 0 is no reading here either).  Plain:
       // the reflectance verdict is per trace, never on a summary.
       const rs = c.ev.map(e => e ? e.reflection : null).filter(r => r != null && !isNaN(r) && r !== 0);
+      const r = rs.length ? fn(rs) : null;
+      const rOwner = (!gated && r != null && !cellFilterOn())
+        ? c.ev.findIndex(e => e && e.reflection != null && fmtR(e.reflection) === fmtR(r))
+        : -1;
+      const rOwn = rOwner >= 0
+        ? ` class="fr-own" data-ti="${rOwner}" data-own-col="${i}" data-own-refl="1"`
+          + ` title="F${traces[rOwner].fiber} ${arrow(traces[rOwner])}: click to find it"`
+        : '';
       cells.push((gated ? lossCell(v, false) : `<td${own}>${aggText(fmt(v))}</td>`)
-               + `<td>${cellText(fmtR(rs.length ? fn(rs) : null))}</td>`);
+               + `<td${rOwn}>${cellText(fmtR(r))}</td>`);
       if (showSec && i < cols.length - 1) {
         const ss = traces.map((_t, ti) => section(ti, i)).filter(Boolean);
         const pick = k => ss.map(s => s[k]).filter(v => v != null && !isNaN(v));
@@ -6081,7 +6127,9 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     paintRows(k);                      // the body is virtual: paint the slice first
     const sel = `tr[data-dir="${t.dir}"][data-fiber="${t.fiber}"][data-src="${t.src || t.dir}"]`;
     const tr = tb.querySelector(sel);
-    const cell = tr && tr.querySelector(`td[data-col="${ci}"]`);
+    const loss = tr && tr.querySelector(`td[data-col="${ci}"]`);
+    // a reflectance figure flashes the Refl. cell, which follows the loss cell
+    const cell = (td.dataset.ownRefl && loss && loss.nextElementSibling) || loss;
     if (cell) {
       table.querySelectorAll('td.fr-hit').forEach(x => x.classList.remove('fr-hit', 'fading'));
       const sr = scroller.getBoundingClientRect(), cr = cell.getBoundingClientRect();
@@ -6497,9 +6545,26 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       // measured legs only, not a transplanted (grey) one.
       const rs = c.ev.filter(x => x).flatMap(x => ['a', 'b'].map(w => x.row[w]))
         .filter(leg => leg && !leg.synthetic).map(leg => leg.refl).filter(num);
+      const r = rs.length ? fn(rs) : null;
+      // Minimum and Maximum name the fibre that holds them (aggOwnAttrs),
+      // matched on the PRINTED figure, first fibre listed on a tie; only
+      // where the cell prints a number.
+      const shows = !cellFilterOn() || (gFailCellsOnly && colFails) || (gWarnCellsOnly && colWarns);
+      const lossFi = (gated || v == null || !shows) ? -1
+        : c.ev.findIndex(x => x && num(x.row.loss) && fmt(x.row.loss) === fmt(v));
+      let reflFi = -1, reflW = 'a';
+      if (!gated && r != null && !cellFilterOn()) {
+        reflFi = c.ev.findIndex(x => x && ['a', 'b'].some(w => {
+          const leg = x.row[w];
+          if (!leg || leg.synthetic || !num(leg.refl) || fmtR(leg.refl) !== fmtR(r)) return false;
+          reflW = w;
+          return true;
+        }));
+      }
       cells.push((c.mixed ? '<td></td>' : '')
-               + (gated ? lossCell(v, false, '', g, warnFor(refl, false)) : `<td>${txt(fmt(v))}</td>`)
-               + `<td>${cellText(rs.length ? fmtR(fn(rs)) : '---')}</td>`);
+               + (gated ? lossCell(v, false, '', g, warnFor(refl, false))
+                        : `<td${aggOwnAttrs(have, lossFi, 'avg', i, false)}>${txt(fmt(v))}</td>`)
+               + `<td${aggOwnAttrs(have, reflFi, reflW, i, true)}>${cellText(rs.length ? fmtR(r) : '---')}</td>`);
       if (showSec && i < cols.length - 1) {
         const ss = have.map((_p, fi) => secOf(fi, i)).filter(Boolean);
         const pick = k => ss.map(x => x[k]).filter(num);
@@ -6551,6 +6616,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     marks.goCell = (fi, which, col) => gridGoCell({ scroller, table, tb, descs, paintRows }, fi, which, col);
     gDrawerMarks.push(marks);
   }
+  wireAggJump({ scroller, table, tb, descs, paintRows }, have);   // Minimum / Maximum -> its row
   appendOneDirGrid(singles, host);
   draw();
   requestAnimationFrame(() => {
@@ -7131,8 +7197,24 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
       // measured legs only, not a transplanted (grey) one.
       const rs = xs.flatMap(x => [x.a, x.b]).filter(leg => leg && !leg.grey)
         .map(leg => leg.refl).filter(num);
-      cells.push((cellFilterOn() && !keep ? '<td></td>' : `<td${cls}>${fmt(v)}</td>`)
-               + `<td>${cellText(rs.length ? fmtR(fn(rs)) : '---')}</td>`);
+      const r = rs.length ? fn(rs) : null;
+      // Minimum and Maximum name the fibre that holds them (aggOwnAttrs),
+      // matched on the PRINTED figure, first fibre listed on a tie; only
+      // where the cell prints a number.
+      const lossFi = (gated || v == null || (cellFilterOn() && !keep)) ? -1
+        : c.ev.findIndex(x => x && num(x.loss) && fmt(x.loss) === fmt(v));
+      let reflFi = -1, reflW = 'a';
+      if (!gated && r != null && !cellFilterOn()) {
+        reflFi = c.ev.findIndex(x => x && ['a', 'b'].some(w => {
+          const leg = x[w];
+          if (!leg || leg.grey || !num(leg.refl) || fmtR(leg.refl) !== fmtR(r)) return false;
+          reflW = w;
+          return true;
+        }));
+      }
+      cells.push((cellFilterOn() && !keep ? '<td></td>'
+                  : `<td${aggOwnAttrs(have, lossFi, 'avg', i, false) || cls}>${fmt(v)}</td>`)
+               + `<td${aggOwnAttrs(have, reflFi, reflW, i, true)}>${cellText(rs.length ? fmtR(r) : '---')}</td>`);
     });
     return `<tr class="fr-agg">${cells.join('')}</tr>`;
   };
@@ -7177,6 +7259,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     marks.goCell = (fi, which, col) => gridGoCell({ scroller, table, tb, descs, paintRows }, fi, which, col);
     gDrawerMarks.push(marks);
   }
+  wireAggJump({ scroller, table, tb, descs, paintRows }, have);   // Minimum / Maximum -> its row
   appendOneDirGrid(singles, host);
   draw();
   requestAnimationFrame(() => {
