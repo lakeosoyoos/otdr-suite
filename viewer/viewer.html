@@ -428,7 +428,7 @@
   #sel-dlg .btns button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
   #sel-dlg .btns button:disabled { opacity: .45; cursor: default; }
 
-  /* Report: the chart and the event table as a PDF or an Excel workbook. */
+  /* Report: the event table, then a page per fiber, as a PDF or an Excel workbook. */
   #report-dlg-bg { position: fixed; inset: 0; z-index: 50; background: rgba(20,40,70,.35); }
   #report-dlg {
     position: fixed; z-index: 51; left: 50%; top: 50%; transform: translate(-50%,-50%);
@@ -740,7 +740,7 @@
   </div>
 
   <div class="group">
-    <button id="btn-report" title="Summary Report: the chart and the event table, then a page per fibre, as a PDF or an Excel workbook">Summary Report…</button>
+    <button id="btn-report" title="Summary Report: the event table, then a page per fiber, as a PDF or an Excel workbook">Summary Report…</button>
   </div>
 </div>
 <div id="toolbar-resizer" title="Drag up to hide the settings and toggles, down to show them; double-click to toggle"></div>
@@ -7962,23 +7962,22 @@ async function undoLastRename() {
   }
 }
 
-// ─── Summary Report: the chart and the event panel, as a PDF or an Excel workbook
+// ─── Summary Report: the event panel, then a page per fibre, as a PDF or an Excel workbook
 // Robert, 2026-09-28: "create a report that shows the traces and the event
 // panel from viewer ... an option to do it in pdf or excel sheet"; named the
 // Summary Report, and made from the Viewer only ("we will only be generating
-// report from viewer").
+// report from viewer").  Robert, 2026-09-30: "get rid of the page that has
+// all the traces shown at once ... start with the full event panel that has
+// all traces and then move right into the fiber by fiber".  So there is no
+// chart of every trace: each fibre's page has its own chart.
 //
-// What is on screen is what is saved.  The chart is drawn by draw() itself at
-// print size, at the zoom the tech is looking at (plus the whole trace when
-// zoomed in).  The event table is the one the panel is showing -- the app's
-// mode, its filters, its red and yellow -- but EVERY row of it: the panel is
-// virtual, so the DOM only holds the rows on screen, and each grid registers
-// `gTableExport` with its full row list.  A cell's colours are read off the
-// page's own CSS, so the report cannot disagree with the panel.  The server
-// lays it out and writes the file: Downloads by default, like everything the
-// suite saves, and never over an existing file.
-
-const REPORT_CHART_W = 1100, REPORT_CHART_H = 470;    // CSS px, drawn at 2x
+// What is on screen is what is saved.  The event table is the one the panel
+// is showing -- the app's mode, its filters, its red and yellow -- but EVERY
+// row of it: the panel is virtual, so the DOM only holds the rows on screen,
+// and each grid registers `gTableExport` with its full row list.  A cell's
+// colours are read off the page's own CSS, so the report cannot disagree
+// with the panel.  The server lays it out and writes the file: Downloads by
+// default, like everything the suite saves, and never over an existing file.
 
 // 'rgb(r, g, b)' / 'rgba(r, g, b, a)' → '#rrggbb', a translucent colour laid
 // on white as the page shows it; null for transparent or unparsable.
@@ -8146,14 +8145,6 @@ function snapChart(fit, view) {
   gDragging = null;
   gHoverKey = null;                   // no hover bold on paper
   draw();
-}
-// The chart at the view on screen, or at `view` (the whole span), as a PNG
-// data URL.
-function reportChartPng(view) {
-  return withPrintCanvas(REPORT_CHART_W, REPORT_CHART_H, 2, (fit) => {
-    snapChart(fit, view || gView);
-    return canvas.toDataURL('image/png');
-  });
 }
 
 // One chart per fibre, FastReporter's way: that fibre's traces alone, fitted
@@ -8330,15 +8321,6 @@ function reportFibreTables(ev, S) {
   return out;
 }
 
-// The fitted view, when the chart is zoomed in away from it; null otherwise.
-function reportWholeView() {
-  const b = dataBounds();
-  if (!b || !gView) return null;
-  const dx = Math.abs(gView.x0 - b.x0) + Math.abs(gView.x1 - b.x1);
-  const dy = Math.abs(gView.y0 - b.y0) + Math.abs(gView.y1 - b.y1);
-  return (dx > 0.01 * (b.x1 - b.x0) || dy > 0.01 * (b.y1 - b.y0)) ? b : null;
-}
-
 // 64, 65, 66, 70 → "64-66, 70"
 function fiberRanges(nums) {
   const s = [...new Set(nums)].sort((a, b) => a - b), out = [];
@@ -8380,19 +8362,6 @@ async function reportPayload(opt, token, progress) {
   const vis = gTraces.filter(t => t.visible);
   const probe = reportStyleProbe();
   try {
-    const images = [];
-    if (gView) {
-      // The caption reads the chart's own axis: km from A's first event.
-      const z = axisZeroKm();
-      images.push({
-        caption: opt.whole ? 'Traces, zoomed as on screen' : 'Traces',
-        png: await reportChartPng(null),
-        note: `Distance ${kmFt(gView.x0 - z)} to ${kmFt(gView.x1 - z)}`,
-      });
-      const whole = opt.whole ? reportWholeView() : null;
-      if (whole) images.push({ caption: 'Traces, whole span', png: await reportChartPng(whole),
-                               note: `Distance ${kmFt(whole.x0 - z)} to ${kmFt(whole.x1 - z)}` });
-    }
     const sorted = [...vis].sort((a, b) => a.fiber - b.fiber || a.dir.localeCompare(b.dir));
     const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';
     const meta = [['Mode', gAnalysisMode === 'fr' ? 'FastReporter' : 'OTDR Suite']];
@@ -8421,6 +8390,8 @@ async function reportPayload(opt, token, progress) {
     const H = probe.add({ bg: '#e4edf7', fg: '#1f2d3d', b: true, al: 'c' });
     const B = probe.add({ bg: null, fg: '#1f2d3d', b: false, al: 'l' });
     const C = probe.add({ bg: null, fg: '#1f2d3d', b: false, al: 'c' });
+    // The report opens on the event table, then the trace list (Robert,
+    // 2026-10-01: "we can keep that table"), then the fibre pages.
     const tables = [];
     const ev = reportEventTable(probe);
     tables.push(ev || { title: 'Event Table', note: 'The event table had not finished loading.',
@@ -8445,7 +8416,7 @@ async function reportPayload(opt, token, progress) {
       }),
       foot: [],
     });
-    // A page per fibre, after the combined table.  With a row or cell filter
+    // A page per fibre, after the event table.  With a row or cell filter
     // on, only the fibres the table still shows; otherwise every fibre drawn.
     const fibres = [];
     if (opt.perFibre) {
@@ -8481,9 +8452,7 @@ async function reportPayload(opt, token, progress) {
       title: 'Summary Report' + (job ? `: ${job}` : ''),
       subtitle: `Generated ${new Date().toLocaleString()}`,
       footer: `OTDR Suite Summary Report${job ? ' · ' + job : ''}`,
-      meta, images,
-      key: sorted.length <= 40 ? sorted.map(t => ({ label: `F${t.fiber} ${arrow(t)}`, color: colorHex(t.color) })) : [],
-      styles: probe.styles, tables,
+      meta, styles: probe.styles, tables,
     };
   } finally {
     probe.done();
@@ -8499,25 +8468,23 @@ function closeReportDialog() {
 async function showReportDialog() {
   closeReportDialog();
   const vis = gTraces.filter(t => t.visible);
-  if (!vis.length) { setReadout('load a trace first: the Summary Report is the chart and the event table on screen'); return; }
+  if (!vis.length) { setReadout('load a trace first: the Summary Report is the event table on screen'); return; }
   let dest = '';
   try { dest = (await (await fetch('/api/report_defaults')).json()).dest || ''; } catch (e) {}
   const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-  const zoomed = !!reportWholeView();
   const nFib = new Set(vis.map(t => t.fiber)).size;
   const bg = document.createElement('div'); bg.id = 'report-dlg-bg';
   const d = document.createElement('div'); d.id = 'report-dlg';
   d.innerHTML = `<h3>Summary Report</h3>`
-    + `<div class="sub">The chart and the event table as they are on screen, every row of the table.</div>`
+    + `<div class="sub">The event table as it is on screen, every row of it.</div>`
     + `<div class="scope"><label><input type="radio" name="rpt-fmt" value="pdf" checked> PDF</label>`
     + `<label><input type="radio" name="rpt-fmt" value="xlsx"> Excel</label></div>`
-    + (zoomed ? `<div class="scope"><label><input type="checkbox" id="rpt-whole" checked> add the whole span too (the chart is zoomed in)</label></div>` : '')
-    + `<div class="scope"><label title="After the combined table, one page per fibre, as FastReporter prints them (${nFib} fibre${nFib === 1 ? '' : 's'} loaded)">`
+    + `<div class="scope"><label title="After the event table, one page per fiber, as FastReporter prints them (${nFib} fiber${nFib === 1 ? '' : 's'} loaded)">`
     + `<input type="checkbox" id="rpt-fibres" checked> Add Per Fiber Summary Pages</label></div>`
     + `<div class="row"><label>File name</label><input type="text" id="rpt-name" value="${esc(reportDefaultName(vis))}"></div>`
     + `<div class="row"><label>Save to</label><input type="text" id="rpt-dest" value="${esc(dest)}">`
     + `<button type="button" id="rpt-browse" title="choose the folder the report is saved to">Browse…</button></div>`
-    + (gTableExport ? '' : `<div class="note">The event table is still loading. Wait for it, or the report has the chart only.</div>`)
+    + (gTableExport ? '' : `<div class="note">The event table is still loading. Wait for it, or the report goes out without it.</div>`)
     + `<div class="err" id="rpt-err"></div>`
     + `<div class="btns"><button id="rpt-cancel">Cancel</button><button class="primary" id="rpt-save">Save report</button></div>`;
   document.body.appendChild(bg);
@@ -8548,11 +8515,9 @@ async function submitReport() {
   if (!d) return;
   const err = d.querySelector('#rpt-err');
   const save = d.querySelector('#rpt-save');
-  const whole = d.querySelector('#rpt-whole');
   const perFibre = d.querySelector('#rpt-fibres');
   const opt = {
     fmt: d.querySelector('input[name=rpt-fmt]:checked').value,
-    whole: !!(whole && whole.checked),
     perFibre: !!(perFibre && perFibre.checked),
     name: d.querySelector('#rpt-name').value,
     dest: d.querySelector('#rpt-dest').value,
