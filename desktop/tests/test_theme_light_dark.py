@@ -1,14 +1,17 @@
 """Light / Dark theme (the sidebar's Theme switch).
 
-Light must be exactly the palette the hub always had, the choice must survive
-in settings.json without touching the other keys, the Viewer must arrive
-marked dark only when the hub is dark with its trace plot and event panel
-kept light, and the theme must add NO engine file (an installed exe refuses
-any signed update whose file set differs from its own).
+Light must be exactly the palette the hub always had, every start must be
+Dark from the first frame (the server starts in Dark; nothing is saved), the
+Viewer must arrive marked dark only when the
+hub is dark with its trace plot and event panel kept light, an open Viewer
+must follow the switch, and the theme must add NO engine file (an installed
+exe refuses any signed update whose file set differs from its own).
 """
 import json
+import os
 import re
 import socket
+import subprocess
 import threading
 import urllib.request
 
@@ -33,14 +36,31 @@ def _theme():
 TH = _theme()
 
 
-def test_light_is_the_config_toml_palette():
-    """Nobody who leaves the switch alone sees a change."""
+def test_light_is_the_palette_the_hub_always_had():
+    assert TH['THEME_STREAMLIT']['light'] == {
+        'base': 'light', 'primaryColor': '#2c5b8a', 'backgroundColor': '#ffffff',
+        'secondaryBackgroundColor': '#eef3f8', 'textColor': '#000000',
+        'borderColor': '#d5dde6', 'dataframeBorderColor': '#dbe4ee',
+        'dataframeHeaderBackgroundColor': '#eef3f8'}
+
+
+def _camel_to_env(key):
+    return 'STREAMLIT_THEME_' + re.sub(r'([A-Z])', r'_\1', key).upper()
+
+
+def test_the_server_starts_in_the_start_theme():
+    """Robert, 2026-10-01: "it needs to start fully in dark".  The exe's
+    launcher (and config.toml for a dev run) start the server in exactly the
+    start theme, so the first page is never painted Light and switched after:
+    the first run finds nothing to change and does not rerun."""
+    want = TH['THEME_STREAMLIT'][TH['THEME_DEFAULT']]
     toml = (REPO_ROOT / '.streamlit' / 'config.toml').read_text(encoding='utf-8')
-    for key in ('base', 'primaryColor', 'backgroundColor',
-                'secondaryBackgroundColor', 'textColor'):
+    launcher = (REPO_ROOT / 'desktop' / 'launcher.py').read_text(encoding='utf-8')
+    for key, val in want.items():
         m = re.search(r'^%s\s*=\s*"([^"]+)"' % key, toml, re.M)
-        assert m, key
-        assert TH['THEME_STREAMLIT']['light'][key] == m.group(1), key
+        assert m and m.group(1) == val, ('config.toml', key)
+        m = re.search(r'os\.environ\.setdefault\("%s", "([^"]+)"\)' % _camel_to_env(key), launcher)
+        assert m and m.group(1) == val, ('launcher', key)
 
 
 def test_both_themes_name_the_same_colours():
@@ -48,24 +68,16 @@ def test_both_themes_name_the_same_colours():
     assert set(TH['THEME_STREAMLIT']['light']) == set(TH['THEME_STREAMLIT']['dark'])
 
 
-def test_saved_theme_round_trip_keeps_other_settings(tmp_path, monkeypatch):
-    monkeypatch.setenv('OTDR_SETTINGS_DIR', str(tmp_path))
-    (tmp_path / 'settings.json').write_text(json.dumps({'analysis_mode': 'fr'}), encoding='utf-8')
-    assert TH['load_theme']() == 'light'
-    TH['save_theme']('dark')
-    assert TH['load_theme']() == 'dark'
-    data = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
-    assert data == {'analysis_mode': 'fr', 'theme': 'dark'}
-
-
-def test_damaged_or_unknown_theme_falls_back_to_light(tmp_path, monkeypatch):
-    monkeypatch.setenv('OTDR_SETTINGS_DIR', str(tmp_path))
-    (tmp_path / 'settings.json').write_text('{not json', encoding='utf-8')
-    assert TH['load_theme']() == 'light'
-    (tmp_path / 'settings.json').write_text(json.dumps({'theme': 'purple'}), encoding='utf-8')
-    assert TH['load_theme']() == 'light'
-    with pytest.raises(ValueError):
-        TH['save_theme']('purple')
+def test_every_start_is_dark_and_nothing_is_saved():
+    """Robert, 2026-10-01: start up in Dark, every time; nothing remembered.
+    The boss started the Suite after an update with Dark saved and it came up
+    only part dark until he flipped the switch back and forth."""
+    assert TH['THEME_DEFAULT'] == 'dark'
+    assert "st.session_state['ui_theme'] = THEME_DEFAULT" in SRC
+    for gone in ('load_theme', 'save_theme', '_theme_settings_path'):
+        assert gone not in SRC, gone
+    switch = SRC.split('def _render_theme_control(where):', 1)[1].split('\ndef ', 1)[0]
+    assert 'settings' not in switch
 
 
 def test_recolor_swaps_palette_colours_only():
@@ -135,3 +147,97 @@ def test_viewer_keeps_plot_and_event_panel_light_in_dark():
     block = m.group(1)
     assert '--plot-bg: #f4f4f5' in block and '--text: #000000' in block
     assert "ctx.fillStyle = plotBg();" in html
+
+
+def test_api_mode_carries_the_theme():
+    """The Viewer asks /api/mode every 1.5 s; the hub's Light / Dark rides along."""
+    port = T.start_in_thread(8797)
+    was = T.CONFIG.get('theme')
+    try:
+        for theme, want in (('dark', 'dark'), ('light', 'light'), (None, 'light')):
+            T.CONFIG['theme'] = theme
+            with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/mode', timeout=4) as r:
+                assert json.loads(r.read())['theme'] == want
+    finally:
+        T.CONFIG['theme'] = was
+
+
+JSC = ('/System/Library/Frameworks/JavaScriptCore.framework/'
+       'Versions/Current/Helpers/jsc')
+
+
+@pytest.mark.skipif(not os.path.exists(JSC), reason='JavaScriptCore shell (macOS) not present')
+def test_open_viewer_follows_the_switch(tmp_path):
+    """Flipping the switch left the embedded Viewer in the theme it loaded
+    with.  The mode poll now hands it the theme: the page's mark changes and
+    the plot is drawn again, only on a change, with no reload."""
+    html = (REPO_ROOT / 'viewer' / 'viewer.html').read_text(encoding='utf-8')
+    assert 'if (j && j.theme) applyHubTheme(j.theme);' in html
+    m = re.search(r'function applyHubTheme\(t\) \{.*?\n\}\n', html, re.S)
+    assert m, 'viewer.html no longer defines applyHubTheme()'
+    js = r"""
+var attrs = {}, draws = 0;
+var document = { documentElement: {
+  getAttribute: function (k) { return k in attrs ? attrs[k] : null; },
+  setAttribute: function (k, v) { attrs[k] = v; },
+  removeAttribute: function (k) { delete attrs[k]; } } };
+function draw() { draws++; }
+""" + m.group(0) + r"""
+var out = [];
+applyHubTheme('dark');  out.push([attrs['data-theme'] || '', draws]);
+applyHubTheme('dark');  out.push([attrs['data-theme'] || '', draws]);
+applyHubTheme('light'); out.push([attrs['data-theme'] || '', draws]);
+applyHubTheme('light'); out.push([attrs['data-theme'] || '', draws]);
+print('OUT ' + JSON.stringify(out));
+"""
+    path = tmp_path / 'theme.js'
+    path.write_text(js, encoding='utf-8')
+    r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
+    out = r.stdout + r.stderr
+    assert 'OUT ' in out, out[-2000:]
+    assert json.loads(out.split('OUT ', 1)[1].strip()) == [
+        ['dark', 1], ['dark', 1], ['', 2], ['', 2]]
+
+
+def test_the_three_dot_menu_is_hidden():
+    """Robert, 2026-10-01: its Settings theme picker overrides the switch."""
+    m = re.search(r"st\.markdown\('<style>([^<]*stAppDeployButton[^<]*)</style>'", SRC.replace("'\n            '", ''))
+    assert m, 'the header hide rule moved'
+    assert '[data-testid="stMainMenu"]' in m.group(1) and '#MainMenu' in m.group(1)
+    assert '_install_theme_pick_clear()' in SRC
+
+
+@pytest.mark.skipif(not os.path.exists(JSC), reason='JavaScriptCore shell (macOS) not present')
+def test_a_theme_picked_in_the_menu_is_cleared_once(tmp_path):
+    """A Light or Dark pick from the ⋮ menu made Streamlit ignore the
+    hub's theme for good.  It is removed and the page reloads once; the
+    theme Streamlit keeps for the hub ("Custom Theme") is left alone."""
+    body = SRC.split('THEME_PICK_CLEAR_JS = """', 1)[1].split('"""', 1)[0]
+    script = body.split('<script>', 1)[1].split('</script>', 1)[0]
+    js = r"""
+function run(store) {
+  var reloads = 0, keys = Object.keys(store);
+  var ls = { get length() { return keys.length; },
+             key: function (i) { return keys[i]; },
+             getItem: function (k) { return store[k]; },
+             removeItem: function (k) { delete store[k]; keys = Object.keys(store); } };
+  var window = { parent: { document: {}, localStorage: ls,
+                           location: { reload: function () { reloads++; } } } };
+""" + script + r"""
+  return [Object.keys(store).sort(), reloads];
+}
+var custom = JSON.stringify({ name: 'Custom Theme', themeInput: {} });
+print('OUT ' + JSON.stringify([
+  run({ 'stActiveTheme-/-v1': JSON.stringify({ name: 'Light' }), other: 'x' }),
+  run({ 'stActiveTheme-/-v1': JSON.stringify({ name: 'Dark' }) }),
+  run({ 'stActiveTheme-/-v1': custom }),
+  run({}),
+]));
+"""
+    path = tmp_path / 'pick.js'
+    path.write_text(js, encoding='utf-8')
+    r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
+    out = r.stdout + r.stderr
+    assert 'OUT ' in out, out[-2000:]
+    assert json.loads(out.split('OUT ', 1)[1].strip()) == [
+        [['other'], 1], [[], 1], [['stActiveTheme-/-v1'], 0], [[], 0]]
