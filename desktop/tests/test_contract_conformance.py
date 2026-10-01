@@ -90,7 +90,7 @@ def test_ior_mismatch_is_stated_in_metres():
     assert "+2,045 ppm" in row["note"], row["note"]
     assert re.search(r"≈20[45] m per 100 km farther out", row["note"]), row["note"]
     assert con["clean"] is False
-    assert "not corrected" in con["headline"].lower()
+    assert con["headline"] == "2 of 4 checked figures do NOT match the contract"
 
 
 def test_ior_within_display_precision_conforms():
