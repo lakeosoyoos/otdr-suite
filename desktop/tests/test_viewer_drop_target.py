@@ -1005,3 +1005,62 @@ def test_the_page_packs_files_as_the_server_reads_them():
     assert 'await Promise.all([worker(), worker()]);' in fn
     s = open(os.path.join(ROOT, 'viewer', 'trace_server.py'), encoding='utf-8').read()
     assert "'/api/drop_files'" in s and 'DROP_BATCH_MAX' in s
+
+# ─── sides the tech emptied with Remove in the Viewer ───────────────────
+# Removing every file on the FILES panel hides the rows in the page and
+# leaves the server pointing at the folder.  The page sends those sides as
+# `emptied` so the next drop treats them as free (Robert 2026-09-30: after
+# removing everything, a new span's A landed on B beside the invisible old A,
+# until Clear Traces on the left panel).
+
+def _drop_real_emptied(emptied, *groups):
+    tok = TS.drop_begin()
+    for g in groups:
+        for name, data in g:
+            TS.drop_file(tok, name, data)
+    return TS.drop_end(tok, emptied=emptied)
+
+
+def test_a_new_a_after_removing_the_only_side_lands_on_a():
+    TS.set_dirs(str(FIXTURE_SPLICE_A_DIR), None)
+    out = _drop_real_emptied('a', _real('a'))
+    assert out['added'] == 'A'
+    assert out['dir_a'] != str(FIXTURE_SPLICE_A_DIR) and out['dir_b'] is None
+    # without `emptied` it is still the other direction, as before
+    TS.set_dirs(str(FIXTURE_SPLICE_A_DIR), None)
+    assert _drop_real(_real('a'))['added'] == 'B'
+
+
+def test_after_removing_both_sides_a_then_b_load_the_new_span():
+    TS.set_dirs(str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR))
+    a = _drop_real_emptied('ab', _real('a'))
+    assert a['added'] == 'A' and a['dir_b'] is None
+    b = _drop_real_emptied('', _real('b'))
+    assert b['added'] == 'B' and b['dir_a'] == a['dir_a']
+
+
+def test_an_emptied_side_is_not_kept_beside_the_drop():
+    TS.set_dirs(str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR))
+    out = _drop_real_emptied('b', _real('a', n=1000))
+    assert out['added'] == 'A'                     # the A folder again: refresh A
+    assert out['dir_b'] is None                    # the removed B is not kept
+
+
+def test_unloading_an_emptied_side_clears_it_and_stamps_the_hub():
+    """Removing every file on a side in the Viewer lets go of that folder at
+    once, stamped like a drop so the hub's A/B box clears on its next run."""
+    TS.set_dirs(str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR))
+    TS.CONFIG.pop('dropped_at', None)
+    out = TS.unload_sides('a')
+    assert out['dir_a'] is None and out['dir_b'] == str(FIXTURE_SPLICE_B_DIR)
+    assert TS.CONFIG['dropped_at'] > 0
+    TS.unload_sides('ab')
+    assert TS.CONFIG['dir_a'] is None and TS.CONFIG['dir_b'] is None
+
+
+def test_unloading_nothing_changes_nothing():
+    TS.set_dirs(str(FIXTURE_SPLICE_A_DIR), None)
+    TS.CONFIG.pop('dropped_at', None)
+    TS.unload_sides('')
+    assert TS.CONFIG['dir_a'] == str(FIXTURE_SPLICE_A_DIR)
+    assert 'dropped_at' not in TS.CONFIG

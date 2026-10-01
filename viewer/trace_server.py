@@ -1804,7 +1804,8 @@ class Handler(BaseHTTPRequestHandler):
                                      retry=bool(q.get('retry')))
                 else:
                     self.rfile.read(n) if n else None
-                    out = drop_end((q.get('token') or [''])[0], retry=bool(q.get('retry')))
+                    out = drop_end((q.get('token') or [''])[0], retry=bool(q.get('retry')),
+                                   emptied=(q.get('emptied') or [''])[0])
             except (ValueError, zipfile.BadZipFile) as e:
                 self._send_json({'error': str(e)}, status=400)
                 return
@@ -1816,6 +1817,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({'error': str(e)}, status=500)
                 return
             self._send_json({'ok': True, **out})
+            return
+
+        if u.path == '/api/unload_sides':
+            if not self._origin_is_local():
+                self._refuse_foreign()
+                return
+            n = int(self.headers.get('Content-Length', 0) or 0)
+            self.rfile.read(n) if n else None
+            sides = (parse_qs(u.query).get('sides') or [''])[0]
+            self._send_json({'ok': True, **unload_sides(sides)})
             return
 
         if u.path == '/api/pick_folder':
@@ -2185,7 +2196,7 @@ def _drop(token):
     return d
 
 
-def _stage_write(drop, into, base, write, retry=False):
+def _stage_write(drop, into, base, write, retry=False, size=0):
     """Stage ONE file under its own name, into the drop's flat `in` folder.
 
     Everything dropped lands in that one folder, so two files of the same name
@@ -2221,18 +2232,40 @@ def _stage_write(drop, into, base, write, retry=False):
         # was lost (see handleFilesDrop's post) never reaches this point: the
         # callers skip it when an identical copy is already staged
         # (_staged_copy).  What does is a different file under a taken name.
-        drop['repeats'].append(base)
         n = 1 + sum(1 for _o, _p, k in drop['rep_files'] if k == key)
         d = os.path.join(drop['dir'], 'rep', str(n))
         os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, base), 'wb') as fh:
-            write(fh)
+        _write_whole(drop, os.path.join(d, base), write, size)
+        drop['repeats'].append(base)
         drop['rep_files'].append((n, os.path.join(d, base), key))
         return False
+    _write_whole(drop, os.path.join(into, base), write, size)
     drop['seen'].add(key)
-    with open(os.path.join(into, base), 'wb') as fh:
-        write(fh)
     return True
+
+
+def _write_whole(drop, dest, write, size=0):
+    """Write a staged file under a temporary name and move it to `dest` only
+    once it is complete.  A write cut off partway (a zip member that fails its
+    check, a full disk) used to leave half a file at `dest`, already counted
+    as arrived: it loaded as a broken trace, and the page's retry with the
+    whole file was taken for a different file under the same name and kept
+    aside as a repeat.  Now a failed write leaves nothing, the name is marked
+    only after the move (see _stage_write), and the retry stages normally.
+    The `size` _drop_take charged for it is given back, so the retry is not
+    counted twice against DROP_TOTAL_MAX."""
+    fd, tmp = tempfile.mkstemp(prefix='.part_', dir=drop['dir'])
+    try:
+        with os.fdopen(fd, 'wb') as fh:
+            write(fh)
+        os.replace(tmp, dest)
+    except BaseException:
+        drop['bytes'] -= size
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _drop_take(drop, n):
@@ -2283,12 +2316,14 @@ def _extract_zip_guarded(drop, data, into, retry=False):
                     n += 1                        # staged by the first try
                     continue
                 _drop_take(drop, len(body))
-                _stage_write(drop, into, safe, lambda dst, body=body: dst.write(body))
+                _stage_write(drop, into, safe, lambda dst, body=body: dst.write(body),
+                             size=len(body))
                 continue
             _drop_take(drop, m.file_size)
             with zf.open(m) as src:
                 if _stage_write(drop, into, safe,
-                                lambda dst, src=src: shutil.copyfileobj(src, dst, 1 << 20)):
+                                lambda dst, src=src: shutil.copyfileobj(src, dst, 1 << 20),
+                                size=m.file_size):
                     n += 1
     return n
 
@@ -2311,7 +2346,7 @@ def drop_file(token, name, data, retry=False):
     if retry and low in drop['seen'] and _staged_copy(drop, into, base, data):
         return {'name': base, 'files': 1, 'retried': True}   # the first try got here
     _drop_take(drop, len(data))
-    if not _stage_write(drop, into, base, lambda fh: fh.write(data)):
+    if not _stage_write(drop, into, base, lambda fh: fh.write(data), size=len(data)):
         return {'name': base, 'files': 0, 'skipped': 'that name was already dropped'}
     return {'name': base, 'files': 1}
 
@@ -2444,7 +2479,7 @@ def _declared_direction(paths):
     return votes.pop() if len(votes) == 1 else None
 
 
-def _single_drop_side(sig, declared=None):
+def _single_drop_side(sig, declared=None, gone=()):
     """Which side a ONE-direction drop lands on, and whether the other side
     survives it.
 
@@ -2465,9 +2500,11 @@ def _single_drop_side(sig, declared=None):
 
     A side counts as loaded only when its folder is actually THERE with trace
     files in it: a path left over from a folder that has since moved must not
-    push the drop onto the other side and leave the dead one on screen."""
-    sig_a = _dir_sig(CONFIG.get('dir_a'))
-    sig_b = _dir_sig(CONFIG.get('dir_b'))
+    push the drop onto the other side and leave the dead one on screen.
+    Nor must a side whose every file the tech removed in the Viewer (`gone`):
+    it is still set here, but the page shows it empty."""
+    sig_a = None if 'a' in gone else _dir_sig(CONFIG.get('dir_a'))
+    sig_b = None if 'b' in gone else _dir_sig(CONFIG.get('dir_b'))
     if sig and sig_a == sig:
         return 'A', True                      # the A folder again -> refresh A
     if sig and sig_b == sig:
@@ -2798,7 +2835,7 @@ _DROPS_ENDED = {}                          # token -> drop_end's answer, for a r
 _DROPS_ENDED_MAX = 16
 
 
-def drop_end(token, retry=False):
+def drop_end(token, retry=False, emptied=''):
     """Split what was dropped into A and B and point the server at them.
 
     A drop holding BOTH directions replaces both folders.  A drop holding ONE
@@ -2835,6 +2872,12 @@ def drop_end(token, retry=False):
     if not paths:
         raise ValueError('nothing dropped was a .sor / .json / .trc file (or a zip of them)')
     split = split_directions(paths)
+    # The sides the page has emptied: every file of that folder taken out of
+    # the Viewer with Remove.  The server still points at the folder, but to
+    # the tech that side is empty, so a drop treats it as free and does not
+    # keep it -- a new span's A dropped after removing everything went to B,
+    # beside the removed A it could no longer see.
+    gone = {c for c in str(emptied or '').lower() if c in 'ab'}
     keep, how, stamps = split['keep'], split['how'], split['stamps']
     sites_swapped = split['sites_swapped']
     if len(keep) == 2:
@@ -2842,7 +2885,7 @@ def drop_end(token, retry=False):
         added_by = split['added_by']
     else:
         declared = split['declared']
-        side, keep_other = _single_drop_side(_trace_sig(keep[0][1]), declared)
+        side, keep_other = _single_drop_side(_trace_sig(keep[0][1]), declared, gone)
         sides = [side]
         added_by = 'file' if declared == ('a' if side == 'A' else 'b') else 'position'
     # A file that arrived under a name already dropped goes on the OTHER side
@@ -2889,8 +2932,8 @@ def drop_end(token, retry=False):
         # which re-reading the folder with direction_prefix would give back
         # ('MTG4' and 'MTG5' both come back 'MTG').  '' is the unnamed drop.
         named[side] = key or None
-    dir_a = out.get('A') or (CONFIG['dir_a'] if keep_other else None)
-    dir_b = out.get('B') or (CONFIG['dir_b'] if keep_other else None)
+    dir_a = out.get('A') or (CONFIG['dir_a'] if keep_other and 'a' not in gone else None)
+    dir_b = out.get('B') or (CONFIG['dir_b'] if keep_other and 'b' not in gone else None)
     set_dirs(dir_a, dir_b)
     CONFIG['dropped_at'] = time.time()
     a_key, a_count = _dir_facts(dir_a)
@@ -3207,6 +3250,20 @@ def fr_tables(fibers):
         if errs and not error:
             error = '; '.join(f'F{k}: {v}' for k, v in list(errs.items())[:3])
     return {'tables': out, 'missing': missing, 'error': error}
+
+
+def unload_sides(sides):
+    """Let go of the folder on each side in `sides` ('a', 'b' or 'ab'): the
+    tech removed every one of its files in the Viewer.  Stamped like a drop,
+    so the hub's A/B boxes follow on its next run (Robert 2026-09-30: removing
+    everything on a side clears that side's box right away) and no other tool
+    runs on a folder the Viewer no longer shows."""
+    gone = {c for c in str(sides or '').lower() if c in 'ab'}
+    if gone:
+        set_dirs(None if 'a' in gone else CONFIG['dir_a'],
+                 None if 'b' in gone else CONFIG['dir_b'])
+        CONFIG['dropped_at'] = time.time()
+    return {'dir_a': CONFIG['dir_a'], 'dir_b': CONFIG['dir_b']}
 
 
 def set_dirs(dir_a, dir_b):

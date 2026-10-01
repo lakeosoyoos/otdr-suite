@@ -1386,6 +1386,30 @@ async function _dropCollect(dt) {
   const ok = f => DROP_EXTS.some(x => f.name.toLowerCase().endsWith(x)) && !f.name.startsWith('.');
   return out.filter(ok);
 }
+// The sides whose every file was taken out with Remove: 'a', 'b', 'ab' or ''.
+// The server still points at those folders, so without this a drop after
+// removing everything was placed as if they were still loaded (a new span's
+// A went to B, beside the invisible old A).
+function emptiedSides() {
+  return ['a', 'b'].filter(dir => {
+    const fibers = (gInfo && gInfo['fibers_' + dir]) || [];
+    return fibers.length > 0 && fibers.every(f => gRemovedFiles.has(`${dir}-${f}`));
+  }).join('');
+}
+
+// Every file of a side removed: that side is empty to the tech, so the
+// server lets go of its folder and the hub's A/B box clears with it.
+async function unloadEmptiedSides() {
+  const sides = emptiedSides();
+  if (!sides) return;
+  try {
+    const r = await fetch(`/api/unload_sides?sides=${sides}`, { method: 'POST' });
+    if (!r.ok) return;
+  } catch (e) { return; }
+  await loadInfo();
+  renderChips();
+}
+
 // Everything this session pinned to one side's folder: loaded traces, hidden
 // rows, direction overrides.  Dropped when that folder is replaced under us.
 function forgetSide(dir) {
@@ -1509,7 +1533,7 @@ async function handleFilesDrop(dt) {
     await Promise.all([worker(), worker()]);
     at.stage = 'end';
     const before = { a: (gInfo && gInfo.dir_a) || '', b: (gInfo && gInfo.dir_b) || '' };
-    const j = await post(`/api/drop_end?token=${token}`);
+    const j = await post(`/api/drop_end?token=${token}&emptied=${emptiedSides()}`);
     at.stage = 'after';
     // Whatever was loaded off a folder this drop REPLACED is now pointing at
     // another span's fibers, so that side is forgotten.  A side the drop left
@@ -2159,6 +2183,7 @@ function removeFile(key, fiber) {
   const msg = `F${fiber} removed from the viewer (reopen the Viewer to list it again)`;
   setReadout(msg);
   selectAfterRemove(next, msg);
+  unloadEmptiedSides();
 }
 
 function removeSelectedFiles() {
@@ -2177,6 +2202,7 @@ function removeSelectedFiles() {
     + ` (reopen the Viewer to list ${keys.length === 1 ? 'it' : 'them'} again)`;
   setReadout(msg);
   selectAfterRemove(next, msg);
+  unloadEmptiedSides();
 }
 
 // FastReporter never leaves the list with nothing selected: after a Remove
@@ -2267,7 +2293,9 @@ function renderFilesPanel() {
   const sayNextDrop = () => {
     const hint = document.getElementById('files-drop-hint');
     if (!hint) return;
-    const hasA = !!(gInfo && gInfo.dir_a), hasB = !!(gInfo && gInfo.dir_b);
+    const gone = emptiedSides();
+    const hasA = !!(gInfo && gInfo.dir_a) && !gone.includes('a');
+    const hasB = !!(gInfo && gInfo.dir_b) && !gone.includes('b');
     hint.textContent =
       (hasA && hasB) ? 'both sides loaded, dropping a folder here starts a new span'
       : hasA ? 'drop the other direction here, A stays loaded'

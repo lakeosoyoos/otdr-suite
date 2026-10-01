@@ -381,31 +381,30 @@ def _render_analysis_mode_control():
     """The OTDR Suite / FastReporter switch, right under the Tool list so
     it is visible on every page.  Seeded from settings.json on the first run of a
     session and written back on every change, so a tech's choice survives a
-    restart.  Same key= discipline as the profile picker: the toggle's own
-    key holds the switch position, session_state.analysis_mode holds the mode."""
+    restart.  session_state.analysis_mode holds the mode; the toggle has no
+    key and starts at the mode (value=)."""
     if 'analysis_mode' not in st.session_state:
         st.session_state['analysis_mode'] = load_analysis_mode()
     _on = st.session_state['analysis_mode'] == 'fr'
     # A toggle, not a radio (Robert, 2026-09-22): the setting is one of two
     # states and reads as a switch -- off is OTDR Suite, on is FastReporter.
-    # The widget's own key holds the switch position; session_state.
-    # analysis_mode holds the mode, and a stale key from an older build is
-    # dropped before the widget is drawn so value= never fights key=.
+    # session_state.analysis_mode holds the mode.
     # Robert, 2026-09-24: both modes on show, FR Mode on the left and OTDR
     # Mode on the right, the switch between them; the knob points at the
-    # mode in use and that name is bold.  Knob right = OTDR Mode.  A new key
-    # (the old 'analysis_toggle' meant the opposite), and value= only when the
-    # key is not already set, so value= never fights key=.
+    # mode in use and that name is bold.  Knob right = OTDR Mode.
     box = st.container(key='analysis_mode_box')
     box.markdown(_MODE_SWITCH_CSS, unsafe_allow_html=True)
     box.markdown('**Analysis Mode**')
-    if not isinstance(st.session_state.get('analysis_switch'), bool):
-        st.session_state['analysis_switch'] = not _on
+    # No key (2026-09-30): with key='analysis_switch', the App's home screen
+    # (no sidebar) and back redrew the knob in its old position while the
+    # mode stayed put, and the next page change silently switched OTDR Mode
+    # to FR Mode.  Keyless, the knob starts at the mode itself (value=) and
+    # is a new widget after every change.
     l, m, r = box.columns([5, 3, 5], vertical_alignment='center')
     l.markdown(_mode_name('FR Mode', _on), unsafe_allow_html=True,
                help=("FR Mode: reproduce EXFO FastReporter's analysis from the same "
                      "files, to the digit, with only your pass/fail thresholds on top."))
-    _right = m.toggle('Analysis mode', key='analysis_switch', label_visibility='collapsed')
+    _right = m.toggle('Analysis mode', value=not _on, label_visibility='collapsed')
     r.markdown(_mode_name('OTDR Mode', not _on), unsafe_allow_html=True,
                help=("OTDR Mode: our own analysis, the numbers and columns we can "
                      "defend from the trace."))
@@ -4551,7 +4550,7 @@ _CONN_ROWS = [
 
     {'key': 'conn_avg', 'label': 'Connector loss (bidirectional average)', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_AVG_MIN_DB'},
-     'defaults': {'value': 0.0}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
+     'defaults': {'value': 0.500}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
      'int': False,
      'help': ('Flag on the connector’s actual loss, (A + B) / 2: the number '
               'the report prints, the number FastReporter reports, and the '
@@ -4559,12 +4558,11 @@ _CONN_ROWS = [
               'above rather than replacing them, so their calibration does not '
               'move. Sacramento↔Suisun F1013 is why it exists: near 0.318 / '
               'far 1.088 averages 0.703, exactly the value the field sheet '
-              'carries, but min = 0.318 never reached 0.62. Ships OFF: across '
-              'that whole 1152-fiber span it adds no fiber the other two gates '
-              'miss, and the sheet records the worst cells as one-way values '
-              'anyway. Turn it on for a span you want judged on the pair’s own '
-              'loss. Cells that fire only here print the average, without the '
-              'side marker.')},
+              'carries, but min = 0.318 never reached 0.62. On at 0.50, the '
+              'Bidir connector loss value, so a connector is flagged when '
+              'either direction or its average is over its limit. Cells that '
+              'fire only here print the average, without the side marker. '
+              '0 turns this gate off.')},
 
     {'key': 'conn_confirm', 'label': 'Connector re-measure tolerance', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_CONFIRM_TOL_DB'},
