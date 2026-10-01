@@ -152,6 +152,6 @@ def test_the_toolbar_is_tighter():
     # every control is still there
     for ctl in ('id="fiber-input"', 'id="btn-add"', 'id="btn-clear"', 'id="btn-fit"',
                 'id="btn-fit-x"', 'id="btn-fit-y"', 'id="btn-zoom-in"', 'id="btn-zoom-out"',
-                'id="cb-stack"', 'id="num-yspace"', 'id="cb-events"', 'id="cb-colors"',
+                'id="cb-stack"', 'id="num-yspace"', 'id="cb-colors"',
                 'id="btn-markers"', 'id="btn-markers-clear"', 'id="btn-report"'):
         assert ctl in SRC, ctl

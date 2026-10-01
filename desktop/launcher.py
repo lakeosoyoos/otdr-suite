@@ -980,15 +980,20 @@ def _silence_first_run_prompt() -> None:
     os.environ.setdefault("STREAMLIT_SERVER_PORT", str(PORT))
     # No developer toolbar ("Deploy" button) in the hub's header.
     os.environ.setdefault("STREAMLIT_CLIENT_TOOLBAR_MODE", "viewer")
-    # Light theme to match the viewer (per-process so it doesn't touch the
-    # tech's other Streamlit apps via a global config).
-    os.environ.setdefault("STREAMLIT_THEME_BASE", "light")
-    os.environ.setdefault("STREAMLIT_THEME_PRIMARY_COLOR", "#2c5b8a")
-    os.environ.setdefault("STREAMLIT_THEME_BACKGROUND_COLOR", "#ffffff")
-    os.environ.setdefault("STREAMLIT_THEME_SECONDARY_BACKGROUND_COLOR", "#eef3f8")
-    # Black lettering, as .streamlit/config.toml has had since 2026-09-22
-    # ("the grey-blue read badly"); the exe reads this, not that file.
-    os.environ.setdefault("STREAMLIT_THEME_TEXT_COLOR", "#000000")
+    # The hub starts in Dark (Robert, 2026-10-01: "it needs to start fully in
+    # dark"), so the server starts in Dark too and the first page is not
+    # painted Light and switched after.  Per-process, so it doesn't touch the
+    # tech's other Streamlit apps via a global config.  These must equal
+    # app.py's THEME_STREAMLIT['dark'] (test_theme_light_dark.py checks); the
+    # exe reads these, not .streamlit/config.toml.
+    os.environ.setdefault("STREAMLIT_THEME_BASE", "dark")
+    os.environ.setdefault("STREAMLIT_THEME_PRIMARY_COLOR", "#3b82f6")
+    os.environ.setdefault("STREAMLIT_THEME_BACKGROUND_COLOR", "#0c0a09")
+    os.environ.setdefault("STREAMLIT_THEME_SECONDARY_BACKGROUND_COLOR", "#1c1917")
+    os.environ.setdefault("STREAMLIT_THEME_TEXT_COLOR", "#fafaf9")
+    os.environ.setdefault("STREAMLIT_THEME_BORDER_COLOR", "#292524")
+    os.environ.setdefault("STREAMLIT_THEME_DATAFRAME_BORDER_COLOR", "#292524")
+    os.environ.setdefault("STREAMLIT_THEME_DATAFRAME_HEADER_BACKGROUND_COLOR", "#1c1917")
     # Windows' own font (2026-09-24), matching .streamlit/config.toml.
     os.environ.setdefault("STREAMLIT_THEME_FONT", "Segoe UI, sans-serif")
     # NOTE: OTDR_SUITE_HOME is set in main() AFTER _prepare_engine() chooses the

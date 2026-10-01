@@ -216,6 +216,9 @@ function renderChips() {} function fit() {} function draw() {} function renderEv
 function loadFailNote() { return ''; }
 function reportDropFailure(e) { print('DROPFAIL ' + e); }
 function setReadout(s, x) { readout = [s, x]; }
+var signs = [];
+function showDropSign(state, small) { signs.push([state, small || '']); }
+function hideDropSign() { signs.push(['hide', '']); }
 async function selectFiles(want) { picked = Array.from(want).sort(); }
 var listing = null;
 async function loadInfo() { gInfo = listing; return true; }
@@ -241,6 +244,7 @@ _CASES = r"""
   out.folders = JSON.parse(sent.end).folders;
   out.picked = picked;
   out.in_flight = gDropInFlight;
+  out.signs = signs.slice();
   // B dropped on its own next to A traces already on the chart: A stays, B is added
   gTraces = [{ key: 'a-1' }, { key: 'a-2' }];
   picked = null;
@@ -295,6 +299,16 @@ def test_a_drop_draws_what_it_dropped(page):
 
 
 @needs_jsc
+def test_the_files_panel_says_a_drop_is_loading_then_what_loaded(page):
+    """Robert 2026-10-01: the panel lights up for a drop and shows it happened."""
+    states = [st for st, _ in page['signs']]
+    assert states[0] == 'load' and states[-1] == 'done'
+    assert 'hide' not in states
+    assert any('uploading 4 / 4 files' in small for st, small in page['signs'] if st == 'load')
+    assert page['signs'][-1][1] == 'A: (2 files) · B: (2 files)'
+
+
+@needs_jsc
 def test_the_report_names_the_drop_never_its_staging_folder(page):
     assert page['job'] == 'A / B side'           # the served name, even one called "A"
     assert page['job_picked'] == 'SPAN-1'      # a picked folder "A": its parent, as before
@@ -307,3 +321,14 @@ def test_the_chart_takes_a_drop_like_the_files_panel():
     assert 'handleFilesDrop(ev.dataTransfer)' in main and '_dragHasFiles(ev)' in main
     assert "main.addEventListener('dragover'" in boot
     assert '#canvas-wrap.dragging' in SRC
+
+
+def test_a_file_dragged_over_the_viewer_or_the_hub_lights_the_files_panel():
+    """Robert 2026-10-01: show the tech that a drop will be taken."""
+    assert '<div id="drop-sign">' in SRC
+    assert "if (_dragHasFiles(ev)) showDropSign('drag');" in SRC
+    # a drop anywhere on the Viewer loads, as the sign says
+    assert "if (_dragHasFiles(ev)) handleFilesDrop(ev.dataTransfer);\n    else hideDropSign();" in SRC
+    assert "if (d && d.type === 'otdr-drag') { showDropSign('drag'); return; }" in SRC
+    app = open(APP_PATH, encoding='utf-8').read()
+    assert "postMessage({ type: 'otdr-drag' }" in app
