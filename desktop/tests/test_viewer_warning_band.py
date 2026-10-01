@@ -231,11 +231,11 @@ def test_warning_cells_only_keeps_yellow_and_collapses_like_failing():
     assert "? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))" in VIEWER
     # a reflectance failure is not a warning, so warning-only blanks it
     assert "if (cellFilterOn() && !(gFailCellsOnly && bad)) return '<td></td>';" in VIEWER
-    # the hint says which filter is on, in each of the three tables (the
-    # Suite table's caption is only the filter words since 2026-09-29)
-    assert VIEWER.count("' · warning cells only'") == 2
-    suite = VIEWER.split("function paintSuiteBidiGrid(", 1)[1].split("\n}\n", 1)[0]
-    assert "'warning cells only'" in suite
+    # the hint says which filter is on, in each of the three tables (every
+    # caption is only the filter words since 2026-09-30)
+    for painter in ("paintSuiteBidiGrid", "renderFastReporterGrid", "paintFrBidiGrid"):
+        body = VIEWER.split("function " + painter + "(", 1)[1].split("\n}\n", 1)[0]
+        assert "'warning cells only'" in body, painter
 
 
 def test_a_failure_outranks_the_yellow_beside_it():

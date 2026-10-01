@@ -3817,26 +3817,13 @@ function renderFastReporterGrid(traces, host, hint) {
   // events, and Connector Reflectance -66.0 from its two reflective ones.
   const fibers = [...new Set(traces.map(t => t.fiber))];
   const isPair = traces.length === 2 && traces[0].fiber !== traces[1].fiber;
-  // Right-click is the ONLY way into the span menu and the settings editor,
-  // and until this line nothing on screen said so — a tech who never thinks
-  // to try it concludes we do not have the feature.  FastReporter signposts
-  // the same two jobs with visible IOR and SPAN buttons in its ribbon; this
-  // is the cheap half of matching that, and the button is still worth adding.
-  // Short on purpose — the full sentence spelling out both jobs wrapped this
-  // row early.  It still names both nouns rather than saying "more options":
-  // a generic label is the kind of thing eyes skip, and a tech hunting a
-  // wrong IOR has to see that this menu is where settings live.
-  const RIGHT_CLICK_HINT = ' · ⋯ or right-click an event for span and settings';
-  hint.textContent = (
-      isPair ? `Pair F${traces[0].fiber} ↔ F${traces[1].fiber}: events aligned by distance (click a column to zoom)`
-    : fibers.length === 1 ? `F${traces[0].fiber}: FastReporter event table (click a column to zoom)`
-    : `${fibers.length} fibers, ${traces.length} traces: FastReporter event table `
-      + `(click a column to zoom; Min/Max/Avg pinned below)`
-  ) + (zeroT ? ' · span set: numbered and measured from its start' : '')
-    + (gFlaggedOnly ? ' · flagged rows only' : '')
-    + (gFailCellsOnly ? ' · failing cells only' : '')
-    + (gWarnCellsOnly ? ' · warning cells only' : '')
-    + (gShowGainers ? '' : ' · gainers hidden') + RIGHT_CLICK_HINT;
+  // Like the Suite table's: no headline, only the ticked filters (Robert).
+  hint.textContent = [
+    gFlaggedOnly ? 'flagged rows only' : '',
+    gFailCellsOnly ? 'failing cells only' : '',
+    gWarnCellsOnly ? 'warning cells only' : '',
+    gShowGainers ? '' : 'gainers hidden',
+  ].filter(Boolean).join(' · ');
 
   const fmt  = v => (v == null || isNaN(v)) ? '-' : v.toFixed(3);
   const fmtK = v => (v == null || isNaN(v)) ? '-' : v.toFixed(4);
@@ -4623,20 +4610,17 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     return `<tr${attrs}>${cells.join('')}</tr>`;
   };
 
-  hint.textContent = (
-      have.length === 1
-        ? `F${have[0].fiber}: FastReporter bidirectional table (${gAvgOnly && !cellFilterOn() ? 'Average' : 'A→B, B→A, Average'}; click a column to zoom)`
-        : `${have.length} fibres: FastReporter bidirectional table (${gAvgOnly && !cellFilterOn() ? 'Average' : 'A→B, B→A, Average'} per fibre; click a column to zoom)`)
-    + (win && win.lo != null ? ' · span set: measured from its start' : '')
-    + (missing.length ? ` · no FR table for F${missing.join(', F')}` : '')
-    + (singles.length ? ` · one direction only, no bidirectional table: F${singles.join(', F')}` : '')
-    + (res.error ? ` · ${res.error}` : '')
-    + (gFlaggedOnly ? ' · flagged rows only' : '')
-    + (gFailCellsOnly ? (descs.length ? ' · failing cells only' : ' · failing cells only: nothing fails') : '')
-    + (gWarnCellsOnly ? (descs.length ? ' · warning cells only' : ' · warning cells only: no warnings') : '')
-    + (gShowGainers ? '' : ' · gainers hidden')
-    + ' · right-click an event for span and settings'
-    + (gSuiteNote ? ` · ${gSuiteNote}` : '');
+  // Like the Suite table's: no headline, no right-click tip and no "Suite
+  // table unavailable" note; only gaps, errors and the ticked filters (Robert).
+  hint.textContent = [
+    missing.length ? `no FR table for F${missing.join(', F')}` : '',
+    singles.length ? `one direction only: F${singles.join(', F')}` : '',
+    res.error || '',
+    gFlaggedOnly ? 'flagged rows only' : '',
+    gFailCellsOnly ? (descs.length ? 'failing cells only' : 'failing cells only: nothing fails') : '',
+    gWarnCellsOnly ? (descs.length ? 'warning cells only' : 'warning cells only: no warnings') : '',
+    gShowGainers ? '' : 'gainers hidden',
+  ].filter(Boolean).join(' · ');
 
   // ── Assembly, virtualised like the single-direction grid ──
   const scroller = document.createElement('div');
@@ -4923,14 +4907,12 @@ async function setSpanEdge(dir, edge, km) {
 // red on its own row whatever the other reads.
 let gSuiteTableSeq = 0;
 let gSuitePoll = null;
-let gSuiteNote = '';        // why the FastReporter layout is standing in
 // Every repaint of the event panel starts here.  A table still being waited
 // for belongs to the traces that asked for it, not to what is drawn now; the
-// stand-in note and the hidden Sections switch belong to the last table.
+// hidden Sections switch belongs to the last table.
 function suiteTableReset() {
   gSuiteTableSeq++;
   if (gSuitePoll) { clearTimeout(gSuitePoll); gSuitePoll = null; }
-  gSuiteNote = '';
   const secLab = document.getElementById('set-sections-off').closest('label');
   if (secLab) secLab.style.display = '';
 }
@@ -4950,9 +4932,8 @@ function renderSuiteBidiGrid(traces, host, hint) {
   const seq = ++gSuiteTableSeq;
   hint.textContent = `OTDR Suite table: reading ${pairs.length} fibre pair${pairs.length === 1 ? '' : 's'}…`;
   // No report table: the files' own tables in the FastReporter layout stand
-  // in, as before, and the hint says that is what they are.
-  const standIn = (why) => {
-    gSuiteNote = `OTDR Suite table unavailable (${why}): showing the files' event tables`;
+  // in, as before (the caption no longer says so, Robert 2026-09-30).
+  const standIn = () => {
     if (!renderFrBidiGrid(traces, host, hint)) renderFastReporterGrid(traces, host, hint);
   };
   const ask = () => fetch(`/api/suite_table?fibers=${pairs.map(p => p.fiber).join(',')}`)
@@ -4968,14 +4949,14 @@ function renderSuiteBidiGrid(traces, host, hint) {
       }
       const tables = res.tables || {};
       if (res.error || !pairs.some(p => Array.isArray(tables[String(p.fiber)]))) {
-        standIn(res.error || 'the report has no table for these fibres');
+        standIn();
         return;
       }
       paintSuiteBidiGrid(pairs, singles, res, host, hint);
     })
     .catch(e => {
       if (seq !== gSuiteTableSeq) return;
-      standIn((e && e.message) || 'fetch failed');
+      standIn();
     });
   ask();
   return true;

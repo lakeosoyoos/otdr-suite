@@ -178,8 +178,9 @@ def test_uni_panel_tie_keeps_its_layout(tmp_path):
 # ─── the Viewer ─────────────────────────────────────────────────────────────
 
 def test_the_viewer_stands_fr_s_table_in_for_an_event_job(monkeypatch):
-    """The Viewer's own run on a job under 20 fibres gets no Suite table and
-    says why; viewer.html's standIn then draws the files' FR-layout tables."""
+    """The Viewer's own run on a job under 20 fibres gets no Suite table;
+    viewer.html's standIn then draws the files' FR-layout tables (without a
+    caption note saying so, Robert 2026-09-30)."""
     import time
     sys.path.insert(0, str(REPO_ROOT / "viewer"))
     import trace_server as TS
@@ -201,7 +202,7 @@ def test_the_viewer_stands_fr_s_table_in_for_an_event_job(monkeypatch):
     assert out["tables"] == {} and sorted(out["missing"]) == fibers, out
     assert out["error"] == "under 20 fibres loaded, the report lists events", out
     html = (REPO_ROOT / "viewer" / "viewer.html").read_text(encoding="utf-8")
-    assert "standIn(res.error || 'the report has no table for these fibres')" in html
+    assert "standIn();" in html
 
 
 def test_uni_events_reach_fifty_fibres_inclusive(tmp_path):
