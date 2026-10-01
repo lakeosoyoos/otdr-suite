@@ -74,7 +74,10 @@ def test_a_then_b_dropped_on_the_viewer_never_reload_its_frame():
     assert not at.exception, at.exception
     # The note is gone and the boxes show the dropped folder...
     assert not any('Pick an A and/or B folder' in i.value for i in at.info)
-    assert at.session_state['view_dir_a_input'] == TS.CONFIG['dir_a']
+    shown = f"{TS.drop_name(TS.CONFIG['dir_a'])} (dropped)"
+    assert 'otdr_viewer_drop_' not in shown
+    assert at.session_state['view_dir_a_input'] == shown
+    assert at.session_state['_drop_box_a'] == (shown, TS.CONFIG['dir_a'])
     # ...and the frame has neither moved nor changed its address.
     assert _viewer_frame(at) == before
 
@@ -114,7 +117,10 @@ def test_the_hub_page_hands_a_stray_drop_to_the_viewer():
     # ...but never one a file box of a page has taken already.
     assert js.count('ev.defaultPrevented') == 2
     # ...and passes it on to the Viewer frame.
-    assert "postMessage({ type: 'otdr-drop', files: files }" in js
+    assert "postMessage({ type: 'otdr-drop'," in js
+    assert 'files: got.map(function(o){ return o.f; })' in js
+    # ...with the folder each file came from, for the name its side goes by
+    assert 'folders: got.map(function(o){ return o.dir; })' in js
     assert re.search(r'^_install_hub_drop_catch\(\)$', app, re.M), 'not installed on every page'
 
     html = open(VIEWER_HTML, encoding='utf-8').read()

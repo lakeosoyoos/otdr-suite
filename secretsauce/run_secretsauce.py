@@ -616,6 +616,7 @@ def _emit_pairs(sor, folder, counts, emit):
         return
 
     out_pairs = []
+    sort_keys, all_pairs, n_flagged = [], [], 0
     n_files = 0
     short_traces_all = []
     window_warnings_all = []
@@ -662,73 +663,89 @@ def _emit_pairs(sor, folder, counts, emit):
             if abs(_v) > _plab.get('k_sd', 1e9):
                 _plflag.update((_x, _y))
         _cfp = analysis.get('closure_fp') or {}
+        # Only the sort keys here (the rounded values the emitted rows carry);
+        # the full rows are built below for the emitted top MAX_EMIT_PAIRS
+        # alone.  A combined A+B folder has over a million pairs, and building
+        # a row for each to keep 500 cost seconds and hundreds of MB.
         for pr in analysis['pairs']:
-            na, nb = pr['a'], pr['b']           # filename stems
-            fa = name_to_num.get(na)
-            fb = name_to_num.get(nb)
-            viewable, reason = True, None
-            if fa is None or fb is None:
-                viewable, reason = False, 'no fiber number in filename'
-            elif fa == fb:
-                viewable, reason = False, 'both files share fiber number'
-            elif num_counts.get(fa, 0) > 1 or num_counts.get(fb, 0) > 1:
-                viewable, reason = False, 'fiber number not unique in folder'
-            rec = {
-                'group': key,
-                'fileA': na, 'fileB': nb,
-                'fiberA': fa, 'fiberB': fb,
-                'score': round(float(pr['score']), 4),
-                'shape_r': (None if pr.get('shape_r') is None
-                            else round(float(pr['shape_r']), 4)),
-                'p_dup': round(float(pr['p_dup']), 4),
-                'verdict': _verdict(float(pr['p_dup'])),
-                'viewable': viewable,
-                'reason': reason,
-            }
-            if pr.get('mating_lr') is not None:
-                rec['mating_lr'] = round(float(pr['mating_lr']), 1)
-                rec['mating_p'] = round(float(pr['mating_p']), 4)
-            if pr.get('splice_diff_sd') is not None:
-                rec['splice_sd'] = round(float(pr['splice_diff_sd']), 2)
-            _cq = _closure_pair(_cfp, na, nb)
-            if _cq is not None:
-                rec['closure_p'] = round(_cq['closure_p'], 4)
-                rec['closure_max_sd'] = round(_cq['closure_max_sd'], 2)
-                if _cq['closure_same_glass']:
-                    rec['closure_same_glass'] = True
-                if _cq['closure_level']:
-                    rec['closure_level'] = _cq['closure_level']
-            if pr.get('port_len_diff_m') is not None:
-                rec['port_len_diff_cm'] = round(100.0 * float(pr['port_len_diff_m']), 1)
-                if pr.get('port_len_left_in'):
-                    rec['port_len_left_in'] = True
-                _hit = [n for n in (na, nb) if n in _plflag]
-                if _hit:
-                    rec['port_len_other_end'] = _hit
-            if pr.get('raw_identical'):
-                # Raw-identity short-circuit (report_sor): the two files carry
-                # the same acquisition data (literal copy / re-export).  Key is
-                # only present when it fired, keeping every other manifest
-                # byte-stable.
-                rec['raw_identical'] = True
-                rec['verdict'] = 'CONFIRMED duplicate (identical)'
-            out_pairs.append(rec)
+            _pd = round(float(pr['p_dup']), 4)
+            _mp = (round(float(pr['mating_p']), 4)
+                   if pr.get('mating_lr') is not None else None)
+            sort_keys.append((-_pd, -(_mp or 0.0), round(float(pr['score']), 4)))
+            if _pd > 0.5:
+                n_flagged += 1
+            all_pairs.append((key, pr, _cfp, _plflag))
 
     # Worst-first: highest likelihood, then lowest σ (most similar) as tiebreak.
     # Ties in p_dup (every pair on a folder the fingerprint cannot judge) are
     # broken by the mating likelihood, so the emitted top rows are the ones a
-    # tech should look at.  n_flagged below is untouched.
-    out_pairs.sort(key=lambda d: (-d['p_dup'], -(d.get('mating_p') or 0.0), d['score']))
-    n_flagged = sum(1 for d in out_pairs if d['p_dup'] > 0.5)
+    # tech should look at.  heapq.nsmallest(n, ...) is documented equal to
+    # sorted(...)[:n], ties kept in order, so these are the rows a full sort
+    # put first.
+    MAX_EMIT_PAIRS = 500
+    n_pairs_total = len(all_pairs)
+    import heapq
+    top_idx = heapq.nsmallest(MAX_EMIT_PAIRS, range(n_pairs_total),
+                              key=sort_keys.__getitem__)
+    for _i in top_idx:
+        key, pr, _cfp, _plflag = all_pairs[_i]
+        na, nb = pr['a'], pr['b']           # filename stems
+        fa = name_to_num.get(na)
+        fb = name_to_num.get(nb)
+        viewable, reason = True, None
+        if fa is None or fb is None:
+            viewable, reason = False, 'no fiber number in filename'
+        elif fa == fb:
+            viewable, reason = False, 'both files share fiber number'
+        elif num_counts.get(fa, 0) > 1 or num_counts.get(fb, 0) > 1:
+            viewable, reason = False, 'fiber number not unique in folder'
+        rec = {
+            'group': key,
+            'fileA': na, 'fileB': nb,
+            'fiberA': fa, 'fiberB': fb,
+            'score': round(float(pr['score']), 4),
+            'shape_r': (None if pr.get('shape_r') is None
+                        else round(float(pr['shape_r']), 4)),
+            'p_dup': round(float(pr['p_dup']), 4),
+            'verdict': _verdict(float(pr['p_dup'])),
+            'viewable': viewable,
+            'reason': reason,
+        }
+        if pr.get('mating_lr') is not None:
+            rec['mating_lr'] = round(float(pr['mating_lr']), 1)
+            rec['mating_p'] = round(float(pr['mating_p']), 4)
+        if pr.get('splice_diff_sd') is not None:
+            rec['splice_sd'] = round(float(pr['splice_diff_sd']), 2)
+        _cq = _closure_pair(_cfp, na, nb)
+        if _cq is not None:
+            rec['closure_p'] = round(_cq['closure_p'], 4)
+            rec['closure_max_sd'] = round(_cq['closure_max_sd'], 2)
+            if _cq['closure_same_glass']:
+                rec['closure_same_glass'] = True
+            if _cq['closure_level']:
+                rec['closure_level'] = _cq['closure_level']
+        if pr.get('port_len_diff_m') is not None:
+            rec['port_len_diff_cm'] = round(100.0 * float(pr['port_len_diff_m']), 1)
+            if pr.get('port_len_left_in'):
+                rec['port_len_left_in'] = True
+            _hit = [n for n in (na, nb) if n in _plflag]
+            if _hit:
+                rec['port_len_other_end'] = _hit
+        if pr.get('raw_identical'):
+            # Raw-identity short-circuit (report_sor): the two files carry
+            # the same acquisition data (literal copy / re-export).  Key is
+            # only present when it fired, keeping every other manifest
+            # byte-stable.
+            rec['raw_identical'] = True
+            rec['verdict'] = 'CONFIRMED duplicate (identical)'
+        out_pairs.append(rec)
 
-    # Cap the EMITTED pair list.  out_pairs is sorted worst-first, so the likely
+    # The EMITTED pair list is capped.  It is sorted worst-first, so the likely
     # duplicates the tech cares about are at the top; the long tail is near-zero
     # non-duplicates nobody scrolls to.  On a combined bidirectional folder that
     # tail is enormous — 864 files → 372,816 pairs, 1152 → 662,976 — and
     # emitting them all builds an ~80-140 MB manifest + HTML table that freezes
     # the browser.  Keep the TRUE totals; ship only the top rows.
-    MAX_EMIT_PAIRS = 500
-    n_pairs_total = len(out_pairs)
 
     payload = {
         'ok': True,
@@ -738,7 +755,7 @@ def _emit_pairs(sor, folder, counts, emit):
         'n_files': n_files,
         'n_pairs': n_pairs_total,
         'n_flagged': n_flagged,
-        'pairs': out_pairs[:MAX_EMIT_PAIRS],
+        'pairs': out_pairs,
         'pairs_truncated': n_pairs_total > MAX_EMIT_PAIRS,
         'pairs_shown': min(n_pairs_total, MAX_EMIT_PAIRS),
     }

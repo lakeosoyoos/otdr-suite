@@ -32,8 +32,24 @@ _LAUNCH_SKIP_M = 500
 _END_BUFFER_M  = 200
 
 
+_POS_CACHE = {}
+
+
+def _shared_pos(n, dz_m):
+    """np.arange(n) * dz_m, built once per (n, dz_m) and shared read-only by
+    every file of that acquisition: identical values, one array instead of
+    one per file (1,728 x 188 KB on a combined 864x2 folder)."""
+    key = (int(n), float(dz_m))
+    pos = _POS_CACHE.get(key)
+    if pos is None:
+        pos = np.arange(n) * dz_m
+        pos.setflags(write=False)
+        _POS_CACHE[key] = pos
+    return pos
+
+
 def load_sor_file(path):
-    r = parse_sor_full(path, trim=False)
+    r = parse_sor_full(path, trim=False, with_events=False)
     if r is None:
         raise ValueError(f'unparseable: {path}')
     trace = r['trace']
@@ -41,7 +57,7 @@ def load_sor_file(path):
     if not sp or sp <= 0:
         raise ValueError(f'bad sampling period: {path}')
     dz_m = 299792458.0 * sp / (2.0 * _IOR)
-    pos = np.arange(len(trace)) * dz_m
+    pos = _shared_pos(len(trace), dz_m)
     length_m = r.get('exfo_spans_length') or (pos[-1] if len(pos) else 0.0)
     events = r.get('events') or []
     # Pulse width expressed in SAMPLES.  The speckle high-pass has to cut at
@@ -125,6 +141,7 @@ def _compute_pair_metrics_batch(files, interior_start, interior_end, min_samples
         slope = float(((ps - pm) * (ts - tm)).sum() / denom) if denom > 0 else 0.0
         intercept = float(tm - slope * pm)
         M_det[k] = ts - (slope * ps + intercept)
+    del interior, ts, ps
 
     # σ(M[i] - M[j]) for all pairs via the variance-decomposition identity
     # on MEAN-CENTERED rows:
@@ -139,9 +156,12 @@ def _compute_pair_metrics_batch(files, interior_start, interior_end, min_samples
     # numerical artifacts as duplicates (Lumen Border LAM/BEY, 2026-07-23).
     # Centered values span ~±1 dB, so the same identity is exact to ~1e-8.
     M64 = M_raw.astype(np.float64)
+    del M_raw
     M0 = M64 - M64.mean(axis=1, keepdims=True)
+    del M64
     v = (M0 ** 2).mean(axis=1)
     C0 = (M0 @ M0.T) / float(N)
+    del M0
     var_ij = v[:, None] + v[None, :] - 2.0 * C0
     sigma_matrix = np.sqrt(np.maximum(var_ij, 0.0))
 
@@ -164,20 +184,24 @@ def _compute_pair_metrics_batch(files, interior_start, interior_end, min_samples
     # dominate the trace. With it, two truly-different short fibers
     # uncorrelate to near zero.
     M_det64 = M_det.astype(np.float64)
+    del M_det
     if tie_panel_mode:
         # Subtract the median trace across all files: removes the shared
         # launch + connector signal so the per-fiber Rayleigh fingerprint
         # is what r actually measures. Median (not mean) is robust to the
         # presence of real duplicates in the dataset.
         group_ref = np.median(M_det64, axis=0, keepdims=True)
-        M_fingerprint = M_det64 - group_ref
+        M_det64 -= group_ref
+        M_fingerprint = M_det64
     else:
         # Production mode: skip fingerprint extraction. Real same-fiber
         # duplicates with naturally-low r (0.85-0.94) on long fibers
         # shouldn't be demoted by an aggressive shared-signal subtraction.
         M_fingerprint = M_det64
     # Re-center each row's residual fingerprint (should already be near zero).
-    Mc = M_fingerprint - M_fingerprint.mean(axis=1, keepdims=True)
+    Mc = M_fingerprint
+    del M_fingerprint, M_det64
+    Mc -= Mc.mean(axis=1, keepdims=True)
     std = np.sqrt((Mc ** 2).mean(axis=1))
     std_outer = np.outer(std, std)
     np.maximum(std_outer, 1e-12, out=std_outer)
@@ -3473,22 +3497,33 @@ def _mating_top(analysis, n=20):
     stays absent and every unaffected manifest is byte-stable (additive)."""
     if not (analysis or {}).get('mating'):
         return []
-    ranked = [p for p in analysis.get('pairs') or [] if p.get('mating_lr') is not None]
+    import heapq
     # The likelihood ratio is quantised: it reads bin indices, so at most
     # _MATING_NULL_BINS ** len(features) distinct values exist and the top one
-    # is shared.  On Goodland->Monument 36 pairs sat on the ceiling and the
-    # displayed top 20 was simply the first 20 alphabetically.  Raising the bin
-    # count breaks the ties but costs discrimination (measured on retruetest:
-    # 10 of 66 true pairs in the top 10 at 24 bins, 7 at 400), so the ratio is
-    # left exactly as calibrated and ties are ordered by how alike the pair is
-    # inside its own folder.  Display only; no likelihood value moves.
-    ranked.sort(key=lambda p: (-p['mating_lr'], -(p.get('mating_tie') or 0.0)))
+    # is shared by many pairs.  Raising the bin count breaks the ties but costs
+    # discrimination (measured: 10 of 66 true pairs in the top 10 at 24 bins,
+    # 7 at 400), so the ratio is left exactly as calibrated and ties are
+    # ordered by how alike the pair is inside its own folder.  Display only;
+    # no likelihood value moves.
+    _key = lambda p: (-p['mating_lr'], -(p.get('mating_tie') or 0.0))
+    # Group first, then take each instrument's own top n: a stable sort then a
+    # filter equals a filter then a stable sort, and nsmallest(n) equals
+    # sorted(...)[:n], so the rows are the ones the full sort produced.
+    # Groups carry (list index, pair) so the round-robin below can start from
+    # the instrument whose best pair the full stable sort put first: main
+    # inserted the groups in that order, and on a two-OTDR folder (the hub's
+    # combined A+B folder) the interleave depends on it.
+    by_inst = {}
+    for _ix, pr in enumerate(analysis.get('pairs') or []):
+        if pr.get('mating_lr') is not None:
+            by_inst.setdefault(pr.get('mating_inst'), []).append((_ix, pr))
+    _tk = lambda t: (_key(t[1]), t[0])
+    _tops = [heapq.nsmallest(n, v, key=_tk) for v in by_inst.values()]
+    _tops.sort(key=lambda top: _tk(top[0]))
+    by_inst = {top[0][1].get('mating_inst'): [t[1] for t in top] for top in _tops}
     # Each instrument's ratio is calibrated against that instrument's own
     # density, so the two are not on one scale and a straight merge lets the
     # louder one fill the whole list.  Take from each in turn instead.
-    by_inst = {}
-    for pr in ranked:
-        by_inst.setdefault(pr.get('mating_inst'), []).append(pr)
     if len(by_inst) > 1:
         queues = [iter(v) for v in by_inst.values()]
         ranked, done = [], False
@@ -3499,6 +3534,8 @@ def _mating_top(analysis, n=20):
                 if nxt is not None:
                     ranked.append(nxt)
                     done = False
+    else:
+        ranked = next(iter(by_inst.values()), [])
     out = []
     for p in ranked[:n]:
         rec = {'a': p['a'], 'b': p['b'],
@@ -3846,16 +3883,18 @@ def _mating_likelihood(files, pairs):
     feats = {f['name']: _mating_file_features(f) for f in files}
     gates = _mating_gates(files, feats)
     active = [k for k in _MATING_FEATURES if k not in gates['dropped']]
-    cols = {k: np.full(n, np.nan) for k in active}
     keymap = {'dl0': 'l0', 'dl1': 'l1', 'dr1': 'r1', 'dr0': 'r0', 'drE': 'rE'}
-    for i, p in enumerate(pairs):
-        fa, fb = feats.get(p['a']), feats.get(p['b'])
-        if not fa or not fb:
-            continue
-        for k in active:
-            va, vb = fa[keymap[k]], fb[keymap[k]]
-            if va is not None and vb is not None:
-                cols[k][i] = abs(float(va) - float(vb))
+    _fnames = list(feats)
+    _fidx = {nm: j for j, nm in enumerate(_fnames)}
+    _miss = len(_fnames)                       # row of NaN for a name not in feats
+    ia = np.fromiter((_fidx.get(p['a'], _miss) for p in pairs), dtype=np.intp, count=n)
+    ib = np.fromiter((_fidx.get(p['b'], _miss) for p in pairs), dtype=np.intp, count=n)
+    cols = {}
+    for k in active:
+        fv = np.array([np.nan if feats[nm][keymap[k]] is None
+                       else float(feats[nm][keymap[k]]) for nm in _fnames]
+                      + [np.nan], dtype=np.float64)
+        cols[k] = np.abs(fv[ia] - fv[ib])
     # ── One instrument at a time ────────────────────────────────────────────
     # A folder can carry two OTDRs.  Goodland->Monument is 1,152 files shot by
     # an FTBx-730D (serial 1882155, fibres 1-576) and an FTBx-730C (1723374,
@@ -3911,8 +3950,9 @@ def _mating_likelihood(files, pairs):
             continue
         lr *= f_lr
         used.append(k)
-        for i, p in enumerate(pairs):
-            p['mating_' + k] = None if np.isnan(x[i]) else float(x[i])
+        _key = 'mating_' + k
+        for p, v in zip(pairs, x.tolist()):
+            p[_key] = None if v != v else v
     if not used:
         for p in pairs:
             p['mating_lr'] = None
@@ -3926,17 +3966,18 @@ def _mating_likelihood(files, pairs):
             scored |= gm
     prior = _MATING_PRIOR_DUPS / max(int(scored.sum()), 1)
     post = prior * lr / (prior * lr + 1.0 - prior)
-    for i, p in enumerate(pairs):
-        if not scored[i]:
+    for p, _sc, _lr, _po, _ti, _in in zip(pairs, scored.tolist(), lr.tolist(),
+                                          post.tolist(), tie.tolist(), inst.tolist()):
+        if not _sc:
             # two different OTDRs: the features compare hardware, not matings
             p['mating_lr'] = None
             p['mating_p'] = None
             p['mating_tie'] = None
             continue
-        p['mating_lr'] = float(lr[i])
-        p['mating_p'] = float(post[i])
-        p['mating_tie'] = float(tie[i])
-        p['mating_inst'] = inst[i]
+        p['mating_lr'] = _lr
+        p['mating_p'] = _po
+        p['mating_tie'] = _ti
+        p['mating_inst'] = _in
     lr = np.where(scored, lr, -np.inf)
     top = int(np.argmax(lr))
     return {'n_pairs': int(scored.sum()), 'features': used, 'prior': prior,
@@ -4213,19 +4254,22 @@ def _analyze_sor(folder):
         i = valid_idx[ki]
         name_i = files[i]['name']
         len_i = files[i].get('length')
+        _sig_row = sigma_matrix[ki].tolist()
+        _r_row = r_matrix[ki].tolist()
+        _raw_row = (r_raw_aligned[ki].tolist()
+                    if r_raw_aligned is not None else None)
         for kj in range(ki + 1, K):
             j = valid_idx[kj]
             len_j = files[j].get('length')
             len_delta = (abs(len_i - len_j) if (len_i and len_j) else None)
-            sigma_ij = float(sigma_matrix[ki, kj])
-            raw_r_ij = (float(r_raw_aligned[ki, kj])
-                        if r_raw_aligned is not None else None)
+            sigma_ij = _sig_row[kj]
+            raw_r_ij = (_raw_row[kj]
+                        if _raw_row is not None else None)
             pairs.append({
                 'a': name_i,
                 'b': files[j]['name'],
                 'score': sigma_ij,
-                'shape_r': float(r_matrix[ki, kj]),
-                'shape_r_raw': raw_r_ij,
+                'shape_r': _r_row[kj],
                 'raw_identical': bool(raw_r_ij is not None
                                       and raw_r_ij >= _RAW_IDENT_R
                                       and sigma_ij <= _RAW_IDENT_SIGMA_DB),
@@ -4561,8 +4605,9 @@ def _analyze_sor(folder):
     file_events = {f['name']: f.get('events') for f in files}
     events_violation = np.zeros(len(pairs), dtype=bool)
     EVENT_CHECK_THRESHOLD = 0.10
+    _pdr_l = p_dup_raw.tolist()
     for i, p in enumerate(pairs):
-        if p_dup_raw[i] < EVENT_CHECK_THRESHOLD:
+        if _pdr_l[i] < EVENT_CHECK_THRESHOLD:
             continue
         (n_match, n_max, n_min, mean_dloss, max_dloss,
          median_dloss, n_max_sig) = _event_match_quality(
@@ -4770,9 +4815,10 @@ def _analyze_sor(folder):
     arg1, arg2 = arg_sorted[:, 0], arg_sorted[:, 1]
     uniq_rival = {}                       # pair index -> (row, rival row)
     pidx = 0
+    _pdr_l = p_dup_raw.tolist()
     for ki in range(Ksz):
         for kj in range(ki + 1, Ksz):
-            if p_dup_raw[pidx] > 0.5:
+            if _pdr_l[pidx] > 0.5:
                 s = float(sigma_matrix[ki, kj])
                 take_i = s <= best1[ki]
                 take_j = s <= best1[kj]
@@ -4805,7 +4851,7 @@ def _analyze_sor(folder):
     name_to_serial = {f['name']: f.get('serial_number') for f in files}
     serial_violation = np.zeros(len(pairs), dtype=bool)
     for i, p in enumerate(pairs):
-        if p_dup_raw[i] <= 0.5:
+        if _pdr_l[i] <= 0.5:
             continue
         sa, sb_ = name_to_serial.get(p['a']), name_to_serial.get(p['b'])
         if sa and sb_ and sa != sb_ and not p.get('raw_identical'):
@@ -4886,7 +4932,7 @@ def _analyze_sor(folder):
     # are measured, so the cost is O(files in candidate pairs) + the one
     # folder-null sample, not O(pairs).
     speckle_violation = np.zeros(len(pairs), dtype=bool)
-    cand = [i for i in range(len(pairs)) if p_dup[i] > 0.5]
+    cand = np.flatnonzero(p_dup > 0.5).tolist()
     n_unmeas = n_abstain = 0
     null_q = None
     if cand:
@@ -5045,14 +5091,11 @@ def _analyze_sor(folder):
               % (sum(len(r['names']) for r in fill_ins), len(fill_ins),
                  _FILL_IN_FAR_S / 60.0))
 
-    for i, p in enumerate(pairs):
-        p['p_dup_sigma']   = float(p_dup_sigma[i])
-        p['p_dup_r']       = float(p_dup_r[i])
-        p['p_dup_raw']     = float(p_dup_raw[i])
-        p['p_dup']         = float(p_dup[i])
-        p['length_capped'] = bool(length_violation[i])
-        p['events_capped'] = bool(events_violation[i])
-        p['z']             = float(stats['z'][i])
+    for p, _praw, _pd, _ev in zip(
+            pairs, p_dup_raw.tolist(), p_dup.tolist(), events_violation.tolist()):
+        p['p_dup_raw']     = _praw
+        p['p_dup']         = _pd
+        p['events_capped'] = _ev
 
     order = np.argsort(scores)
     n99 = int((p_dup > 0.99).sum())
@@ -5764,9 +5807,10 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     ws = wb.create_sheet('Top 30 highest similarity')
     headers = ['Rank', 'Pair A', 'Pair B', 'Time Gap (s)', 'Similarity',
                'Level of Disagreement', 'Duplicate Likelihood (%)']
-    sim_sorted = sorted([(i, p) for i, p in enumerate(pairs)
-                         if p.get('shape_r') is not None],
-                        key=lambda x: -x[1]['shape_r'])[:30]
+    import heapq
+    sim_sorted = heapq.nsmallest(30, ((i, p) for i, p in enumerate(pairs)
+                                      if p.get('shape_r') is not None),
+                                 key=lambda x: -x[1]['shape_r'])
     rows_data = []
     for rank, (_, p) in enumerate(sim_sorted, 1):
         rows_data.append([
@@ -5813,8 +5857,8 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
                    'Δ Launch Loss (mdB)', 'Δ First-Connector Loss (mdB)',
                    'Δ First-Connector Refl (dB)', 'Δ Launch Refl (dB)',
                    'Δ End Refl (dB)', 'Duplicate Likelihood (%)']
-        m_sorted = sorted([p for p in pairs if p.get('mating_lr') is not None],
-                          key=lambda q: -q['mating_lr'])[:50]
+        m_sorted = heapq.nsmallest(50, (p for p in pairs if p.get('mating_lr') is not None),
+                                   key=lambda q: -q['mating_lr'])
         rows_data = []
         for rank, p in enumerate(m_sorted, 1):
             def _md(k):
