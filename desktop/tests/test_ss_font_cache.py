@@ -54,8 +54,8 @@ def test_a_stale_lock_from_a_stopped_run_is_cleared(tmp_path):
     keep.mkdir(parents=True)
     stale = keep / "fontlist-v390.json.matplotlib-lock"
     fresh = keep / "other.json.matplotlib-lock"
-    stale.write_text("")
-    fresh.write_text("")
+    stale.write_text("", encoding="utf-8")
+    fresh.write_text("", encoding="utf-8")
     old = stale.stat().st_mtime - 3600
     os.utime(stale, (old, old))
     _import_runner(tmp_path, True)
