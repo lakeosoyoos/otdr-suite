@@ -2098,7 +2098,6 @@ function clearAll() {
   COLORS_USED.clear();
   clearFileSelection();
   gPickKey = null;                   // nothing left to point at
-  syncFiberBox();
   gAutoFit = true;
   gView = null;
   gMarkers = { a: null, b: null };   // drop stale markers — they're meaningless
@@ -2124,11 +2123,16 @@ function renderChips() {
 // The Fibers box says what is loaded, however it got there: a FILES-panel
 // click, a removal, a report jump.  It kept the last typed list, so after
 // Clear All it still read "1-240" over an empty chart.  Left alone while the
-// tech is typing in it.
+// tech is typing in it.  The Dir buttons follow too: A, B or A + B by the
+// folder each trace comes from (`src`), which is what Add loads from, not
+// the direction it is drawn as after a Direction change.
 function syncFiberBox() {
   const box = document.getElementById('fiber-input');
   if (document.activeElement === box) return;
   box.value = fiberRangeText(gTraces.map(t => t.fiber));
+  if (!gTraces.length) return;
+  const dirs = new Set(gTraces.map(t => t.src || t.dir));
+  setAddDir(dirs.size === 1 ? [...dirs][0] : 'both');
 }
 
 // [1,2,3,4,7,9,10] -> "1-4, 7, 9, 10": a run of three or more is a range,
@@ -2615,19 +2619,6 @@ function syncFileMarks() {
   gSelectedFiles.clear();
   for (const t of gTraces) gSelectedFiles.add(t.key);
   syncFiberBox();
-}
-
-// The Fibers box and Dir buttons say what is selected in FILES: 64, 67,
-// 169-180 and A, B or A + B.  Left alone while the tech is typing in it.
-function syncFiberBox() {
-  const box = document.getElementById('fiber-input');
-  if (document.activeElement === box) return;
-  box.value = fiberRanges(gTraces.map(t => +t.fiber).filter(Number.isFinite));
-  if (!gTraces.length) return;
-  // The folder each trace comes from (`src`), which is what Add loads from,
-  // not the direction it is drawn as after a Direction change.
-  const dirs = new Set(gTraces.map(t => t.src || t.dir));
-  setAddDir(dirs.size === 1 ? [...dirs][0] : 'both');
 }
 
 const filesList = document.getElementById('files-list');
