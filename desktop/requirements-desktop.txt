@@ -4,12 +4,15 @@
 # against any transitive bump.  Build with Python 3.11 (NOT 3.12+).
 
 # 1. setuptools pin — MUST be exactly 65.5.1 (co-pinned with Python 3.11).
-#    Newer setuptools makes pkg_resources strict and crashes the frozen exe
-#    at launch with "InvalidVersion: '.../OTDRSuite'".
+#    Newer setuptools makes pkg_resources strict, which crashed the frozen
+#    exe at launch with "InvalidVersion: '.../OTDRSuite'" while the exe
+#    bundled pkg_resources.  Since 2026-10 it does not (see OTDRSuite.spec);
+#    the pin keeps the build venv as it was proven.
 setuptools==65.5.1
 
-# 2. pkg_resources' vendored packages installed as real top-level packages
-#    so its extern-importer has a working runtime fallback.
+# 2. pkg_resources' vendored packages, installed as real top-level packages
+#    for its extern-importer.  Since 2026-10 they are no longer bundled into
+#    the exe; they stay in the build venv so it is unchanged.
 jaraco.text
 jaraco.functools
 jaraco.context
