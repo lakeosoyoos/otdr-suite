@@ -176,6 +176,9 @@ def test_signed_update_accepts_good_and_rejects_tampered(monkeypatch, tmp_path):
 
     staging = tmp_path / "staging"
     monkeypatch.setattr(L, "_fetch", good_fetch)
+    # Nothing cached, so version 9 is newer (a real cache on the test machine
+    # would make it "not newer" and skip the download).
+    monkeypatch.setattr(L, "_cached_version", lambda: 0)
     got = L._try_auto_update(staging)
     assert got is not None and got["__version_int"] == 9
     assert (staging / "app.py").exists()
@@ -219,4 +222,5 @@ def test_signed_update_rejects_hash_mismatch(monkeypatch, tmp_path):
 
     staging = tmp_path / "staging"
     monkeypatch.setattr(L, "_fetch", poisoned_fetch)
+    monkeypatch.setattr(L, "_cached_version", lambda: 0)   # the files ARE fetched
     assert L._try_auto_update(staging) is None     # rejected on SHA mismatch

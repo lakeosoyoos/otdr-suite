@@ -221,7 +221,12 @@ def _uni_run(at, dest):
 
 def test_the_direction_pick_survives_a_trip(mixed):
     folder, dest = mixed
-    at = _uni_run(_open(_hub(folder), 'Unidirectional'), dest)
+    # Uni's own folder box, the left panel empty: in the left panel a folder
+    # holding two directions is split into A and B (_panel_dirs), so Uni
+    # would run on one direction there and offer no Direction pick.
+    at = _open(_hub(), 'Unidirectional')
+    at.text_input(key='uni_folder_input').input(folder).run()
+    at = _uni_run(at, dest)
     pick = at.selectbox(key='uni_dir_pick')
     assert len(pick.options) == 3, pick.options       # most populous + 2
     pick.set_value(pick.options[2]).run()
@@ -231,7 +236,12 @@ def test_the_direction_pick_survives_a_trip(mixed):
 
 def test_a_kept_direction_that_is_no_longer_offered_is_left_out(mixed):
     folder, dest = mixed
-    at = _uni_run(_open(_hub(folder), 'Unidirectional'), dest)
+    # Uni's own folder box, the left panel empty: in the left panel a folder
+    # holding two directions is split into A and B (_panel_dirs), so Uni
+    # would run on one direction there and offer no Direction pick.
+    at = _open(_hub(), 'Unidirectional')
+    at.text_input(key='uni_folder_input').input(folder).run()
+    at = _uni_run(at, dest)
     _open(at, 'Viewer')
     # As after a new run whose directions (or fibre counts) differ.
     at.session_state['uni_dir_pick_saved'] = 'NOT->OFFERED  (6 fibers)'

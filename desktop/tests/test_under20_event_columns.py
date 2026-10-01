@@ -8,7 +8,9 @@ call a closure, a phantom or a bend from, so:
   events line up across the fibres, from either end.  Every fibre's A, B and
   average are read there; the loss gate, breaks, reflectance and the ILA end
   columns still flag.  No Splice/Bends/Damage column, no bend cell.
-- Unidirectional report: the same, at the uni gate.
+- Unidirectional report: the same, at the uni gate, for up to 50 fibres
+  (UNI_EVENT_JOB_MAX, Robert 2026-09-30: "small uni jobs, use events", "up to
+  50").
 - The Viewer shows FR's table for such a job: the report writes it no table.
 - A panel tie keeps its own layout (Robert's choice): bidir when the span
   structure pass recognises it, uni when the span is no longer than
@@ -201,3 +203,23 @@ def test_the_viewer_stands_fr_s_table_in_for_an_event_job(monkeypatch):
     assert out["error"] == "under 20 fibres loaded, the report lists events", out
     html = (REPO_ROOT / "viewer" / "viewer.html").read_text(encoding="utf-8")
     assert "standIn();" in html
+
+
+def test_uni_events_reach_fifty_fibres_inclusive(tmp_path):
+    """Robert 2026-09-30: small uni jobs use events "up to 50".  The limit is
+    UNI_EVENT_JOB_MAX (50) and it is inclusive: the 24-fibre splice_A job
+    lists events at a limit of 24 and calls closures again at 23."""
+    _engine("""
+    assert E.UNI_EVENT_JOB_MAX == 50
+    print('OK')
+    """)
+    def labels(limit):
+        m, _, _ = _runner(tmp_path, "--uni", "--dir-a", FIXTURE_DIR / "splice_A",
+                          "--overrides", json.dumps({"UNI_EVENT_JOB_MAX": limit}))
+        return [c["label"] for c in m["uni"]["grid_columns"]]
+    at = labels(24)
+    assert any(l.startswith("Event ") for l in at), at
+    assert not any(l.startswith(("Splice ", "Bend/Damage")) for l in at), at
+    below = labels(23)
+    assert not any(l.startswith("Event ") for l in below), below
+    assert any(l.startswith("Splice ") for l in below), below

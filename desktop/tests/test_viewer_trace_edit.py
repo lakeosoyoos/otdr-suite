@@ -216,7 +216,7 @@ def _server_src():
 
 def test_the_span_menu_offers_the_edit_dialog():
     h = _html()
-    assert 'Edit trace settings' in h
+    assert 'Trace settings (IOR, names)' in h
     assert 'showEditDialog(dir, fiber)' in h
 
 
