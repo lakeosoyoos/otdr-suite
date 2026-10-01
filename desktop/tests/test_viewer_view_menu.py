@@ -103,11 +103,51 @@ def test_the_fr_bidirectional_grid_blanks_the_same_way():
 
 def test_the_panel_hint_names_whichever_view_is_on():
     # once per event table: single-direction, FastReporter A+B, OTDR Suite A+B.
-    # The Suite caption is only the filter words (2026-09-29), so no leading dot.
-    assert SRC.count("' · flagged rows only'") == 2
-    assert SRC.count("' · failing cells only'") == 2
-    suite = SRC.split("function paintSuiteBidiGrid(", 1)[1].split("\n}\n", 1)[0]
-    assert "'flagged rows only'" in suite and "'failing cells only'" in suite
-    for painter in ("renderFastReporterGrid", "paintFrBidiGrid"):
+    # Every caption is only the filter words (Suite 2026-09-29, the other two
+    # 2026-09-30), joined with ' · ', so no leading dot.
+    assert "' · flagged rows only'" not in SRC
+    for painter in ("paintSuiteBidiGrid", "renderFastReporterGrid", "paintFrBidiGrid"):
         body = SRC.split("function " + painter + "(", 1)[1].split("\n}\n", 1)[0]
-        assert "' · flagged rows only'" in body and "' · failing cells only'" in body, painter
+        assert "'flagged rows only'" in body and "'failing cells only'" in body, painter
+        assert "].filter(Boolean).join(' · ');" in body, painter
+
+
+def test_the_view_switches_sit_behind_a_gear():
+    """Robert 2026-09-29: the check boxes behind a settings icon with a drop
+    down, plus Show averages only.  The gear is lit while any is on."""
+    title = SRC.split('<div id="evt-title">', 1)[1].split("</div>", 1)[0]
+    assert 'id="evt-view-btn"' in title and 'id="evt-view-menu"' in title
+    menu = title.split('id="evt-view-menu"', 1)[1]
+    for box in ('set-failcells', 'set-warncells', 'set-sections-off', 'set-avg-only'):
+        assert f'id="{box}"' in menu, box
+    assert 'Show averages only' in menu
+    assert "btn.classList.toggle('on', on.length > 0);" in SRC
+    # the menu is fixed and the sticky header lifted, or the table covers it
+    assert "position: fixed; z-index: 50;" in SRC
+    head = SRC.split('#event-panel-header {\n    padding', 1)[1].split('}', 1)[0]
+    assert 'z-index: 20;' in head
+
+
+def test_averages_only_keeps_each_fibres_average_row():
+    """Both two-direction tables (FastReporter and OTDR Suite): with no cell
+    filter on, each fibre keeps its Average row alone.  With one on, the
+    filter's rule decides the direction rows, so a connector's failing
+    direction still shows (#370) and averages-only changes nothing."""
+    rule = ("    .filter(w => (!collapse || w === 'avg' || legKept(fi, w))\n"
+            "              && (collapse || !gAvgOnly || w === 'avg')).map(w => [fi, w]));")
+    assert SRC.count(rule) == 2
+    assert "localStorage.setItem('otdr_viewer_avg_only'" in SRC
+    item = SRC.split("function viewItems() {", 1)[1].split("\n}", 1)[0]
+    assert "${gAvgOnly ? '✓ ' : ''}Show averages only" in item
+    suite = SRC.split("function paintSuiteBidiGrid(", 1)[1].split("\n}\n", 1)[0]
+    assert "if (gAvgOnly && !cellFilterOn())" in suite and "'averages only'" in suite
+
+
+def test_the_gate_note_stays_on_screen_when_it_is_news():
+    """Robert 2026-09-29: "(following OTDR Settings 0.160 dB)" is gone, on
+    hover only.  A down Settings box, an override, loss grading off and a
+    one-direction load on a bidirectional report still show beside the box."""
+    fn = SRC[SRC.index('function syncGateUI'):][:1600]
+    assert ("const unusual = flagsOff() || gGateOverride != null || gateIsOff()\n"
+            "    || (gSourceReport !== 'uni' && oneDirOnly());") in fn
+    assert "lbl.textContent = unusual ? `(${gateLabel()})` : '';" in fn

@@ -246,6 +246,15 @@ def test_writer_full_sheet_order_with_fibers(tmp_path):
     wb = openpyxl.load_workbook(out)
     assert wb.sheetnames == ['Acquisition Parameters', 'Reburn Percentage',
                              'Unidir Events', 'Legend', 'Flagged Events']
+    # Every cell on every sheet has its text centred (2026-09-29).
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for c in row:
+                assert (c.alignment.horizontal, c.alignment.vertical) == (
+                    'center', 'center'), f"{ws.title}!{c.coordinate}"
+    # A line longer than its column wraps, so centring can't cut off its
+    # start: the Reburn Percentage subtitle sits in column A (2026-09-29).
+    assert wb['Reburn Percentage']['A2'].alignment.wrap_text
 
 
 # ── Runner contract ─────────────────────────────────────────────────────

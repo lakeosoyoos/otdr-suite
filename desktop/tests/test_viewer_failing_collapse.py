@@ -75,7 +75,7 @@ def test_a_connector_keeps_each_failing_direction():
             "    if (which === 'avg') return clearsAt(x.row.loss, gateFor(isRefl(x), false));\n"
             "    if (legReflFails(x, which)) return true;\n"
             "    const leg = x.row[which];\n"
-            "    if (!legOk(leg)) return false;\n"
+            "    if (!legOk(leg) || gainerHidden(leg.loss)) return false;\n"   # Show gainers
             "    return clearsAt(leg.loss, gateFor(isRefl(x), true));\n"
             "  };") in FN
     assert "const legOk = leg => !!leg && !leg.synthetic && !(Number(leg.status || 0) & 0x08);" in FN

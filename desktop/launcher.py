@@ -56,6 +56,8 @@ APP_URL      = f"http://{HOST}:{PORT}"
 #   2. fetch manifest.sig (a detached Ed25519 signature over the EXACT
 #      manifest bytes),
 #   3. VERIFY that signature against UPDATE_PUBLIC_KEY_HEX (baked below),
+#      and stop there when manifest.version is not newer than the cached
+#      version (nothing to download; step 5 would refuse it anyway),
 #   4. fetch each ENGINE_FILE and check its SHA-256 against the manifest,
 #   5. refuse the swap unless manifest.version > the cached version
 #      (anti-rollback), then atomically swap into ~/.otdrSuite/engine.
@@ -520,6 +522,16 @@ def _try_auto_update(staging: Path):
         _report_install_needed(reason)
         return None
 
+    # 3b. Nothing newer than the cache: the swap in _prepare_engine refuses an
+    #     older-or-equal version (anti-rollback), so do not download 43 files
+    #     just to throw them away.  Same predicate, checked before the fetch.
+    #     That download was 7-13 s of every boot with no new publish.  A
+    #     damaged or missing cache reports version 0, so a repair still fetches.
+    cur = _cached_version()
+    if version <= cur:
+        print(f"auto-update: version {version} <= cached {cur}, nothing to fetch")
+        return None
+
     # 4. fetch each file into staging and check its SHA-256 against the manifest
     staging.mkdir(parents=True, exist_ok=True)
     # Pin to the manifest's own commit so a merge landing mid-update cannot
@@ -935,13 +947,19 @@ def _silence_first_run_prompt() -> None:
     os.environ.setdefault("STREAMLIT_GLOBAL_DEVELOPMENT_MODE", "false")
     os.environ.setdefault("STREAMLIT_SERVER_ADDRESS", HOST)
     os.environ.setdefault("STREAMLIT_SERVER_PORT", str(PORT))
+    # No developer toolbar ("Deploy" button) in the hub's header.
+    os.environ.setdefault("STREAMLIT_CLIENT_TOOLBAR_MODE", "viewer")
     # Light theme to match the viewer (per-process so it doesn't touch the
     # tech's other Streamlit apps via a global config).
     os.environ.setdefault("STREAMLIT_THEME_BASE", "light")
     os.environ.setdefault("STREAMLIT_THEME_PRIMARY_COLOR", "#2c5b8a")
     os.environ.setdefault("STREAMLIT_THEME_BACKGROUND_COLOR", "#ffffff")
     os.environ.setdefault("STREAMLIT_THEME_SECONDARY_BACKGROUND_COLOR", "#eef3f8")
-    os.environ.setdefault("STREAMLIT_THEME_TEXT_COLOR", "#1f2a36")
+    # Black lettering, as .streamlit/config.toml has had since 2026-09-22
+    # ("the grey-blue read badly"); the exe reads this, not that file.
+    os.environ.setdefault("STREAMLIT_THEME_TEXT_COLOR", "#000000")
+    # Windows' own font (2026-09-24), matching .streamlit/config.toml.
+    os.environ.setdefault("STREAMLIT_THEME_FONT", "Segoe UI, sans-serif")
     # NOTE: OTDR_SUITE_HOME is set in main() AFTER _prepare_engine() chooses the
     # engine source (updated cache vs bundled), so the hub + subprocess load the
     # same code.

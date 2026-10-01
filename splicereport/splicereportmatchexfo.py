@@ -152,7 +152,7 @@ AVG_LAUNCH_SKIP_KM = 0.01
 
 # Per-fiber span ATTENUATION gate, dB/km.  0 = off (default).  Graded on the
 # span loss and span length EXFO stores in every file -- the loss is the
-# number FastReporter prints as "Span Loss (dB)" (exact on 1152 WSC<->SUI
+# number FastReporter prints as "Span Loss (dB)" (exact on 1152 job R
 # fibers) -- per direction and averaged.  AWS / IIG MT.1085: 0.250 dB/km.
 FIBER_ATTEN_DB_KM = 0.0
 # Per-fiber ORL floor, dB.  0 = off (default).  This is the OTDR's own total
@@ -343,8 +343,8 @@ NO_LAUNCH_DEAD_KM = 0.3    # km — the launch zone when the A population is
 # REFLECTIVE.  Usually it is — it is a mated bulkhead, a glass-air-glass
 # interface.  But the OTDR only tables a reflectance when its own peak
 # estimator fires, and occasionally it tables the very same connector as a
-# plain non-reflective '0F' step with reflectance 0.000.  WSC↔SUI F242 is the
-# case that surfaced this: its Suisun launch connector is `0F9999LS` @1.0197 km
+# plain non-reflective '0F' step with reflectance 0.000.  job R F242 is the
+# case that surfaced this: its B-end launch connector is `0F9999LS` @1.0197 km
 # carrying 0.263 dB, so the frame was never shifted, the connector landed
 # 933 m off the 63.9701 km ILA column, was swept into Splice 12 and printed as
 # `242 .238` — a false reburn on a connector.
@@ -358,10 +358,10 @@ NO_LAUNCH_DEAD_KM = 0.3    # km — the launch zone when the A population is
 # event #2 is the first real splice.  Measured (17 directions, ~9,900 fibers):
 #
 #   direction   n     refl-launch      reel median   max dev   non-refl #2 in 3 km
-#   WSC_A     1152   1152 (100.0%)       1.0350 km    30.6 m   —
-#   SUI_B     1152   1151  (99.9%)       1.0044 km     0.0 m   1 @ 1.0197 (+15.3 m)  ← F242
-#   WSCsh_A   1152   1146  (99.5%)       1.0009 km    34.8 m   6 @ 0.7…29.3 m
-#   SUIsh_B   1152   1152 (100.0%)       1.0076 km     6.3 m   —
+#   R_A       1152   1152 (100.0%)       1.0350 km    30.6 m   —
+#   R_B       1152   1151  (99.9%)       1.0044 km     0.0 m   1 @ 1.0197 (+15.3 m)  ← F242
+#   Rsh_A     1152   1146  (99.5%)       1.0009 km    34.8 m   6 @ 0.7…29.3 m
+#   Rsh_B     1152   1152 (100.0%)       1.0076 km     6.3 m   —
 #   MIL_A     1152   1152 (100.0%)       1.0070 km     2.5 m   —
 #   TOP_B     1152   1152 (100.0%)       1.0095 km     2.5 m   —
 #   NIL_A      453    453 (100.0%)       0.9993 km     7.7 m   —
@@ -392,14 +392,14 @@ LAUNCH_REEL_TOL_KM   = 0.025  # km — how far a NON-reflective candidate may si
                               # from the direction's reel median and still be
                               # the reel connector.
                               #   • accepts F242 at +15.3 m (1.6x margin) and
-                              #     5 of the 6 WSC short-shot non-reflective
+                              #     5 of the 6 job R short-shot non-reflective
                               #     launch connectors (0.7-3.2 m), which are
                               #     unambiguous: those files hold three events
                               #     — port, this one, and EOF.
                               #   • the nearest STRUCTURAL confusable measured
                               #     on any consensus-bearing direction is a
                               #     real closure 32.5 m past the reel
-                              #     (WSCSUIsh0203; the Suisun ILA sits ~89 m
+                              #     (job R short F203; the B-end ILA sits ~89 m
                               #     past its connector).  25 m stays under it
                               #     deliberately.
                               # Held below the widest reel dispersion seen
@@ -824,11 +824,11 @@ def _bend_res_bend_m():
     placement error):
 
         span         pulse    smear    |Δpos| p95   |Δpos| p99   max
-        WSC↔SUI       500 ns    51 m       43 m        61 m      102 m
+        job R         500 ns    51 m       43 m        61 m      102 m
         KANLAN       2500 ns   255 m      168 m       230 m      592 m
 
     The smear tracks the measured p99 on both spans, so it is the right floor.
-    On WSC↔SUI the floor (51 m) is below the constant and NOTHING changes —
+    On job R the floor (51 m) is below the constant and NOTHING changes —
     that span stays bit-for-bit.  On KANLAN it lifts the gate to 255 m, which
     is what stops four B-mirrored positions at Splice 19 (residuals -153 to
     -190 m, all of them the closure's own event seen from the far end) being
@@ -882,7 +882,7 @@ def _mirror_span(b_eof_own, pop_span, cap_km, fallback_span=None):
     end, and mirroring on it displaces every B event toward the A launch by
     exactly the break distance.
 
-    SUI↔EMR (2026-08-19): every BEND cell in a 1152-fiber report — all four of
+    job E (2026-08-19): every BEND cell in a 1152-fiber report — all four of
     them — was this and nothing else.  F369's B-side splice at closure 32.810
     km, mirrored on that fiber's own 49.380 km "end" (really 7.9 dB of damage,
     with 27 km of live glass and the far-end Fresnel still visible past it),
@@ -996,7 +996,7 @@ LAUNCH_STEP_GUARD_KM  = 0.150   # an event this close to the trace start is
                                 # that DOES fit sits far enough downstream that
                                 # both its windows land past the step — it reads
                                 # the connector's recovery tail and flat glass,
-                                # never the step.  Measured on WSC↔SUI's B
+                                # never the step.  Measured on job R's B
                                 # direction: -0.019…+0.020 dB against 14 events
                                 # whose stored losses are 0.253-0.567 dB and
                                 # whose steps are plainly visible in the trace —
@@ -1287,7 +1287,7 @@ LAUNCH_CONN_CONFIRM_TOL_DB   = 0.05   # dB — stored-vs-trace agreement the
 # which is the AVERAGE — and the average is the number this function PRINTS,
 # the number FastReporter reports, and the number the reviewer hand-types.
 #
-# Sacramento↔Suisun F1013 is the case that named this gate: near 0.318 / far
+# job R F1013 is the case that named this gate: near 0.318 / far
 # 1.088 → average 0.703, which is EXACTLY the value the field sheet carries for
 # that fiber.  min = 0.318 never reached 0.62, so the bidirectional gate stayed
 # silent and the fiber was caught only incidentally by the uni gate, printing
@@ -1309,7 +1309,7 @@ LAUNCH_CONN_CONFIRM_TOL_DB   = 0.05   # dB — stored-vs-trace agreement the
 LAUNCH_CONN_AVG_MIN_DB       = 0.500  # dB — flag when (A + B) / 2 >= this.
                                       #   0.0 = OFF.  History: it shipped OFF
                                       #   (0.0) until 2026-09-29.  Measured on the
-                                      #   full Sacramento↔Suisun 1152: at 0.62
+                                      #   full job R 1152: at 0.62
                                       #   it adds NO fiber the other two gates
                                       #   miss, and it would rewrite five
                                       #   printed numbers (F4 .84→.66,
@@ -1345,7 +1345,7 @@ TAILBOX_OUTLIER_DB           = 7.5    # dB — a tailbox reflectance must be at
                                       #   bare-glass EOL and would otherwise
                                       #   flag).  WAS 10.0, which was too strict
                                       #   to catch anything real: on
-                                      #   Sacramento↔Suisun the only three
+                                      #   job R the only three
                                       #   fibers of 1152 that clear the -49.9
                                       #   floor (F12 -49.218, F254 -47.968,
                                       #   F486 -48.773, median -57.171) sit
@@ -3337,7 +3337,7 @@ def _fr_proj_constant(rec_silent, rec_loud):
     keeps the legacy reconstruction it has always had.  Coverage stops at
     the edge of what can be checked instead of continuing into wrongness.
     Four acquisitions on disk are that shape on every call (MILELMsh,
-    TULORO, DURANCfec, and the WSC<->SUI August 5 km short round); none of
+    TULORO, DURANCfec, and the job R August 5 km short round); none of
     them discovers a splice today, so the abstention costs nothing measured
     — but it is the rule that makes the check above a guarantee rather than
     a best effort.
@@ -3759,14 +3759,14 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=N
     # fits collapse onto its recovery tail.  The OLS still returns a number —
     # it is just a number about the connector.
     #
-    # WSC↔SUI Splice 12 is that case, and it is why this guard exists.  It
-    # sits 66-80 m past the Suisun launch, so the B-side projection lands at
+    # job R Splice 12 is that case, and it is why this guard exists.  It
+    # sits 66-80 m past the B-end launch, so the B-side projection lands at
     # ~1.04-1.08 km with a transplanted 4.5 km before-window clamped down to
     # 39-77 m.  Fitting it printed 48 extra cells at 63.97 km spanning -0.68
     # to +2.87 dB, on a span whose report matches its field team exactly.
     #
     # Refused, the position falls through to the end-zone reconstruction
-    # that was built and validated on those fibers (WSC↔SUI: 21 the reviewer
+    # that was built and validated on those fibers (job R: 21 the reviewer
     # had to add back by hand).  KAN↔LAN F150 projects 104.8 km past the
     # Kansas City launch and F439 108 km past the Lancaster one, so neither
     # is touched.
@@ -3802,14 +3802,14 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=N
             hi_m = (float(e['dist_km']) * 1000.0) + lo_m
     # `reach_m` overrides the guard: FastReporter's own table (fr_bidi_table)
     # passes 0, because FR does transplant right up to the cable ends -- the
-    # WSC<->SUI Splice 12 keys, 40 m from the far connector, are exact with
+    # job R Splice 12 keys, 40 m from the far connector, are exact with
     # the guard off and blank with it on.  The classic path keeps the guard.
     reach_m = FR_TRANSPLANT_REACH_M if reach_m is None else float(reach_m)
     # A zero reach is no guard at all -- not even at the marker itself: FR
     # transplants windows whose CursorB IS the end event (SubB pulled onto
     # it), and the Bellcore end distance can sit a hair before the
     # proprietary one, which read as 'past the end' and refused three
-    # WSC<->SUI legs FR had answered.
+    # job R legs FR had answered.
     if reach_m > 0:
         if (cur_a - lo_m) < reach_m:
             return None
@@ -3836,7 +3836,7 @@ def _fr_origin_idx(rec):
     samples start at the OTDR's own port, so when a tech sets the span start
     on the launch connector every table position is short of its sample by
     the launch reel.  On the Las Cruces 5 ns panel spans that is 12,908
-    samples (1,028.3 m of reel at 0.0797 m); on every WSC<->SUI, Zayo and
+    samples (1,028.3 m of reel at 0.0797 m); on every job R, job Z and
     SEANOR key it is 0.  A .sor declares it in GenParams (user_offset_km); a
     .bdr's reader reports 0 there, but every event record carries its cursors
     both as integer samples and as metres, so the difference is the origin."""
@@ -3975,7 +3975,7 @@ FR_ROW_END = 128
 # FR transplants to the cable ends.  The classic path's FR_TRANSPLANT_REACH_M
 # (150 m) refuses a projection that close to a connector because the old
 # reconstruction printed phantoms there; FR's table has no such refusal --
-# on WSC<->SUI (275 ns, 2.5 m samples) Splice 12 sits 40-90 m from the far
+# on job R (275 ns, 2.5 m samples) Splice 12 sits 40-90 m from the far
 # connector and FR writes a synthesised leg on every fiber.  30 of its .bdr
 # keys: 374 of 379 rows exact with the guard off, 344 with it on; the five
 # that remain differ by 0.5-1.8 mdB on a 6-8 sample after-window running
@@ -4055,16 +4055,16 @@ def fr_bidi_table(rec_a, rec_b):
     rb = rec_b if rec_b.get('_span_side') or rec_b.get('_bdr_side') else dict(rec_b, _span_side='b')
     # THE FRAME IS B'S END OF FIBRE.  Back-solved from FR's own rows
     # (MeanPosition = (A + L - B) / 2) on all 100 .bdr keys on disk -- Zayo,
-    # SEANOR, WSC<->SUI -- L is the B->A file's end-of-fibre event position
+    # job S, job R -- L is the B->A file's end-of-fibre event position
     # (Status 0x80), every time, whether A's end reads longer or shorter.
     # On a whole fibre that is what _fr_proj_constant validates and returns;
-    # on a BROKEN one (WSC<->SUI fiber 230: A dies at 15.67 km, B at 48.38 km
+    # on a BROKEN one (job R fiber 230: A dies at 15.67 km, B at 48.38 km
     # from its own end) _fr_proj_constant has no cable end to check against
     # and abstains, while FR carries on in B's frame and prints the B event
     # at 48,380 - 37,622 = 10,758 m with A's leg synthesised there (its
     # export: A -0.007, B -0.052, mean -0.029; this table: the same to the
     # printed digit).  B's end marker is THE frame, not a fallback: on 92
-    # keys (Zayo, SEANOR, WSC<->SUI, and 48 Las Cruces 5 ns panel spans) FR's
+    # keys (job Z, job S, job R, and 48 short 5 ns panel spans) FR's
     # constant is B's end marker every time, while the validated constant is
     # one sample (0.08 m) short on five Las Cruces fibres (8, 11, 13, 17, 25)
     # -- which moved their launch row to -0.04 m where FR prints 0.  The
@@ -4391,7 +4391,7 @@ def fr_bidi_table(rec_a, rec_b):
 # carries no loss on them.  Nothing of the classic discovery, corroboration
 # or scan machinery runs in this mode -- a cell here is FR's number or blank.
 # HOW FASTREPORTER LAYS EVENTS OUT AS COLUMNS across a cable.  Read off its
-# WSC<->SUI export (fibers 1-432, 20 Event columns, 4,381 rows) replayed row
+# job R export (fibers 1-432, 20 Event columns, 4,381 rows) replayed row
 # by row, then pinned by driving FastReporter itself on chosen fiber sets
 # (Files-panel aligned Event Table, 2026-09-22):
 #   * the first fiber founds the columns at its own event positions, and a
@@ -4687,7 +4687,7 @@ def _grey_loss(fiber_data, splice_km, mirror=None, twin=None):
         # clean fiber on each side, which a closure a few tens of metres from
         # a cable end simply doesn't have — so the silent side read None, no
         # bidir average was formed, and the cell vanished from the report
-        # (WSC↔SUI Splice 12 @63.9675 km, 80 m before the far-end connector:
+        # (job R Splice 12 @63.9675 km, 80 m before the far-end connector:
         # 21 fibers the reviewer had to add back by hand).  The end-anchored
         # reconstruction fits whatever glass exists between the launch
         # connector and the far-end connector; it refuses to fire anywhere
@@ -6289,7 +6289,7 @@ def _in_cable_end_zone(fiber_data, dist_km):
     The pairing clause for the LAUNCH_STEP_GUARD_KM fail-open: there the
     re-measure gate is structurally BLIND, so a raw single-direction stored
     loss has nothing corroborating it — and dead-zone-biased stored losses
-    are exactly what a cable end produces.  WSC↔SUI's B direction stores a
+    are exactly what a cable end produces.  job R's B direction stores a
     median 0.197 dB (up to 0.369) at 80 m past its launch on 1055 fibers the
     reviewer left unflagged; gating a "(B)" cell on `stored >= 0.250` there
     flags noise.  Inside this zone only a MEASURED bidirectional average may
@@ -7997,7 +7997,7 @@ def _clears_threshold(loss, threshold):
     The cells are labelled with _format_loss (3 decimals), so a bidir of
     0.1595 prints ".160" — and the boss, reading ".16" against a 0.160
     threshold, flags it.  The raw comparison 0.1595 >= 0.160 is False, so the
-    engine dropped it while showing the tech nothing: WSC↔SUI 637@Splice 7
+    engine dropped it while showing the tech nothing: job R 637@Splice 7
     (A .187 / B .132) and 1067@Splice 2 (A .172 / B .147) are both exactly
     0.1595.  Rounding first makes the printed number and the flag agree.
     Panel REBURN_THRESHOLD semantics are unchanged — this only decides which
@@ -8712,7 +8712,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         # and emits findings at BOTH of that direction's ends:
         #     launch  rule → events[0]                 → the end shot FROM
         #     tailbox rule → last 1F before EOL        → the OTHER end
-        # Those two are up to a full span apart (WSC<->SUI: 64 km), so a
+        # Those two are up to a full span apart (job R: 64 km), so a
         # direction's far-end finding is collected separately and merged into
         # the end it is physically AT.  The ILA columns carry no distance
         # column, so the header is the only thing placing these findings.
@@ -9615,7 +9615,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                     # raw-A "(A)" single-direction flag instead).  Shipping the
                     # raw A number when we HAVE a B measurement contradicts the
                     # standing north star — FastReporter averages the two sides
-                    # and applies the same 0.160 cutoff — and the boss's WSC↔SUI
+                    # and applies the same 0.160 cutoff — and the boss's job R
                     # review deleted exactly those cells: 456 @Splice 3
                     # (A .294, b_grey .011 → avg .152) and 826 @Splice 5
                     # (A .259, b_grey .021 → avg .140).  A measured flat B side
@@ -10167,7 +10167,7 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                 # B event but no A event in table — measure the A-direction
                 # loss at this position from the A JSON trace (grey value).
                 # `e` is the loud side; its stored cursors anchor the end-zone
-                # reconstruction (WSC↔SUI Splice 12 lives on this path).
+                # reconstruction (job R Splice 12 lives on this path).
                 a_grey = (_grey_loss(ra, a_frame_km, mirror=_mirror_anchor(rb, e),
                                      twin=(rb, e))
                           if ra is not None else None)
@@ -11175,7 +11175,7 @@ def scan_bidir_ghost_reflections(fibers_a, fibers_b, splices, existing_results,
                # operator — the pattern #96 set for uni_find_connectors.
                # NOT `not _clears_threshold(...)`: that is "< threshold",
                # which excludes exactly the events sitting ON the gate, and
-               # on WSC<->SUI AUG that is 149 of them.
+               # on job R AUG that is 149 of them.
                and abs(_printed_loss(be.get('splice_loss') or 0.0)) \
                    <= GHOST_REFL_MAX_LOSS_DB + 1e-9
         ]
@@ -11369,7 +11369,7 @@ def _reflective_spike_confirms(fiber_data, event_km, refl_db):
         #      one landmark both frames must agree on — the fibre's own end.
         #
         # Measuring in case 1 is not merely redundant, it LOSES the event:
-        # the end-of-fibre detector returns 0.0 on WSC_SUIsh, so F19's 1.0021
+        # the end-of-fibre detector returns 0.0 on job R short set, so F19's 1.0021
         # km offset would vanish and its -73.95 dB glint be refuted at flat
         # backscatter 1 km upstream — the exact bug this gate exists to stop,
         # inverted.
@@ -11611,7 +11611,7 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                 refl = e.get('reflection')
                 if refl is None or refl >= 0:
                     # The table is SILENT on this event, which is not the same
-                    # as "not reflective".  WSC_SUIsh F19 stores its 3.8937 km
+                    # as "not reflective".  job R short set F19 stores its 3.8937 km
                     # glint as 0F / reflectance 0.0 while FastReporter
                     # re-analyses the file and calls it Reflective, -75.0 dB.
                     # Ask the glass before dropping it.
@@ -11629,7 +11629,7 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                 # NO loss filter — a reflective event is a reflective
                 # event regardless of the splice-loss magnitude.
                 # Mid-span only.  The 3.0 km blanket at each end is sized for
-                # the 60-120 km spans this engine grew up on; on WSC_SUIsh's
+                # the 60-120 km spans this engine grew up on; on job R short set's
                 # 4.00 km it leaves a mid-span window of NEGATIVE width
                 # (3.00 .. 1.00 km) and blanks the whole cable, so the ends
                 # are capped at a fraction of the fiber as well.  Long spans
@@ -12106,6 +12106,37 @@ def uni_apply_show_filter(grid, columns):
     return out, [columns[ci] for ci in keep]
 
 
+def center_all_cells(wb):
+    """Centre the text in every cell of every sheet, horizontally and
+    vertically, keeping wrap where it was set.  Both the Splice Report and
+    the Unidirectional report run this last, right before saving, so every
+    sheet any writer added reads the same way (2026-09-29).
+
+    A line longer than its column also gets wrapped.  Left aligned, such text
+    ran on into the next columns and its start stayed readable; centred, it
+    runs off BOTH sides, so the start of a Legend description vanished behind
+    the colour name to its left (and a column-A line had nowhere to go).
+    Wrapped, it stays centred and whole; the row grows to fit.  One Excel
+    width unit is about one character, so a line with more characters than
+    the column is wide cannot fit."""
+    for ws in wb.worksheets:
+        widths = {}
+        for row in ws.iter_rows():
+            for cell in row:
+                wrap = bool(cell.alignment.wrap_text)
+                if not wrap and cell.value is not None:
+                    col = cell.column_letter
+                    if col not in widths:
+                        dim = ws.column_dimensions.get(col)
+                        widths[col] = (dim.width if dim is not None
+                                       else None) or 8.43
+                    longest = max((len(line) for line in
+                                   str(cell.value).splitlines()), default=0)
+                    wrap = longest > widths[col]
+                cell.alignment = Alignment(
+                    horizontal='center', vertical='center', wrap_text=wrap)
+
+
 def write_display_sheet(wb, keys=('loss', 'bend', 'break')):
     """Category / Shown (Y/N) for the categories this report type has.
     Only written when one of them is hidden."""
@@ -12406,7 +12437,7 @@ def ribbon_label(ri, ribbon_size, n_fibers):
 def fiber_average_splice_loss(fibers_a, fibers_b):
     """Per-fiber average splice loss, FastReporter's definition.
 
-    FR's per-fiber "Avg. Splice Loss" (proven on the real WSC<->SUI exports,
+    FR's per-fiber "Avg. Splice Loss" (proven on the real job R exports,
     1152 fibers, "Splice and reflectance" sheet) is the SIGNED mean over the
     UNION of both directions' event tables: every mid-span position EITHER
     detector stored, excluding the reflective (connector) events, each
@@ -12492,7 +12523,7 @@ def fiber_span_attenuation_orl(fibers_a, fibers_b):
     figures EXFO stores in each file's proprietary block.
 
     Span loss per direction is the number FastReporter prints as
-    "Span Loss (dB)" -- checked on the real WSC<->SUI exports, 1152 fibers,
+    "Span Loss (dB)" -- checked on the real job R exports, 1152 fibers,
     it rounds to FR's value on every one.  Attenuation is that loss over the
     stored span length (metres in the file, km here), per direction, and the
     fiber's figure is the mean of the two.  ORL is the file's total ORL per
@@ -13002,84 +13033,69 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # off leaves its verdict column reading "not graded".
     if span_stats is not None:
         ws_sp = wb.create_sheet("Span attenuation and ORL")
-        for _c, _w in (('A', 9), ('B', 14), ('C', 14), ('D', 12), ('E', 14),
-                       ('F', 14), ('G', 14), ('H', 12), ('I', 12), ('J', 12),
-                       ('K', 12)):
+        for _c, _w in (('A', 9), ('B', 14), ('C', 14), ('D', 14), ('E', 12),
+                       ('F', 14), ('G', 14), ('H', 14), ('I', 12), ('J', 12),
+                       ('K', 12), ('L', 12)):
             ws_sp.column_dimensions[_c].width = _w
-        _gates = []
-        if (FIBER_ATTEN_DB_KM or 0) > 0:
-            _gates.append("attenuation %.3f dB/km" % FIBER_ATTEN_DB_KM)
-        if (SPAN_ORL_MIN_DB or 0) > 0:
-            _gates.append("ORL floor %.2f dB" % SPAN_ORL_MIN_DB)
-        ws_sp.cell(row=1, column=1,
-                   value="Span Attenuation and ORL: one row per fiber, "
-                         "graded at " + ", ".join(_gates)).font = \
-            Font(name=FONT_NAME, bold=True, size=FSIZE)
-        ws_sp.cell(row=2, column=1,
-                   value=("Span loss and span length are the figures the OTDR "
-                          "stored in each file; the span loss is the number "
-                          "FastReporter prints. Attenuation is span loss over "
-                          "span length, each direction, then averaged; a fiber "
-                          "FAILS when the average is above the gate. ORL is "
-                          "the OTDR's own total ORL per direction, not the "
-                          "OLTS measurement; a fiber FAILS when either "
-                          "direction reads below the floor. A blank means the "
-                          "file did not carry that figure.")).font = \
-            Font(name=FONT_NAME, size=FSIZE, italic=True)
         _shdr = ["Fiber", "Span Loss A->B (dB)", "Span Loss B->A (dB)",
+                 "Span Loss Avg (dB)",
                  "Length (km)", "Atten. A->B (dB/km)", "Atten. B->A (dB/km)",
                  "Atten. Avg (dB/km)", "Atten. Verdict", "ORL A->B (dB)",
                  "ORL B->A (dB)", "ORL Verdict"]
         for _ci, _h in enumerate(_shdr, 1):
-            _hc = ws_sp.cell(row=4, column=_ci, value=_h)
+            _hc = ws_sp.cell(row=1, column=_ci, value=_h)
             _hc.font = hdr_font
             _hc.fill = hdr_fill
-        _sr = 5
+        _sr = 2
         _n_att_fail = _n_orl_fail = 0
         for _fn in sorted(span_stats):
             _s = span_stats[_fn]
             _lens = [v for v in (_s.get('len_a_km'), _s.get('len_b_km')) if v]
             _len = (sum(_lens) / len(_lens)) if _lens else None
+            # average of the directions present, same rule as Atten. Avg
+            _losses = [v for v in (_s.get('loss_a'), _s.get('loss_b'))
+                       if v is not None]
+            _loss_avg = (sum(_losses) / len(_losses)) if _losses else None
             _av = atten_verdict(_s.get('att_avg'))
             _ov = orl_verdict(_s.get('orl_a'), _s.get('orl_b'))
             if _s.get('short_shot'):
                 # a trace that stops short of the far end measures part of
                 # the fiber: nothing here describes the span
                 _av = _ov = 'SHORT SHOT'
-            _vals = [_fn, _s.get('loss_a'), _s.get('loss_b'), _len,
+            _vals = [_fn, _s.get('loss_a'), _s.get('loss_b'), _loss_avg, _len,
                      _s.get('att_a'), _s.get('att_b'), _s.get('att_avg'),
                      _av if _av else "not graded",
                      _s.get('orl_a'), _s.get('orl_b'),
                      _ov if _ov else "not graded"]
             for _ci, _v in enumerate(_vals, 1):
                 if isinstance(_v, float):
-                    _v = round(_v, 4 if _ci == 4 else (2 if _ci in (9, 10) else 3))
+                    _v = round(_v, 4 if _ci == 5 else (2 if _ci in (10, 11) else 3))
                 _cell = ws_sp.cell(row=_sr, column=_ci, value=_v)
                 _cell.font = Font(name=FONT_NAME, size=FSIZE,
-                                  bold=(_ci in (8, 11) and _v == 'FAIL'))
-                if _ci in (2, 3, 5, 6, 7):
+                                  bold=(_ci in (9, 12) and _v == 'FAIL'))
+                if _ci in (2, 3, 4, 6, 7, 8):
                     _cell.number_format = '0.000'
-                elif _ci == 4:
+                elif _ci == 5:
                     _cell.number_format = '0.0000'
-                elif _ci in (9, 10):
+                elif _ci in (10, 11):
                     _cell.number_format = '0.00'
             _n_att_fail += (_av == 'FAIL')
             _n_orl_fail += (_ov == 'FAIL')
             _sr += 1
-        if _sr == 5:
-            ws_sp.cell(row=5, column=1, value="(no fibers)").font = \
+        if _sr == 2:
+            ws_sp.cell(row=2, column=1, value="(no fibers)").font = \
                 Font(name=FONT_NAME, size=FSIZE, italic=True)
         else:
             _sum = []
             if (FIBER_ATTEN_DB_KM or 0) > 0:
                 _sum.append("%d of %d fibers FAIL the %.3f dB/km attenuation gate"
-                            % (_n_att_fail, _sr - 5, FIBER_ATTEN_DB_KM))
+                            % (_n_att_fail, _sr - 2, FIBER_ATTEN_DB_KM))
             if (SPAN_ORL_MIN_DB or 0) > 0:
                 _sum.append("%d of %d fibers FAIL the %.2f dB ORL floor"
-                            % (_n_orl_fail, _sr - 5, SPAN_ORL_MIN_DB))
+                            % (_n_orl_fail, _sr - 2, SPAN_ORL_MIN_DB))
             ws_sp.cell(row=_sr + 1, column=1, value="; ".join(_sum)).font = \
                 Font(name=FONT_NAME, bold=True, size=FSIZE)
-        ws_sp.freeze_panes = "A5"
+        ws_sp.freeze_panes = "A2"
 
     # ── Column widths — TRUE minimum-fit (no column wider than its content) ──
     # Calibri 12 is ~1.1–1.2 Excel-width-units/char; keep a hair of margin so
@@ -13123,6 +13139,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # already has a deliberate non-default font (e.g. bold white on red
     # for break/broke).  Preserves bold / italic / color decisions while
     # standardising name + size.
+
     default_font_kwargs = {'name': FONT_NAME, 'size': FSIZE}
     for row in ws.iter_rows(min_row=1, max_row=ws.max_row,
                              min_col=1, max_col=ws.max_column):
@@ -13224,6 +13241,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             print(f"  WARN: failed to render acquisition sheet: {_exc}")
 
     write_display_sheet(wb, keys=('loss', 'bend', 'break', 'conn', 'refl'))
+    center_all_cells(wb)
     wb.save(output_path)
     print(f"  Saved: {output_path}")
 
@@ -13741,6 +13759,9 @@ UNI_MIN_POP_SPLICE       = 20      # min fibers in a 1 km bin → candidate clos
 # docstring warns about.  The floor now scales DOWN with the job and never up.
 UNI_MIN_POP_SPLICE_FRAC  = 0.25    # fraction of loaded fibers, jobs under 20 only
 UNI_MIN_POP_SPLICE_FLOOR = 3       # never nominate a closure on fewer than this
+UNI_EVENT_JOB_MAX        = 50      # uni job of at most this many fibres LOADED shows
+                                   #   events, not closures (Robert 2026-09-30:
+                                   #   "small uni jobs, use events", "up to 50")
 UNI_LAUNCH_FIBER_MAX     = 3.0     # km — launch exclusion WITH a launch box
 UNI_NO_LAUNCH_DEAD_KM    = 0.3     # km — front-end dead zone WITHOUT a launch box
 UNI_LAUNCH_BOX_MIN_FRAC  = 0.25    # population frac with a launch reflection → box present
@@ -13882,7 +13903,7 @@ UNI_CONN_END_TOL_KM      = 0.005  # km — a connector this close to the cable
                                   #   rounding).
 
 UNI_REFL_FLOOR_DB        = -80.0  # dB — 0 = detection off.  ON by default as of
-                                  # the WSC_SUIsh fix, at the same floor the
+                                  # the job R short set fix, at the same floor the
                                   # bidirectional report already uses
                                   # (MIDSPAN_REFL_WARN_DB): the boss ran a uni
                                   # report on a span whose F19 carries a real
@@ -13890,11 +13911,11 @@ UNI_REFL_FLOOR_DB        = -80.0  # dB — 0 = detection off.  ON by default as 
                                   # "uni does not flag reflective events in the
                                   # field" was the standing complaint.  Ripple
                                   # over 10 folders on disk: every span except
-                                  # WSC_SUIsh is unchanged.
+                                  # job R short set is unchanged.
 UNI_REFL_CEIL_DB         = 0.0    # dB — 0 = no ceiling
 # Front dead zone vs span.  UNI_LAUNCH_FIBER_MAX is a 3.0 km blanket sized
 # for the 60-120 km spans this tool grew up on.  On the 4 km of glass past
-# WSC_SUIsh's launch reel that blanket covers 75% of the cable, so the front
+# job R short set's launch reel that blanket covers 75% of the cable, so the front
 # exclusion is capped at a FRACTION of the span as well.  Long spans are
 # unaffected: 25% of 62 km is 15 km, so min() still returns the 3.0 km rule.
 UNI_FRONT_DEAD_SPAN_FRAC = 0.25
@@ -13937,7 +13958,7 @@ def uni_direction_signature(r):
 
 
 def _uni_sig_parts(sig):
-    """('SUI', 'WSC') for 'SUI->WSC'; None when there is no '->' to split."""
+    """('BBB', 'AAA') for 'BBB->AAA'; None when there is no '->' to split."""
     if '->' not in (sig or ''):
         return None
     a, _, b = (sig or '').partition('->')
@@ -13963,8 +13984,8 @@ def uni_sig_is_typo_of(sig, chosen):
     """True when `sig` is a FIELD TYPO of `chosen`, not a second span.
 
     Grouping on the exact GenParams signature is silent data loss when a site
-    code is mistyped on part of a shoot: WSC↔SUI fibers 313-324 carry
-    'SUI->WCR' instead of 'SUI->WSC', so 12 of 1152 files were dropped without
+    code is mistyped on part of a shoot: job R fibers 313-324 carry
+    'BBB->AAX' instead of 'BBB->AAA', so 12 of 1152 files were dropped without
     a word (with them, 125 EXFO-reported cells and 14 EXFO FAILs).
 
     A wrong merge silently fuses two real directions, which is worse than the
@@ -14306,8 +14327,8 @@ def uni_auto_detect_span(fibers):
 # FastReporter labels it "Continuous Fiber": the range was set shorter than
 # the cable, so the fiber runs on past the last sample.  `is_end` is False on
 # these — correctly, they are not a fiber end — but every span- and EOF-gated
-# rule then sees a fiber with no end at all.  WSC_SUIsh (Sac to Suisun FEC,
-# 24 fibers, 5 km range on a longer cable) returned span 0.00 km, no columns
+# rule then sees a fiber with no end at all.  The job R short set
+# (24 fibers, 5 km range on a longer cable) returned span 0.00 km, no columns
 # and no cells for exactly this reason.
 UNI_CONTINUOUS_TYPE_CHARS = ('O',)
 
@@ -14344,7 +14365,7 @@ def uni_fiber_eof(r):
 
     Prefers a real end-of-fiber marker.  Falls back to the continuous-fiber
     marker so a partial acquisition still has a span, an end region, and a
-    reflectance search window — the alternative is the WSC_SUIsh outcome of
+    reflectance search window — the alternative is the job R short set outcome of
     reporting nothing at all.  Break detection is NOT fed by this fallback:
     a continuous fiber has not broken (see uni_find_breaks)."""
     km = uni_fiber_eof_strict(r)
@@ -14796,7 +14817,7 @@ def uni_find_reflective_events(fibers, span_km, launch_box_present=False,
     pre-converted raw km here would correct the same offset twice.
 
     A stored reflectance of 0.0 no longer ends the enquiry.  The firmware
-    writes `0F..., reflectance 0.0` on glints it did not classify (WSC_SUIsh
+    writes `0F..., reflectance 0.0` on glints it did not classify (job R short set
     F19 @3.8937 km — FastReporter re-analyses the same file and reports
     Reflective, -75.0 dB), so when the table is silent the reflectance is
     MEASURED from the fiber's own samples instead.  `bs_level` is the
@@ -15353,13 +15374,14 @@ def fr_uni_columns(fibers):
 
 
 def _uni_col_word(col):
-    """'Event' on a job under UNI_MIN_POP_SPLICE fibres, else 'Splice'."""
+    """'Event' on a job of at most UNI_EVENT_JOB_MAX fibres, else 'Splice'."""
     return 'Event' if col.get('is_event_column') else 'Splice'
 
 
 def uni_event_columns(fibers, exclude_km=()):
-    """The uni twin of discover_event_columns (Robert 2026-09-29: a job under
-    20 fibres shows its events and makes no splice or bend call).  One column
+    """The uni twin of discover_event_columns (Robert 2026-09-29/30: a uni job
+    of up to UNI_EVENT_JOB_MAX fibres shows its events and makes no splice or
+    bend call).  One column
     per cluster of in-span stored events, split on the closure gap floored at
     the pulse smear; a cluster within UNI_CLOSURE_MATCH_KM of a connector or
     reflective column already on the report (`exclude_km`) is that column's
@@ -16130,6 +16152,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         print(f"  WARN: reburn sheet skipped: {exc}")
 
     write_display_sheet(wb, keys=('loss', 'bend', 'break', 'conn'))
+    center_all_cells(wb)
     wb.save(output_path)
     print(f"  Saved: {output_path}  ({len(rows)} flagged-event rows)")
     return {'flagged_rows': len(rows),
@@ -16273,20 +16296,20 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
             print(f"  Cable End column @ {end_cols[0]['position_km_display']:.2f} km "
                   f"({len(end_cols[0]['end_members'])} fiber(s) reach it)")
 
-        # ── Under UNI_MIN_POP_SPLICE fibres loaded: events, not closures ──
-        # Robert 2026-09-29: such a job shows its events and makes no splice,
-        # bend or damage call.  Every cluster of stored events becomes an
+        # ── Up to UNI_EVENT_JOB_MAX fibres loaded: events, not closures ──
+        # Robert 2026-09-29/30: such a job shows its events and makes no
+        # splice, bend or damage call (under 20 at first, then "up to 50").  Every cluster of stored events becomes an
         # "Event N" column judged at the splice gate; the damage-zone and
         # bend/damage finders stay out.  Breaks (found above, as always),
         # connectors, reflectance and the Cable End are unchanged.  A
         # panel tie keeps its layout: a span no longer than LAUNCH_FIBER_MAX
         # is reels and panels, not a route with closures to show.
-        if len(fibers) < UNI_MIN_POP_SPLICE and span > LAUNCH_FIBER_MAX:
+        if len(fibers) <= UNI_EVENT_JOB_MAX and span > LAUNCH_FIBER_MAX:
             valid = uni_event_columns(
                 fibers, exclude_km=[c['position_km_refined']
                                     for c in conn_cols + refl_cols])
             prebreak_cols, off_cols = [], []
-            print(f"  {len(fibers)} fibers loaded (< {UNI_MIN_POP_SPLICE}): "
+            print(f"  {len(fibers)} fibers loaded (<= {UNI_EVENT_JOB_MAX}): "
                   f"{len(valid)} event column(s), no closure or bend calls")
         columns = uni_build_columns(valid,
                                     prebreak_cols + off_cols + refl_cols + conn_cols

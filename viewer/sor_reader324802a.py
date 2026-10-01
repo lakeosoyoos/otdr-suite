@@ -76,7 +76,7 @@ def _parse_fxd_params(data, blocks):
     acq_range   = struct.unpack_from('<I', data, pw_end)[0]
     # Pulse width actually used, in ns (uint16 per entry from +18; EXFO writes
     # exactly one).  Field map verified byte-for-byte on this span's own files:
-    # WSCSUI long = 500 ns, WSCSUIsh short = 10 ns, both num_pw 1.  Mirrors
+    # job R long = 500 ns, job R short = 10 ns, both num_pw 1.  Mirrors
     # splicereport/sor_reader324802a.py's `fxd_pulse_ns`, which reads the same
     # bytes -- the two readers are deliberately isolated copies.
     #
@@ -317,7 +317,7 @@ def _parse_key_events(data, blocks):
             # spans −79.8…−11.6.  Also `2E` is a common end-of-fiber code
             # (858 of TUL↔BAR's 862 end events) that `is_end` below already
             # honours — a non-reflective fiber end is a contradiction.
-            # Found via WSC↔SUI F34, whose `2F9999LS` launch connector at
+            # Found via job R F34, whose `2F9999LS` launch connector at
             # −25.072 dB (worst on the cable) went unflagged.  Kept as an
             # explicit set so an unknown future code fails closed.
             # Mirrors splicereport/ and secretsauce/, which carry their own
@@ -512,6 +512,102 @@ def _prop_scalar(stream, name, want_type, want_size):
             return struct.unpack_from('<I', stream, val_off)[0]
         return None
 
+
+
+# ── FastReporter's settings panel ────────────────────────────────────────
+# What FR shows for one trace under Test Parameters and Test Settings, read
+# from the same fields FR reads.  Every name was matched against an FR panel
+# of the same acquisition (the Splice Report's _parse_test_settings carries
+# the census): Range is metres, NominalWavelength / NominalPulseWidth /
+# SamplingPeriod are SI, Duration is whole seconds.  Resolution is not stored;
+# FR prints the sample pitch, c x SamplingPeriod / (2 x Ior), which is 0.319 m
+# on a 3.125 ns / 1.47 shot as its panel shows.
+#
+# A missing field stays None: the panel exists so a tech can check what the
+# OTDR was told, and a made-up number there is worse than a blank one.
+_PANEL_F64 = ('Ior', 'Rbs', 'HelixFactor', 'SpliceLossThreshold',
+              'SplitterDetectionThreshold', 'ReflectanceThreshold',
+              'EndOfFiberThreshold', 'Range', 'NominalWavelength',
+              'NominalPulseWidth', 'SamplingPeriod')
+_PANEL_U32 = ('SplitterDetection', 'Duration')
+
+
+def read_test_panel(data):
+    """FR's Test Parameters + Test Settings for one .sor, from its bytes.
+
+    Returns {'wavelength_nm', 'range_km', 'pulse_ns', 'duration_s',
+    'resolution_m', 'ior', 'backscatter_db', 'helix_pct',
+    'splice_thr_db', 'splitter_on', 'splitter_thr_db', 'refl_thr_db',
+    'eof_thr_db', 'fiber_type'}, each None when the file does not carry it.
+
+    FR has an eighth Test Settings row, Fiber core size, that no field in the
+    file holds; `fiber_type` is the GenParams glass code (652 = G.652) so the
+    dialog can say what IS stored instead of guessing a micron figure.
+    """
+    out = dict.fromkeys(('wavelength_nm', 'range_km', 'pulse_ns', 'duration_s',
+                         'resolution_m', 'ior', 'backscatter_db', 'helix_pct',
+                         'splice_thr_db', 'splitter_on', 'splitter_thr_db',
+                         'refl_thr_db', 'eof_thr_db', 'fiber_type'))
+    try:
+        blocks = _parse_block_directory(data)
+    except Exception:
+        return out
+    try:
+        stream = _decompress_proprietary(data, blocks)
+    except Exception:
+        stream = None
+    f = {n: _prop_scalar(stream, n, 3, 8) for n in _PANEL_F64} if stream else {}
+    u = {n: _prop_scalar(stream, n, 1, 4) for n in _PANEL_U32} if stream else {}
+    fxd = {}
+    try:
+        fxd = _parse_fxd_params(data, blocks)
+    except Exception:
+        pass
+    # FxdParams is the fallback for the three it also stores: a file with no
+    # EXFO block still has a wavelength, a pulse and a duration.
+    if f.get('NominalWavelength'):
+        out['wavelength_nm'] = round(f['NominalWavelength'] * 1e9, 1)
+    elif fxd.get('wavelength'):
+        out['wavelength_nm'] = fxd['wavelength']
+    if f.get('NominalPulseWidth'):
+        out['pulse_ns'] = round(f['NominalPulseWidth'] * 1e9, 3)
+    elif fxd.get('fxd_pulse_ns'):
+        out['pulse_ns'] = fxd['fxd_pulse_ns']
+    if u.get('Duration') is not None:
+        out['duration_s'] = float(u['Duration'])
+    elif fxd.get('duration_sec'):
+        out['duration_s'] = fxd['duration_sec']
+    if f.get('Range'):
+        out['range_km'] = f['Range'] / 1000.0
+    ior = f.get('Ior')
+    if ior is None:
+        try:
+            ior = _read_ior(data, blocks)
+        except Exception:
+            ior = None
+    out['ior'] = ior
+    if f.get('SamplingPeriod') and ior:
+        out['resolution_m'] = 299_792_458.0 * f['SamplingPeriod'] / 2.0 / ior
+    for key, name in (('backscatter_db', 'Rbs'), ('helix_pct', 'HelixFactor'),
+                      ('splice_thr_db', 'SpliceLossThreshold'),
+                      ('splitter_thr_db', 'SplitterDetectionThreshold'),
+                      ('refl_thr_db', 'ReflectanceThreshold'),
+                      ('eof_thr_db', 'EndOfFiberThreshold')):
+        out[key] = f.get(name)
+    if u.get('SplitterDetection') is not None:
+        out['splitter_on'] = bool(u['SplitterDetection'])
+    # GenParams: language (2), cable id, fiber id, then fiber type int16.
+    try:
+        i = data.find(b'GenParams', data.find(b'GenParams') + 1)
+        if i >= 0:
+            o = i + len(b'GenParams') + 1 + 2
+            o = data.index(b'\x00', o) + 1
+            o = data.index(b'\x00', o) + 1
+            ft = struct.unpack_from('<H', data, o)[0]
+            out['fiber_type'] = ft or None
+    except (ValueError, struct.error):
+        pass
+    return out
 
 # A proprietary-block field name: NUL-delimited, 2-79 chars, ASCII-printable,
 # first character a letter.  The lookbehind is what makes this the same set of

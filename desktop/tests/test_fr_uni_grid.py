@@ -85,7 +85,14 @@ def test_the_runner_prints_fr_s_columns_in_fr_mode_and_ours_otherwise(tmp_path):
         (12, "splice", 0.265), (20, "splice", 0.273)]
     suite, err = _uni("suite", str(tmp_path / "suite.xlsx"))
     assert suite["ok"] and suite["analysis_mode"] == "suite" and "FastReporter mode" not in err
+    # 24 fibres: a uni job of up to 50 lists its events (UNI_EVENT_JOB_MAX,
+    # Robert 2026-09-30), one column per place the stored events line up --
+    # the 14 closures of the full cable, no Bend/Damage call.  Same two cells.
     assert [(c["km"], c["kind"]) for c in suite["uni"]["grid_columns"]] == [
-        (0.0, "connector"), (14.56, "splice"), (21.28, "splice"), (47.06, "splice"),
-        (61.48, "bend_damage"), (67.54, "connector")]
+        (0.0, "connector"), (6.0, "splice"), (11.71, "splice"), (14.56, "splice"),
+        (19.65, "splice"), (21.28, "splice"), (26.75, "splice"), (32.55, "splice"),
+        (36.71, "splice"), (42.45, "splice"), (47.06, "splice"), (52.68, "splice"),
+        (55.58, "splice"), (61.52, "splice"), (63.62, "splice"), (67.54, "connector")]
+    assert all(c["label"].startswith("Event ")
+               for c in suite["uni"]["grid_columns"] if c["kind"] == "splice")
     assert [(c["fiber"], c["loss"]) for c in suite["uni"]["cells"]] == [(12, 0.265), (20, 0.273)]
