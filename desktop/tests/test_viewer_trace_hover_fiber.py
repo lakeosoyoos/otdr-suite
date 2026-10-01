@@ -10,10 +10,12 @@ the rules here are the Viewer's own:
   hover        a box beside the cursor with a color swatch and "F0002 A->B"
                for the ONE trace whose drawn line is nearest, within
                TRACE_HIT_PX (Robert: "only show one fiber we are hovering
-               over"); that trace drawn bold on top
+               over"); the trace itself is drawn as it was (the boss
+               2026-10-01: "just give us the box")
   click        the same nearest trace is picked (as a table row click picks) and
                the table centres its row between the pinned header and the
-               pinned Minimum/Maximum rows; a press that moves is still a pan
+               pinned Minimum/Maximum rows; a second click on the picked
+               trace lets it go; a press that moves is still a pan
   no numbers   the box names the fiber only (no km/dB on hover, 2026-09-29)
 
 The hit test is a plain function (traceHits), run in JavaScriptCore where
@@ -116,7 +118,9 @@ var gPickKey = null, draws = 0, asked = null;
 function draw() { draws++; }
 var gGridGoTo = function (t, e) { asked = [t.key, e]; };
 goToTrace(A);  out.click = [gPickKey, asked, draws];
-goToTrace(A);  out.click_again = gPickKey;            // keeps it picked
+draws = 0; asked = null;
+goToTrace(A);  out.click_again = [gPickKey, asked, draws];   // lets go, no jump
+goToTrace(A);  out.click_third = gPickKey;            // picks it again
 gGridGoTo = null;
 goToTrace(B);  out.no_grid = gPickKey;                // no table: still picks
 print('OUT ' + JSON.stringify(out));
@@ -181,7 +185,8 @@ def test_steep_falls_and_flipped_traces_are_hit_where_drawn(hits):
 @needs_jsc
 def test_a_click_picks_the_trace_and_goes_to_its_row(hits):
     assert hits['click'] == ['a-1', ['a-1', None], 1]
-    assert hits['click_again'] == 'a-1'
+    assert hits['click_again'] == [None, None, 1]
+    assert hits['click_third'] == 'a-1'
     assert hits['no_grid'] == 'b-1'
 
 
@@ -192,8 +197,9 @@ def test_the_box_names_one_fiber_and_nothing_else():
     assert 'km' not in box.replace('ctx.', '') and 'dB' not in box
     draw = _js_func('draw')
     assert 'if (gMouse && hovered) drawHoverBox(hovered);' in draw
-    # the hovered trace goes over the rest, bold, at full strength
-    assert 'if (hovered) drawTrace(hovered, r, true);' in draw
+    # hovering changes no trace: no bold redraw on top, no other width
+    assert 'drawTrace(hovered' not in draw
+    assert 'gHoverKey' not in _js_func('drawTrace')
     assert draw.index('const hovered = hoverTrace();') < draw.index('drawEventMarkers(t, r)')
 
 
@@ -212,12 +218,19 @@ def test_hover_follows_the_mouse_and_stays_off_links_drags_and_paper():
 def test_a_still_click_on_a_trace_jumps_and_a_moving_press_still_pans():
     down = SRC.split("canvas.addEventListener('mousedown'", 1)[1].split("canvas.addEventListener('mousemove'", 1)[0]
     assert "if (!gMarkerMode && ev.button === 0) {" in down
-    assert down.index('gTraceClick = { t: th[0].t') < down.index("kind: 'pan'")
+    # a press on the empty chart is a click too, with no trace
+    assert "gTraceClick = { t: th.length ? th[0].t : null," in down
+    assert down.index('gTraceClick = { t: th.length') < down.index("kind: 'pan'")
     up = SRC.split("window.addEventListener('mouseup'", 1)[1].split("canvas.addEventListener('dblclick'", 1)[0]
     blk = up.split('if (gTraceClick) {', 1)[1].split('\n  }\n', 1)[0]
     assert 'Math.abs(ev.offsetX - c.x) <= 3 && Math.abs(ev.offsetY - c.y) <= 3' in blk
     assert 'gView = { x0: d.vx0, x1: d.vx1, y0: d.vy0, y1: d.vy1 };' in blk   # the jiggle is undone
-    assert 'goToTrace(c.t);' in blk
+    assert 'else if (c.t) goToTrace(c.t);' in blk
+    # a still click on the empty chart lets go of the picked fiber (the boss,
+    # 2026-10-01: "cant unselect his fibers"); a double-click's second click
+    # (a Fit) changes no pick
+    assert 'else { gPickKey = null; draw(); }' in blk
+    assert blk.index('if (ev.detail > 1) draw();') < blk.index('goToTrace(c.t)')
 
 
 def test_every_table_centres_the_row_when_given_no_event():
