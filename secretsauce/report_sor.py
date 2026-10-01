@@ -2133,6 +2133,1231 @@ def _near_splice_meta(analysis):
             'tail': tail}
 
 
+# ── Closure fingerprint: the splice loss at every closure the cable passes ──
+# The near splice reads ONE splice behind the panel.  A cable passes closures
+# along its length and every fiber is spliced in each one, so every fiber
+# carries its own loss at every closure.  That loss is glass: an unplug and
+# re-plug cannot change it, and two shots of one fiber repeat it to the noise.
+#
+# Method, per folder, no locations supplied:
+#   1. Two straight lines, (c-h-w, c-h) and (c+h, c+h+w), evaluated at c: the
+#      step at c.  The 2h gap holds the splice wherever it sits in the tray.
+#   2. A closure is where the step's spread ACROSS fibers rises above
+#      _CLOSURE_SPREAD_X x its local level (noise grows along the fiber).  Its
+#      center is the middle of the plateau the spread makes.  A weaker peak
+#      inside another closure's windows is that closure seen from the side.
+#   3. Reflective clusters (connectors, panels, reels) are cut out of the span:
+#      no closure inside one, no window across one.  A re-plug changes a
+#      connector, and the far-end panel read as a closure was the only reading
+#      that split two true repeats on a 79 km and a 61 km job.  The start
+#      waits _CLOSURE_START_PULSES pulse lengths for the receiver to recover
+#      from the launch connector (a 62 km job at 500 ns: two shots seconds
+#      apart read 20 sd apart at 1.1 km, every real closure within 1.7 sd).
+#   4. Each closure is read with one folder-wide window, a quarter of the
+#      closest closure spacing, and its noise with the SAME windows at spots
+#      with no closure inside them.  A closure whose loss clears 5 x noise on
+#      fewer than _CLOSURE_MIN_FRAC of fibers carries no identity: not used.
+#
+# A pair's readings (every closure both fibers reach, plus the near splice
+# when usable) give chi2 = sum(z^2), z = difference / two-shot sd.  What the
+# Closures tab tells a tech, in two levels, both needing all three of:
+#   1. each file's best match is the other (mutual best partners);
+#   2. they agree as closely as one fiber shot twice: at least half the
+#      readings shared, chi2 p >= _CLOSURE_AGREE_P, none beyond
+#      _CLOSURE_MATCH_MAX_SD;
+#   3. the next closest match for either file agrees at least
+#      _CLOSURE_LIKELY_X times worse (chi2 per reading, floored at 1).
+# LIKELY THE SAME FIBER, CHECK THE PORT LOG: all three.  THE SAME FIBER: all
+# three with the runner-up _CLOSURE_EXCL_X times worse.  Agreement alone is not
+# identity: fibers of one color in different tubes come off one draw and share
+# the mode-field part of every one-way splice loss (a 432-fiber job with 16
+# closures: 12 pairs meet all three at 2x, runner-up 2.8-5.1x; every known
+# repeat on a long job has its runner-up 11-80x worse), so only the second
+# level says 'same fiber'.  The tab also prints how many pairs would reach the
+# first level by chance in a folder this size (readings shuffled between
+# fibers, which assumes unrelated fibers, so it is a floor where same-color
+# fibers look alike).  Measured 2026-09-30.  The cue was fixed on a 10 km test
+# span (18 shots, 13-18 re-shoot 1-6), so that span is not an independent test
+# of the 2x bar (its weakest true pair sits at exactly 2.0x); the rest are:
+#   10 km test span, 5 ns: likely 6, all six true, same 0, chance 1.1
+#   10 km test span, 10 ns: likely 6, all six true, same 2, chance 1.1
+#   known repeats on five long jobs (25 + 3 + 3 + 2 + 1): every one 'same',
+#   nothing else, chance 0; a 1152-fiber job with none: none; the 432-fiber
+#   look-alike job: 12 likely, 0 same.
+# Measured 2026-09-26 on 15 long jobs (11-21 closures each), with the
+# earlier same-glass rule (agree loosely, runner-up 10x worse):
+#
+#   re-shoots: next-best 11x to 1,200x worse; look-alikes: 5.6x at most
+#   37 same-glass pairs; the current verdict flags 22 of them, holds 12 at
+#   exactly 0.5 (twin / event caps) and never raises 3 (identical event
+#   tables, shot 0.6 to 2.5 min apart)
+#   3 current flags disagree at many closures: unconfirmed either way
+#   10 km test span, 2 closures + near splice: the six true pairs rank 1-6 of
+#   153 at 5 and 10 ns
+#
+# It never vetoes: one unmarked mating can split a true pair at one closure,
+# and a splice remade between two shoots changes the glass.  Display only:
+# nothing here moves p_dup, the mating likelihood or a verdict.
+_CLOSURE_H_M = 40.0
+_CLOSURE_ZONE_PULSES = 3.0
+_CLOSURE_ZONE_M = 50.0
+_CLOSURE_W_M = 600.0
+_CLOSURE_WMAX_M = 1500.0
+_CLOSURE_WMIN_M = 200.0
+_CLOSURE_GRID_M = 10.0
+_CLOSURE_LOCAL_M = 2000.0
+_CLOSURE_SPREAD_X = 2.5
+_CLOSURE_MIN_FRAC = 0.20
+_CLOSURE_STEP_NOISE = 5.0
+_CLOSURE_EVENT_SHARE = 0.05
+_CLOSURE_START_M = 300.0            # past the anchor (port or launch connector)
+_CLOSURE_START_PULSES = 20.0
+_CLOSURE_ANCHOR_M = 3000.0
+_CLOSURE_SPOT_STEP_M = 250.0
+_CLOSURE_MIN_SPOTS = 3
+_CLOSURE_MIN_FILES = 6
+_CLOSURE_MATCH_P = 0.001            # chi2 survival at or above this = glass match
+_CLOSURE_MATCH_MAX_SD = 4.0         # and no single reading beyond this
+_CLOSURE_SHUFFLES = 3
+_CLOSURE_MIN_READINGS = 3
+_CLOSURE_EXCL_X = 10.0             # 'same fiber': runner-up agrees this many times worse
+_CLOSURE_LIKELY_X = 2.0             # 'likely the same fiber': runner-up at least this much worse
+_CLOSURE_AGREE_P = 0.05             # agrees as closely as one fiber shot twice
+_CLOSURE_SAME_CHANCE = 0.1          # 'same fiber' only where fewer pairs than this reach it by chance
+_CLOSURE_MANY_READINGS = 8          # from here a repeat stands 10x clear (37 of 37 known ones did)
+_CLOSURE_TOP = 50                   # pairs listed on the Closures tab and in the manifest
+
+
+def _closure_cums(f):
+    x = np.asarray(f.get('pos'), dtype=float)
+    y = np.asarray(f.get('trace'), dtype=float)
+    k = min(len(x), len(y))
+    x, y = x[:k], y[:k]
+
+    def z(a):
+        return np.concatenate(([0.0], np.cumsum(a)))
+    return (x, z(np.ones_like(x)), z(x), z(x * x), z(y), z(x * y))
+
+
+def _closure_step(C, c, h, wl, wr):
+    """Right line minus left line at c (vectorised over c).  NaN where either
+    window holds fewer than 20 samples."""
+    x, c0, c1, c2, cy, cxy = C
+    c = np.atleast_1d(np.asarray(c, dtype=float))
+
+    def fit(lo, hi):
+        i0 = np.searchsorted(x, lo, 'left')
+        i1 = np.searchsorted(x, hi, 'left')
+        n = c0[i1] - c0[i0]
+        with np.errstate(all='ignore'):
+            mx = (c1[i1] - c1[i0]) / n
+            vxx = (c2[i1] - c2[i0]) - n * mx * mx
+            k = ((cxy[i1] - cxy[i0]) - mx * (cy[i1] - cy[i0])) / vxx
+            v = (cy[i1] - cy[i0]) / n + k * (c - mx)
+        v[n < 20] = np.nan
+        return v
+    return fit(c + h, c + h + wr) - fit(c - h - wl, c - h)
+
+
+def _closure_anchor(files, end):
+    """Where the fiber under test starts: the last reflective interior event in
+    the first _CLOSURE_ANCHOR_M (panel port, or launch reel + jumper + port),
+    else 0.  A connector further out is left to the closure's own connector
+    rule: anchoring on it would skip every closure before it."""
+    first = []
+    for f in files:
+        r = [float(e['dist_km']) * 1000.0 for e in (f.get('events') or [])[1:-1]
+             if e.get('dist_km') is not None
+             and (e.get('is_reflective') or e.get('reflection') not in (None, 0, 0.0))
+             and float(e['dist_km']) * 1000.0 < min(_CLOSURE_ANCHOR_M, 0.5 * end)]
+        first.append(r[-1] if r else 0.0)
+    return float(np.median(first)) if first else 0.0
+
+def _closure_zones(fs, lo, hi, h, pulse_m):
+    """Connector zones: positions where more than _CLOSURE_EVENT_SHARE of fibers
+    carry a reflective interior event.  A re-plug changes a connector, and a
+    long pulse smears one over a hundred meters or more, so no closure may sit
+    in a zone and no fit window may cross one (two true repeats on a 79 km
+    and a 61 km job: the only closure that disagreed was the far-end panel,
+    read as a closure 73 and 158 m from its reflective event)."""
+    xs = []
+    for f in fs:
+        for e in (f.get('events') or [])[1:-1]:
+            dk = e.get('dist_km')
+            if (dk is not None and lo < float(dk) * 1000.0 < hi
+                    and (e.get('is_reflective') or e.get('reflection') not in (None, 0, 0.0))):
+                xs.append(float(dk) * 1000.0)
+    zones = []
+    if xs:
+        xs = np.sort(np.array(xs))
+        guard = h + _CLOSURE_ZONE_PULSES * pulse_m + _CLOSURE_ZONE_M
+        for run in np.split(xs, np.where(np.diff(xs) > 2.0 * h)[0] + 1):
+            if len(run) > _CLOSURE_EVENT_SHARE * len(fs):
+                zones.append((float(run[0]) - guard, float(run[-1]) + guard, len(run)))
+    # merge overlaps
+    zones.sort()
+    merged = []
+    for z in zones:
+        if merged and z[0] <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], z[1]), merged[-1][2] + z[2])
+        else:
+            merged.append(z)
+    return merged
+
+
+def _closure_segments(lo, hi, zones):
+    """[lo, hi] with the connector zones cut out."""
+    segs, a = [], lo
+    for z0, z1, _n in zones:
+        if z0 > a:
+            segs.append((a, min(z0, hi)))
+        a = max(a, z1)
+    if a < hi:
+        segs.append((a, hi))
+    return [(x, y) for x, y in segs if y > x]
+
+
+def _closure_fingerprint(files, pairs, near_splice=None):
+    """Find the closures, read every fiber's loss at each, attach each pair's
+    'closure_chi2', 'closure_k', 'closure_max_sd', 'closure_p' (in place) and
+    return a summary.  Abstains out loud.  Never touches p_dup."""
+    from scipy.stats import chi2 as _chi2
+
+    def _no(reason):
+        return {'usable': False, 'note': 'Closure fingerprint: NOT USABLE - ' + reason + '.'}
+    fs = [f for f in files or () if f.get('trace') is not None and f.get('pos') is not None]
+    if len(fs) < _CLOSURE_MIN_FILES:
+        return _no('%d fiber(s), fewer than %d' % (len(fs), _CLOSURE_MIN_FILES))
+    end = float(np.median([float(f.get('length') or f['pos'][-1]) for f in fs]))
+    pm = [float(f['pulse_samples']) * float(f['pos'][1] - f['pos'][0]) for f in fs
+          if f.get('pulse_samples') and len(f['pos']) > 1]
+    pulse_m = float(np.median(pm)) if pm else 0.0
+    # The gap stays 40 m whatever the pulse: a long pulse leaks the step into
+    # the right window, but it leaks the same way on every shot of every fiber,
+    # and identity needs repeatability, not accuracy.  Scaling the gap with the
+    # pulse (2 x 250 m on the 97 km shots) squeezed the windows and multiplied
+    # the noise by 5-10.  Connectors are what a long pulse smears dangerously,
+    # and the zones below take care of those.
+    h = _CLOSURE_H_M
+    w = _CLOSURE_W_M
+    # After the launch connector the receiver recovers over many pulse lengths,
+    # and how far depends on that connector, which a re-plug changes (a 62 km
+    # job at 500 ns: a 'closure' at 1.1 km read 20 sd apart on two shots
+    # seconds apart).
+    lo = _closure_anchor(fs, end) + max(_CLOSURE_START_M, _CLOSURE_START_PULSES * pulse_m)
+    hi = end - max(50.0, h + _CLOSURE_ZONE_PULSES * pulse_m)
+    zones = _closure_zones(fs, lo, hi, h, pulse_m)
+    segs = _closure_segments(lo, hi, zones)
+    grid = np.concatenate([np.arange(a + h + w, b - h - w, _CLOSURE_GRID_M)
+                           for a, b in segs] or [np.zeros(0)])
+    if grid.size < 3:
+        return _no('a %.0f m span leaves no room for a closure and %.0f m of fiber '
+                   'either side of it' % (end, h + w))
+    names = [f['name'] for f in fs]
+    # each fiber's own end: a fiber that stops inside a window reads nothing there
+    fend = {f['name']: float(f.get('length') or f['pos'][-1]) - 50.0 for f in fs}
+    # A fiber's running sums are six arrays the length of its trace: 1.5 GB on a
+    # 1152-fiber 64 km job if every fiber's were kept at once.  So each of the
+    # three passes below builds one fiber's sums, reads all it needs from them
+    # and lets them go.
+    S = np.array([_closure_step(_closure_cums(f), grid, h, w, w) for f in fs])
+    for k, n in enumerate(names):
+        S[k, grid + h + w > fend[n]] = np.nan
+    with np.errstate(all='ignore'):
+        spread = 1.4826 * np.nanmedian(np.abs(S - np.nanmedian(S, axis=0)), axis=0)
+    kk = int(_CLOSURE_LOCAL_M / _CLOSURE_GRID_M)
+    with np.errstate(all='ignore'):
+        local = np.array([np.nanmedian(spread[max(0, i - kk):i + kk + 1])
+                          for i in range(len(spread))])
+    hot = np.where(spread > _CLOSURE_SPREAD_X * local)[0]
+    cands = []
+    fgs = []
+    if hot.size:
+        for run in np.split(hot, np.where(np.diff(hot) > int(2 * h / _CLOSURE_GRID_M))[0] + 1):
+            j = run[int(np.nanargmax(spread[run]))]
+            seg = [sg for sg in segs if sg[0] <= grid[j] <= sg[1]][0]
+            fg = np.arange(max(grid[j] - 2 * h, seg[0] + h + w),
+                           min(grid[j] + 2 * h, seg[1] - h - w) + 1e-9, 2.0)
+            if fg.size:
+                fgs.append(fg)
+    if fgs:
+        # every candidate's fine grid in one pass over the fibers
+        allfg = np.concatenate(fgs)
+        FSall = np.array([_closure_step(_closure_cums(f), allfg, h, w, w) for f in fs])
+        at = 0
+        for fg in fgs:
+            FS = FSall[:, at:at + fg.size]
+            at += fg.size
+            with np.errstate(all='ignore'):
+                fsp = 1.4826 * np.nanmedian(np.abs(FS - np.nanmedian(FS, axis=0)), axis=0)
+            if not np.isfinite(fsp).any():
+                continue
+            ok = np.where(fsp >= 0.9 * np.nanmax(fsp))[0]
+            cands.append((float(0.5 * (fg[ok[0]] + fg[ok[-1]])), float(np.nanmax(fsp))))
+    # A closure seen from the side: a weaker peak inside a stronger one's windows.
+    cands.sort(key=lambda t: -t[1])
+    kept = []
+    for c, sp_ in cands:
+        if all(abs(c - k) > h + w for k, _ in kept):
+            kept.append((c, sp_))
+    centers = sorted(c for c, _ in kept)
+    if not centers:
+        return _no('no closure: the splice loss spread across fibers never rises '
+                   'above %gx its level along the span' % _CLOSURE_SPREAD_X)
+    closures, dropped = [], []
+    # One window for the folder: a quarter of the closest closure-to-closure
+    # spacing, so every gap leaves room to measure the noise.  Connectors and
+    # the ends only clip the closures next to them (below).
+    cc_gaps = [b - a for sg in segs
+               for a, b in zip([c for c in centers if sg[0] <= c <= sg[1]][:-1],
+                               [c for c in centers if sg[0] <= c <= sg[1]][1:])]
+    base = min(cc_gaps) if cc_gaps else max(b - a for a, b in segs)
+    wm = float(np.clip(base / 4.0 - h, _CLOSURE_WMIN_M, _CLOSURE_WMAX_M))
+    # Each closure's windows and closure-free noise spots first, then one pass
+    # over the fibers reads every closure and its spots.
+    plan = []
+    for c in centers:
+        seg = [sg for sg in segs if sg[0] <= c <= sg[1]][0]
+        wl = min(wm, c - h - seg[0])
+        wr = min(wm, seg[1] - c - h)
+        if min(wl, wr) < 100.0:
+            plan.append({'at_m': c, 'why': 'less than 100 m of fiber on one side '
+                                           'before a connector or the end'})
+            continue
+        spots = []
+        for d in np.arange(-30000.0, 30000.0 + 1e-9, _CLOSURE_SPOT_STEP_M):
+            x = c + d
+            if not any(sg[0] <= x - h - wl and x + h + wr <= sg[1] for sg in segs):
+                continue
+            if any(x - wl - 2 * h <= cc <= x + wr + 2 * h for cc in centers):
+                continue
+            spots.append(x)
+        if len(spots) < _CLOSURE_MIN_SPOTS:
+            plan.append({'at_m': c, 'why': 'only %d closure-free stretch(es) to '
+                                           'measure the noise on' % len(spots)})
+            continue
+        plan.append((c, wl, wr, spots))
+    meas = [q for q in plan if isinstance(q, tuple)]
+    V = np.zeros((len(fs), len(meas)))
+    SPS = [np.zeros((len(fs), len(q[3]))) for q in meas]
+    if meas:
+        for k, f in enumerate(fs):
+            cm = _closure_cums(f)
+            for m, (c, wl, wr, spots) in enumerate(meas):
+                V[k, m] = _closure_step(cm, [c], h, wl, wr)[0]
+                SPS[m][k] = _closure_step(cm, spots, h, wl, wr)
+    m = -1
+    for q in plan:
+        if not isinstance(q, tuple):
+            dropped.append(q)
+            continue
+        m += 1
+        c, wl, wr, spots = q
+        v = V[:, m].copy()
+        for k, n in enumerate(names):
+            if c + h + wr > fend[n]:
+                v[k] = np.nan
+        SP = SPS[m]
+        sp_arr = np.asarray(spots)
+        for k, n in enumerate(names):
+            SP[k, sp_arr + h + wr > fend[n]] = np.nan
+        with np.errstate(all='ignore'):
+            sig = float(1.4826 * np.nanmedian(np.abs(SP - np.nanmedian(SP, axis=0))))
+        fin = np.isfinite(v)
+        if not sig > 0 or fin.sum() < _CLOSURE_MIN_FILES:
+            dropped.append({'at_m': c, 'why': 'too few fibers reach it'})
+            continue
+        frac = float(np.mean(np.abs(v[fin]) > _CLOSURE_STEP_NOISE * sig))
+        if frac < _CLOSURE_MIN_FRAC:
+            dropped.append({'at_m': c, 'why': 'its loss clears %g x the %.4f dB noise on '
+                                              '%.0f%% of fibers' % (_CLOSURE_STEP_NOISE, sig,
+                                                                     100 * frac)})
+            continue
+        closures.append({'at_m': c, 'noise_db': sig, 'sd_pair_db': sig * np.sqrt(2.0),
+                         'frac': frac, 'spread_db': float(np.nanstd(v[fin])),
+                         'n_spots': len(spots), 'window_m': (wl, wr),
+                         'loss': dict(zip(names, v.tolist()))})
+    for z0, z1, n_ev in zones:
+        dropped.append({'at_m': 0.5 * (z0 + z1),
+                        'why': 'connector zone %.0f-%.0f m (reflective on %d file(s)), '
+                               'not read' % (z0, z1, n_ev)})
+    if not closures:
+        return _no('%d candidate closure(s), none usable (%s)'
+                   % (len(centers), '; '.join('%.0f m: %s' % (d['at_m'], d['why'])
+                                              for d in dropped[:3])))
+    # Readings: one column per closure, plus the near splice when it measured.
+    cols = [(np.array([cl['loss'][n] for n in names]), cl['sd_pair_db']) for cl in closures]
+    ns_used = bool(near_splice and near_splice.get('usable'))
+    if ns_used:
+        cols.append((np.array([near_splice['loss'].get(n, np.nan) for n in names], dtype=float),
+                     float(near_splice['sd_pair_db'])))
+    idx = {n: i for i, n in enumerate(names)}
+
+    def _pair_arrays(V, ia, ib):
+        c2 = np.zeros(len(ia)); k = np.zeros(len(ia)); mx = np.zeros(len(ia))
+        for col, sd in V:
+            z = (col[ia] - col[ib]) / sd
+            ok = np.isfinite(z)
+            c2[ok] += z[ok] ** 2
+            k[ok] += 1
+            mx[ok] = np.maximum(mx[ok], np.abs(z[ok]))
+        p = np.full(len(ia), np.nan)
+        g = k > 0
+        p[g] = _chi2.sf(c2[g], k[g])
+        return c2, k, mx, p
+
+    # A fiber that stops early carries one or two readings, and one reading
+    # agrees with almost anything (one such fiber on a 1152-fiber job: 331
+    # 'matches' on k = 1).
+    k_min = max(int(np.ceil(0.5 * len(cols))), min(_CLOSURE_MIN_READINGS, len(cols)))
+
+    def _match(k, mx, p):
+        return (k >= k_min) & (p >= _CLOSURE_MATCH_P) & (mx < _CLOSURE_MATCH_MAX_SD)
+    plist = [p for p in pairs or () if p.get('a') in idx and p.get('b') in idx]
+    n = len(names)
+    iu = np.triu_indices(n, 1)
+
+    def _score(V):
+        """Every pair of the folder: readings, agreement, best partners, runner-up,
+        and the two levels.  Every pair, so each file's best and next-best
+        partner are known even when the caller passes a subset."""
+        c2, k, mx, pv = _pair_arrays(V, iu[0], iu[1])
+        with np.errstate(all='ignore'):
+            rr = np.where(k >= k_min, c2 / np.maximum(k, 1), np.inf)
+        Rm = np.full((n, n), np.inf)
+        Rm[iu[0], iu[1]] = rr
+        Rm[iu[1], iu[0]] = rr
+        oo = np.argsort(Rm, axis=1)
+        c1, cn = oo[:, 0], oo[:, 1]
+        s1, s2 = Rm[np.arange(n), c1], Rm[np.arange(n), cn]
+
+        def _nxt(a, b):
+            # the best partner of file a other than b
+            return np.where(c1[a] == b, s2[a], s1[a])
+        with np.errstate(all='ignore'):
+            nx = np.minimum(_nxt(iu[0], iu[1]), _nxt(iu[1], iu[0]))
+            gap = nx / np.maximum(rr, 1.0)
+        agree = (k >= k_min) & (pv >= _CLOSURE_AGREE_P) & (mx < _CLOSURE_MATCH_MAX_SD)
+        mutual = (c1[iu[0]] == iu[1]) & (c1[iu[1]] == iu[0]) & np.isfinite(rr)
+        same = agree & mutual & (gap >= _CLOSURE_EXCL_X)
+        likely = agree & mutual & (gap >= _CLOSURE_LIKELY_X) & ~same
+        return {'c2': c2, 'k': k, 'mx': mx, 'pv': pv, 'rr': rr, 'best': c1, 'best_rr': s1,
+                'next': nx, 'gap': gap, 'agree': agree, 'mutual': mutual,
+                'same': same, 'likely': likely, 'loose': _match(k, mx, pv)}
+    F = _score(cols)
+    # How many pairs would reach each level with no duplicate present: shuffle
+    # every reading across fibers (breaks identity, keeps each reading's spread).
+    # It assumes unrelated fibers, so it is a floor where same-color fibers of
+    # different tubes look alike (the 432-fiber look-alike job).
+    rng = np.random.default_rng(20260930)
+    reps = 200 if n <= 120 else (20 if n <= 600 else 5)
+    ch_l, ch_s = [], []
+    for _ in range(reps):
+        Fs = _score([(col[rng.permutation(n)], sd) for col, sd in cols])
+        ch_l.append(int(Fs['likely'].sum() + Fs['same'].sum()))
+        ch_s.append(int(Fs['same'].sum()))
+    chance_likely, chance_same = float(np.mean(ch_l)), float(np.mean(ch_s))
+    # 'Same fiber' is a claim the folder must be able to make: with few readings
+    # a runner-up 10x worse happens by chance (60 unrelated fibers, 2 closures:
+    # 0.28 per folder), and there it reads 'likely' instead.
+    same_ok = chance_same < _CLOSURE_SAME_CHANCE
+    if not same_ok:
+        F['likely'] = F['likely'] | F['same']
+        F['same'] = np.zeros_like(F['same'])
+    fc2, fk, fmx, fpv, frr = F['c2'], F['k'], F['mx'], F['pv'], F['rr']
+    fmt, f_next, f_same, f_likely = F['loose'], F['next'], F['same'], F['likely']
+    n_match = int(fmt.sum())
+    n_same = int(f_same.sum())
+    n_likely = int(f_likely.sum())
+    # The pairs carry no closure keys.  A dozen keys on each of 662,976 pairs
+    # (a 1152-fiber job) took 700 MB, because they pushed every pair record
+    # past its size; the per-pair readings stay in the folder's arrays below,
+    # read through _closure_pair.  Only the pairs the tab and the manifest
+    # list carry the keys.
+    ia_ = np.fromiter((idx[p['a']] for p in plist), dtype=np.int64, count=len(plist))
+    ib_ = np.fromiter((idx[p['b']] for p in plist), dtype=np.int64, count=len(plist))
+    lo_, hi_ = np.minimum(ia_, ib_), np.maximum(ia_, ib_)
+    tp = np.where(lo_ < hi_, lo_ * (2 * n - lo_ - 1) // 2 + (hi_ - lo_ - 1), 0)
+    sel = np.where((lo_ < hi_) & (fk[tp] > 0))[0]       # pairs with a reading, in order
+    tt = tp[sel]
+    del ia_, ib_, lo_, hi_, tp
+    # The Closures tab order: the same fiber, then likely, then everything
+    # else; within a level more readings, then the closest agreement (higher p,
+    # then lower chi-square), then the order of the pairs.
+    lv = np.where(f_same[tt], 0, np.where(f_likely[tt], 1, 2))
+    order = np.lexsort((np.arange(tt.size), fc2[tt], -fpv[tt], -fk[tt], lv))[:_CLOSURE_TOP]
+    ranked = []
+    for i in order:
+        p, t = plist[sel[i]], int(tt[i])
+        ia, ib = int(iu[0][t]), int(iu[1][t])
+        p['closure_chi2'] = float(fc2[t])
+        p['closure_k'] = int(fk[t])
+        p['closure_max_sd'] = float(fmx[t])
+        p['closure_p'] = float(fpv[t])
+        p['closure_match'] = bool(fmt[t])
+        p['closure_agree'] = bool(F['agree'][t])
+        p['closure_mutual'] = bool(F['mutual'][t])
+        p['closure_next'] = (None if not np.isfinite(f_next[t]) else float(f_next[t]))
+        p['closure_next_x'] = (None if not np.isfinite(F['gap'][t]) else float(F['gap'][t]))
+        p['closure_same_glass'] = bool(f_same[t])
+        p['closure_level'] = ('same' if f_same[t] else 'likely' if f_likely[t] else None)
+        better = []
+        for x, y in ((ia, ib), (ib, ia)):
+            bx = int(F['best'][x])
+            if bx != y and np.isfinite(F['best_rr'][x]) and F['best_rr'][x] < frr[t]:
+                better.append([names[x], names[bx]])
+        if better:
+            p['closure_better'] = better
+        ranked.append(p)
+    # the earlier loose-agreement chance rate, kept for the internals
+    rates = []
+    for _ in range(_CLOSURE_SHUFFLES):
+        V = [(col[rng.permutation(n)], sd) for col, sd in cols]
+        _, sk, smx, sp = _pair_arrays(V, iu[0], iu[1])
+        rates.append(float(_match(sk, smx, sp).mean()))
+    rate = float(np.mean(rates))
+    expected = rate * len(iu[0])
+
+    def _lst(mask):
+        return [{'a': names[iu[0][t]], 'b': names[iu[1][t]], 'k': int(fk[t]),
+                 'chi2_per': float(frr[t]), 'max_sd': float(fmx[t]),
+                 'next': float(f_next[t]), 'next_x': float(F['gap'][t])}
+                for t in np.where(mask)[0]]
+    out = {'usable': True, 'closures': closures, 'dropped': dropped,
+           'same_glass': _lst(f_same), 'likely': _lst(f_likely), 'same_ok': same_ok,
+           'near_splice_used': ns_used, 'n_readings': len(cols), 'k_min': k_min,
+           'n_files': n, 'n_pairs': int(len(iu[0])), 'n_match': n_match,
+           'n_same_glass': n_same, 'n_likely': n_likely,
+           'chance_likely': chance_likely, 'chance_same': chance_same,
+           'chance_rate': rate, 'expected_chance': expected,
+           'match_p': _CLOSURE_MATCH_P, 'match_max_sd': _CLOSURE_MATCH_MAX_SD,
+           'agree_p': _CLOSURE_AGREE_P, 'excl_x': _CLOSURE_EXCL_X,
+           'likely_x': _CLOSURE_LIKELY_X, 'ranked': ranked,
+           # every pair's reading, for _closure_pair
+           'pair_idx': idx, 'pair_k': fk, 'pair_chi2': fc2, 'pair_max_sd': fmx,
+           'pair_p': fpv, 'pair_same': f_same, 'pair_likely': f_likely}
+    where = ', '.join('%.2f km' % (cl['at_m'] / 1000.0) for cl in closures)
+    found = n_same + n_likely
+    # With many readings a repeat stands far clear of its runner-up: every known
+    # one on the long jobs did, 11x to 80x (37 repeats on six jobs).  A pair
+    # that is each file's best match but only 2-10x clear, with that many
+    # readings, is what same-color fibers of different tubes look like (a
+    # 432-fiber job: 12 pairs, 2.8-5.1x), so it is not called 'likely the
+    # same fiber' there.
+    many = len(cols) >= _CLOSURE_MANY_READINGS
+    mid = ('alike but not as clear as a repeat (check the port log)' if many
+           else 'likely the same fiber (check the port log)')
+    # The top line names only what was found: a zero count is left out.
+    if n_same and n_likely:
+        lead = '%d pair(s) the same fiber, %d more %s' % (n_same, n_likely, mid)
+    elif n_same:
+        lead = '%d pair(s) the same fiber' % n_same
+    elif n_likely:
+        lead = '%d pair(s) %s' % (n_likely, mid)
+    else:
+        lead = 'No pair is likely the same fiber'
+    # The chance count sits on the Closures tab under the pairs heading, not in
+    # the top line (2026-09-30).
+    chance_line = ''
+    if found:
+        if chance_likely < 0.05:
+            chance_line = ('With no duplicates present, almost no pair would reach this list '
+                           'by chance in a folder this size.')
+        else:
+            chance_line = ('With no duplicates present, about %.1f pair(s) would reach this '
+                           'list by chance in a folder this size' % chance_likely)
+            if found <= 1.5 * chance_likely:
+                chance_line += (', as many as were found, so on their own these are only a '
+                                'ranking.')
+            else:
+                chance_line += '.'
+    extra = ''
+    if many and n_likely:
+        gx = [float(F['gap'][t]) for t in np.where(f_likely)[0]]
+        extra = (' With %d readings every known repeat has stood at least 10 times clear of '
+                 'its runner-up; these stand %.1f to %.1f times clear, which is what fibers '
+                 'of the same color in different tubes look like.'
+                 % (len(cols), min(gx), max(gx)))
+    out['many_readings'] = many
+    out['chance_line'] = chance_line
+    out['summary'] = ('%d closure(s) at %s%s. %s.%s See the Closures sheet.'
+                      % (len(closures), where, ' plus the near splice' if ns_used else '',
+                         lead, extra))
+    out['note'] = ('Closure fingerprint: usable - %d closure(s) (%s)%s, noise %s dB per '
+                   'shot. %d pair(s) the same fiber, %d %s (chance: %.2f likely, %.2f same in '
+                   'a folder this size). Glass, so a re-plug cannot change it. Display only.'
+                   % (len(closures), where, ' + near splice' if ns_used else '',
+                      '/'.join('%.4f' % cl['noise_db'] for cl in closures),
+                      n_same, n_likely, 'alike, not as clear as a repeat' if many
+                      else 'likely the same fiber', chance_likely, chance_same))
+    return out
+
+
+# ── Port length: the per-port section of a tie panel, to the centimeter ────
+# On a tie panel nothing after the far panel carries identity at 5 ns (2026-08
+# study: backscatter shape, far-end reflectance, fiber length all equal their
+# repeatability).  What does: the LENGTH of the one section that is different
+# for every port, the tie between the two panels (31 m and 62 m ties, and a
+# 62 m tie shot through 15 m sacrificial jumpers).  It is glass, so a re-plug
+# cannot change it, and it reads the same from the OTHER END on another OTDR
+# days later: a 288-port tie panel, 286 ports both ways, agree to 0.8 cm
+# (2026-09-27).  The reels and jumpers, the same for every shot, read
+# 0.3-1.7 cm apart across a folder: that is the folder's own measurement
+# floor, and the section whose spread stands furthest above it is the port's.
+#
+# The edge is the 10% linear-excess crossing of the dip's leading side and
+# nothing else.  The half-depth and -3 dB crossings move 1.5-3 cm per dB of
+# dip depth, and a mean that includes them reads a tie 1-1.8 cm shorter per
+# dB of mating reflectance, which the two ends of one port do not share: with
+# that mean the two ends agreed to 1.9-2.5 cm and three ports of a 288-port
+# panel 'disagreed' (a 6 dB mating on one side); with this edge alone
+# 0.5-0.8 cm and none do.  A dip whose width is off the folder's modal width
+# (a merged double reflection) is not read: every edge disagrees on it.
+#
+# What the tie length CANNOT do: ports next to each other are cut alike.  The
+# length runs in a 24-port sawtooth (0.6-0.75 cm per port, a 5-9 cm step at
+# each block, 15-25 cm at a 12-fiber ribbon boundary), so port N shot again
+# and filed as N+1 reads within about 1 cm of the real N+1, inside the
+# measurement.  Length ranks; it does not decide.
+#
+# CONNECTOR LEFT IN: the tech pressed start again without moving the jumper
+# and filed the shot under the next number.  Then EVERY section repeats to a
+# fraction of a millimeter AND the reflective dip at both tie matings repeats
+# in depth to 0.01 dB and in profile to the trace noise.  Moving to the next
+# port re-makes two matings and the dip depth moves about 0.5 dB, and in no
+# chance length coincidence in ten folders did it move less than 0.07 dB.
+# So this conjunction, at fixed tolerances, is the one tie-panel reading that
+# can name a repeat: on a 288-port tie panel shot through sacrificial jumpers,
+# direction A 28 pairs in 17 groups (runs of up to five numbers, 33-38 s
+# apart), direction B 6; three other tie panels and an 18-file tray
+# (re-plugged between shots) none.  It misses a repeat that was re-plugged,
+# and on an OTDR with timebase jitter it misses most (12 shots of one port:
+# 2 of 15 never-unplugged pairs).
+#
+# THE TWO DIRECTIONS: a tie is shot from both ends, and its length is the same
+# from either.  When the folder holds both directions, fiber number N must
+# read the same length both ways; a number that does not is probably another
+# port on one side (a repeat filed under the next number where the next
+# ribbon starts, a slip, a swap) or a different set-up on one side (one file
+# shot on another OTDR with other jumpers).  A random wrong port is caught
+# 91-96% of the time, a neighboring one 9-34%.  Display only: nothing here
+# moves p_dup, the mating likelihood or a verdict.
+_PORT_LEN_FLOOR_M = 0.005           # a length is never measured better than this
+_PORT_LEN_MIN_SNR = 3.0             # per-port spread must be this many floors
+_PORT_LEN_MIN_FILES = 6
+_PORT_LEN_BINS = 24                 # same quantile-bin null as the mating likelihood
+_PORT_LEN_EPS = 0.05                # floor: a changed jumper costs a pair at most log10(0.05)
+_PORT_LEN_DIP_DB = 3.0
+_PORT_LEN_MIN_DIP_DB = 5.0
+_PORT_LEN_BASE_M = 40.0
+_PORT_LEN_MAX_DZ_M = 0.2            # validated at 0.08-0.16 m; a 30 ns dip reads no edge
+_PORT_LEN_WIDTH_LO = 0.7            # a dip narrower or wider than the folder's is not read
+_PORT_LEN_WIDTH_HI = 1.3
+_PORT_LEN_PROF = 15                 # samples either side of the dip kept for the profile
+_PORT_LEN_AB_MIN = 6                # numbers shot both ways needed for the check
+_PORT_LEN_AB_SD = 3.5               # both-ways difference beyond this many sd = not the same port
+_PORT_LEN_KIT_X = 10.0              # a shared section this many floors off = another set-up
+_PORT_LEN_KIT_MIN_M = 0.25          # and at least this far: a re-seated jumper moves a few cm
+_PORT_LEN_LEFT_IN_M = 0.0015        # connector left in: every section within this
+_PORT_LEN_LEFT_IN_DB = 0.08         # and both tie-mating depths within this
+_PORT_LEN_LEFT_IN_NOISE_X = 6.0     # and both dip profiles within this many trace noises
+
+
+def _port_len_dips(t, p):
+    """Reflective dips (the trace is in the loss domain: a reflection is a dip).
+    The baseline is a 40 m running median taken over 1 m block medians: a full
+    per-sample median made a 288-file tie-panel folder five times slower."""
+    from scipy.ndimage import median_filter
+    dz = p[1] - p[0]
+    q = max(1, int(round(1.0 / dz)))
+    nb = len(t) // q
+    if nb < 3:
+        return []
+    blk = np.median(t[:nb * q].reshape(nb, q), axis=1)
+    wb = max(3, int(round(_PORT_LEN_BASE_M / (q * dz))) | 1)
+    bb = median_filter(blk, size=wb, mode='nearest')
+    base = np.repeat(bb, q)
+    if len(base) < len(t):
+        base = np.concatenate([base, np.full(len(t) - len(base), bb[-1])])
+    m = t < base - _PORT_LEN_DIP_DB
+    out, i, n = [], 0, len(t)
+    while i < n:
+        if m[i]:
+            j = i
+            while j < n and m[j]:
+                j += 1
+            k = i + int(np.argmin(t[i:j]))
+            out.append((k, float(base[k] - t[k])))
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def _port_len_mating(t, p, k):
+    """One reflective mating: the dip whose minimum is sample k.  Returns
+    {'x': leading 10% linear-excess crossing, 'depth', 'width_m', 'prof'} or
+    None.  The profile is the dip in dB below its baseline, 2 x _PORT_LEN_PROF
+    + 1 samples around the minimum."""
+    dz = p[1] - p[0]
+    a = max(0, k - int(round(12.0 / dz)))
+    b = k - int(round(2.0 / dz))
+    if b - a < 10 or k < 1 or k >= len(t) - 1:
+        return None
+    B = float(np.median(t[a:b]))
+    y0, y1, y2 = t[k - 1], t[k], t[k + 1]
+    den = y0 - 2 * y1 + y2
+    off = 0.5 * (y0 - y2) / den if den != 0 else 0.0
+    tmin = y1 - 0.25 * (y0 - y2) * off
+    depth = B - tmin
+    if not (np.isfinite(depth) and depth > 1.0):
+        return None
+    pex = 10 ** ((B - t) / 5.0) - 1.0          # excess linear power (5 log display)
+    pk = 10 ** (depth / 5.0) - 1.0
+    level = 0.1 * pk
+    i = k
+    while i > a and pex[i] > level:
+        i -= 1
+    u0, u1 = pex[i], pex[i + 1]
+    fr = (level - u0) / (u1 - u0) if u1 != u0 else 0.0
+    x = p[i] + fr * dz
+    j = k
+    lim = min(len(t) - 1, k + int(round(12.0 / dz)))
+    while j < lim and pex[j] > level:
+        j += 1
+    v0, v1 = pex[j - 1], pex[j]
+    fr2 = (v0 - level) / (v0 - v1) if v0 != v1 else 0.0
+    x2 = p[j - 1] + fr2 * dz
+    lo, hi = k - _PORT_LEN_PROF, k + _PORT_LEN_PROF + 1
+    if lo < 0 or hi > len(t):
+        return None
+    prof = B - t[lo:hi]
+    if not (np.isfinite(x) and np.isfinite(x2) and np.isfinite(prof).all()):
+        return None
+    return {'x': float(x), 'depth': float(depth), 'width_m': float(x2 - x),
+            'prof': prof.astype(np.float32), 'k': int(k)}
+
+
+def _port_len_edges(f):
+    """Every reflective mating before the fiber end (launch side first) plus
+    the end itself, as mating dicts, with the file's trace noise; or None.
+    The end is the first dip after which the trace climbs to the noise floor;
+    on a tie panel a receive reel follows the far panel, so the matings all
+    sit well before it."""
+    t = np.asarray(f.get('trace'), dtype=float)
+    p = np.asarray(f.get('pos'), dtype=float)
+    k = min(len(t), len(p))
+    if k < 200 or not np.isfinite(p[:k]).all():
+        return None
+    t, p = t[:k], p[:k]
+    dz = p[1] - p[0]
+    if not (np.isfinite(dz) and 0 < dz <= _PORT_LEN_MAX_DZ_M):
+        return None
+    t = np.where(np.isfinite(t), t, 64.0)
+    dips = [(i, d) for i, d in _port_len_dips(t, p) if d > _PORT_LEN_MIN_DIP_DB]
+    if len(dips) < 2:
+        return None
+    end_i = None
+    for i, d in dips:
+        after = t[i + int(round(4 / dz)): i + int(round(20 / dz))]
+        before = t[max(0, i - int(round(40 / dz))): i - int(round(3 / dz))]
+        if len(after) and len(before) and np.median(after) > np.median(before) + 4:
+            end_i = i
+            break
+    lim = p[end_i] - 100.0 if end_i is not None else p[-1]
+    mats = []
+    for i, d in dips:
+        if p[i] >= lim or (end_i is not None and i == end_i):
+            break
+        m = _port_len_mating(t, p, i)
+        if m is None:
+            return None
+        if mats and m['x'] - mats[-1]['x'] < 5.0:
+            return None
+        mats.append(m)
+    # The fiber end closes the last section (the receive reel on a tie panel,
+    # the same for every shot; the per-port fiber on a tray without one).
+    if end_i is not None and mats:
+        me = _port_len_mating(t, p, end_i)
+        if me is not None and me['x'] - mats[-1]['x'] >= 5.0:
+            mats.append(me)
+    if len(mats) < 2:
+        return None
+    # trace noise on the launch reel: 400 m ending 20 m before the first mating
+    x0 = mats[0]['x']
+    sel = (p > x0 - 400.0) & (p < x0 - 20.0)
+    if sel.sum() < 50:
+        sel = (p > 20.0) & (p < x0 - 20.0)
+    dd = np.diff(t[sel]) if sel.sum() > 10 else np.array([0.05])
+    noise = float(np.median(np.abs(dd - np.median(dd))) / 0.6745 / np.sqrt(2.0))
+    return {'mats': mats, 'noise': max(noise, 1e-4), 'dz': dz}
+
+
+def _port_len_group(name):
+    """Direction group of a file: its name prefix (A->B and B->A shots never
+    share sections, and the tie reads the same length from either end)."""
+    try:
+        pref, num = _port_split(name)
+    except Exception:
+        return name, None
+    return pref, (None if num is None else int(num))
+
+
+def _port_len_left_in(sa, sb, da, db, pa, pb, noise):
+    """Connector-left-in test for one pair: every section, both tie-mating
+    depths and both dip profiles repeat.  sa/sb: section arrays; da/db: the
+    two depths; pa/pb: the two profiles; noise: the larger trace noise."""
+    if np.max(np.abs(sa - sb)) > _PORT_LEN_LEFT_IN_M:
+        return False
+    if np.max(np.abs(np.asarray(da) - np.asarray(db))) > _PORT_LEN_LEFT_IN_DB:
+        return False
+    for qa, qb in zip(pa, pb):
+        best = None
+        for sh in (-1, 0, 1):
+            u = qa[max(0, sh):len(qa) + min(0, sh)]
+            v = qb[max(0, -sh):len(qb) + min(0, -sh)]
+            r = float(np.sqrt(np.mean((u - v) ** 2)))
+            best = r if best is None else min(best, r)
+        if best > _PORT_LEN_LEFT_IN_NOISE_X * noise:
+            return False
+    return True
+
+
+def _port_length(files, pairs):
+    """Attach 'port_len_diff_m', 'port_len_lr' (log10) and 'port_len_left_in'
+    to every same-direction pair (in place) and return a summary with the
+    two-direction check and the connector-left-in groups.  Abstains out loud.
+    Never touches p_dup."""
+    from scipy.stats import halfnorm
+
+    def _no(reason):
+        return {'usable': False, 'note': 'Port length: NOT USABLE - ' + reason + '.'}
+    fs = [f for f in files or () if f.get('trace') is not None and f.get('pos') is not None]
+    if len(fs) < _PORT_LEN_MIN_FILES:
+        return _no('%d file(s), fewer than %d' % (len(fs), _PORT_LEN_MIN_FILES))
+    p0 = np.asarray(fs[0]['pos'], dtype=float)
+    dz0 = float(p0[1] - p0[0]) if len(p0) > 1 else float('nan')
+    if not (np.isfinite(dz0) and 0 < dz0 <= _PORT_LEN_MAX_DZ_M):
+        return _no('%.2f m between samples: the reading is validated at 0.08-0.2 m, '
+                   'and a wider pulse reads no edge' % dz0)
+    E, grp, unread = {}, {}, []
+    for f in fs:
+        e = _port_len_edges(f)
+        if e:
+            E[f.get('name')] = e
+            grp[f.get('name')] = _port_len_group(f.get('name'))[0]
+        else:
+            unread.append(f.get('name'))
+    if len(E) < _PORT_LEN_MIN_FILES:
+        return _no('%d file(s) with two reflective matings before the fiber end, fewer '
+                   'than %d' % (len(E), _PORT_LEN_MIN_FILES))
+    L, at, S, D, P, groups, skipped, kit = {}, {}, {}, {}, {}, {}, [], {}
+    serial = {f.get('name'): (f.get('serial_number') or None) for f in fs}
+    for g in sorted(set(grp.values()), key=str):
+        names = [n for n in E if grp[n] == g]
+        gl = g or '(no prefix)'
+        if len(names) < _PORT_LEN_MIN_FILES:
+            skipped.append({'group': gl, 'why': '%d file(s), fewer than %d'
+                                                 % (len(names), _PORT_LEN_MIN_FILES),
+                            'files': names})
+            continue
+        counts = [len(E[n]['mats']) for n in names]
+        nm = int(max(set(counts), key=counts.count))
+        lay = [n for n in names if len(E[n]['mats']) == nm]
+        odd = [n for n in names if len(E[n]['mats']) != nm]
+        if odd:
+            skipped.append({'group': gl, 'why': 'not the %d-mating layout of the '
+                                                 'other %d' % (nm, len(lay)), 'files': odd})
+        if len(lay) < _PORT_LEN_MIN_FILES:
+            skipped.append({'group': gl, 'why': 'no shared layout', 'files': lay})
+            continue
+        # a dip off the group's modal width is a merged or broken reflection
+        # (the fiber end is not judged: its trailing side is the noise floor)
+        W = np.array([[m['width_m'] for m in E[n]['mats'][:-1]] for n in lay])
+        wmed = np.median(W, axis=0)
+        ok = [(W[i] >= _PORT_LEN_WIDTH_LO * wmed).all() and (W[i] <= _PORT_LEN_WIDTH_HI * wmed).all()
+              for i in range(len(lay))]
+        bad = [n for n, o in zip(lay, ok) if not o]
+        if bad:
+            skipped.append({'group': gl, 'why': 'a reflection whose width is off the '
+                                                 'folder\'s (merged or broken dip)', 'files': bad})
+        lay = [n for n, o in zip(lay, ok) if o]
+        if len(lay) < _PORT_LEN_MIN_FILES:
+            skipped.append({'group': gl, 'why': 'too few clean files', 'files': lay})
+            continue
+        A = np.array([np.diff([m['x'] for m in E[n]['mats']]) for n in lay])
+        med = np.median(A, axis=0)
+        spread = 1.4826 * np.median(np.abs(A - med), axis=0)
+        # The sections that are the same for every shot (reels, jumpers) show
+        # how well this folder measures a length; the port's stands above that.
+        floor = max(float(spread.min()), _PORT_LEN_FLOOR_M)
+        sec = int(np.argmax(spread))
+        snr = float(spread[sec]) / floor
+        if snr < _PORT_LEN_MIN_SNR:
+            skipped.append({'group': gl, 'why': 'widest spread %.1f cm against a %.1f cm '
+                                                 'floor (%.1f x; %g needed)'
+                                                 % (100 * spread[sec], 100 * floor, snr,
+                                                    _PORT_LEN_MIN_SNR), 'files': []})
+            continue
+        # another set-up: a shared section far off the group's, or another OTDR
+        sers = [serial[n] for n in lay if serial.get(n)]
+        ser_mode = max(set(sers), key=sers.count) if sers else None
+        shared = [j for j in range(A.shape[1]) if j != sec]
+        for i, n in enumerate(lay):
+            why = []
+            for j in shared:
+                if abs(A[i, j] - med[j]) > max(_PORT_LEN_KIT_X * floor, _PORT_LEN_KIT_MIN_M):
+                    why.append('section %d reads %.2f m, the others %.2f m'
+                               % (j + 1, A[i, j], med[j]))
+            if ser_mode and serial.get(n) and serial[n] != ser_mode:
+                why.append('OTDR %s, the others %s' % (serial[n], ser_mode))
+            if why:
+                kit[n] = '; '.join(why)
+            L[n] = float(A[i, sec])
+            S[n] = A[i]
+            at[n] = float(E[n]['mats'][sec + 1]['x'])
+            D[n] = (E[n]['mats'][sec]['depth'], E[n]['mats'][sec + 1]['depth'])
+            P[n] = (E[n]['mats'][sec]['prof'], E[n]['mats'][sec + 1]['prof'])
+        groups[g] = {'n_files': len(lay), 'section': sec, 'n_sections': nm - 1,
+                     'section_median_m': float(med[sec]), 'spread_m': float(spread[sec]),
+                     'floor_m': floor, 'snr': snr, 'serial': ser_mode,
+                     'shared_m': [float(med[j]) for j in shared]}
+    if not groups:
+        return _no('no section differs from port to port (%s; %g x the floor needed)'
+                   % ('; '.join('%s: %s' % (s['group'], s['why']) for s in skipped)
+                      or 'no direction group large enough', _PORT_LEN_MIN_SNR))
+    precision = max(v['floor_m'] for v in groups.values())
+    noise = {n: E[n]['noise'] for n in L}
+    # ── same-direction pairs: length difference, likelihood, connector left in ──
+    names = list(L)
+    left_pairs = set()
+    for g in groups:
+        gn = [n for n in names if grp[n] == g]
+        if len(gn) < 2:
+            continue
+        SA = np.array([S[n] for n in gn])
+        for i in range(len(gn)):
+            close = np.where(np.max(np.abs(SA[i + 1:] - SA[i]), axis=1) <= _PORT_LEN_LEFT_IN_M)[0]
+            for j in close + i + 1:
+                a, b = gn[i], gn[j]
+                if _port_len_left_in(SA[i], SA[j], D[a], D[b], P[a], P[b],
+                                     max(noise[a], noise[b])):
+                    left_pairs.add((a, b))
+    # groups of files that are one shot repeated: connected components
+    parent = {n: n for n in names}
+
+    def _find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for a, b in left_pairs:
+        parent[_find(a)] = _find(b)
+    comp = {}
+    for n in names:
+        comp.setdefault(_find(n), []).append(n)
+    left_in = sorted([sorted(v) for v in comp.values() if len(v) > 1],
+                     key=lambda v: (grp[v[0]], v[0]))
+    left_of = {n: v for v in left_in for n in v}
+    ab = _port_len_ab_check(L, precision, kit, left_of)
+    if ab.get('usable'):
+        # the two ends of one port are two shots on two OTDRs days apart: the
+        # best measure of how well this folder repeats a tie length
+        precision = min(precision, max(ab['sd_m'], _PORT_LEN_FLOOR_M))
+    plist = [p for p in pairs or ()
+             if p.get('a') in L and p.get('b') in L and grp[p['a']] == grp[p['b']]]
+    d = np.array([abs(L[p['a']] - L[p['b']]) for p in plist])
+    lr = np.zeros(len(d))
+    if len(d) >= _PORT_LEN_BINS:
+        q = np.quantile(d, np.linspace(0.0, 1.0, _PORT_LEN_BINS + 1))
+        q[0], q[-1] = 0.0, np.inf
+        pt = np.diff(halfnorm.cdf(q, scale=precision))
+        pt = np.maximum(pt, 1e-4)
+        pt /= pt.sum()
+        b = np.clip(np.searchsorted(q, d, side='right') - 1, 0, _PORT_LEN_BINS - 1)
+        lr = np.log10((1 - _PORT_LEN_EPS) * pt[b] * _PORT_LEN_BINS + _PORT_LEN_EPS)
+    for p, dd, r in zip(plist, d, lr):
+        p['port_len_diff_m'] = float(dd)
+        p['port_len_lr'] = float(r)
+        if p.get('mating_lr') is not None:
+            p['port_len_joint'] = float(np.log10(max(p['mating_lr'], 1e-300)) + r)
+        key = (p['a'], p['b']) if (p['a'], p['b']) in left_pairs else (p['b'], p['a'])
+        if key in left_pairs:
+            p['port_len_left_in'] = True
+    within = int((d <= precision).sum())
+    g0 = groups[sorted(groups, key=lambda k: -groups[k]['n_files'])[0]]
+    out = {'usable': True, 'length': L, 'port_at': at, 'groups': groups, 'skipped': skipped,
+           'unread': unread, 'kit': kit, 'left_in': left_in,
+           'spread_m': g0['spread_m'], 'floor_m': g0['floor_m'], 'snr': g0['snr'],
+           'precision_m': precision, 'section': g0['section'],
+           'n_sections': g0['n_sections'], 'section_median_m': g0['section_median_m'],
+           'n_files': len(L), 'n_pairs': len(plist), 'n_within': within,
+           'median_m': float(np.median(list(L.values())))}
+    out['ab'] = ab
+    ab_txt = ''
+    if ab.get('usable'):
+        ab_txt = (' Shot both ways: %d fiber numbers read the same length from either '
+                  'end to %.1f cm; %d do not, so on one side that number is probably '
+                  'another port%s.'
+                  % (ab['n_matched'], 100 * ab['sd_m'], len(ab['mismatch']),
+                     ' (or another set-up: %d)' % ab['n_kit'] if ab['n_kit'] else ''))
+    li_txt = ''
+    if left_in:
+        li_txt = (' Connector left in, one port under several numbers: %d group(s), %d '
+                  'files (%s).' % (len(left_in), sum(len(v) for v in left_in),
+                                   '; '.join(' & '.join(n[-4:] for n in v) for v in left_in[:6])
+                                   + ('; ...' if len(left_in) > 6 else '')))
+    sk_txt = ''
+    n_sk = sum(len(s['files']) for s in skipped) + len(unread)
+    if n_sk:
+        sk_txt = ' %d file(s) not read (see the sheet).' % n_sk
+    desc = '; '.join('%s%.1f m section (%d of %d), spread %.1f cm, floor %.1f cm'
+                     % ((g + ': ') if len(groups) > 1 else '', v['section_median_m'],
+                        v['section'] + 1, v['n_sections'], 100 * v['spread_m'],
+                        100 * v['floor_m']) for g, v in groups.items())
+    out['summary'] = ('Per-port section: %s. %d pair(s) within the floor.%s%s%s A ranking; only '
+                      'the connector-left-in groups are a finding. See the Port length sheet.'
+                      % (desc, within, li_txt, ab_txt, sk_txt))
+    out['note'] = ('Port length: usable - %d fibers; %s. %d of %d pairs within the floor.%s%s%s '
+                   'Display only.' % (len(L), desc, within, len(plist), li_txt, ab_txt, sk_txt))
+    return out
+
+
+def _port_len_ab_check(L, precision, kit, left_of):
+    """Fiber numbers shot in two directions: the same port reads the same tie
+    length from either end.  Groups are the file-name prefixes (_port_split);
+    the two largest groups that share numbers are compared."""
+    groups = {}
+    for n, v in L.items():
+        pref, num = _port_len_group(n)
+        if num is None:
+            continue
+        groups.setdefault(pref, {}).setdefault(num, []).append((n, v))
+    if len(groups) < 2:
+        return {'usable': False, 'why': 'one direction only'}
+    best = None
+    for pa in groups:
+        for pb in groups:
+            if pa >= pb:
+                continue
+            shared = [k for k in groups[pa] if k in groups[pb]]
+            if best is None or len(shared) > len(best[2]):
+                best = (pa, pb, shared)
+    pa, pb, shared = best
+    if len(shared) < _PORT_LEN_AB_MIN:
+        return {'usable': False, 'why': '%d fiber number(s) shot both ways, fewer than %d'
+                                        % (len(shared), _PORT_LEN_AB_MIN)}
+    rows = []
+    for k in sorted(shared):
+        for na, va in groups[pa][k]:
+            for nb, vb in groups[pb][k]:
+                rows.append((k, na, nb, va - vb))
+    diff = np.array([r[3] for r in rows])
+    off = float(np.median(diff))
+    # observed, floored only at the absolute floor: the folder's shared sections
+    # are 1 km reels on most rigs and carry the OTDR's scale drift, which a 31 m
+    # tie does not (a 288-port panel: reel spread 1.1-1.6 cm, the two ends
+    # agree to 0.8 cm)
+    sd = max(float(1.4826 * np.median(np.abs(diff - off))), _PORT_LEN_FLOOR_M)
+    mism = []
+    by_group = {}
+    for n, v in L.items():
+        by_group.setdefault(_port_len_group(n)[0], []).append((n, v))
+    for (k, na, nb, dd) in rows:
+        z = (dd - off) / sd
+        if abs(z) > _PORT_LEN_AB_SD:
+            m = {'num': k, 'a': na, 'b': nb, 'diff_m': float(dd - off), 'sd': float(z),
+                 'kit_a': kit.get(na), 'kit_b': kit.get(nb),
+                 'left_in_a': [x for x in left_of.get(na, []) if x != na],
+                 'left_in_b': [x for x in left_of.get(nb, []) if x != nb]}
+            # which port a disagreeing file really holds: same-direction files
+            # that read its length within the floor, the mating likelihood
+            # orders them on the sheet
+            for side in ('a', 'b'):
+                n = m[side]
+                g = _port_len_group(n)[0]
+                like = sorted([(abs(v - L[n]), o) for o, v in by_group.get(g, ())
+                               if o != n and abs(v - L[n]) <= precision])
+                m['like_' + side] = [o for _, o in like[:6]]
+            mism.append(m)
+    mism.sort(key=lambda r: -abs(r['sd']))
+    return {'usable': True, 'group_a': pa, 'group_b': pb, 'n_matched': len(rows),
+            'offset_m': off, 'sd_m': sd, 'k_sd': _PORT_LEN_AB_SD, 'mismatch': mism,
+            'n_kit': sum(1 for m in mism if m['kit_a'] or m['kit_b']),
+            'z': {(r[1], r[2]): float((r[3] - off) / sd) for r in rows}}
+
+
+def _display_only(name, prefix, pairs, reading, *args):
+    """Run one display-only reading.  An error abstains out loud: no tab, no
+    Summary row and no keys left on the pairs, so the report is what it was."""
+    try:
+        return reading(*args)
+    except Exception as exc:          # display only: never take the report down
+        for p in pairs or ():
+            for k in [k for k in p if k.startswith(prefix)]:
+                del p[k]
+        return {'usable': False, 'note': '%s: NOT USABLE - error: %s' % (name, exc)}
+
+
+def _display_only_meta(summarize, analysis):
+    """A display-only summary for the manifest.  An error leaves it out and
+    never takes the run down."""
+    try:
+        return summarize(analysis)
+    except Exception as exc:          # display only: never take the run down
+        print('%s left out of the manifest - error: %s' % (summarize.__name__, exc),
+              file=sys.stderr)
+        return None
+
+
+def _display_only_sheet(wb, title, write, reading):
+    """Write one display-only sheet.  An error leaves a one-line note in its
+    place (the Summary row still points here) and never takes the workbook
+    down."""
+    ws = wb.create_sheet(title)
+    try:
+        write(ws, reading)
+    except Exception as exc:          # display only: never take the workbook down
+        at = wb.index(ws)
+        wb.remove(ws)
+        ws = wb.create_sheet(title, at)
+        ws.cell(row=1, column=1, value='This tab could not be written (error: %s). '
+                                       'Nothing else in the report is affected.' % exc)
+        print('%s sheet: NOT WRITTEN - error: %s' % (title, exc), file=sys.stderr)
+
+
+def _port_length_meta(analysis, top=50):
+    """JSON-ready port-length reading; None when it abstained (additive)."""
+    pl = (analysis or {}).get('port_length') or {}
+    if not pl.get('usable'):
+        return None
+    ranked = sorted([p for p in (analysis.get('pairs') or [])
+                     if p.get('port_len_diff_m') is not None],
+                    key=lambda p: (not p.get('port_len_left_in'), p['port_len_diff_m'],
+                                   -(p.get('mating_lr') or 0.0)))[:top]
+    ab = pl.get('ab') or {}
+    out = {'summary': pl['summary'], 'spread_m': round(pl['spread_m'], 4),
+           'floor_m': round(pl['floor_m'], 4), 'precision_m': round(pl['precision_m'], 4),
+           'section_median_m': round(pl['section_median_m'], 3),
+           'n_within': pl['n_within'],
+           'length': {k: round(v, 4) for k, v in pl['length'].items()},
+           'left_in': pl['left_in'],
+           'kit': pl['kit'],
+           'not_read': [{'group': s['group'], 'why': s['why'], 'files': s['files'][:20]}
+                        for s in pl['skipped'] if s['files']]
+                       + ([{'group': '', 'why': 'no two reflective matings before the fiber '
+                                                'end', 'files': pl['unread'][:20]}]
+                          if pl['unread'] else []),
+           'top': [{'a': p['a'], 'b': p['b'], 'diff_m': round(p['port_len_diff_m'], 4),
+                    'lr': round(p['port_len_lr'], 3),
+                    'left_in': bool(p.get('port_len_left_in'))} for p in ranked]}
+    if ab.get('usable'):
+        out['ab'] = {'group_a': ab['group_a'], 'group_b': ab['group_b'],
+                     'n_matched': ab['n_matched'], 'offset_m': round(ab['offset_m'], 4),
+                     'sd_m': round(ab['sd_m'], 4), 'k_sd': ab['k_sd'],
+                     'mismatch': [{'num': m['num'], 'a': m['a'], 'b': m['b'],
+                                   'diff_m': round(m['diff_m'], 4), 'sd': round(m['sd'], 2),
+                                   'kit_a': m['kit_a'], 'kit_b': m['kit_b'],
+                                   'left_in_a': m['left_in_a'], 'left_in_b': m['left_in_b'],
+                                   'like_a': m['like_a'], 'like_b': m['like_b']}
+                                  for m in ab['mismatch']]}
+    return out
+
+
+def _closure_reason(q, n_readings):
+    """One line a tech can act on: why this pair is, or is not, listed."""
+    k = int(q.get('closure_k') or 0)
+    mx = float(q.get('closure_max_sd') or 0.0)
+    gx = q.get('closure_next_x')
+    shared = ('All %d readings' % k if k >= n_readings
+              else 'All %d shared readings (of %d)' % (k, n_readings))
+    if q.get('closure_level') in ('same', 'likely'):
+        txt = ("%s within %.1f sd, as one fiber shot twice; each is the other's best match; "
+               "the next closest match is %s times worse."
+               % (shared, mx, ('%.0f' % gx) if gx is not None and gx >= 10 else
+                  ('%.1f' % gx if gx is not None else 'far')))
+        if q.get('closure_level') == 'likely' and n_readings >= _CLOSURE_MANY_READINGS:
+            txt += (' With %d readings a repeat normally stands at least 10 times clear.'
+                    % n_readings)
+        return txt
+    if not q.get('closure_agree'):
+        if mx >= _CLOSURE_MATCH_MAX_SD:
+            return 'One reading %.1f sd apart.' % mx
+        if k < n_readings and q.get('closure_p', 1.0) >= _CLOSURE_AGREE_P:
+            return 'Only %d of %d readings shared.' % (k, n_readings)
+        return 'Agrees more loosely than one fiber shot twice (worst reading %.1f sd).' % mx
+    better = q.get('closure_better') or []
+    if better:
+        return ('Agrees (worst reading %.1f sd), but %s.'
+                % (mx, '; '.join('%s matches %s better' % (f, o) for f, o in better)))
+    return ("Each is the other's best match, but another fiber matches almost as well "
+            "(next closest %.1f times worse)." % (gx if gx is not None else 0.0))
+
+
+def _closure_pair(cf, a, b):
+    """One pair's closure reading from the folder's arrays (the pairs carry no
+    closure keys, see _closure_fingerprint).  None when the reading abstained
+    or the pair shares no reading."""
+    idx = (cf or {}).get('pair_idx')
+    if not idx:
+        return None
+    ia, ib = idx.get(a), idx.get(b)
+    if ia is None or ib is None or ia == ib:
+        return None
+    if ia > ib:
+        ia, ib = ib, ia
+    n = cf['n_files']
+    t = ia * (2 * n - ia - 1) // 2 + (ib - ia - 1)
+    if not cf['pair_k'][t] > 0:
+        return None
+    level = 'same' if cf['pair_same'][t] else 'likely' if cf['pair_likely'][t] else None
+    return {'closure_chi2': float(cf['pair_chi2'][t]), 'closure_k': int(cf['pair_k'][t]),
+            'closure_max_sd': float(cf['pair_max_sd'][t]), 'closure_p': float(cf['pair_p'][t]),
+            'closure_level': level, 'closure_same_glass': level == 'same'}
+
+
+def _closure_meta(analysis, top=50):
+    """JSON-ready closure reading for the runner's manifest; None when the
+    engine abstained, so the key stays absent (additive)."""
+    cf = (analysis or {}).get('closure_fp') or {}
+    if not cf.get('usable'):
+        return None
+    ranked = (cf.get('ranked') or [])[:top]
+    return {'summary': cf['summary'],
+            'closures': [{'at_m': round(cl['at_m'], 1),
+                          'noise_db': round(cl['noise_db'], 5),
+                          'sd_pair_db': round(cl['sd_pair_db'], 5),
+                          'frac': round(cl['frac'], 3),
+                          'spread_db': round(cl['spread_db'], 4)} for cl in cf['closures']],
+            'near_splice_used': cf['near_splice_used'],
+            'n_match': cf['n_match'],
+            'n_same_glass': cf['n_same_glass'],
+            'n_likely': cf['n_likely'],
+            'many_readings': cf.get('many_readings', False),
+            'chance_line': cf.get('chance_line', ''),
+            'chance_likely': round(cf['chance_likely'], 2),
+            'chance_same': round(cf['chance_same'], 2),
+            'likely': [{'a': g['a'], 'b': g['b'], 'k': g['k'],
+                        'chi2_per': round(g['chi2_per'], 3),
+                        'max_sd': round(g['max_sd'], 2),
+                        'next_x': round(g['next_x'], 2)} for g in cf['likely'][:200]],
+            'same_glass': [{'a': g['a'], 'b': g['b'], 'k': g['k'],
+                            'chi2_per': round(g['chi2_per'], 3),
+                            'max_sd': round(g['max_sd'], 2),
+                            'next': round(g['next'], 2)} for g in cf['same_glass'][:200]],
+            'expected_chance': round(cf['expected_chance'], 4),
+            'top': [{'a': p['a'], 'b': p['b'], 'chi2': round(p['closure_chi2'], 2),
+                     'k': p['closure_k'], 'max_sd': round(p['closure_max_sd'], 2),
+                     'p': round(p['closure_p'], 4),
+                     'match': bool(p.get('closure_match')),
+                     'same_glass': bool(p.get('closure_same_glass')),
+                     'level': p.get('closure_level'),
+                     'reason': _closure_reason(p, cf['n_readings']),
+                     'next': (None if p.get('closure_next') is None
+                              else round(p['closure_next'], 2))}
+                    for p in ranked]}
+
+
 def _fill_ins_meta(analysis):
     """Fibres shot out of order, JSON-ready.  Empty list when there are none."""
     return [{'names': list(r['names']), 'shot_at': float(r['shot_at']),
@@ -3807,6 +5032,12 @@ def _analyze_sor(folder):
     # confirm one, and a fill-in says where to look, not what was found.
     near_splice = _near_splice(files, pairs)
     print(near_splice['note'])
+    closure_fp = _display_only('Closure fingerprint', 'closure_', pairs,
+                               _closure_fingerprint, files, pairs, near_splice)
+    print(closure_fp['note'])
+    port_length = _display_only('Port length', 'port_len_', pairs,
+                                _port_length, files, pairs)
+    print(port_length['note'])
     fill_ins = _fill_ins(files)
     if fill_ins:
         print('Shot out of order: %d fibre(s) in %d run(s) shot more than %.0f min '
@@ -3862,6 +5093,8 @@ def _analyze_sor(folder):
         'mating': mating,
         'event_fallback': event_fallback,
         'near_splice': near_splice,
+        'closure_fp': closure_fp,
+        'port_length': port_length,
         'fill_ins': fill_ins,
     }
 
@@ -3894,6 +5127,12 @@ def build_report_sor(folder, title, out_pdf, meta=None):
         _nsm = _near_splice_meta(analysis)
         if _nsm:
             meta['near_splice'] = _nsm
+        _cfm = _display_only_meta(_closure_meta, analysis)
+        if _cfm:
+            meta['closure_fp'] = _cfm
+        _plm = _display_only_meta(_port_length_meta, analysis)
+        if _plm:
+            meta['port_length'] = _plm
         _fim = _fill_ins_meta(analysis)
         if _fim:
             meta['fill_ins'] = _fim
@@ -4267,6 +5506,12 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
         _nsm = _near_splice_meta(analysis)
         if _nsm:
             meta['near_splice'] = _nsm
+        _cfm = _display_only_meta(_closure_meta, analysis)
+        if _cfm:
+            meta['closure_fp'] = _cfm
+        _plm = _display_only_meta(_port_length_meta, analysis)
+        if _plm:
+            meta['port_length'] = _plm
         _fim = _fill_ins_meta(analysis)
         if _fim:
             meta['fill_ins'] = _fim
@@ -4362,6 +5607,12 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     _ns = analysis.get('near_splice') or {}
     if _ns.get('usable'):
         rows.append(('Near splice', _ns['summary']))
+    _cf = analysis.get('closure_fp') or {}
+    if _cf.get('usable'):
+        rows.append(('Closures', _cf['summary']))
+    _pl = analysis.get('port_length') or {}
+    if _pl.get('usable'):
+        rows.append(('Port length', _pl['summary']))
     _fi = analysis.get('fill_ins') or []
     if _fi:
         rows.append(('Shot out of order',
@@ -4679,6 +5930,251 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
                             if nxt else [None, None, None]), BASE)
         for col, w in zip('ABCDEFGHI', (22, 22, 30, 16, 20, 20, 16, 15, 24)):
             ws.column_dimensions[col].width = w
+    def _closures_sheet(ws, _cf):
+        cls = _cf['closures']
+        _put_row(ws, 1, [_cf['summary']], BASE_BOLD)
+        _put_row(ws, 2, ['How to read this tab. Every fiber is spliced at every closure the '
+                         'cable passes, and the loss of each splice is part of the glass: a '
+                         're-plug cannot change it, so two shots of one fiber read the same '
+                         'losses within the measurement. A pair is LIKELY THE SAME FIBER when '
+                         'all three hold: each file\'s best match is the other; they agree as '
+                         'closely as one fiber shot twice (no reading more than %g sd apart, '
+                         'chi-square p at least %g); and the next closest match for either '
+                         'file is at least %g times worse. It is THE SAME FIBER when that next '
+                         'closest match is at least %g times worse, on a folder with enough '
+                         'readings that this almost never happens by chance (with only a few, '
+                         'no pair is called the same fiber, only likely). With %d or more readings '
+                         'a real repeat stands far clearer than 2 times (every known one on '
+                         'the long spans stood 11 to 80 times clear), so there the middle '
+                         'level reads ALIKE, NOT AS CLEAR AS A REPEAT. "By chance" shuffles the '
+                         'readings between fibers to show how many pairs would reach the first '
+                         'level with no duplicates present; it assumes unrelated fibers, and on '
+                         'a big cable fibers of the same color in different tubes can look '
+                         'alike, so a likely pair is where to look in the port log, not a '
+                         'verdict. Display only: nothing on this tab changes the duplicate '
+                         'likelihood.'
+                         % (_CLOSURE_MATCH_MAX_SD, _cf['agree_p'], _cf['likely_x'],
+                            _cf['excl_x'], _CLOSURE_MANY_READINGS)], BASE)
+        _band = (analysis.get('confidence') or {}).get('band')
+        r = 3
+        if _band == 'Low':
+            _put_row(ws, r, ['The fingerprint detector cannot measure this folder (confidence '
+                             'Low), so the duplicate likelihood on the other tabs is 0 for every '
+                             'pair here. That is not evidence against the pairs below.'], BASE)
+        r = 5
+        _put_row(ws, r, ['Closure (km)', 'Noise per Shot (dB)', 'Two Shots Agree Within (dB)',
+                         'Fibers With a Clear Loss (%)', 'Spread Across Fibers (dB)'],
+                 HDR_FONT, hdr_fill)
+        for cl in cls:
+            r += 1
+            _put_row(ws, r, [round(cl['at_m'] / 1000.0, 3), round(cl['noise_db'], 4),
+                             round(cl['sd_pair_db'], 4), round(100 * cl['frac'], 1),
+                             round(cl['spread_db'], 4)], BASE)
+        r += 2
+        ranked = (_cf.get('ranked') or [])[:_CLOSURE_TOP]
+        _put_row(ws, r, ['Pairs Most Likely to Be the Same Fiber'], BASE_BOLD)
+        r += 1
+        if _cf.get('chance_line'):
+            _put_row(ws, r, [_cf['chance_line']], BASE)
+            r += 1
+        _put_row(ws, r, ['Pair A', 'Pair B', 'Match', 'Why', "Each Other's Best Match",
+                         'Worst Reading (sd)', 'Next Closest Match (times worse)', 'Readings',
+                         'Time Gap (s)', 'Fingerprint Likelihood (%)', 'Chi-square per Reading',
+                         'p'], HDR_FONT, hdr_fill)
+        _lvl = {'same': 'Same fiber',
+                'likely': ('Alike, not as clear as a repeat: check the port log'
+                           if _cf.get('many_readings')
+                           else 'Likely the same fiber, check the port log')}
+        for q in ranked:
+            r += 1
+            gx = q.get('closure_next_x')
+            _put_row(ws, r, [q['a'], q['b'], _lvl.get(q.get('closure_level')),
+                             _closure_reason(q, _cf['n_readings']),
+                             'Yes' if q.get('closure_mutual') else 'No',
+                             round(q['closure_max_sd'], 1),
+                             None if gx is None else round(gx, 1),
+                             q['closure_k'], _gap_s(q['a'], q['b']),
+                             'not measured' if _band == 'Low'
+                             else round(100.0 * float(q.get('p_dup', 0.0)), 1),
+                             round(q['closure_chi2'] / max(q['closure_k'], 1), 2),
+                             round(q['closure_p'], 4)], BASE)
+        r += 2
+        _put_row(ws, r, ['Splice Loss at Each Closure (dB)'], BASE_BOLD)
+        r += 1
+        _put_row(ws, r, ['File'] + ['%.2f km' % (cl['at_m'] / 1000.0) for cl in cls]
+                 + (['Near splice'] if _cf['near_splice_used'] else []), HDR_FONT, hdr_fill)
+        _nsl = (_ns.get('loss') or {}) if _cf['near_splice_used'] else {}
+        for f in files:
+            r += 1
+            vals = [cl['loss'].get(f['name']) for cl in cls]
+            if _cf['near_splice_used']:
+                vals.append(_nsl.get(f['name']))
+            _put_row(ws, r, [f['name']] + [None if v is None or not np.isfinite(v)
+                                          else round(float(v), 4) for v in vals], BASE)
+        ws.column_dimensions['A'].width = 24
+        ws.column_dimensions['B'].width = 24
+        ws.column_dimensions['C'].width = 38
+        ws.column_dimensions['D'].width = 90
+        for col in 'EFGHIJKL':
+            ws.column_dimensions[col].width = 16
+    def _port_length_sheet(ws, _pl):
+        plen = _pl['length']
+        _put_row(ws, 1, [_pl['summary']], BASE_BOLD)
+        _put_row(ws, 2, ['Measured from the trace: the length of the one section that differs '
+                         'from port to port (the tie between the two panels), from the 10%% '
+                         'crossing of each reflective mating\'s leading edge. A length a '
+                         're-plug cannot change: one port repeats to a few mm in a session, '
+                         'to about 1 cm across sessions and OTDRs, and reads the same from '
+                         'either end. The sections that are the same for every shot (reels, '
+                         'jumpers) spread %.1f cm here: that is the measurement floor. It '
+                         'ranks pairs; it cannot confirm one, because ports next to each other '
+                         'are cut alike (about 1 cm apart). "Connector left in" is different: '
+                         'two files whose every section, both mating depths and both dip '
+                         'profiles repeat within the noise are one shot repeated, which moving '
+                         'to another port cannot produce. A changed test jumper moves the '
+                         'other sections, not the tie. When the folder holds both directions, '
+                         'a fiber number whose two directions disagree is probably another port '
+                         'on one side, or another set-up. Display only: the duplicate '
+                         'likelihood is not changed by this sheet.'
+                         % (100 * _pl['precision_m'],)], BASE)
+        _ab = _pl.get('ab') or {}
+        _abz = _ab.get('z') or {}
+        _abflag = {}
+        for (_na, _nb), _zz in _abz.items():
+            if abs(_zz) > _ab.get('k_sd', 1e9):
+                _abflag[_na] = _zz
+                _abflag[_nb] = _zz
+        _left_of = {n: v for v in _pl.get('left_in') or [] for n in v}
+        r = 4
+        if _pl.get('left_in'):
+            _put_row(ws, r, ['Connector Left In: One Port Under Several Numbers'], BASE_BOLD)
+            r += 1
+            _put_row(ws, r, ['Every section within %.1f mm, both mating depths within %.2f dB '
+                             'and both dip profiles within %g x the trace noise. Moving the '
+                             'jumper to another port re-makes two matings and moves a depth by '
+                             'about 0.5 dB; in no chance length coincidence has it moved less '
+                             'than 0.07 dB. A repeat that was re-plugged does not show here.'
+                             % (1000 * _PORT_LEN_LEFT_IN_M, _PORT_LEN_LEFT_IN_DB,
+                                _PORT_LEN_LEFT_IN_NOISE_X)], BASE)
+            r += 1
+            _put_row(ws, r, ['Direction', 'Files', 'Port Lengths (m)', 'Shot Within (s)',
+                             'Other End Disagrees'], HDR_FONT, hdr_fill)
+            for v in _pl['left_in']:
+                r += 1
+                _gaps = [_gap_s(v[0], x) for x in v[1:]]
+                _gaps = [x for x in _gaps if x is not None]
+                _put_row(ws, r, [_port_len_group(v[0])[0], ', '.join(v),
+                                 ', '.join('%.3f' % plen[x] for x in v),
+                                 max(_gaps) if _gaps else None,
+                                 ', '.join(x[-8:] for x in v if x in _abflag) or None], BASE)
+            r += 2
+        if _ab.get('usable'):
+            _put_row(ws, r, ['Fiber Numbers Shot From Both Ends'], BASE_BOLD)
+            r += 1
+            _put_row(ws, r, ['%s against %s: %d numbers matched; the same port reads the same '
+                             'length from either end to %.1f cm (1 sd, offset %+.1f cm between '
+                             'the directions). %d number(s) differ by more than %g sd, so on one '
+                             'side that number is probably another port (a repeat filed under '
+                             'the next number where the next ribbon starts, a slip, a swap) or '
+                             'another set-up. Ports next to each other are often cut to the '
+                             'same length, so a repeat filed under the next number usually '
+                             'passes this check.'
+                             % (_ab['group_a'], _ab['group_b'], _ab['n_matched'], 100 * _ab['sd_m'],
+                                100 * _ab['offset_m'], len(_ab['mismatch']), _ab['k_sd'])], BASE)
+            r += 1
+            _put_row(ws, r, ['Fiber', 'File A', 'File B', 'Length A (m)', 'Length B (m)',
+                             'Difference (cm)', 'Difference (sd)', 'Another Set-Up',
+                             'Connector Left In With', 'Same Length as A (same direction)',
+                             'Same Length as B (same direction)'], HDR_FONT, hdr_fill)
+            for m in _ab['mismatch']:
+                r += 1
+                _kit = '; '.join('%s: %s' % (x[-8:], k) for x, k in
+                                 ((m['a'], m.get('kit_a')), (m['b'], m.get('kit_b'))) if k)
+                _li = '; '.join('%s: %s' % (x[-8:], ', '.join(y[-8:] for y in w)) for x, w in
+                                ((m['a'], m.get('left_in_a')), (m['b'], m.get('left_in_b'))) if w)
+                _put_row(ws, r, [m['num'], m['a'], m['b'], round(plen[m['a']], 3),
+                                 round(plen[m['b']], 3), round(100 * m['diff_m'], 1),
+                                 round(m['sd'], 1), _kit or None, _li or None,
+                                 ', '.join(m.get('like_a', [])) or None,
+                                 ', '.join(m.get('like_b', [])) or None], BASE)
+            r += 2
+        _put_row(ws, r, ['Ports Closest in Length (same direction)'], BASE_BOLD)
+        r += 1
+        _put_row(ws, r, ['Pair A', 'Pair B', 'Port Length A (m)', 'Port Length B (m)',
+                         'Difference (cm)', 'Connector Left In', 'Mating Likelihood',
+                         'Time Gap (s)', 'Duplicate Likelihood', 'Other End Disagrees'],
+                 HDR_FONT, hdr_fill)
+        close = sorted([q for q in pairs if q.get('port_len_diff_m') is not None],
+                       key=lambda q: (not q.get('port_len_left_in'), q['port_len_diff_m'],
+                                      -(q.get('mating_lr') or 0.0)))[:50]
+
+        def _abtxt(q):
+            f = [n[-8:] for n in (q['a'], q['b']) if n in _abflag]
+            return ', '.join(f) if f else None
+        for q in close:
+            r += 1
+            _put_row(ws, r, [q['a'], q['b'], round(plen[q['a']], 3), round(plen[q['b']], 3),
+                             round(100 * q['port_len_diff_m'], 1),
+                             'Yes' if q.get('port_len_left_in') else None,
+                             None if q.get('mating_lr') is None else round(q['mating_lr'], 1),
+                             _gap_s(q['a'], q['b']), round(float(q.get('p_dup', 0.0)), 4),
+                             _abtxt(q)], BASE)
+        joint = sorted([q for q in pairs if q.get('port_len_joint') is not None],
+                       key=lambda q: -q['port_len_joint'])[:30]
+        if joint:
+            r += 2
+            _put_row(ws, r, ['Mating Likelihood and Port Length Together (same OTDR only)'], BASE_BOLD)
+            r += 1
+            _put_row(ws, r, ['Pair A', 'Pair B', 'Mating Likelihood', 'Difference (cm)',
+                             'Together (log10)', 'Time Gap (s)', 'Duplicate Likelihood',
+                             'Other End Disagrees'], HDR_FONT, hdr_fill)
+            for q in joint:
+                r += 1
+                _put_row(ws, r, [q['a'], q['b'], round(q['mating_lr'], 1),
+                                 round(100 * q['port_len_diff_m'], 1), round(q['port_len_joint'], 2),
+                                 _gap_s(q['a'], q['b']), round(float(q.get('p_dup', 0.0)), 4),
+                                 _abtxt(q)], BASE)
+        _nr = [s_ for s_ in _pl.get('skipped') or [] if s_['files']]
+        if _nr or _pl.get('unread'):
+            r += 2
+            _put_row(ws, r, ['Files Not Read'], BASE_BOLD)
+            r += 1
+            _put_row(ws, r, ['Direction', 'Why', 'Files'], HDR_FONT, hdr_fill)
+            for s_ in _nr:
+                r += 1
+                _put_row(ws, r, [s_['group'], s_['why'], ', '.join(s_['files'][:40])
+                                 + (' ...' if len(s_['files']) > 40 else '')], BASE)
+            if _pl.get('unread'):
+                r += 1
+                _put_row(ws, r, ['', 'no two reflective matings before the fiber end',
+                                 ', '.join(_pl['unread'][:40])
+                                 + (' ...' if len(_pl['unread']) > 40 else '')], BASE)
+        r += 2
+        _put_row(ws, r, ['Port Length of Every File'], BASE_BOLD)
+        r += 1
+        _put_row(ws, r, ['File', 'Port Length (m)', 'Other End (sd)', 'Connector Left In With',
+                         'Another Set-Up'], HDR_FONT, hdr_fill)
+        _abfile = {}
+        for (_na, _nb), _zz in _abz.items():
+            _abfile[_na] = _zz
+            _abfile[_nb] = _zz
+        for f in files:
+            r += 1
+            v = plen.get(f['name'])
+            zz = _abfile.get(f['name'])
+            _put_row(ws, r, [f['name'], None if v is None else round(v, 4),
+                             None if zz is None else round(zz, 1),
+                             ', '.join(x for x in _left_of.get(f['name'], []) if x != f['name'])
+                             or None,
+                             (_pl.get('kit') or {}).get(f['name'])], BASE)
+        ws.column_dimensions['A'].width = 24
+        ws.column_dimensions['B'].width = 24
+        for col in 'CDEFGHIJK':
+            ws.column_dimensions[col].width = 18
+    for _title, _key, _write in (('Closures', 'closure_fp', _closures_sheet),
+                                 ('Port length', 'port_length', _port_length_sheet)):
+        if (analysis.get(_key) or {}).get('usable'):
+            _display_only_sheet(wb, _title, _write, analysis[_key])
     _fi = analysis.get('fill_ins') or []
     if _fi:
         ws = wb.create_sheet('Shot out of order')
