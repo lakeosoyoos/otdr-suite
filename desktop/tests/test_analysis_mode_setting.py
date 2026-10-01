@@ -127,8 +127,13 @@ def test_the_mode_in_use_has_a_green_halo_and_the_switch_is_always_on(hub):
     css = SRC.split("_MODE_SWITCH_CSS = (", 1)[1].split("'</style>')", 1)[0]
     assert ".mode-on{" in css and "#22c55e" in css           # the green halo
     assert "label[data-baseweb=\"checkbox\"]>div:first-child" in css
-    assert "background-color:var(--primary-color" in css      # track always on
-    assert ".st-key-analysis_mode_box" in css and css.count(".st-key-") == css.count(".st-key-analysis_mode_box")
+    # track always on, in the theme's accent (Light: the hub blue; Dark: blue)
+    assert "background-color:var(--otdr-accent,#2c5b8a)" in css
+    # scoped to the two sidebar switches (Analysis Mode, and Theme, which
+    # wears the same halo), nothing else
+    assert ".st-key-analysis_mode_box" in css and ".st-key-theme_box" in css
+    assert css.count(".st-key-") == (css.count(".st-key-analysis_mode_box")
+                                     + css.count(".st-key-theme_box"))
     assert 'class="mode-on">FR Mode<' in hub._mode_name("FR Mode", True)
     assert 'class="mode-off">OTDR Mode<' in hub._mode_name("OTDR Mode", False)
 
