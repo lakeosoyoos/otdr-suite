@@ -17,7 +17,8 @@ HOW TO BUILD  (must be done ON Windows — PyInstaller can't cross-build
      crashes at launch).
   2. Open a Command Prompt in this desktop\ folder.
   3. Run:  build.bat
-     It makes a fresh venv, installs requirements-desktop.txt, re-pins
+     It makes a fresh venv, installs requirements-desktop.txt at the exact
+     versions in constraints-desktop.txt, re-pins
      setuptools==65.5.1 LAST, runs PyInstaller, then BOOT-TESTS the exe
      (launches it and waits for /_stcore/health = ok).  A build that
      compiles but won't launch FAILS here — it will not produce a zip.
