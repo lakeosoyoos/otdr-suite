@@ -9,9 +9,12 @@
    viewer to carry over with those same settings and thresholds"
 
     pop-up       landing on the Viewer, Splice Report or Unidirectional from
-                 another tool, by the Select Tool list or a "← Back" button;
-                 never on Secret Sauce, never on the first page, never on a
-                 report-cell or pair click (Robert: no pop-up on cell jumps)
+                 another tool, by the Select Tool list or a "← Back" button,
+                 when the settings come over from a DIFFERENT Settings tool
+                 (2026-10-01: only if actually carried); never on Secret
+                 Sauce, never on the first page, never back on the tool they
+                 were last set on, never on a report-cell or pair click
+                 (Robert: no pop-up on cell jumps)
     answer       OK or Edit Settings only: no ✕, Esc or click outside
     OK           dark, takes Return / Enter
     Edit         opens the Settings box and scrolls the page to it
@@ -152,6 +155,36 @@ def test_secret_sauce_gets_no_popup_and_the_way_back_asks():
     (d,) = _popup(at)
     # Secret Sauce has no thresholds: they came from the Viewer before it.
     assert "as **Viewer**" in " ".join(m.value for m in d.markdown)
+
+
+def test_back_on_the_same_tool_carries_nothing_so_no_popup():
+    """Robert 2026-10-01: only when the thresholds are actually carried over.
+    Viewer -> Secret Sauce -> Viewer brings nothing from another tool."""
+    at = _open(_hub(), "Secret Sauce")
+    assert not _popup(at)
+    _open(at, "Viewer")
+    assert not _popup(at)
+    # ...and a real hand-off after it still asks.
+    _open(at, "Unidirectional")
+    (d,) = _popup(at)
+    assert "as **Viewer**" in " ".join(m.value for m in d.markdown)
+
+
+def test_no_settings_tool_before_it_carries_nothing():
+    """A tool change with no Settings tool before it has nothing to carry."""
+    import app as hub
+    ss = {'_last_tool': 'Secret Sauce'}
+
+    class _SS(dict):
+        __getattr__ = dict.get
+    fake = _SS(ss)
+    real = hub.st.session_state
+    hub.st.session_state = fake
+    try:
+        hub._note_tool_change('Splice Report')
+    finally:
+        hub.st.session_state = real
+    assert '_carry_popup' not in fake
 
 
 def test_the_back_button_from_the_viewer_asks():
