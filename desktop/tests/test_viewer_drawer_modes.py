@@ -15,7 +15,7 @@ Pinned here:
     marks nothing);
   * with no table (pending, error, one direction only) the drawer draws the
     files' own events, and a trace the table does not cover always does;
-  * the events checkbox still hides every mark;
+  * Display Events off leaves only each event's line and number;
   * a click on a drawer mark goes to its own cell in the panel, and the
     span menu opens only on a real reading;
   * past a few fibres each column gets ONE tag, and past DRAWER_TICK_MAX
@@ -54,8 +54,9 @@ def _const(name):
 
 def test_draw_marks_the_table_and_falls_back_per_trace():
     fn = _fn("draw")
-    ev = fn[fn.index("if (gShowEvents) {"):]
-    assert "gDrawerMarks.length ? drawPairing(gDrawerMarks, r) : null" in ev
+    ev = fn[fn.index("let covered = null;"):]
+    assert "if (gShowEvents && gDrawerMarks.length) covered = drawPairing(gDrawerMarks, r);" in ev
+    assert "else if (gShowFailedLabels && gDrawerMarks.length) drawPairing(gDrawerMarks, r, true);" in ev
     # a trace the table does not cover keeps its file's own event numbers
     assert "covered && covered.has(t)" in ev and "drawEventMarkers(t, r)" in ev
 
@@ -127,15 +128,21 @@ def test_clicks_on_drawer_marks():
     menu = SRC[SRC.index("canvas.addEventListener('contextmenu'"):]
     menu = menu[:menu.index("\n});")]
     assert "if (!lh || !lh.t) return;" in menu
-    assert "if (!gShowEvents) return;" in menu
+    # the lines and numbers are always drawn, so their menu always works
+    assert "gShowEvents" not in menu
 
 
-def test_event_labels_switch_still_hides_every_mark():
-    i = SRC.index("getElementById('set-event-labels').onchange")
-    assert "gShowEvents = e.target.checked;" in SRC[i:i + 300]
-    assert "draw();" in SRC[i:i + 300]
+def test_labels_off_leaves_lines_and_numbers():
+    assert "draw();" in _fn("setEventLabels")
     fn = _fn("draw")
-    assert fn.index("if (gShowEvents) {") < fn.index("drawPairing(")
+    ev = fn[fn.index("let covered = null;"):]
+    # off, and with Show Failed Event Labels: nothing is covered, so every
+    # trace draws its file's own lines and numbers; Show Event Labels: the
+    # drawer, as before
+    assert "if (gShowEvents && gDrawerMarks.length) covered = drawPairing(gDrawerMarks, r);" in ev
+    assert "else if (gShowFailedLabels && gDrawerMarks.length) drawPairing(gDrawerMarks, r, true);" in ev
+    assert "if (gShowEvents)" not in fn
+    assert "drawEventMarkers(t, r);" in ev
 
 
 def test_one_direction_is_marked_in_either_mode():
@@ -219,7 +226,7 @@ var R = {x: 56, y: 12, w: 1100, h: 600};
         prelude,
         _const("DRAWER_DETAIL_MAX"), _const("DRAWER_TICK_MAX"), _const("DRAWER_LANES"),
         _const("DRAWER_COLOR"),
-        _fn("lowerBound"), _fn("drawerColumnSummary"), _fn("layoutDrawerTags"),
+        _fn("lowerBound"), _fn("drawerColumnSummary"), _fn("drawerCellFailed"), _fn("layoutDrawerTags"),
         _fn("chartLabels"), _fn("drawPairing"),
         body,
     ])
@@ -336,12 +343,25 @@ print(JSON.stringify({ticks: ticks, ms: ms}));
 def test_a_picked_fibre_is_drawn_in_full_among_many(tmp_path):
     res = _jsc(tmp_path, r"""
 var D = marks(40, 1);
-gPickKey = 'b-5';
+gPickKey = 'b-1';
 drawPairing([D], R);
 print(JSON.stringify({text: calls.fillText}));
 """)
     assert "A 0.175" in res["text"]
-    assert any(s.startswith("F5 Splice 1") or s.startswith("F5 ") for s in res["text"])
+    assert "F1 Splice 1  avg 0.116  FAIL" in res["text"]
+
+
+@needs_jsc
+def test_a_picked_passing_fibre_gets_no_drawer_marks_when_failed_only(tmp_path):
+    res = _jsc(tmp_path, r"""
+var D = marks(40, 1);
+gPickKey = 'b-5';
+drawPairing([D], R, true);
+var mine = gLabelHits.filter(function (h) { return h.t && h.t.fiber === 5; });
+print(JSON.stringify({text: calls.fillText, mine: mine.length}));
+""")
+    assert not any(s.startswith(("A ", "B ", "F5")) for s in res["text"])
+    assert res["mine"] == 0                 # its own event numbers mark it (draw)
 
 
 @needs_jsc
@@ -350,8 +370,8 @@ def test_one_direction_set_ticks_and_tags_each_event(tmp_path):
 var t = trace('b', 354);
 var D = {mode: 'suite', single: true, have: [{fiber: 354, ta: null, tb: t}], went: [],
   goCell: function (fi, w, col) { D.went.push([fi, w, col]); },
-  cols: [{i: 2, title: 'Event 3', km: 44.2, cells: [{fi: 0, avg: 0.058, km: 44.2, avgFail: false, avgWarn: false,
-          legs: {a: null, b: {km: 10.79, loss: 0.058, hollow: false, fail: false, warn: false}}}]}]};
+  cols: [{i: 2, title: 'Event 3', km: 44.2, cells: [{fi: 0, avg: 0.058, km: 44.2, avgFail: false, avgWarn: true,
+          legs: {a: null, b: {km: 10.79, loss: 0.058, hollow: false, fail: false, warn: true}}}]}]};
 var P = marks(1, 1);
 var cov = drawPairing([P, D], R);
 gLabelHits.filter(function (h) { return !h.t; }).forEach(function (h) { h.go(); });
@@ -361,6 +381,67 @@ print(JSON.stringify({covered: cov.size, text: calls.fillText, went: D.went}));
     assert "Event 3  loss 0.058" in res["text"]
     assert res["text"].count("B 0.058") == 1          # the pair's; the one-way number is on its tag
     assert res["went"] == [[0, "b", 2]]
+
+
+# ─── Show Failed Event Labels: only what fails (Robert 2026-10-01) ──────
+
+@needs_jsc
+def test_failed_only_marks_just_the_failing_cells(tmp_path):
+    """Two fibres at one splice, fibre 1 fails, fibre 2 passes: fibre 1 gets
+    its band, ticks, tag and values; fibre 2 gets nothing from the drawer
+    (its file's own line and number mark it, see draw)."""
+    res = _jsc(tmp_path, r"""
+var D = marks(2, 1);
+D.cols[0].cells[1].legs.b.hollow = false;
+drawPairing([D], R, true);
+var f1 = gLabelHits.filter(function (h) { return h.t && h.t.fiber === 1; });
+var f2 = gLabelHits.filter(function (h) { return h.t && h.t.fiber === 2; });
+f1[0].go();
+print(JSON.stringify({text: calls.fillText, bands: calls.fillRect,
+                      f1: f1.length, f2: f2.length, went: D.went}));
+""")
+    assert sorted(res["text"]) == sorted(["F1 Splice 1  avg 0.116  FAIL", "A 0.175", "B 0.058"])
+    assert res["f1"] == 2 and res["f2"] == 0
+    assert res["bands"] == 2                       # fibre 1's band and its tag
+    assert res["went"] == [[0, "a", 0]]
+
+
+@needs_jsc
+def test_only_a_failing_average_is_labeled(tmp_path):
+    """A warning is not a failure, and nor is one direction over the gate
+    while its Average passes."""
+    res = _jsc(tmp_path, r"""
+var D = marks(3, 1);
+var c = D.cols[0].cells;
+c[0].avgFail = false;                               // fibre 1 passes now
+c[1].avgWarn = true;                                // fibre 2 warns on its Average
+c[2].avgFail = true;                                // fibre 3: its Average fails
+c[0].legs.a.fail = true;                            // fibre 1: only its A reading fails
+drawPairing([D], R, true);
+var failed = calls.fillText.slice();
+calls.fillText = []; gLabelHits = [];
+drawPairing([D], R);                                // Show Event Labels: all three
+print(JSON.stringify({failed: failed, all: calls.fillText}));
+""")
+    who = lambda texts: sorted(t.split(" ")[0] for t in texts if t.startswith("F"))
+    assert who(res["failed"]) == ["F3"]
+    assert who(res["all"]) == ["F1", "F2", "F3"]
+
+
+@needs_jsc
+def test_a_column_nobody_fails_gets_nothing_when_failed_only(tmp_path):
+    res = _jsc(tmp_path, r"""
+var D = marks(12, 2);
+D.cols[1].cells.forEach(function (c) { c.avgFail = false; });
+drawPairing([D], R, true);
+var ticks = gLabelHits.filter(function (h) { return h.t; });
+print(JSON.stringify({text: calls.fillText, ticks: ticks.length,
+                      fibres: ticks.map(function (h) { return h.t.fiber; })}));
+""")
+    # Splice 1: fibre 1 alone, its tag still counting every fibre
+    assert len(res["text"]) == 1 and res["text"][0].startswith("Splice 1")
+    assert "1/12 FAIL" in res["text"][0]
+    assert res["ticks"] == 2 and set(res["fibres"]) == {1}
 
 
 @needs_jsc
