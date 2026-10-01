@@ -145,8 +145,9 @@ def test_sr_typed_site_names_print_everywhere_the_site_appears(tmp_path):
     assert (m["site_a"], m["site_b"]) == ("WEST", "EAST")
     wb = openpyxl.load_workbook(out)
     ws = wb["Splice Report"]
-    assert ws.cell(3, 2).value == "A-End ILA: WEST"
-    assert ws.cell(3, ws.max_column).value == "B-End ILA: EAST"
+    # (a small job's header carries a second line, its event type)
+    assert ws.cell(3, 2).value.split("\n")[0] == "A-End ILA: WEST"
+    assert ws.cell(3, ws.max_column).value.split("\n")[0] == "B-End ILA: EAST"
     acq = [c.value for row in wb["Acquisition Parameters"].iter_rows()
            for c in row if isinstance(c.value, str)]
     assert "A-dir WEST" in acq and "B-dir EAST" in acq
