@@ -227,8 +227,14 @@ def _fr_table_payload(spec_json, analysis='fr'):
                 for r in (ra, rb):
                     r['_source'] = 'sor'
             else:
-                ra = sr.parse_sor_full(pa, trim=False)
-                rb = sr.parse_sor_full(pb, trim=False)
+                def _read(p):
+                    # A .trc carries every wavelength shot; the table is
+                    # FR's at 1550 nm (or the file's first), as the Viewer
+                    # draws it.
+                    return (sr.parse_trc_wavelength(p, trim=False)
+                            if p.lower().endswith('.trc')
+                            else sr.parse_sor_full(p, trim=False))
+                ra, rb = _read(pa), _read(pb)
                 for r, side in ((ra, 'a'), (rb, 'b')):
                     r['_source'] = 'sor'
                     r['_span_side'] = side
@@ -943,7 +949,9 @@ def main():
                     print("  no closures discovered, publishing span structure: "
                           "%d column(s) (panel-to-panel span)" % len(splices),
                           file=sys.stderr)
-            # ── Under 20 fibres loaded: events, not closures ──
+            # ── Under 80 fibres loaded: events, not closures ──
+            # (E.EVENT_JOB_MAX_FIBERS; was under 20.  Robert 2026-10-01:
+            # "under 80 we don't try to determine bend or splice".)
             # Robert 2026-09-29: such a job shows its events and makes no
             # splice or bend call (E.discover_event_columns).  A panel-to-panel
             # span keeps the structure columns found just above.
@@ -966,7 +974,7 @@ def main():
                 _struct_results, _struct_fired = {}, False
                 splices = _event_cols
                 print("  %d fibers loaded (< %d): %d event column(s), no "
-                      "closure or bend calls" % (len(fa), E.MIN_POP_SPLICE,
+                      "closure or bend calls" % (len(fa), E.EVENT_JOB_MAX_FIBERS + 1,
                                                  len(splices)), file=sys.stderr)
             # The entry case is a real closure but takes no splice number — it
             # renders as "Entry".  This numbering is a DUPLICATE of the one in
@@ -1095,6 +1103,9 @@ def main():
             if _event_job:
                 all_results, splices = E.neutralize_event_job(
                     all_results, splices, threshold)
+                # FR's word for every event column (Reflective /
+                # Non-reflective / Mixed): the sheet and the Viewer read it
+                E.stamp_event_kinds(splices, fa, fb)
                 num = 0
                 for sp in splices:
                     if sp.get('column_kind') == 'splice':
@@ -1162,6 +1173,7 @@ def main():
         col = []
         for si, sp in enumerate(splices):
             col.append({'index': si, 'km': sp_km(si),
+                        'event_kind': sp.get('event_kind'),
                         'kind': ('event' if sp.get('is_event_column')
                                  else sp.get('column_kind', 'splice')),
                         'is_repair': bool(sp.get('is_repair')),

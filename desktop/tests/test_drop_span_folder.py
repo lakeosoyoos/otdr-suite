@@ -35,8 +35,8 @@ def test_app_parses():
 
 
 def test_splice_report_drop_box_takes_traces():
-    assert "type=['zip', 'bdr', 'sor', 'json']" in APP, \
-        'SR drop box still rejects a dragged span folder'
+    assert "type=['zip', 'bdr', 'sor', 'json', 'trc']" in APP, \
+        'SR drop box still rejects a dragged span folder (or its .trc)'
 
 
 def test_resolver_stages_dropped_traces():

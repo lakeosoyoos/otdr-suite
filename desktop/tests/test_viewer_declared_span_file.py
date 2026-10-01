@@ -168,3 +168,63 @@ def test_the_cached_trace_is_never_mutated():
     fn = fn[:fn.index('\ndef ')]
     assert 't = dict(t)' in fn
     assert re.search(r"t\['events'\] = \[dict\(e, dist_km=", fn)
+
+
+# ── a declared span with nothing before its start ────────────────────────
+
+def test_a_stored_offset_counts_without_a_negative_event():
+    """A span started on the launch reel's far connector, with nothing between
+    the port and it, re-bases every event to 0 and up: no negative event.  The
+    file still says where the span starts, and that is the answer."""
+    t = _trace([0.0, 0.0624, 1.0956], eof_km=2.14)
+    t['user_offset_km'] = 1.0044
+    assert TS._trace_span_launch_km(t) == 1.0044
+
+
+def test_launch_reel_span_markers_sit_in_the_reports_frame(tmp_path):
+    """Real shots (fixtures/endlaunch, one direction of one span) whose span
+    starts on the launch reel's far connector, with no event before it.  The
+    reports put every event at its stored position plus the stored launch
+    length (the raw frame); the Viewer has to draw them there too.  It drew
+    them a launch length short while only a negative event could declare a
+    span: the 118 km fiber's far end sat 1.4 km before the end of its curve.  These
+    are very long pulses, so the end of the curve bounds the answer only
+    coarsely."""
+    import importlib.util
+    import shutil
+    spec = importlib.util.spec_from_file_location(
+        'viewer_reader_endlaunch', os.path.join(ROOT, 'viewer', 'sor_reader324802a.py'))
+    R = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(R)
+    src = os.path.join(HERE, 'fixtures', 'endlaunch')
+    # The folder holds both directions of one fiber; take the direction with
+    # the most files (by name prefix), so each fiber number is one file.
+    groups = {}
+    for fn in sorted(os.listdir(src)):
+        groups.setdefault(fn[:6], []).append(fn)
+    for fn in max(groups.values(), key=len):
+        shutil.copy(os.path.join(src, fn), tmp_path / fn)
+    folder = str(tmp_path)
+    saved = TS.CONFIG.get('dir_a')
+    TS.CONFIG['dir_a'] = folder
+    try:
+        assert TS.frame_facts(folder)['span_launch_km'] is not None
+        for n, fn in TS.list_fibers(folder):
+            r = R.parse_sor_full(os.path.join(folder, fn), trim=False)
+            raw = [e['dist_km'] + r['user_offset_km'] for e in r['events']]
+            t = TS.load_trace('a', n)
+            drawn = [e['dist_km'] for e in t['events']]
+            # The folder's agreed launch length, within the 50 m a reel may
+            # vary across one span.
+            assert len(raw) == len(drawn)
+            assert all(abs(a - b) < 0.05 for a, b in zip(raw, drawn)), (fn, raw, drawn)
+            # The last event is where this direction's glass ends (EXFO flags
+            # one fiber's saturated launch as its end; the 1F is the far end).
+            # A long pulse puts the curve's last drop up to ~0.6 km past it;
+            # unshifted it was 1.6 km, so the bound sits under one launch length.
+            assert abs(TS._trace_eof_km(t) - drawn[-1]) < 0.8, fn
+    finally:
+        TS.CONFIG['dir_a'] = saved
+        TS._LIST_CACHE.clear()
+        TS._FRAME_CACHE.clear()
+        TS._load_trace_cached.cache_clear()
