@@ -4944,8 +4944,8 @@ def _event_is_reflective(e):
 def event_kind(per_fibre):
     """An event column's FastReporter word from {fibre: reflective?}, where a
     fibre is reflective when either direction's stored event there is (FR's
-    bidirectional merge).  Returns (kind, tip): 'Reflective' when every fibre
-    is, 'Non-reflective' when none is, else 'Mixed' with `tip` naming each
+    bidirectional merge).  Returns (kind, tip): "Reflective" when every fibre
+    is, "Non-reflective" when none is, else "Mixed" with `tip` naming each
     fibre's type (the hover text); `tip` is '' unless Mixed."""
     vals = set(per_fibre.values())
     if vals == {True}:
