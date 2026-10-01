@@ -342,6 +342,10 @@ def main():
                     help="JSON list of [fiber, path_a, path_b]: print FastReporter's "
                          "bidirectional table for each pair as one JSON line on "
                          "stdout and exit.  Nothing else runs (the Viewer's FR mode).")
+    ap.add_argument('--fr-table-file', default=None,
+                    help="Path to a file holding the --fr-table JSON list.  The "
+                         "Viewer uses this: Windows caps a command line at 32,767 "
+                         "characters, which a whole cable's pairs pass.")
     ap.add_argument('--viewer-table', default=None,
                     help="Path to write the Viewer's OTDR Suite table to: this "
                          "report's columns and, for every fibre at every "
@@ -364,7 +368,8 @@ def main():
                     help='JSON dict of engine-global threshold overrides '
                          'from the OTDR settings panel.')
     args = ap.parse_args()
-    if not args.fr_table and (not args.dir_a or not args.out):
+    if (not args.fr_table and not args.fr_table_file
+            and (not args.dir_a or not args.out)):
         ap.error('--dir-a and --out are required')
 
     real_stdout = sys.stdout
@@ -374,6 +379,16 @@ def main():
         real_stdout.write(json.dumps(payload) + '\n')
         real_stdout.flush()
 
+    if args.fr_table_file and not args.fr_table:
+        try:
+            with open(args.fr_table_file, encoding='utf-8') as fh:
+                args.fr_table = fh.read()
+        except (OSError, UnicodeDecodeError) as exc:
+            emit({'ok': False, 'error': f'--fr-table-file: {exc}'})
+            return
+        if not args.fr_table.strip():
+            emit({'ok': False, 'error': '--fr-table-file: the file is empty'})
+            return
     if args.fr_table:
         try:
             emit(_fr_table_payload(args.fr_table, args.analysis))

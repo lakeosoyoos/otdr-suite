@@ -3154,14 +3154,21 @@ def fr_tables(fibers):
         jobs.append((f, pa, pb, key))
     error = None
     if jobs:
-        cmd = _engine_argv() + ['--fr-table',
-                                json.dumps([[f, pa, pb] for f, pa, pb, _ in jobs]),
-                                '--analysis', mode]
+        # The pairs go to the engine in a file, not on its command line.
+        # Windows caps a command line at 32,767 characters.  A pair takes 130
+        # to 220 of them once quoted, so a tray or a whole cable passed the
+        # cap somewhere between 150 and 250 fibres: the engine never started
+        # and FR mode showed "engine failed" for all of them.
         kw = {}
         if sys.platform == 'win32':
             kw['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         payload = {}
+        spec = None
         try:
+            fd, spec = tempfile.mkstemp(prefix='otdr_fr_pairs_', suffix='.json')
+            with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+                fh.write(json.dumps([[f, pa, pb] for f, pa, pb, _ in jobs]))
+            cmd = _engine_argv() + ['--fr-table-file', spec, '--analysis', mode]
             p = subprocess.run(cmd, capture_output=True, text=True,
                                timeout=FR_TABLE_TIMEOUT_S, **kw)
             lines = [ln for ln in (p.stdout or '').splitlines() if ln.strip()]
@@ -3173,6 +3180,12 @@ def fr_tables(fibers):
             error = 'engine timed out'
         except (OSError, ValueError) as e:
             error = f'engine failed: {e}'
+        finally:
+            if spec:
+                try:
+                    os.remove(spec)
+                except OSError:
+                    pass
         tables = payload.get('tables') or {}
         for f, pa, pb, key in jobs:
             rows = tables.get(str(f))
