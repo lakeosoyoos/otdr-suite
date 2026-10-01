@@ -4087,6 +4087,11 @@ if st.session_state.get('app_mode') not in ('traces', 'project', 'setup'):
         st.session_state['app_mode'] = 'traces'
 if st.session_state.get('app_mode') not in ('traces', 'project', 'setup'):
     _render_home(_home_msg)
+    # OTDR Suite App: a file dropped on the home screen is refused, not saved
+    # to Downloads (Robert, 2026-10-01).  There is no Viewer frame here, so
+    # the hub's drop catcher only refuses it; Quick Analysis and a project
+    # install it again below (it runs once per page).
+    _install_hub_drop_catch()
     try:
         maybe_report_update()
     except Exception:
