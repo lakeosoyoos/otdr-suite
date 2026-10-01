@@ -246,9 +246,9 @@ def test_default_on_and_remembered():
 
 def test_in_the_gear_and_the_view_menu_and_lights_the_gear_when_off():
     menu = SRC.split('id="evt-view-menu"', 1)[1].split("</span>", 1)[0]
-    assert '<input id="set-gainers" type="checkbox" checked> Show gainers</label>' in menu
+    assert '<input id="set-gainers" type="checkbox" checked> Show Gainers</label>' in menu
     item = _body(SRC, "function viewItems() {")
-    assert "`<button data-view=\"gainers\">${gShowGainers ? '✓ ' : ''}Show gainers</button>`" in item
+    assert "`<button data-view=\"gainers\">${gShowGainers ? '✓ ' : ''}Show Gainers</button>`" in item
     sync = _body(SRC, "function syncViewBtn() {")
     assert "!gShowGainers && 'gainers hidden'" in sync
     assert "if (e.target.checked !== gShowGainers) toggleView('gainers');" in SRC

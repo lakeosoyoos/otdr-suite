@@ -702,7 +702,7 @@
 <div id="toolbar">
   <button id="btn-back" class="primary" hidden
           title="Go back to the report that opened this Viewer"></button>
-  <button id="toolbar-show" title="Show the settings and toggles again">&#9662; Show toolbar</button>
+  <button id="toolbar-show" title="Show the settings and toggles again">&#9662; Show Toolbar</button>
 
   <div class="group keep">
     <label>Fibers:</label>
@@ -726,12 +726,12 @@
     <button id="btn-fit-y" title="Fit Y: dB axis to the visible distance window (keep distance zoom)">Fit Y</button>
     <button id="btn-zoom-in" title="Zoom in (+)">+</button>
     <button id="btn-zoom-out" title="Zoom out (−)">&minus;</button>
-    <label style="margin-left:8px;"><input type="checkbox" id="cb-stack" checked> stack A/B</label>
+    <label style="margin-left:8px;"><input type="checkbox" id="cb-stack" checked> Stack A/B</label>
     <label id="lbl-yspace" style="margin-left:6px;"
            title="Y Spacing: push the B traces down this many dB so they do not overlap. 0 = FastReporter's default, one true common dB scale.">Y
-      spacing: <input type="number" id="num-yspace" value="0" step="1" min="0" max="60"> dB</label>
-    <label style="margin-left:8px;"><input type="checkbox" id="cb-events" checked> events</label>
-    <label style="margin-left:8px;" title="On: TIA-598 fiber colours by ribbon position. Off: FastReporter's scheme, A blue and B dark gray."><input type="checkbox" id="cb-colors" checked> fiber colors</label>
+      Spacing: <input type="number" id="num-yspace" value="0" step="1" min="0" max="60"> dB</label>
+    <label style="margin-left:8px;"><input type="checkbox" id="cb-events" checked> Events</label>
+    <label style="margin-left:8px;" title="On: TIA-598 fiber colours by ribbon position. Off: FastReporter's scheme, A blue and B dark gray."><input type="checkbox" id="cb-colors" checked> Fiber Colors</label>
   </div>
 
   <div class="group">
@@ -765,15 +765,15 @@
                 aria-haspopup="true" aria-expanded="false">&#9881;<span id="evt-view-on"></span></button>
         <span id="evt-view-menu" role="menu" hidden>
         <label title="Blank every cell that is not a failure: only the flagged figures stay on screen.">
-          <input id="set-failcells" type="checkbox"> Show failing cells only</label>
-        <label title="Blank every cell that is not a warning: only the yellow figures (at or over the OTDR Settings Warning, under Fail) stay on screen.  With 'failing cells only' also ticked, both stay.">
-          <input id="set-warncells" type="checkbox"> Show warning cells only</label>
+          <input id="set-failcells" type="checkbox"> Show Failing Cells Only</label>
+        <label title="Blank every cell that is not a warning: only the yellow figures (at or over the OTDR Settings Warning, under Fail) stay on screen.  With 'Failing Cells Only' also ticked, both stay.">
+          <input id="set-warncells" type="checkbox"> Show Warning Cells Only</label>
         <label title="Hide the Section columns (length, loss, attenuation between events) and the Section statistics.">
-          <input id="set-sections-off" type="checkbox"> Sections off</label>
+          <input id="set-sections-off" type="checkbox"> Sections Off</label>
         <label title="Each fibre shows only its Average row: its A→B and B→A rows are hidden.">
-          <input id="set-avg-only" type="checkbox"> Show averages only</label>
+          <input id="set-avg-only" type="checkbox"> Show Averages Only</label>
         <label title="Untick to blank every gainer: a single-direction reading with a negative loss (FastReporter's 'Positive').  A hidden gainer is not judged, so it cannot fail its row.  The bidirectional Average is always shown.">
-          <input id="set-gainers" type="checkbox" checked> Show gainers</label>
+          <input id="set-gainers" type="checkbox" checked> Show Gainers</label>
         <label title="Keep the Minimum / Maximum / Average rows pinned to the bottom of the panel.  Off, they sit under the last row and never cover the table.">
           <input id="set-pin-agg" type="checkbox"> Pin Min/Max/Average</label>
         </span>
@@ -781,10 +781,10 @@
       <span class="hint" id="event-hint">add a trace to see events</span>
       <span id="evt-settings">
         <label title="An event at or above this loss is flagged. Seeded from the report that opened this Viewer, so the two agree; edit to explore.">
-          loss &ge; <input id="set-loss" type="number" step="0.005" min="0" value="0.160"> dB</label>
+          Loss &ge; <input id="set-loss" type="number" step="0.005" min="0" value="0.160"> dB</label>
         <span id="gate-src" class="gate-src" title="Which report's threshold this Viewer is judging by."></span>
         <label title="Reflectance band low end (engine UNI_REFL_FLOOR_DB). 0 turns the reflectance rule off.">
-          refl band <input id="set-refl-lo" type="number" step="1" max="0" value="-80"></label>
+          Refl Band <input id="set-refl-lo" type="number" step="1" max="0" value="-80"></label>
         <label title="Reflectance band high end (engine UNI_REFL_CEIL_DB). 0 = no ceiling.">
           &hellip; <input id="set-refl-hi" type="number" step="1" max="0" value="0"> dB</label>
       </span>
@@ -3468,19 +3468,19 @@ function showFileDirMenu(x, y, src, fiber, name) {
     + ` title="${dirty.length ? `write ${dirty.length === 1 ? 'this file' : dirty.length + ' files'}`
                                 + ' as shown into a copy in the sibling &quot;edited&quot; folder'
                               : 'change the direction first'}">`
-    + `Save ${dirty.length > 1 ? dirty.length + ' directions to edited copies'
-                               : 'direction to edited copy'}…</button>`
+    + `Save ${dirty.length > 1 ? dirty.length + ' Directions to Edited Copies'
+                               : 'Direction to Edited Copy'}…</button>`
     // Same editor the span menu offers: IOR, names, span — written to a copy.
-    + `<button data-edit="1">Trace settings (IOR, names)…</button>`
+    + `<button data-edit="1">Trace Settings (IOR, Names)…</button>`
     // Find and replace over the file NAMES, PowerRename-style.  Marked
     // files come along; the dialog says how many before anything moves.
-    + `<button data-rename="1">Rename ${marked > 1 ? marked + ' marked files' : 'file'}…</button>`
+    + `<button data-rename="1">Rename ${marked > 1 ? marked + ' Marked Files' : 'File'}…</button>`
     // Take the file out of the list, off the chart and out of the grid.
     // Says the count first: a marked range removes the whole range.
-    + `<button data-remove="1">Remove ${marked > 1 ? marked + ' marked files' : 'file'}`
-    + ` from viewer</button>`
+    + `<button data-remove="1">Remove ${marked > 1 ? marked + ' Marked Files' : 'File'}`
+    + ` from Viewer</button>`
     + (gRenameUndo.length
-       ? `<button data-undo="1">Undo rename of ${gRenameUndo[gRenameUndo.length - 1].n} file`
+       ? `<button data-undo="1">Undo Rename of ${gRenameUndo[gRenameUndo.length - 1].n} File`
          + `${gRenameUndo[gRenameUndo.length - 1].n === 1 ? '' : 's'}</button>` : '')
     // FR's Select Same tools, on the files this menu acts on.
     + selectSameMenuHtml(marks);
@@ -5156,11 +5156,11 @@ function buildEventRows(traces) {
 // an event's ⋯ menu, and applied to every distance the Viewer shows.
 // Remembered on this PC.  km keeps the "km, feet" pair the boss asked for.
 const DIST_UNITS = {
-  km:  { f: 1,          label: 'km',  name: 'km (kilometers)', dp: 4 },
-  mi:  { f: 0.621371,   label: 'mi',  name: 'mi (miles)',      dp: 4 },
-  kft: { f: 3.2808399,  label: 'kft', name: 'kft (kilofeet)',  dp: 3 },
-  m:   { f: 1000,       label: 'm',   name: 'm (meters)',      dp: 1 },
-  ft:  { f: 3280.8399,  label: 'ft',  name: 'ft (feet)',       dp: 0 },
+  km:  { f: 1,          label: 'km',  name: 'km (Kilometers)', dp: 4 },
+  mi:  { f: 0.621371,   label: 'mi',  name: 'mi (Miles)',      dp: 4 },
+  kft: { f: 3.2808399,  label: 'kft', name: 'kft (Kilofeet)',  dp: 3 },
+  m:   { f: 1000,       label: 'm',   name: 'm (Meters)',      dp: 1 },
+  ft:  { f: 3280.8399,  label: 'ft',  name: 'ft (Feet)',       dp: 0 },
 };
 let gDistUnit = (() => {
   try { const u = localStorage.getItem('otdr.distUnit'); return DIST_UNITS[u] ? u : 'km'; }
@@ -6634,7 +6634,7 @@ function showDirChooser(x, y, picks) {
   m.id = 'span-menu';
   m.innerHTML = `<div class="span-menu-hd">Which Direction?</div>`
     + picks.map((p, k) =>
-        `<button data-k="${k}">${p.dir === 'a' ? 'A→B' : 'B→A'} span and settings…</button>`).join('')
+        `<button data-k="${k}">${p.dir === 'a' ? 'A→B' : 'B→A'} Span and Settings…</button>`).join('')
     + viewItems();
   document.body.appendChild(m);
   m.style.left = Math.min(x, window.innerWidth - m.offsetWidth - 8) + 'px';
@@ -6656,11 +6656,11 @@ function showDirChooser(x, y, picks) {
 // the boss, on being told it existed, asked for both switches to live here.
 function viewItems() {
   return `<div class="span-menu-hd">View</div>`
-    + `<button data-view="rows">${gFlaggedOnly ? '✓ ' : ''}Show only flagged rows</button>`
-    + `<button data-view="cells">${gFailCellsOnly ? '✓ ' : ''}Show only failing cells</button>`
-    + `<button data-view="warncells">${gWarnCellsOnly ? '✓ ' : ''}Show only warning cells</button>`
-    + `<button data-view="avg">${gAvgOnly ? '✓ ' : ''}Show averages only</button>`
-    + `<button data-view="gainers">${gShowGainers ? '✓ ' : ''}Show gainers</button>`
+    + `<button data-view="rows">${gFlaggedOnly ? '✓ ' : ''}Show Only Flagged Rows</button>`
+    + `<button data-view="cells">${gFailCellsOnly ? '✓ ' : ''}Show Only Failing Cells</button>`
+    + `<button data-view="warncells">${gWarnCellsOnly ? '✓ ' : ''}Show Only Warning Cells</button>`
+    + `<button data-view="avg">${gAvgOnly ? '✓ ' : ''}Show Averages Only</button>`
+    + `<button data-view="gainers">${gShowGainers ? '✓ ' : ''}Show Gainers</button>`
     + `<div class="span-menu-hd">Distance Unit</div>`
     + Object.entries(DIST_UNITS).map(([k, u]) =>
         `<button data-unit="${k}"${k === gDistUnit ? ' class="primary"' : ''}>`
@@ -6704,12 +6704,12 @@ function showSpanMenu(x, y, dir, km, fiber, src) {
   // so putting them in front of a tech would be inviting a pointless click.
   const useful = dir === 'a' ? 'start' : 'end';
   const items = [
-    ['start', `Span START of ${arrow} here`],
-    ['end',   `Span END of ${arrow} here`],
+    ['start', `Span START of ${arrow} Here`],
+    ['end',   `Span END of ${arrow} Here`],
     // Named for what it does to the picture (Robert 2026-09-26); the header
     // above already says which direction.
     ['clear', 'Reset to Full Span'],
-    ['edit',  `Trace settings (IOR, names)…`],
+    ['edit',  `Trace Settings (IOR, Names)…`],
   ];
   const m = document.createElement('div');
   m.id = 'span-menu';
@@ -7251,7 +7251,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
 const EDIT_FIELDS = [
   ['cable_id',   'Cable ID'],   ['fiber_id',  'Fiber ID'],
   ['loc_a',      'Location A'], ['loc_b',     'Location B'],
-  ['cable_code', 'Cable code'], ['job_id',    'Job ID'],
+  ['cable_code', 'Cable Code'], ['job_id',    'Job ID'],
   ['customer',   'Customer'],   ['company',   'Company'],
   ['operator',   'Operator A'], ['operator_b','Operator B'],
   ['comment',    'Comment'],
@@ -7263,10 +7263,10 @@ function spanRow(dir) {
   const s = gSpanDecl && gSpanDecl[dir];
   if (!s || (s.start_km == null && s.end_km == null)) return '';
   const parts = [];
-  if (s.start_km != null) parts.push(`start ${s.start_km.toFixed(4)} km`);
-  if (s.end_km != null) parts.push(`end ${s.end_km.toFixed(4)} km`);
-  return `<div class="row"><label>Declared span</label><label style="color:var(--text)">`
-    + `<input type="checkbox" id="edit-span" checked> write it into the copies (${parts.join(', ')})</label></div>`;
+  if (s.start_km != null) parts.push(`Start ${s.start_km.toFixed(4)} km`);
+  if (s.end_km != null) parts.push(`End ${s.end_km.toFixed(4)} km`);
+  return `<div class="row"><label>Declared Span</label><label style="color:var(--text)">`
+    + `<input type="checkbox" id="edit-span" checked> Write It Into the Copies (${parts.join(', ')})</label></div>`;
 }
 // FR's Test Parameters and Test Settings, row for row.  Formats are FR's:
 // the boss reads that panel daily, and one that rounds differently is one he
@@ -7289,13 +7289,13 @@ function frPanelHtml(p, iorVal) {
   const settings = [
     ['IOR', `<input type="number" id="edit-ior" step="0.000001" min="1.40" max="1.55" value="${iorVal}" title="type a new IOR to write it into the copies">`],
     ['Backscatter', n(p.backscatter_db, 2, ' dB')],
-    ['Helix factor', n(p.helix_pct, 2, ' %')],
-    ['Splice loss detection threshold', n(p.splice_thr_db, 3, ' dB')],
-    [`<label><input type="checkbox" disabled${splitOn ? ' checked' : ''}> Splitter loss (SM Only)</label>`,
+    ['Helix Factor', n(p.helix_pct, 2, ' %')],
+    ['Splice Loss Detection Threshold', n(p.splice_thr_db, 3, ' dB')],
+    [`<label><input type="checkbox" disabled${splitOn ? ' checked' : ''}> Splitter Loss (SM Only)</label>`,
      n(p.splitter_thr_db, 3, ' dB'), splitOn ? '' : 'off'],
-    ['Reflectance detection threshold', n(p.refl_thr_db, 1, ' dB')],
-    ['End-of-fiber detection threshold', n(p.eof_thr_db, 3, ' dB')],
-    ['Fiber core size', core],
+    ['Reflectance Detection Threshold', n(p.refl_thr_db, 1, ' dB')],
+    ['End-of-Fiber Detection Threshold', n(p.eof_thr_db, 3, ' dB')],
+    ['Fiber Core Size', core],
   ];
   return `<div class="fr-panels">`
     + `<table class="fr-panel"><tr><th colspan="2">Test Parameters</th></tr>`
@@ -7330,8 +7330,8 @@ async function showEditDialog(dir, fiber) {
   const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   d.innerHTML = `<h3>Trace Settings: ${arrow}</h3>`
     + `<div class="sub">read from ${esc(s.filename)}${s.editable ? '' : ': <b>' + esc(s.why) + '</b>'}</div>`
-    + `<div class="scope"><label><input type="radio" name="edit-scope" value="all" checked> all fibers in this folder</label>`
-    + `<label><input type="radio" name="edit-scope" value="one"> only F${fiber}</label></div>`
+    + `<div class="scope"><label><input type="radio" name="edit-scope" value="all" checked> All Fibers in This Folder</label>`
+    + `<label><input type="radio" name="edit-scope" value="one"> Only F${fiber}</label></div>`
     + (s.panel
        ? frPanelHtml(s.panel, iorVal)
        : `<div class="row"><label>IOR</label><input type="number" id="edit-ior" step="0.00001" min="1.40" max="1.55" value="${iorVal}"></div>`)
@@ -7339,10 +7339,10 @@ async function showEditDialog(dir, fiber) {
         `<div class="row"><label>${label}</label><input type="text" id="edit-${k}" data-key="${k}" value="${esc(ids[k])}"></div>`).join('')
     + spanRow(dir)
     + `<div class="note">Blank a field to leave it unchanged. The originals are never touched; edited copies go to the folder below. Browse to choose one, or type a full path (a bare name makes a folder of that name in Downloads).</div>`
-    + `<div class="row"><label>Save copies to</label><input type="text" id="edit-dest" value="${esc(s.dest_full || s.dest_default)}">`
+    + `<div class="row"><label>Save Copies To</label><input type="text" id="edit-dest" value="${esc(s.dest_full || s.dest_default)}">`
     + `<button type="button" id="edit-browse" title="choose the folder edited copies are saved to">Browse…</button></div>`
     + `<div class="err" id="edit-err"></div>`
-    + `<div class="btns"><button id="edit-cancel">Cancel</button><button class="primary" id="edit-save"${s.editable ? '' : ' disabled'}>Save copies</button></div>`;
+    + `<div class="btns"><button id="edit-cancel">Cancel</button><button class="primary" id="edit-save"${s.editable ? '' : ' disabled'}>Save Copies</button></div>`;
   document.body.appendChild(bg);
   document.body.appendChild(d);
   // Remember what the file says, so an untouched field is NOT re-sent as a
@@ -7532,11 +7532,11 @@ function showRenameDialog(dir, fiber, name) {
   // Scopes, widest last.  The default is the marked set when this row is one
   // of the marked — "select some, right-click, rename" is the flow the boss
   // described — and otherwise just the row that was right-clicked.
-  const scopes = [['one', `only ${name}`]];
-  if (marked.length > 1) scopes.push(['sel', `the ${marked.length} marked files`]);
-  if (nA) scopes.push(['a', `all ${nA} files in ${gInfo.dir_a_name}`]);
-  if (nB) scopes.push(['b', `all ${nB} files in ${gInfo.dir_b_name}`]);
-  if (nA && nB) scopes.push(['both', `all ${nA + nB} files in both folders`]);
+  const scopes = [['one', `Only ${name}`]];
+  if (marked.length > 1) scopes.push(['sel', `The ${marked.length} Marked Files`]);
+  if (nA) scopes.push(['a', `All ${nA} Files in ${gInfo.dir_a_name}`]);
+  if (nB) scopes.push(['b', `All ${nB} Files in ${gInfo.dir_b_name}`]);
+  if (nA && nB) scopes.push(['both', `All ${nA + nB} Files in Both Folders`]);
   const start = (marked.length > 1 && gSelectedFiles.has(`${dir}-${fiber}`)) ? 'sel' : 'one';
 
   const bg = document.createElement('div'); bg.id = 'rn-dlg-bg';
@@ -7547,28 +7547,28 @@ function showRenameDialog(dir, fiber, name) {
     + `<div class="row"><label>Files</label><select id="rn-scope">`
     + scopes.map(([v, t]) => `<option value="${v}"${v === start ? ' selected' : ''}>${esc(t)}</option>`).join('')
     + `</select></div>`
-    + `<div class="row"><label>Search for</label><input type="text" id="rn-find" autocomplete="off" spellcheck="false"></div>`
-    + `<div class="row"><label>Replace with</label><input type="text" id="rn-rep" autocomplete="off" spellcheck="false"></div>`
+    + `<div class="row"><label>Search For</label><input type="text" id="rn-find" autocomplete="off" spellcheck="false"></div>`
+    + `<div class="row"><label>Replace With</label><input type="text" id="rn-rep" autocomplete="off" spellcheck="false"></div>`
     + `<div class="opts">`
-    + `<label><input type="checkbox" id="rn-regex"> Regular expression</label>`
-    + `<label><input type="checkbox" id="rn-case"> Match case</label>`
-    + `<label><input type="checkbox" id="rn-all" checked> Replace every match</label>`
+    + `<label><input type="checkbox" id="rn-regex"> Regular Expression</label>`
+    + `<label><input type="checkbox" id="rn-case"> Match Case</label>`
+    + `<label><input type="checkbox" id="rn-all" checked> Replace Every Match</label>`
     + `</div>`
-    + `<div class="opts"><span style="color:var(--text-sec)">Apply to</span>`
-    + `<label><input type="radio" name="rn-part" value="whole" checked> whole file name</label>`
-    + `<label><input type="radio" name="rn-part" value="name"> name, keep the extension</label>`
-    + `<label><input type="radio" name="rn-part" value="ext"> extension only</label>`
+    + `<div class="opts"><span style="color:var(--text-sec)">Apply To</span>`
+    + `<label><input type="radio" name="rn-part" value="whole" checked> Whole File Name</label>`
+    + `<label><input type="radio" name="rn-part" value="name"> Name, Keep the Extension</label>`
+    + `<label><input type="radio" name="rn-part" value="ext"> Extension Only</label>`
     + `</div>`
-    + `<div class="row"><label>Add text</label><input type="text" id="rn-add" autocomplete="off" spellcheck="false"></div>`
-    + `<div class="opts"><span style="color:var(--text-sec)">Add it</span>`
-    + `<label><input type="radio" name="rn-at" value="end" checked> at the end, before the extension</label>`
-    + `<label><input type="radio" name="rn-at" value="start"> at the start of the name</label>`
+    + `<div class="row"><label>Add Text</label><input type="text" id="rn-add" autocomplete="off" spellcheck="false"></div>`
+    + `<div class="opts"><span style="color:var(--text-sec)">Add It</span>`
+    + `<label><input type="radio" name="rn-at" value="end" checked> At the End, Before the Extension</label>`
+    + `<label><input type="radio" name="rn-at" value="start"> At the Start of the Name</label>`
     + `</div>`
     + `<div id="rn-list"></div>`
     + `<div class="count" id="rn-count"></div>`
     + `<div class="err" id="rn-err"></div>`
     + `<div class="btns">`
-    + `<button type="button" class="link spacer" id="rn-tick">tick all / none</button>`
+    + `<button type="button" class="link spacer" id="rn-tick">Tick All / None</button>`
     + `<button id="rn-cancel">Cancel</button>`
     + `<button class="primary" id="rn-go" disabled>Rename</button></div>`;
   document.body.appendChild(bg);
@@ -7929,7 +7929,7 @@ function showRenameResult(res) {
   d.innerHTML = `<h3>Rename Done</h3><div class="note" style="font-size:11px;line-height:1.5">`
     + lines.map(l => `<div style="margin:6px 0">${l}</div>`).join('') + `</div>`
     + `<div class="btns">`
-    + (res.renamed ? `<button class="spacer" id="rn-undo">Undo this rename</button>` : '')
+    + (res.renamed ? `<button class="spacer" id="rn-undo">Undo This Rename</button>` : '')
     + `<button class="primary" id="rn-done">Done</button></div>`;
   d.querySelector('#rn-done').onclick = closeRenameDialog;
   const u = d.querySelector('#rn-undo');
@@ -8511,15 +8511,15 @@ async function showReportDialog() {
     + `<div class="sub">The chart and the event table as they are on screen, every row of the table.</div>`
     + `<div class="scope"><label><input type="radio" name="rpt-fmt" value="pdf" checked> PDF</label>`
     + `<label><input type="radio" name="rpt-fmt" value="xlsx"> Excel</label></div>`
-    + (zoomed ? `<div class="scope"><label><input type="checkbox" id="rpt-whole" checked> add the whole span too (the chart is zoomed in)</label></div>` : '')
+    + (zoomed ? `<div class="scope"><label><input type="checkbox" id="rpt-whole" checked> Add the Whole Span Too (the Chart Is Zoomed In)</label></div>` : '')
     + `<div class="scope"><label title="After the combined table, one page per fibre, as FastReporter prints them (${nFib} fibre${nFib === 1 ? '' : 's'} loaded)">`
     + `<input type="checkbox" id="rpt-fibres" checked> Add Per Fiber Summary Pages</label></div>`
-    + `<div class="row"><label>File name</label><input type="text" id="rpt-name" value="${esc(reportDefaultName(vis))}"></div>`
-    + `<div class="row"><label>Save to</label><input type="text" id="rpt-dest" value="${esc(dest)}">`
+    + `<div class="row"><label>File Name</label><input type="text" id="rpt-name" value="${esc(reportDefaultName(vis))}"></div>`
+    + `<div class="row"><label>Save To</label><input type="text" id="rpt-dest" value="${esc(dest)}">`
     + `<button type="button" id="rpt-browse" title="choose the folder the report is saved to">Browse…</button></div>`
     + (gTableExport ? '' : `<div class="note">The event table is still loading. Wait for it, or the report has the chart only.</div>`)
     + `<div class="err" id="rpt-err"></div>`
-    + `<div class="btns"><button id="rpt-cancel">Cancel</button><button class="primary" id="rpt-save">Save report</button></div>`;
+    + `<div class="btns"><button id="rpt-cancel">Cancel</button><button class="primary" id="rpt-save">Save Report</button></div>`;
   document.body.appendChild(bg);
   document.body.appendChild(d);
   bg.onclick = closeReportDialog;
@@ -8611,7 +8611,7 @@ async function submitReport() {
   d.innerHTML = `<h3>Summary Report Saved</h3>`
     + `<div class="note" style="font-size:12px;line-height:1.5"><b>${opt.fmt === 'pdf' ? 'PDF' : 'Excel workbook'}</b> saved to:<br><code>${esc(j.path)}</code></div>`
     + `<div class="err" id="rpt-err"></div>`
-    + `<div class="btns"><button id="rpt-reveal">Show in folder</button><button id="rpt-open">Open</button>`
+    + `<div class="btns"><button id="rpt-reveal">Show in Folder</button><button id="rpt-open">Open</button>`
     + `<button class="primary" id="rpt-done">Done</button></div>`;
   const open = async (reveal) => {
     const e2 = d.querySelector('#rpt-err');

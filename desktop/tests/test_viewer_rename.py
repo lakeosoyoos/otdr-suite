@@ -222,7 +222,7 @@ def test_the_right_click_menu_offers_rename_and_undo():
     assert "showRenameDialog(src, fiber, name)" in menu
     # Marked files come along, and the count is on the menu item before the
     # dialog opens.
-    assert "marked > 1 ? marked + ' marked files' : 'file'" in menu
+    assert "marked > 1 ? marked + ' Marked Files' : 'File'" in menu
     assert "gRenameUndo.length" in menu and "undoLastRename()" in menu
     assert "row.dataset.name);" in SRC
 
