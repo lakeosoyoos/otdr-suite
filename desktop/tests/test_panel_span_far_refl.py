@@ -50,8 +50,8 @@ def test_far_end_reflectance_fails_are_reported_at_the_end_they_are_at(tmp_path)
     the RDR4 connector, so they belong in the RDR4 column."""
     ila = _ila(tmp_path)
     rdr4 = ila["A-End ILA: RDR4"]
-    assert re.search(r"\b126 REFL-47\.0dB", rdr4), rdr4
-    assert re.search(r"\b74 REFL-49\.8dB", rdr4), rdr4
+    assert re.search(r"\b126 B→A REFL-47\.0dB", rdr4), rdr4
+    assert re.search(r"\b74 B→A REFL-49\.8dB", rdr4), rdr4
 
 
 def test_a_clean_fiber_and_the_other_end_stay_quiet(tmp_path):

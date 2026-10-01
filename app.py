@@ -8504,6 +8504,11 @@ def _sr_site_inputs(span, dir_a, dir_b):
     return site_a, site_b
 
 
+def _count(n, word):
+    """'1 fiber', '12 fibers': a count with its noun, singular for one."""
+    return f"{n} {word}" + ('' if n == 1 else 's')
+
+
 def _sr_result_slot(_p, span):
     """session_state key roots for one span's finished run: span 1 keeps the
     names every other path reads (`sr_result` / `sr_dirs` — the disk cache,
@@ -8546,9 +8551,10 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     if n_spans > 1:
         st.markdown(f"##### Span {span}: {res['site_a']} → {res['site_b']}")
     # Summary + Excel download
-    st.success(f"{res['site_a']} → {res['site_b']}  ·  {res['n_fibers']} fibers  ·  "
-               f"{res['n_splices']} splices  ·  span {res['span_km']} km  ·  "
-               f"{res['n_flagged']} flagged events")
+    st.success(f"{res['site_a']} → {res['site_b']}  ·  "
+               f"{_count(res['n_fibers'], 'fiber')}  ·  "
+               f"{_count(res['n_splices'], 'splice')}  ·  span {res['span_km']} km  ·  "
+               f"{_count(res['n_flagged'], 'flagged event')}")
     xp = res.get('xlsx')
     if xp and os.path.exists(xp):
         with open(xp, 'rb') as fh:
@@ -8566,8 +8572,15 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     # link to ?nav=viewer&fiber=&km= which the hub turns into a viewer deep-link.
     cols = res['columns']
     ribbon_size = res['ribbon_size']
-    n_fibers = res['n_fibers']
+    # max_fiber lays the grid out; n_fibers is how many were loaded (a
+    # manifest from before max_fiber carried the highest fiber there).
+    n_fibers = res.get('max_fiber') or res['n_fibers']
     n_ribbons = (n_fibers + ribbon_size - 1) // ribbon_size
+    # Rows from the first ribbon holding a loaded fiber to the last; an empty
+    # ribbon between them keeps its row (a gap the tech should see).
+    _rl = res.get('ribbons') or []
+    ribbon_rows = (list(range(min(_rl), max(_rl) + 1)) if _rl
+                   else list(range(n_ribbons)))
     # group flagged cells by (ribbon, column index)
     by_rc = {}
     for c in res['cells']:
@@ -8597,7 +8610,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     if _sd[1] and os.path.isdir(_sd[1]):
         _dirs_qs += f"&srb={_q(_sd[1])}"
     _dirs_qs += _panel_qs()
-    for ri in range(n_ribbons):
+    for ri in ribbon_rows:
         f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
         html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
         for ci, col in enumerate(cols):
@@ -8991,12 +9004,17 @@ def page_splice_report():
 #  PAGE: Unidirectional (A-only one-shot)  — splice report engine, --uni mode
 # ═════════════════════════════════════════════════════════════════════════
 def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None,
-            show=None):
+            show=None, site_a=None, site_b=None):
     """Argv for the unidirectional one-shot — the splice report engine's
     --uni mode (same subprocess, same sor_reader isolation, ZK-format
-    workbook out)."""
+    workbook out).  `site_a` / `site_b` are the names in the page's A-End /
+    B-End boxes; the engine prints them in the direction of the shot."""
     common = ['--uni', '--dir-a', folder, '--out', out_xlsx,
               '--analysis', analysis_mode()]
+    if site_a:
+        common += ['--site-a', site_a]
+    if site_b:
+        common += ['--site-b', site_b]
     if direction:
         common += ['--direction', direction]
     if landmarks:
@@ -9286,6 +9304,44 @@ def _parse_landmarks_text(text):
     return landmarks, bad
 
 
+def _uni_site_inputs(folder):
+    """The Unidirectional page's two site boxes, the Splice Report's pair:
+    the cable's A-end and B-end names.  Filled with the names the traces
+    store (GenParams, exactly as stored) when the folder changes; a
+    presenter can type over them (WEST / EAST).  The engine prints them in
+    the direction of the shot, so a B folder reads "EAST → WEST".
+
+    What the boxes show is kept in a slot no widget owns, with the folder it
+    was shown for, so a trip to another tool does not put them back (the
+    same keyed-state pattern as _sr_site_inputs; never value= and key= on
+    one widget).  Returns (site_a, site_b)."""
+    k_a, k_b, k_src, k_saved = ('uni_site_a', 'uni_site_b', 'uni_site_src',
+                                'uni_site_saved')
+    _saved = st.session_state.get(k_saved)
+    if _saved and _saved[0] == folder:
+        for _k, _v in zip((k_a, k_b), _saved[1]):
+            if _k not in st.session_state:
+                st.session_state[_k] = _v
+    if st.session_state.get(k_src) != folder:
+        import glob
+        sors = sorted(glob.glob(os.path.join(folder, '*.sor')) +
+                      glob.glob(os.path.join(folder, '*.SOR')))
+        loc_a, loc_b = _sor_locations(sors[0]) if sors else ('', '')
+        st.session_state[k_a] = loc_a
+        st.session_state[k_b] = loc_b
+        st.session_state[k_src] = folder
+    st.session_state.setdefault(k_a, '')
+    st.session_state.setdefault(k_b, '')
+    s1, s2 = st.columns(2)
+    site_a = s1.text_input('A-End site', key=k_a,
+                           help='The site at the A end of the cable. Prints in '
+                                'the report in the direction of the shot.')
+    site_b = s2.text_input('B-End site', key=k_b,
+                           help='The site at the B end of the cable.')
+    st.session_state[k_saved] = (folder, (site_a, site_b))
+    return site_a.strip(), site_b.strip()
+
+
 def page_unidirectional():
     st.markdown('#### Unidirectional')
 
@@ -9437,6 +9493,8 @@ def page_unidirectional():
             if pick != '(most populous)':
                 dir_choice = pick.rsplit('  (', 1)[0]
 
+    uni_site_a, uni_site_b = _uni_site_inputs(folder)
+
     with st.expander('Job Landmarks (Optional: Closure Map / Handholes)'):
         st.caption('One per line: `km, label`, or `km, label, splice` for a '
                    'known closure.  Labels print on the grid’s Handholes '
@@ -9475,7 +9533,9 @@ def page_unidirectional():
                                                       direction=dir_choice,
                                                       landmarks=landmarks,
                                                       overrides=uni_overrides,
-                                                      show=uni_show)
+                                                      show=uni_show,
+                                                      site_a=uni_site_a,
+                                                      site_b=uni_site_b)
         st.session_state['uni_out_xlsx'] = out_xlsx
         st.session_state.pop('uni_result', None)
         st.rerun()
@@ -9543,8 +9603,12 @@ def page_unidirectional():
     _n_folder = u.get('n_files_in_folder')
     _n_drop = u.get('n_files_not_analysed') or 0
     _covered = (f"{u.get('n_fibers', '?')} of {_n_folder} files"
-                if _n_folder and _n_drop else f"{u.get('n_fibers', '?')} fibers")
-    _line = (f"{_covered} · direction {u.get('direction', '?')} · "
+                if _n_folder and _n_drop else _count(u.get('n_fibers', '?'), 'fiber'))
+    # The shot's own direction, site names in full and in the order the
+    # distances run (the engine reads it from the files' LocationsDirection);
+    # the GenParams signature reads the same for both ends of a span.
+    _line = (f"{_covered} · direction "
+             f"{u.get('direction_label') or u.get('direction', '?')} · "
              f"span ≈ {u.get('span_km', '?')} km")
     if _n_drop:
         st.error(f"⚠️ PARTIAL COVERAGE: {_line}")
@@ -9626,13 +9690,21 @@ def page_unidirectional():
         rs = int(u.get('ribbon_size') or 12)
         max_f = int(u.get('max_fiber') or u.get('n_fibers') or 0)
         n_ribbons = (max_f + rs - 1) // rs if max_f else 0
+        # Rows from the first ribbon holding a loaded fiber to the last; an
+        # empty ribbon between them keeps its row.
+        _url = u.get('ribbons') or []
+        uni_ribbon_rows = (list(range(min(_url), max(_url) + 1)) if _url
+                           else list(range(n_ribbons)))
         off = float(u.get('launch_offset_km') or 0.0)
         by_rc = {}
         for c in u['cells']:
             by_rc.setdefault(((c['fiber'] - 1) // rs, c['col']), []).append(c)
-        _KIND_COLOR = {'splice': '#1f4e79', 'bend_damage': '#8a6d00',
-                       'break': '#c00000', 'reflective': '#6c3483',
-                       'connector': '#0e6655', 'end': '#595959'}
+        # The workbook's colors (UNI_LEGEND), as text on white: each kind's
+        # header shade, dark enough to read.  The Cable End readings are
+        # plain black, as their cells are unfilled in the workbook.
+        _KIND_COLOR = {'splice': '#c2185b', 'bend_damage': '#8a6d00',
+                       'break': '#c00000', 'reflective': '#a6340f',
+                       'connector': '#8c5300', 'end': '#000000'}
         _uni_port = ensure_trace_server()
         if _uni_pside and (_pa or _pb):
             # Run on one of the left panel's folders: the popped Viewer keeps
@@ -9672,7 +9744,7 @@ def page_unidirectional():
                         f"<div style='font-size:10px;color:#000000'>{gc['km']:.2f} km</div>"
                         f"{lm}</th>")
         html.append('</tr></thead><tbody>')
-        for ri in range(n_ribbons):
+        for ri in uni_ribbon_rows:
             f0, f1 = ri * rs + 1, min((ri + 1) * rs, max_f)
             html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;"
                         f"padding:3px 8px;border:1px solid #e3e9f0;"

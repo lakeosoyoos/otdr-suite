@@ -145,7 +145,7 @@ def test_ila_cell_text_survives_the_tag_splitter():
     iss = E.detect_launch_issues({1: _dir(launch_refl=-20.0)}, {1: _dir()})
     _, lca, _ = E.build_ribbon_data({}, n_fibers=12, ribbon_size=12,
                                     n_splices=1, launch_issues=iss)
-    assert lca[0]['text'] == '1 REFL-20.0dB', lca[0]
+    assert lca[0]['text'] == '1 A→B REFL-20.0dB', lca[0]
 
 
 # ── in-grid reflective labels ───────────────────────────────────────────────

@@ -220,7 +220,7 @@ def test_writer_zk_sheet_set_and_handholes_row(tmp_path):
                              'Flagged Events']
     ws = wb['Unidir Events']
     # One distance row, km and feet in the same cell.
-    assert ws.cell(row=1, column=1).value == 'LAM→BEY:'
+    assert ws.cell(row=1, column=1).value == 'LAM → BEY:'
     assert ws.cell(row=1, column=2).value == "5.00km, 16,404'"
     assert ws.cell(row=2, column=1).value == 'Handholes:'   # tech-fill row
     assert ws.cell(row=3, column=1).value == 'Ribbon'
@@ -475,7 +475,8 @@ def test_uni_legend_reads_like_the_splice_report_legend(tmp_path):
                      site_a='LAM', site_b='BEY')
     ws = openpyxl.load_workbook(out)['Legend']
     rows = _legend_rows(ws)
-    assert len(rows) >= 8, rows
+    # Only the colors this workbook paints: one splice column, one cell.
+    assert rows == [('Dark Pink (header)', 'Splice'), ('Pink (cell)', 'Reburn')], rows
     # Nothing below the colour table: no label-format block, no thresholds.
     assert ws.max_row == 1 + len(rows), ws.max_row
 
@@ -491,8 +492,7 @@ def test_uni_legend_reads_like_the_splice_report_legend(tmp_path):
     elements = {c.split('(')[1].rstrip(')') for c, _ in rows}
     assert {'header', 'cell'} <= elements, elements
     flags = {f for _, f in rows}
-    for shared in ('Splice', 'Break'):
-        assert shared in flags, (shared, flags)
+    assert 'Splice' in flags, flags
 
 
 def test_bend_damage_has_one_name_across_the_workbook(tmp_path):

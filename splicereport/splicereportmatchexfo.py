@@ -12815,11 +12815,34 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
     if launch_issues:
         per_ribbon_a = {}   # ri → list of (fnum, severity, tag)
         per_ribbon_b = {}
+
+        def _with_direction(info, end, tags):
+            """An end's tags, each reflectance named for the direction that
+            read it.  Both directions read the connector at each end -- one
+            at its launch, the other at its far end -- and both print the
+            same bare 'REFL-48.3dB', so a fiber failing both ways printed
+            '180 REFL-48.3dB 180 REFL-48.7dB' with nothing to tell the two
+            apart (a 432-fiber span: F180, 190, 192, 226, 233, 242).  refl_rules runs
+            parallel to the REFL tags: 'launch' is the shot taken FROM this
+            end, anything else the shot from the other end.  The arrows are
+            the ones the header rows use; every other tag is unchanged."""
+            rules = list((info.get('refl_rules') or {}).get(end) or [])
+            near, far = ('A→B', 'B→A') if end == 'A' else ('B→A', 'A→B')
+            out, k = [], 0
+            for tag in tags:
+                if str(tag).startswith('REFL') and k < len(rules):
+                    tag = f"{near if rules[k] == 'launch' else far} {tag}"
+                    k += 1
+                elif str(tag).startswith('REFL'):
+                    k += 1
+                out.append(tag)
+            return out
+
         for fnum, info in launch_issues.items():
             ri = (fnum - 1) // ribbon_size
-            for tag in info.get('a_tags', []):
+            for tag in _with_direction(info, 'A', info.get('a_tags', [])):
                 per_ribbon_a.setdefault(ri, []).append((fnum, info['severity'], tag))
-            for tag in info.get('b_tags', []):
+            for tag in _with_direction(info, 'B', info.get('b_tags', [])):
                 per_ribbon_b.setdefault(ri, []).append((fnum, info['severity'], tag))
 
         def _sev_order(s):
@@ -12860,6 +12883,16 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
 # ═══════════════════════════════════════════════════════════════════════
 #  STEP 6 — Generate Excel
 # ═══════════════════════════════════════════════════════════════════════
+
+def ribbon_rows_between(ribbons, n_ribbons):
+    """The ribbon rows a grid draws (0-based): every ribbon from the first
+    one holding a loaded fiber to the last, so a ribbon missing between
+    them still shows as an empty row.  `ribbons` are the loaded ribbons;
+    none given, every ribbon below `n_ribbons`."""
+    if not ribbons:
+        return list(range(n_ribbons))
+    return list(range(min(ribbons), max(ribbons) + 1))
+
 
 def ribbon_label(ri, ribbon_size, n_fibers):
     first = ri * ribbon_size + 1
@@ -13050,10 +13083,55 @@ def km_ft_label(km):
     return f"{km:.2f}km, {km * FT_PER_KM:,.0f}'"
 
 
+# The Splice Report sheet's colors, in Legend order: (fill, color name,
+# text color, flag name).  Color = flag type, the flag's name and nothing
+# else (Robert 2026-09-29), in plain words: no engine tag.
+SR_LEGEND = [
+    ("FFC7CE", "Pink", "000000", "Reburn (A and B average)"),
+    ("FF4444", "Red", "FFFFFF", "Break"),
+    ("E64A19", "Deep Orange", "FFFFFF", "REFL"),
+    ("FFEB3B", "Yellow", "000000", "Bend"),
+    ("FFF2CC", "Light Yellow", "000000", "Read A→B only"),
+    ("FF7043", "Coral", "FFFFFF", "Read A→B only, high"),
+    ("E8D5F5", "Lavender", "4B0082", "Read B→A only"),
+    ("C084FC", "Purple", "1A0033", "Read B→A only, high"),
+    ("BDD7EE", "Light Blue", "1F4E79", "Read B→A past a break"),
+    ("4A90D9", "Blue", "FFFFFF", "Read B→A past a break, high"),
+    ("BFBFBF", "Gray", "3F3F3F", "Not seen from either end"),
+    ("A5D6A7", "Mint Green", "1B5E20", "Gainer"),
+    ("FFE0B2", "Light Orange", "000000", "Near the limit"),
+    ("FFA500", "Orange", "5D2E00", None),       # the cable ends: sr_legend_rows
+]
+
+
+def sr_legend_rows(painted, end_texts=()):
+    """The Legend's rows for the colors a Splice Report sheet actually
+    paints (`painted`: six-digit fills), in SR_LEGEND order.  A span lists
+    the colors it uses, not all fourteen.
+
+    The orange A-End / B-End cells are named for what they hold
+    (`end_texts`).  The Legend used to call them "Launch / RESHOOT_DEAD_TRACE
+    / BREAK_AT_PANEL", two engine tags and a word that is wrong for the B
+    end; on a 432-fiber span every one of them is an end connector's reflectance."""
+    blob = ' '.join(end_texts or ())
+    conn = [w for w, keys in (('reflectance', ('REFL',)),
+                              ('loss', ('LAUNCH', 'PIGTAIL')))
+            if any(k in blob for k in keys)]
+    names = []
+    if conn:
+        names.append('End connector ' + ' / '.join(conn))
+    if any(t in blob for t in ('RESHOOT', 'BREAK_AT_PANEL', 'SHORT SHOT',
+                               'FILE_MISSING', 'NO_EVENTS', 'DURATION')):
+        names.append('Trace to check or reshoot')
+    end_name = ', '.join(names) or 'End connector'
+    return [(name, fc, tc, desc if desc is not None else end_name)
+            for fc, name, tc, desc in SR_LEGEND if fc in painted]
+
+
 def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_b, span_km,
                launch_cells_a=None, launch_cells_b=None,
                fibers_a=None, fibers_b=None, all_results=None,
-               fiber_avgs=None, span_stats=None):
+               fiber_avgs=None, span_stats=None, ribbons=None):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Splice Report"
@@ -13188,8 +13266,11 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         km = sp.get('position_km_display',
                     sp.get('position_km_refined', sp['position_km']))
         # B→A is the cable span minus the A-side display value, also
-        # truncated to 10 m so the two headers stay self-consistent.
-        b_km = math.floor((span_km - km) * 100) / 100.0
+        # truncated to 10 m so the two headers stay self-consistent, and
+        # never below zero: a column past the span's own end (a far
+        # connector at 55.003 km on a 55.00 km span, read alone) printed
+        # "-0.01km, -33'".  That connector is B's own launch, 0.00 km from B.
+        b_km = max(0.0, math.floor((span_km - km) * 100) / 100.0)
         for row, value, font in ((1, km_ft_label(b_km), b_km_font),
                                  (2, km_ft_label(km),   a_km_font)):
             c = ws.cell(row=row, column=_km_col(si), value=value)
@@ -13301,8 +13382,14 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         # Single light-pink tier for all launch issues (severity ignored)
         return launch_fill, launch_font
 
-    for ri in range(n_ribbons):
-        row = ri + 4
+    # Rows run from the first ribbon holding a loaded fiber to the last
+    # (`ribbons`, 0-based): ribbon 30 loaded alone drew 29 empty rows above
+    # it.  An empty ribbon between two loaded ones keeps its row, so a
+    # ribbon missing mid-span still shows as a gap.  Omitted, every ribbon
+    # up to the highest fiber gets one, as before.
+    ribbon_rows = ribbon_rows_between(ribbons, n_ribbons)
+    for _row_i, ri in enumerate(ribbon_rows):
+        row = _row_i + 4
         ws.cell(row=row, column=1, value=ribbon_label(ri, ribbon_size, n_fibers)).font = ribbon_font
 
         # ── ILA:A column (col 2) — issues AT THE PHYSICAL A END ──
@@ -13397,25 +13484,24 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
 
     # ── Legend sheet ──
     # Colour = flag type, nothing else (Robert 2026-09-29).  The report no
-    # longer prints the thresholds it graded on.
+    # longer prints the thresholds it graded on.  Only the colors this
+    # sheet actually paints are listed (sr_legend_rows), in plain words.
     ws_leg = wb.create_sheet("Legend")
     ws_leg.column_dimensions['A'].width = 16
     ws_leg.column_dimensions['B'].width = 44
-    legend_items = [
-        ("Pink",       "FFC7CE", "000000", "A+B reburn"),
-        ("Red",        "FF4444", "FFFFFF", "Break"),
-        ("Red (broke)","FF4444", "FFFFFF", "Broke"),
-        ("Deep Orange","E64A19", "FFFFFF", "REFL (in-line reflective)"),
-        ("Lt. Blue",   "BDD7EE", "1F4E79", "B-fill"),
-        ("Gray",       "BFBFBF", "3F3F3F", "Dead zone"),
-        ("Lt. Yellow", "FFF2CC", "000000", "A-only"),
-        ("Lavender",   "E8D5F5", "4B0082", "B-only"),
-        ("Yellow",     "FFEB3B", "000000", "Bend"),
-        ("Orange",     "FFA500", "5D2E00", "Launch / RESHOOT_DEAD_TRACE / BREAK_AT_PANEL"),
-        ("Mint Green", "A5D6A7", "1B5E20", "Field gainer"),
-    ]
+    _painted = {ws.cell(row=r, column=c).fill.start_color.rgb[-6:]
+                for r in range(4, ws.max_row + 1)
+                for c in range(2, end_col + 1)
+                if ws.cell(row=r, column=c).fill.fill_type == 'solid'}
+    _end_texts = [lc['text'] for lcs in (launch_cells_a or {}, launch_cells_b or {})
+                  for lc in lcs.values()]
+    legend_items = sr_legend_rows(_painted, _end_texts)
     ws_leg.cell(row=1, column=1, value="Color").font = Font(name=FONT_NAME, bold=True, size=FSIZE)
-    ws_leg.cell(row=1, column=2, value="Flag").font = Font(name=FONT_NAME, bold=True, size=FSIZE)
+    ws_leg.cell(row=1, column=2, value="Meaning").font = Font(name=FONT_NAME, bold=True, size=FSIZE)
+    if not legend_items:
+        ws_leg.cell(row=2, column=1,
+                    value="No cell in this report is shaded.").font = \
+            Font(name=FONT_NAME, italic=True, size=FSIZE)
     for i, (name, fc, tc, desc) in enumerate(legend_items, 2):
         c = ws_leg.cell(row=i, column=1, value=name)
         c.fill = PatternFill(start_color=fc, end_color=fc, fill_type="solid")
@@ -13661,10 +13747,12 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             from reburn_summary import compute_reburn_summary, \
                 render_xlsx_sheet as _render_reburn
             _reburn = compute_reburn_summary(all_results, splices,
-                                              n_fibers, ribbon_size)
+                                              n_fibers, ribbon_size,
+                                              ribbons=ribbons)
             _render_reburn(wb, _reburn,
                            insert_at=0,                # before any audit
-                           font_name=FONT_NAME, font_size=FSIZE)
+                           font_name=FONT_NAME, font_size=FSIZE,
+                           span_label=f"Span: {site_a} → {site_b}")
             print(f"  Reburn summary: {_reburn['reburn_cells']} of "
                   f"{_reburn['total_cells']} cells "
                   f"({_reburn['reburn_percentage']:.2f}%)")
@@ -16094,15 +16182,58 @@ def uni_ribbon_label(ri, ribbon_size, n_fibers):
     return f"Fiber {first}-{last} ({ri + 1}){tube}"
 
 
+def uni_shot_direction(fibers):
+    """('A' | 'B', origin, far) for one direction's fibers: which end of the
+    cable the shot was taken from, and the two site names in the order the
+    distances run.
+
+    The names are GenParams' own, in full (SITEA, NET-XX-SITEB-0001): no
+    three-letter code.  EXFO stores the same pair in the same order for both
+    directions of a span (location A, location B) and says which way the
+    shot went in its own LocationsDirection field (1 = A->B, 2 = B->A), the
+    Direction FastReporter shows.  The majority of the files decides; a file
+    without the field (another make, a .json) is read as GenParams' own
+    order, originating location first.  The filename is never consulted."""
+    votes = {}
+    sample = None
+    for fnum in sorted(fibers):
+        r = fibers[fnum]
+        if sample is None:
+            sample = r
+        d = r.get('exfo_locations_direction')
+        votes[d] = votes.get(d, 0) + 1
+    if sample is None:
+        return 'A', '', ''
+    known = {k: v for k, v in votes.items() if k in (1, 2)}
+    d = max(known, key=lambda k: (known[k], -k)) if known else 1
+    loc_a = (sample.get('gen_loc_a') or '').strip()
+    loc_b = (sample.get('gen_loc_b') or '').strip()
+    if d == 2:
+        return 'B', loc_b, loc_a
+    return 'A', loc_a, loc_b
+
+
+def uni_shot_direction_named(fibers, typed_a=None, typed_b=None):
+    """uni_shot_direction with the tech's own names for the cable's A end
+    and B end swapped in: (side, origin, far).  An empty name keeps the
+    stored one."""
+    side, origin, far = uni_shot_direction(fibers)
+    a_end, b_end = (origin, far) if side == 'A' else (far, origin)
+    a_end = (typed_a or '').strip() or a_end
+    b_end = (typed_b or '').strip() or b_end
+    return (side,) + ((a_end, b_end) if side == 'A' else (b_end, a_end))
+
+
 def uni_short_code(location_str):
     """3-letter site code from a GenParams location ('LA Media Rd MH' → LAM)."""
     letters = ''.join(ch for ch in (location_str or '') if ch.isalpha())
     return letters[:3].upper()
 
 
-def uni_flagged_event_rows(grid, columns):
+def uni_flagged_event_rows(grid, columns, side='A'):
     """Per-event rows for the 'Flagged Events' sheet — the answer to 'why is
-    this cell shaded?' for every shaded cell."""
+    this cell shaded?' for every shaded cell.  `side` is the end the shot
+    was taken from ('A' or 'B', uni_shot_direction), named in the text."""
     splice_n = bend_n = break_n = refl_n = conn_n = 0
     col_labels = []
     for col in columns:
@@ -16202,7 +16333,7 @@ def uni_flagged_event_rows(grid, columns):
                           f"bend/damage per the job's closure map.  Loss "
                           f"{abs(loss):.3f} dB.")
             else:
-                reason = (f"Possible bend/damage: A-side event >= "
+                reason = (f"Possible bend/damage: {side}-side event >= "
                           f"{UNI_BEND_THRESHOLD:.3f} dB away from any validated "
                           f"splice closure.  Loss {abs(loss):.3f} dB.")
             rows.append({'fiber': fnum, 'ribbon': ri + 1,
@@ -16213,21 +16344,26 @@ def uni_flagged_event_rows(grid, columns):
     return rows
 
 
-def uni_build_reburn_summary(grid, columns, n_ribbons, ribbon_label_fn=None):
+def uni_build_reburn_summary(grid, columns, n_ribbons, ribbon_label_fn=None,
+                             ribbons=None):
     """Reburn % = splice cells with >= 1 flagged fiber / (ribbons × splice
-    columns).  Ported from the standalone reburn_percentage module."""
+    columns).  Ported from the standalone reburn_percentage module.
+    `ribbons` (0-based) are the ribbons that hold a loaded fiber; omitted,
+    every ribbon below `n_ribbons` counts."""
     if ribbon_label_fn is None:
         ribbon_label_fn = lambda ri: f"Ribbon {ri + 1}"
+    ribbon_list = sorted(ribbons) if ribbons else list(range(n_ribbons))
+    n_ribbons = len(ribbon_list)
     splice_cols = [(ci, col) for ci, col in enumerate(columns)
                    if col.get('kind') == 'splice']
     n_splice_cols = len(splice_cols)
     total_cells = n_ribbons * n_splice_cols
     reburn_cells = 0
     per_splice_counts = [0] * n_splice_cols
-    per_ribbon_counts = [0] * n_ribbons
+    per_ribbon_counts = {ri: 0 for ri in ribbon_list}
     for si, (ci, col) in enumerate(splice_cols):
         _broke = col.get('broke_members') or ()
-        for ri in range(n_ribbons):
+        for ri in ribbon_list:
             # A fiber that DIES at this closure rides the splice column
             # (uni_build_columns) but is not a reburn candidate — nobody is
             # going back to re-burn a splice on a fiber that is cut.  A cell
@@ -16247,7 +16383,7 @@ def uni_build_reburn_summary(grid, columns, n_ribbons, ribbon_label_fn=None):
     per_ribbon = [{'ribbon_label': ribbon_label_fn(ri), 'ribbon_idx': ri,
                    'n_splices': per_ribbon_counts[ri],
                    'pct': (per_ribbon_counts[ri] / n_splice_cols * 100.0) if n_splice_cols else 0.0}
-                  for ri in range(n_ribbons)]
+                  for ri in ribbon_list]
     return {'n_ribbons': n_ribbons, 'n_splice_cols': n_splice_cols,
             'total_cells': total_cells, 'reburn_cells': reburn_cells,
             'percentage': percentage, 'per_splice': per_splice,
@@ -16367,8 +16503,46 @@ def uni_write_reburn_sheet(wb, summary, insert_at=1,
     ws.freeze_panes = "A6"
 
 
+# The Unidirectional grid's colors, in Legend order: (fill, color name
+# with the element it shades, text color, flag name).  The cell colors and
+# names are the Splice Report's; each header is a darker shade of its cells.
+# The Cable End column (navy header, no cell fill) holds readings, not flags,
+# and takes no row, like the Splice Report's own end columns.
+UNI_LEGEND = [
+    ("C2185B", "Dark Pink (header)", "FFFFFF", "{splice}"),
+    ("FFC7CE", "Pink (cell)", "000000", "Reburn"),
+    ("B7950B", "Gold (header)", "000000", "Bend/Damage"),
+    ("FFEB3B", "Yellow (cell)", "000000", "Bend/Damage"),
+    ("C00000", "Dark Red (header)", "FFFFFF", "Break"),
+    ("FF4444", "Red (cell)", "FFFFFF", "Break"),
+    ("A6340F", "Dark Orange (header)", "FFFFFF", "REFL"),
+    ("E64A19", "Deep Orange (cell)", "FFFFFF", "REFL"),
+    ("8C5300", "Dark Amber (header)", "FFFFFF", "Connector"),
+    ("FFA500", "Orange (cell)", "5D2E00", "Connector"),
+]
+
+
+def uni_legend_rows(ws, type_row):
+    """The Legend rows for the colors the Unidirectional grid paints, from
+    its column-type row (`type_row`) down.  'Splice' reads 'Event' on a job
+    that lists events rather than closures."""
+    painted, words = set(), set()
+    for r in range(type_row, ws.max_row + 1):
+        for c in range(2, ws.max_column + 1):
+            cell = ws.cell(row=r, column=c)
+            if cell.fill is not None and cell.fill.fill_type == 'solid':
+                painted.add(cell.fill.start_color.rgb[-6:])
+            if r == type_row and isinstance(cell.value, str):
+                words.add(cell.value.split(' ')[0])
+    splice = ('Event' if 'Event' in words and 'Splice' not in words
+              else 'Splice')
+    return [(name, fc, tc, desc.format(splice=splice))
+            for fc, name, tc, desc in UNI_LEGEND if fc in painted]
+
+
 def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
-                   site_a='', site_b='', fibers=None, coverage=None):
+                   site_a='', site_b='', fibers=None, coverage=None, side='A',
+                   ribbons=None):
     """ZK-approved five-sheet workbook: Acquisition Parameters, Reburn
     Percentage, Unidir Events (ribbon grid), Legend, Flagged Events.
 
@@ -16401,11 +16575,25 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     hdr_fill_sp = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
     hdr_fill_bend = PatternFill(start_color="B7950B", end_color="B7950B", fill_type="solid")
     hdr_fill_break = PatternFill(start_color="C00000", end_color="C00000", fill_type="solid")
-    hdr_fill_end = PatternFill(start_color="595959", end_color="595959", fill_type="solid")
-    end_shade = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
+    # The cell colors are the Splice Report's (UNI_LEGEND): a splice flag is
+    # the reburn pink, a bend yellow, a break red, a reflective event deep
+    # orange, a connector the end-connector orange.  Each column header is a
+    # darker shade of its cells' color, with text that reads on it (white
+    # at 5.9:1 or better; black on the gold).  The Cable End column holds
+    # readings, not flags: its cells take no fill, and its header the navy
+    # of the Ribbon header and the Splice Report's end columns.  Gray is the
+    # Splice Report's "not seen from either end" and means nothing else here.
+    hdr_fill_end = hdr_fill_sp
+    hdr_fill_splice = PatternFill(start_color="C2185B", end_color="C2185B", fill_type="solid")
+    hdr_fill_conn = PatternFill(start_color="8C5300", end_color="8C5300", fill_type="solid")
+    hdr_fill_refl = PatternFill(start_color="A6340F", end_color="A6340F", fill_type="solid")
+    conn_shade = PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid")
+    conn_text = Font(name=FN, size=FS, color="5D2E00")
+    refl_shade = PatternFill(start_color="E64A19", end_color="E64A19", fill_type="solid")
+    refl_text = Font(name=FN, bold=True, size=FS, color="FFFFFF")
     a_km_font = Font(name=FN, bold=True, size=FS, color="1F4E79")
     hh_font = Font(name=FN, size=FS, italic=True, color="595959")
-    splice_shade = PatternFill(start_color="BDD7EE", end_color="BDD7EE", fill_type="solid")
+    splice_shade = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
     bend_shade = PatternFill(start_color="FFEB3B", end_color="FFEB3B", fill_type="solid")
     break_shade = PatternFill(start_color="FF4444", end_color="FF4444", fill_type="solid")
     break_text = Font(name=FN, bold=True, size=FS, color="FFFFFF")
@@ -16443,7 +16631,10 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
             ws.row_dimensions[i].height = 30 if i == 1 else 46
         ws.sheet_properties.tabColor = "C00000"
 
-    ab_label = f"{site_a}→{site_b}:" if (site_a and site_b) else "A→B:"
+    # `site_a` / `site_b` are the shot's own origin and far end, in that
+    # order (uni_shot_direction): the distances on this row run from site_a.
+    ab_label = (f"{site_a} → {site_b}:" if (site_a and site_b)
+                else ("B→A:" if side == 'B' else "A→B:"))
     # One distance row: km and feet together in a single cell, the way the
     # splice report prints them (2026-09-17).  It used to take two rows.
     DIST_ROW = R0 + 1
@@ -16470,20 +16661,20 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     for ci, col in enumerate(columns):
         if col['kind'] == 'splice':
             if col.get('is_entry_case'):
-                label, fill = "Entry", hdr_fill_sp
+                label, fill = "Entry", hdr_fill_splice
             else:
                 splice_n += 1
-                label, fill = f"{_uni_col_word(col)} {splice_n}", hdr_fill_sp
+                label, fill = f"{_uni_col_word(col)} {splice_n}", hdr_fill_splice
         elif col['kind'] == 'break':
             break_n += 1
             label, fill = f"Break {break_n}", hdr_fill_break
         elif col['kind'] == 'connector':
             conn_n += 1
             label = "Launch Conn." if col.get('is_launch') else f"Connector {conn_n}"
-            fill = hdr_fill_bend
+            fill = hdr_fill_conn
         elif col['kind'] == 'reflective':
             refl_n += 1
-            label, fill = f"REFL {refl_n}", hdr_fill_bend
+            label, fill = f"REFL {refl_n}", hdr_fill_refl
         elif col['kind'] == 'end':
             label, fill = "Cable End", hdr_fill_end
         else:
@@ -16507,8 +16698,12 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         ws.row_dimensions[TYPE_ROW].height = 30
 
     cell_text_font = Font(name=FN, size=FS, color="000000")
-    for ri in range(n_ribbons):
-        xr = ri + DATA_START_ROW
+    # Rows run from the first ribbon holding a loaded fiber to the last
+    # (`ribbons`, 0-based): fiber 354 loaded alone drew 29 empty ribbons
+    # above its own.  An empty ribbon between two loaded ones keeps its row.
+    ribbon_rows = ribbon_rows_between(ribbons, n_ribbons)
+    for _row_i, ri in enumerate(ribbon_rows):
+        xr = _row_i + DATA_START_ROW
         ws.cell(row=xr, column=1,
                 value=uni_ribbon_label(ri, ribbon_size, n_fibers)).font = cell_text_font
         for ci, col in enumerate(columns):
@@ -16521,7 +16716,11 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                 elif col['kind'] == 'break':
                     cell.fill, cell.font = break_shade, break_text
                 elif col['kind'] == 'end':
-                    cell.fill, cell.font = end_shade, cell_text_font
+                    cell.font = cell_text_font       # a reading: no fill
+                elif col['kind'] == 'connector':
+                    cell.fill, cell.font = conn_shade, conn_text
+                elif col['kind'] == 'reflective':
+                    cell.fill, cell.font = refl_shade, refl_text
                 else:
                     cell.fill, cell.font = bend_shade, cell_text_font
                 if col['kind'] == 'end':
@@ -16538,7 +16737,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         # 18, not 16: "42.01km, 137,834'" has to fit without the neighbour
         # clipping it.
         ws.column_dimensions[openpyxl.utils.get_column_letter(ci + 2)].width = 18
-    for ri in range(DATA_START_ROW, n_ribbons + DATA_START_ROW):
+    for ri in range(DATA_START_ROW, len(ribbon_rows) + DATA_START_ROW):
         ws.row_dimensions[ri].height = 32
     for ri in (DIST_ROW, HH_ROW, TYPE_ROW):
         ws.row_dimensions[ri].height = 18
@@ -16551,18 +16750,10 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     # element it shades in parentheses; B is the name the workbook prints.
     leg.column_dimensions['A'].width = 30
     leg.column_dimensions['B'].width = 20
-    leg_rows = [
-        ("Blue (header)",         "1F4E79", "FFFFFF", "Splice"),
-        ("Lt. Blue (cell)",       "BDD7EE", "1F4E79", "Splice"),
-        ("Gold (header)",         "B7950B", "000000", "Bend/Damage"),
-        ("Yellow (cell)",         "FFEB3B", "000000", "Bend/Damage"),
-        ("Dark Red (header)",     "C00000", "FFFFFF", "Break"),
-        ("Red (cell)",            "FF4444", "FFFFFF", "Break"),
-        ("Gold (connector)",      "B7950B", "000000", "Connector"),
-        ("Dark Gray (Cable End)", "595959", "FFFFFF", "Cable End"),
-    ]
+    # Only the colors this workbook paints are listed (uni_legend_rows).
+    leg_rows = uni_legend_rows(ws, DATA_START_ROW - 1)
     leg.cell(row=1, column=1, value="Color").font = Font(name=FN, bold=True, size=FS)
-    leg.cell(row=1, column=2, value="Flag").font = Font(name=FN, bold=True, size=FS)
+    leg.cell(row=1, column=2, value="Meaning").font = Font(name=FN, bold=True, size=FS)
     for i, (name, fc, tc, desc) in enumerate(leg_rows, start=2):
         c = leg.cell(row=i, column=1, value=name)
         c.fill = PatternFill(start_color=fc, end_color=fc, fill_type="solid")
@@ -16581,8 +16772,8 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         c.alignment = Alignment(horizontal='center', vertical='center')
         ev.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
     kind_fill = {'splice': splice_shade, 'bend_damage': bend_shade,
-                 'break': break_shade, 'reflective': bend_shade,
-                 'connector': bend_shade}
+                 'break': break_shade, 'reflective': refl_shade,
+                 'connector': conn_shade}
     # One name per event across the workbook: the grid header, the manifest
     # label, the Legend and this Kind cell all read 'Bend/Damage'.  A Flagged
     # Events row used to print 'Bend/Damage 1' in Column and 'Possible
@@ -16591,7 +16782,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                   'reflective': 'REFL', 'connector': 'Connector',
                   'break': 'BREAK'}
     ev_row_font = Font(name=FN, size=FS, color="000000")
-    rows = uni_flagged_event_rows(grid, columns)
+    rows = uni_flagged_event_rows(grid, columns, side=side)
     for i, r in enumerate(rows, start=2):
         ev.cell(row=i, column=1, value=r['fiber']).font = ev_row_font
         ev.cell(row=i, column=2, value=r['ribbon']).font = ev_row_font
@@ -16609,7 +16800,9 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                        else ev_row_font)
         kc = ev.cell(row=i, column=6, value=kind_label[r['column_kind']])
         kc.font = (Font(name=FN, size=FS, bold=True, color='FFFFFF')
-                   if r['column_kind'] == 'break' else ev_row_font)
+                   if r['column_kind'] in ('break', 'reflective')
+                   else conn_text if r['column_kind'] == 'connector'
+                   else ev_row_font)
         kc.fill = kind_fill[r['column_kind']]
         ev.cell(row=i, column=7, value=r['reason']).font = Font(name=FN, size=FS)
         ev.cell(row=i, column=7).alignment = Alignment(wrap_text=True, vertical='top')
@@ -16637,7 +16830,8 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     try:
         summary = uni_build_reburn_summary(
             grid, columns, n_ribbons,
-            ribbon_label_fn=lambda ri: uni_ribbon_label(ri, ribbon_size, n_fibers))
+            ribbon_label_fn=lambda ri: uni_ribbon_label(ri, ribbon_size, n_fibers),
+            ribbons=(ribbons or ribbon_rows))
         uni_write_reburn_sheet(wb, summary, insert_at=1)
         print(f"  Reburn percentage: {summary['percentage']:.2f}% "
               f"({summary['reburn_cells']} of {summary['total_cells']} splice cells)")
@@ -16855,11 +17049,16 @@ def uni_viewer_table(fibers, columns, grid_columns, grid, leg='a'):
 
 
 def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
-                 landmarks=None, analysis='suite', viewer_leg=None):
+                 landmarks=None, analysis='suite', site_a=None, site_b=None,
+                 viewer_leg=None):
     """Full unidirectional pipeline: load one direction → normalize →
     discover/validate closures → trace-measured pre-break damage →
     off-splice + breaks → landmarks → ZK workbook.
-    Returns a summary dict for the hub manifest.  Raises on empty input."""
+    Returns a summary dict for the hub manifest.  Raises on empty input.
+
+    `site_a` / `site_b` are the names the tech typed for the cable's A end
+    and B end (the Splice Report's two site boxes); either left empty keeps
+    the stored GenParams name.  They print in the direction of the shot."""
     rs = ribbon_size or RIBBON_SIZE
     fibers, chosen, counts, merged_sigs, coverage = uni_load_dir(
         input_dir, direction=direction)
@@ -17044,13 +17243,14 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     grid = uni_build_ribbon_grid(fibers, columns, rs)
     grid, columns = uni_apply_show_filter(grid, columns)
 
-    sample = fibers[next(iter(sorted(fibers)))]
-    site_a = uni_short_code(sample.get('gen_loc_a'))
-    site_b = uni_short_code(sample.get('gen_loc_b'))
+    side, site_a, site_b = uni_shot_direction_named(fibers, site_a, site_b)
 
+    # The ribbons that hold a loaded fiber, 0-based: the grid draws the first
+    # to the last of them, and the reburn denominator counts these only.
+    ribbons = sorted({(f - 1) // rs for f in fibers})
     wrote = uni_write_xlsx(grid, columns, n_fibers, rs, span, output_path,
                            site_a=site_a, site_b=site_b, fibers=fibers,
-                           coverage=coverage)
+                           coverage=coverage, side=side, ribbons=ribbons)
 
     # In-app clickable grid payload (mirrors the bidir manifest's
     # columns/cells): the hub renders a ribbon × column grid where every
@@ -17137,9 +17337,15 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
                                           for pc in prebreak_cols),
             'demoted_columns': [round(d, 2) for d in demoted],
             'landmarks_applied': len(landmarks or []),
+            # The shot's origin and far end, in that order, and which end of
+            # the cable it was taken from (uni_shot_direction).
             'site_a': site_a, 'site_b': site_b,
+            'shot_side': side,
+            'direction_label': (f"{site_a} → {site_b}" if site_a and site_b
+                                else ''),
             'ribbon_size': rs,
             'max_fiber': n_fibers,
+            'ribbons': ribbons,
             'launch_offset_km': round(launch_offset_km, 4),
             'grid_columns': grid_columns,
             'cells': cells,
