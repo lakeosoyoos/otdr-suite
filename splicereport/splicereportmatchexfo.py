@@ -5100,6 +5100,38 @@ def neutralize_event_job(results, splices, threshold):
     return out, cols
 
 
+def _type_is_reflective(e):
+    """SR-4731 type code first character 1 or 2: reflective, for an end or
+    launch event as for an in-span one ('1E' a reflective end, '0E' not)."""
+    return str(e.get('type') or '')[:1] in ('1', '2')
+
+
+def end_event_kinds(fibers_a, fibers_b=None):
+    """FR's word for the two cable-end columns, {'A': (kind, tip), 'B': ...}
+    (Robert 2026-10-01: the ends read "Reflective" too).  Per fibre, an end
+    is reflective when either direction's stored event there is: at the A
+    end, A's first event (its start, the A panel) or B's end-of-fibre event;
+    at the B end, A's end-of-fibre event or B's first event."""
+    def first(r):
+        evs = [e for e in (r or {}).get('events') or [] if not e.get('is_end')]
+        return min(evs, key=lambda e: e['dist_km']) if evs else None
+
+    def eof(r):
+        return next((e for e in (r or {}).get('events') or [] if e.get('is_end')), None)
+
+    out = {}
+    for end in ('A', 'B'):
+        refl = {}
+        for fnum in set(fibers_a or {}) | set(fibers_b or {}):
+            ra, rb = (fibers_a or {}).get(fnum), (fibers_b or {}).get(fnum)
+            evs = ([first(ra), eof(rb)] if end == 'A' else [eof(ra), first(rb)])
+            evs = [e for e in evs if e is not None]
+            if evs:
+                refl[fnum] = any(_type_is_reflective(e) for e in evs)
+        out[end] = event_kind(refl)
+    return out
+
+
 def stamp_event_kinds(splices, fibers_a, fibers_b=None):
     """Give every event column without one its FastReporter word
     ('event_kind', and 'event_kind_tip' when Mixed): the columns
@@ -7840,6 +7872,14 @@ def suite_viewer_table(fibers_a, fibers_b, splices, all_results,
                'B': fold['B'] + lead if 'B' in fold else len(columns) - 1}
     for _e, _ci in end_col.items():
         columns[_ci]['end'] = _e
+    # on an event job the ends carry FR's word as the event columns do
+    # (the same end_event_kinds the sheet prints)
+    if any(sp.get('is_event_column') for sp in splices):
+        _ek = end_event_kinds(fibers_a, fibers_b)
+        for _e, _ci in end_col.items():
+            columns[_ci]['event_kind'] = _ek[_e][0]
+            if _ek[_e][1]:
+                columns[_ci]['event_kind_tip'] = _ek[_e][1]
 
     def _b_mirror(rb):
         end = next((e['dist_km'] for e in (rb or {}).get('events') or []
@@ -13218,6 +13258,18 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     ws.cell(row=3, column=end_col).fill = hdr_fill
     if any(sp.get('is_event_column') and sp.get('event_kind') for sp in splices):
         ws.row_dimensions[3].height = 30      # room for the event kind line
+        # The two ends read FR's word too (Robert 2026-10-01), on an event
+        # job only: a closure layout's headers stay as they are.
+        from openpyxl.comments import Comment
+        _ek = end_event_kinds(fibers_a or {}, fibers_b or {})
+        for _col, _end, _site in ((2, 'A', site_a), (end_col, 'B', site_b)):
+            _kind, _tip = _ek[_end]
+            _c = ws.cell(row=3, column=_col)
+            _c.value = f"{_end}-End ILA: {_site}\n{_kind}"
+            _c.alignment = Alignment(horizontal='center', vertical='center',
+                                     wrap_text=True)
+            if _tip:
+                _c.comment = Comment(_tip, 'OTDR Suite')
 
     # ── Data rows ──
     def _launch_fill(sev):
@@ -15765,7 +15817,7 @@ def _uni_col_word(col):
     return 'Event' if col.get('is_event_column') else 'Splice'
 
 
-def uni_event_columns(fibers, exclude_km=(), front_dead_km=None):
+def uni_event_columns(fibers, exclude_km=()):
     """The uni twin of discover_event_columns (Robert 2026-09-29/30: a uni job
     of up to UNI_EVENT_JOB_MAX fibres shows its events and makes no splice or
     bend call).  One column
@@ -15776,15 +15828,15 @@ def uni_event_columns(fibers, exclude_km=(), front_dead_km=None):
     uni_build_columns and the grid judge them as they judge a splice column
     (the uni splice gate), marked is_event_column."""
     _set_run_pulse_smear(fibers)
-    # the closure layout's front dead zone (uni_front_dead_km): a shot with
-    # no launch box starts on the OTDR port, whose connector is not plant
-    _front = max(LAUNCH_SKIP_KM, front_dead_km or 0.0)
+    # Port-area readings are listed and graded like any event, as FR lists
+    # them (Robert 2026-10-01); only the closure layout keeps a front dead
+    # zone (uni_front_dead_km).
     pairs = []
     for fnum, r in fibers.items():
         eof = next((e['dist_km'] for e in r['events'] if e.get('is_end')), None)
         for e in r['events']:
             d = e['dist_km']
-            if d < _front or e.get('is_end'):
+            if d < LAUNCH_SKIP_KM or e.get('is_end'):
                 continue
             if eof is not None and d >= eof:
                 continue
@@ -16415,7 +16467,9 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         else:
             bend_n += 1
             label, fill = f"Bend/Damage {bend_n}", hdr_fill_bend
-        _ev_kind = col.get('event_kind') if col.get('is_event_column') else None
+        _ev_kind = (col.get('event_kind')
+                    if col.get('is_event_column') or col['kind'] in ('end', 'connector')
+                    else None)
         if _ev_kind:
             # FR's word on a second line ("Event 3" / "Non-reflective"); a
             # Mixed column names each fibre's type in the hover note
@@ -16427,7 +16481,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         if _ev_kind and col.get('event_kind_tip'):
             from openpyxl.comments import Comment
             c.comment = Comment(col['event_kind_tip'], 'OTDR Suite')
-    if any(c.get('is_event_column') and c.get('event_kind') for c in columns):
+    if any(c.get('event_kind') for c in columns):
         ws.row_dimensions[TYPE_ROW].height = 30
 
     cell_text_font = Font(name=FN, size=FS, color="000000")
@@ -16651,7 +16705,8 @@ def uni_viewer_table(fibers, columns, grid_columns, grid, leg='a'):
                                                  c['position_km_refined'])), 4)})
         if c['kind'] == 'end':
             out_cols[-1]['end'] = 'B' if leg == 'a' else 'A'
-        if c.get('is_event_column') and c.get('event_kind'):
+        if c.get('event_kind') and (c.get('is_event_column')
+                                    or c['kind'] in ('end', 'connector')):
             out_cols[-1]['event_kind'] = c['event_kind']
             if c.get('event_kind_tip'):
                 out_cols[-1]['event_kind_tip'] = c['event_kind_tip']
@@ -16923,10 +16978,36 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
         if len(fibers) <= UNI_EVENT_JOB_MAX and span > LAUNCH_FIBER_MAX:
             valid = uni_event_columns(
                 fibers, exclude_km=[c['position_km_refined']
-                                    for c in conn_cols + refl_cols],
-                front_dead_km=(None if box_present
-                               else uni_front_dead_km(False, span)))
+                                    for c in conn_cols + refl_cols])
             prebreak_cols, off_cols = [], []
+            # the Cable End reads FR's word too (Robert 2026-10-01): each
+            # reaching fibre's own end-of-fibre type
+            for _ec in end_cols:
+                _refl = {}
+                for _f in (_ec.get('end_members') or {}):
+                    _eof = next((e for e in fibers[_f]['events'] if e.get('is_end')), None)
+                    if _eof is not None:
+                        _refl[_f] = _type_is_reflective(_eof)
+                _ec['event_kind'], _ec['event_kind_tip'] = event_kind(_refl)
+            # so do its connector columns (the launch panel and, with a tail
+            # box, the far one, which IS this report's cable end): each
+            # member fibre's stored event there, in its own raw frame
+            _tol = max(UNI_CLOSURE_MATCH_KM, _RUN_PULSE_SMEAR_KM)
+            for _cc in conn_cols:
+                _refl = {}
+                for _f in (_cc.get('conn_all') or {}):
+                    _r = fibers.get(_f)
+                    if _r is None:
+                        continue
+                    _at = _cc['position_km_refined'] + float(
+                        _r.get('_uni_event_offset_km') or 0.0)
+                    _near = [e for e in (_r.get('_uni_raw_events') or _r['events'])
+                             if abs(e['dist_km'] - _at) <= _tol]
+                    if _near:
+                        _e = min(_near, key=lambda e: abs(e['dist_km'] - _at))
+                        _refl[_f] = _type_is_reflective(_e)
+                if _refl:
+                    _cc['event_kind'], _cc['event_kind_tip'] = event_kind(_refl)
             print(f"  {len(fibers)} fibers loaded (<= {UNI_EVENT_JOB_MAX}): "
                   f"{len(valid)} event column(s), no closure or bend calls")
         columns = uni_build_columns(valid,
@@ -16977,7 +17058,8 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
         grid_columns.append({'km': round(col['position_km_display'], 3),
                              'kind': col['kind'], 'label': _lbl,
                              'landmark': col.get('landmark', '')})
-        if col.get('is_event_column') and col.get('event_kind'):
+        if col.get('event_kind') and (col.get('is_event_column')
+                                      or col['kind'] in ('end', 'connector')):
             grid_columns[-1]['event_kind'] = col['event_kind']
     cells = []
     for (ri, ci), entries in grid.items():

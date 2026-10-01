@@ -36,6 +36,7 @@ def _engine(body, head=""):
 
 
 def _runner(tmp_path, *args):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     out = tmp_path / "r.xlsx"
     p = subprocess.run([sys.executable, str(RUNNER), *map(str, args), "--out", str(out)],
                        capture_output=True, text=True)
@@ -102,7 +103,7 @@ def test_a_column_holds_one_reading_per_fibre_per_direction():
 def test_splice_report_sheet_and_viewer_table_carry_the_word(tmp_path):
     """24 fibres: an event job.  The sheet's header reads "Event N" over the
     word, and the Viewer's table carries the same word on each event column
-    (the end columns keep their own titles and carry none)."""
+    (the end columns keep their own titles, with their own word)."""
     m, xlsx = _runner(tmp_path, "--dir-a", FIXTURE_DIR / "splice_A",
                       "--dir-b", FIXTURE_DIR / "splice_B",
                       "--viewer-table", tmp_path / "t.json")
@@ -115,7 +116,8 @@ def test_splice_report_sheet_and_viewer_table_carry_the_word(tmp_path):
     t = json.loads((tmp_path / "t.json").read_text(encoding="utf-8"))
     ev = [c for c in t["columns"] if c["title"].startswith("Event ")]
     assert [c["event_kind"] for c in ev] == kinds
-    assert "event_kind" not in t["columns"][0] and "event_kind" not in t["columns"][-1]
+    # the ends carry it too (Robert 2026-10-01), from the cable-end events
+    assert t["columns"][0]["event_kind"] and t["columns"][-1]["event_kind"]
 
 
 def test_a_mixed_header_has_a_hover_note(tmp_path):
@@ -158,3 +160,44 @@ def test_viewer_prints_the_word_before_the_distance():
             "${esc(c.eventKind)}</span><br>`") in body
     assert ('h2 += `<th colspan="2" class="fr-evsub">${kindTxt}'
             '<span class="fr-km">${kmFt(c.km)}</span></th>`;') in body
+
+
+def test_the_ends_read_fr_s_word_on_an_event_job(tmp_path):
+    """Robert 2026-10-01: A-End / B-End read "Reflective" etc. like FR, on
+    the sheet and in the Viewer table (an event job only); a reflective end
+    is either direction's stored event there of type 1 or 2."""
+    _engine("""
+    def ev(km, typ, end=False):
+        return {'dist_km': km, 'splice_loss': 0.0, 'type': typ, 'is_end': end}
+    fa = {1: {'events': [ev(0.0, '1F9999LS'), ev(40.0, '0E9999LS', True)]},
+          2: {'events': [ev(0.0, '0F9999LS'), ev(40.0, '1E9999LS', True)]}}
+    fb = {1: {'events': [ev(0.0, '0F9999LS'), ev(40.0, '0E9999LS', True)]},
+          2: {'events': [ev(0.0, '0F9999LS'), ev(40.0, '0E9999LS', True)]}}
+    k = E.end_event_kinds(fa, fb)
+    # A end: F1 A start reflective; F2 A start 0F, B end 0E -> Mixed
+    assert k['A'] == ('Mixed', 'F1 Reflective, F2 Non-reflective'), k
+    # B end: F1 A end 0E, B start 0F -> no; F2 A end 1E -> yes
+    assert k['B'][0] == 'Mixed', k
+    print('OK')
+    """)
+    m, xlsx = _runner(tmp_path, "--dir-a", FIXTURE_DIR / "splice_A",
+                      "--dir-b", FIXTURE_DIR / "splice_B",
+                      "--viewer-table", tmp_path / "t.json")
+    ws = openpyxl.load_workbook(xlsx)["Splice Report"]
+    t = json.loads((tmp_path / "t.json").read_text(encoding="utf-8"))
+    a_kind, b_kind = t["columns"][0]["event_kind"], t["columns"][-1]["event_kind"]
+    assert ws.cell(3, 2).value == f"A-End ILA: A\n{a_kind}"
+    assert ws.cell(3, ws.max_column).value == f"B-End ILA: B\n{b_kind}"
+    # a closure layout keeps its end headers as they were
+    m2, xlsx2 = _runner(tmp_path / "c", "--dir-a", FIXTURE_DIR / "splice_A",
+                        "--dir-b", FIXTURE_DIR / "splice_B",
+                        "--overrides", json.dumps({"EVENT_JOB_MAX_FIBERS": 0}))
+    assert openpyxl.load_workbook(xlsx2)["Splice Report"].cell(3, 2).value == "A-End ILA: A"
+
+
+def test_uni_end_and_connector_columns_read_fr_s_word(tmp_path):
+    m, _ = _runner(tmp_path, "--uni", "--dir-a", FIXTURE_DIR / "splice_A")
+    cols = m["uni"]["grid_columns"]
+    ends = [c for c in cols if c["kind"] in ("connector", "end")]
+    assert ends and all(c.get("event_kind") in ("Reflective", "Non-reflective", "Mixed")
+                        for c in ends), ends
