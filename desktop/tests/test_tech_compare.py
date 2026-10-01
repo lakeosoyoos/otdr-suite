@@ -233,7 +233,7 @@ def test_upload_box_sits_under_the_a_b_inputs():
 def test_comparison_is_written_to_the_report_folder_and_offered():
     assert "_render_tech_comparison(f'{_p}{sfx}', xp, tech_xlsx, dest," in SRC
     body = SRC.split('def _render_tech_comparison(', 1)[1].split('\ndef ', 1)[0]
-    assert "_SpliceReport_vs_Tech.xlsx" in body
+    assert "'_vs_Tech.xlsx'" in body
     assert 'out_path = os.path.join(dest_dir,' in body
     assert "st.download_button('⬇ Differences vs tech (Excel)'" in body
     assert "report_error('splice report — tech comparison'" in body
