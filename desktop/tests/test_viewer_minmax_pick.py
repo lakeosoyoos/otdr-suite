@@ -67,8 +67,9 @@ def test_the_chart_draws_the_picked_trace_bold_and_dims_the_rest():
     # picked LAST, so it lies over the others
     assert "sort((a, b) => isPicked(a.key) - isPicked(b.key))" in draw
     assert "ctx.globalAlpha = (gPickKey && !isPicked(t.key)) ? 0.22 : 1;" in draw
-    tr = SRC.split("function drawTrace(t, r) {", 1)[1].split("\nfunction ", 1)[0]
-    assert "const lw = isPicked(t.key) ? 2.6 : 1.2;" in tr
+    tr = SRC.split("function drawTrace(t, r, bold = false) {", 1)[1].split("\nfunction ", 1)[0]
+    # (bold: the trace under the cursor, test_viewer_trace_hover_fiber)
+    assert "const lw = (bold || isPicked(t.key)) ? 2.6 : 1.2;" in tr
     assert "ctx.lineWidth = lw + 1.8;" in tr            # the light-colour edge scales too
     # the markers set their own alpha, so they fold the dimming in themselves
     mk = SRC.split("function drawEventMarkers(t, r) {", 1)[1].split("\nfunction ", 1)[0]
