@@ -268,7 +268,7 @@ def test_fiber_colours_toggle_off_to_fastreporter_blue_and_black():
     fn = html[html.index('function nextColor('):][:700]
     assert '!gFiberColors' in fn and "startsWith('b-') ? FR_COLORS.b : FR_COLORS.a" in fn
     tog = html[html.index('function setFiberColors('):][:600]
-    assert 'COLORS_USED.clear()' in tog and 'for (const t of gTraces) t.color = nextColor(' in tog
+    assert 'COLORS_USED.clear()' in tog and 'for (const t of gTraces) t.color = traceColor(t);' in tog
     assert "localStorage.setItem('otdr_viewer_fiber_colors'" in tog
 
 
