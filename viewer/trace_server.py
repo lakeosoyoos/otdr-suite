@@ -1518,9 +1518,13 @@ class Handler(BaseHTTPRequestHandler):
             # The Viewer asks this every second or two (pollAnalysisMode) so
             # the hub's Analysis Mode switch reaches a Viewer that already has
             # traces on screen.  Kept to one dict lookup: no folder listing.
+            # The folders as well, so a page sees the hub's A/B boxes (or a
+            # Remove in another window) move without a focus event.
             self._send_json({'analysis_mode': (CONFIG.get('analysis_mode')
                                                if CONFIG.get('analysis_mode') in ('suite', 'fr')
-                                               else 'suite')})
+                                               else 'suite'),
+                             'dir_a': CONFIG.get('dir_a') or '',
+                             'dir_b': CONFIG.get('dir_b') or ''})
             return
 
         if u.path == '/api/report_defaults':

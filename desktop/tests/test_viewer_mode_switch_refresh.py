@@ -158,9 +158,9 @@ def test_api_mode_answers_the_hub_mode():
         for mode in ('fr', 'suite'):
             ts.CONFIG['analysis_mode'] = mode
             with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/mode', timeout=4) as r:
-                assert json.loads(r.read()) == {'analysis_mode': mode}
+                assert json.loads(r.read())['analysis_mode'] == mode
         ts.CONFIG['analysis_mode'] = 'nonsense'
         with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/mode', timeout=4) as r:
-            assert json.loads(r.read()) == {'analysis_mode': 'suite'}
+            assert json.loads(r.read())['analysis_mode'] == 'suite'
     finally:
         ts.CONFIG['analysis_mode'] = was

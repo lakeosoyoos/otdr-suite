@@ -1,13 +1,23 @@
-"""Remove every file, then type a fiber: it loads (demo list #34).
+"""Remove every file: the folders clear and the Fibers box switches off
+(demo list #34; Robert 2026-10-01: "after we remove the files on the right
+panel it should clear the boxes and then we should not be able to type fiber
+numbers ... a greyed out example Fiber number").
 
-Removing every file in the FILES panel ("Remove N marked files") let go of
-the trace server's folders (/api/unload_sides), while the hub's A/B boxes
-still showed them until its next run.  Typing a fiber and Add then said
-"no A/B folder is set".  Removing some files never did that.  Now Remove only
-takes rows out of the list, whatever it takes; the folders stay what the
-hub set, and a fiber typed in the box loads from them (and is listed again).
+Before, removing every file let go of the trace server's folders while the
+hub's A/B boxes kept the old path until something else ran the hub, and a
+fiber typed in the meantime said "no A/B folder is set".  Now:
 
-Run in JavaScriptCore where present.
+  Remove      the last file off a side lets go of that side's folder
+              (/api/unload_sides); removing some files keeps it
+  hub boxes   a fragment looks every VIEWER_FOLDERS_TICK_S and runs the hub
+              when the Viewer moved the folders, so the boxes empty at once
+  Fibers box  with no file listed on either side the box and Add are off and
+              the box shows FIBERS_OFF_PLACEHOLDER, grayed; both come back as
+              soon as a folder lists a file again (a box typed in the hub, a
+              drop, another window), which the page hears through /api/mode
+
+The page runs in JavaScriptCore where present; the server and hub parts run
+everywhere.
 """
 from __future__ import annotations
 
@@ -15,16 +25,20 @@ import json
 import os
 import re
 import subprocess
+import urllib.request
 
 import pytest
 
-from conftest import VIEWER_DIR
+from conftest import (VIEWER_DIR, APP_PATH, run_streamlit, import_trace_server,
+                      FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
 
 SRC = (VIEWER_DIR / 'viewer.html').read_text(encoding='utf-8')
+TS = import_trace_server()
 JSC = ('/System/Library/Frameworks/JavaScriptCore.framework/'
        'Versions/Current/Helpers/jsc')
 needs_jsc = pytest.mark.skipif(not os.path.exists(JSC),
                                reason='JavaScriptCore shell (macOS) not present')
+OFF_TEXT = 'e.g. 354, add files first'
 
 
 def _js_func(name):
@@ -44,56 +58,69 @@ def _const(name):
 
 
 _STUBS = r"""
-var gSelNext = null, gAddDir = 'both', gTraces = [], gLoadFailures = [], gStoredDir = {};
-var gRemovedFiles = new Set(), gAutoFit = true, gLoadingKeys = new Set();
-var gSelectedFiles = new Set(), COLORS_USED = new Set();
-var gInfo = { dir_a: '/span/A side', dir_b: '/span/B side', fibers_a: [353, 354], fibers_b: [353, 354] };
-var box = { value: '' }, readout = '';
-var document = { getElementById: function () { return box; } };
-var console = { warn: function () {} };
-var posts = [];
+var gTraces = [], gRemovedFiles = new Set(), gSelectedFiles = new Set(), COLORS_USED = new Set();
+var gAutoFit = true, gDropInFlight = false, gModePollBusy = false, gAnalysisMode = 'suite';
+var server = { dir_a: '/span/A side', dir_b: '/span/B side' };
+var lists = { fibers_a: [353, 354], fibers_b: [353, 354] };
+var gInfo = null;
+var els = { 'fiber-input': { value: '354', disabled: false, placeholder: '', title: '' },
+            'btn-add': { disabled: false } };
+var document = { getElementById: function (id) { return els[id] || null; } };
+var posts = [], forgot = [];
+function listing() {
+  return { dir_a: server.dir_a, dir_b: server.dir_b, analysis_mode: 'suite',
+           fibers_a: server.dir_a ? lists.fibers_a : [], fibers_b: server.dir_b ? lists.fibers_b : [] };
+}
+async function loadInfo() { gInfo = listing(); renderFilesPanel(); return true; }
+function renderFilesPanel() { syncFiberBoxEnabled(); }
 function fetch(url, opt) {
-  if (opt && opt.method === 'POST') posts.push(url);
-  var m = /dir=(\w)&fiber=(\d+)/.exec(url);
-  return Promise.resolve({ ok: true, json: function () {
-    return Promise.resolve({ dist_km: [0, 1], trace_db: [0, 1], events: [], fiber: m ? +m[2] : 0 }); } });
+  var body = { ok: true };
+  if (opt && opt.method === 'POST') {
+    posts.push(url);
+    var m = /sides=(\w+)/.exec(url);
+    if (m && m[1].indexOf('a') >= 0) server.dir_a = '';
+    if (m && m[1].indexOf('b') >= 0) server.dir_b = '';
+  } else if (url.indexOf('/api/mode') === 0) {
+    body = { analysis_mode: 'suite', dir_a: server.dir_a, dir_b: server.dir_b };
+  }
+  return Promise.resolve({ ok: true, json: function () { return Promise.resolve(body); } });
 }
-function effDir(d) { return d; }
-function nextColor() { return 0; }
+function forgetSide(d) {
+  forgot.push(d);
+  for (const k of [...gRemovedFiles]) if (k.startsWith(d + '-')) gRemovedFiles.delete(k);
+}
 function fileRowKeys() { return ['a-353', 'a-354', 'b-353', 'b-354'].filter(function (k) { return !gRemovedFiles.has(k); }); }
-function prunePick() {}
-async function selectAfterRemove() {}
-function syncFileMarks() {} function renderChips() {} function fit() {} function draw() {}
-function renderEventTable() {}
-function setReadout(s) { readout = String(s); }
-async function loadOverview() { throw new Error('not in this test'); }
-// What the server did when the page let go of an emptied side (the page's
-// own unloadEmptiedSides, before #34): the folder is gone.
-async function unloadEmptiedSides() {
-  var s = emptiedSides();
-  if (!s) return;
-  await fetch('/api/unload_sides?sides=' + s, { method: 'POST' });
-  if (s.indexOf('a') >= 0) gInfo.dir_a = '';
-  if (s.indexOf('b') >= 0) gInfo.dir_b = '';
-}
+function prunePick() {} async function selectAfterRemove() {}
+function renderChips() {} function fit() {} function draw() {} function renderEventTable() {}
+function setReadout() {}
 """
 
 _CASES = r"""
 (async function () {
   var out = {};
-  box.value = '354';
-  await addFibers();
-  // every file marked and removed
-  ['a-353', 'a-354', 'b-353', 'b-354'].forEach(function (k) { gSelectedFiles.add(k); });
+  var box = els['fiber-input'], add = els['btn-add'];
+  var snap = function () { return [box.disabled, add.disabled, box.placeholder, box.value]; };
+  await loadInfo();
+  out.loaded = snap();
+  // some files removed: nothing is let go of, the box stays on
+  ['a-353', 'b-353'].forEach(function (k) { gSelectedFiles.add(k); });
   removeSelectedFiles();
-  await Promise.resolve();
-  out.after_remove = [gTraces.length, posts.slice(), gInfo.dir_a, emptiedSides()];
-  out.remove_says = readout;
-  // the tech types a fiber
+  await new Promise(function (r) { setTimeout(r, 0); });
+  out.some = [posts.slice(), server.dir_a, server.dir_b, snap()];
+  // the rest removed: both folders go and the box switches off
   box.value = '354';
-  await addFibers();
-  out.typed = [gTraces.map(function (t) { return t.key; }).sort(), readout];
-  out.listed_again = fileRowKeys();
+  ['a-354', 'b-354'].forEach(function (k) { gSelectedFiles.add(k); });
+  removeSelectedFiles();
+  await new Promise(function (r) { setTimeout(r, 0); });
+  out.all = [posts.slice(), server.dir_a, server.dir_b, snap()];
+  // a folder set again (the hub's box): the page hears it and the box is back
+  server.dir_a = '/span/A side';
+  await pollAnalysisMode();
+  out.back = [snap(), forgot.slice(), gRemovedFiles.size];
+  // no folder at all from the start
+  server.dir_a = ''; server.dir_b = ''; gRemovedFiles = new Set();
+  await loadInfo();
+  out.none = snap();
   print('OUT ' + JSON.stringify(out));
 })().catch(function (e) { print('ERR ' + e + '\n' + e.stack); });
 """
@@ -101,11 +128,11 @@ _CASES = r"""
 
 @pytest.fixture(scope='module')
 def res(tmp_path_factory):
-    funcs = '\n'.join([_const('MAX_DETAIL_TRACES'), _const('MAX_OVERVIEW_FIBERS')]
-                      + [_js_func(n) for n in ('parseFibers', 'planFiberLoad', 'absentNote',
-                                               'planOrSay', 'loadFailNote', 'fetchRetry',
-                                               'loadOne', 'addFibers', 'fileAfterRemove',
-                                               'removeSelectedFiles', 'emptiedSides')])
+    funcs = '\n'.join([_const('FIBERS_PLACEHOLDER'), _const('FIBERS_OFF_PLACEHOLDER'),
+                       _const('MODE_POLL_MS')]
+                      + [_js_func(n) for n in ('filesListed', 'syncFiberBoxEnabled', 'emptiedSides',
+                                               'unloadEmptiedSides', 'fileAfterRemove',
+                                               'removeSelectedFiles', 'pollAnalysisMode')])
     path = tmp_path_factory.mktemp('remove_all') / 'rm.js'
     path.write_text(_STUBS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
@@ -115,37 +142,84 @@ def res(tmp_path_factory):
 
 
 @needs_jsc
-def test_removing_every_file_keeps_the_hub_folders(res):
-    n, posts, dir_a, emptied = res['after_remove']
-    assert n == 0
-    assert posts == []                          # no /api/unload_sides
-    assert dir_a == '/span/A side'
-    assert emptied == 'ab'                      # a drop still treats both sides as free
-    assert 'type a fiber number to load it again' in res['remove_says']
+def test_removing_some_files_keeps_the_folders(res):
+    posts, dir_a, dir_b, box = res['some']
+    assert posts == [] and dir_a and dir_b
+    assert box[:2] == [False, False]
+    assert res['loaded'][:3] == [False, False, '64, 67, 169-180']
 
 
 @needs_jsc
-def test_a_typed_fiber_loads_after_everything_was_removed(res):
-    keys, said = res['typed']
-    assert keys == ['a-354', 'b-354']
-    assert 'no A/B folder is set' not in said
-    assert res['listed_again'] == ['a-354', 'b-354']
+def test_removing_the_last_file_clears_the_folders_and_switches_the_box_off(res):
+    posts, dir_a, dir_b, box = res['all']
+    assert posts == ['/api/unload_sides?sides=ab']
+    assert (dir_a, dir_b) == ('', '')
+    assert box == [True, True, OFF_TEXT, '']
 
 
-def test_nothing_in_the_page_lets_go_of_the_folders_on_remove():
-    assert 'fetch(`/api/unload_sides' not in SRC
-    assert 'unloadEmptiedSides()' not in SRC
+@needs_jsc
+def test_a_new_folder_brings_the_box_back(res):
+    box, forgot, removed_left = res['back']
+    assert box[:3] == [False, False, '64, 67, 169-180']
+    assert forgot == ['a']                      # the old A side's removed rows are forgotten
+    assert res['none'] == [True, True, OFF_TEXT, '']
 
 
-def test_a_message_never_moves_the_chart():
-    """The status line said "no A/B folder is set" in the toolbar, took a line
-    of its own there (360 px wide) and pushed the chart and table down a line.
-    It now floats over the top of the chart and takes no room."""
-    toolbar = SRC.split('<div id="toolbar">', 1)[1].split('<div id="toolbar-resizer"', 1)[0]
-    assert 'id="readout"' not in toolbar
-    wrap = SRC.split('<div id="canvas-wrap">', 1)[1].split('<div id="event-resizer"', 1)[0]
-    assert '<div id="readout"></div>' in wrap
-    css = SRC.split('  #readout {', 1)[1].split('}', 1)[0]
-    assert 'position: absolute;' in css
-    assert 'min-width' not in css
-    assert 'overflow: hidden;' in css and 'text-overflow: ellipsis;' in css
+def test_the_box_is_grayed_when_off():
+    assert '#fiber-input:disabled { background: #eef1f4; cursor: not-allowed; }' in SRC
+    assert '#btn-add:disabled' in SRC
+    assert "const FIBERS_OFF_PLACEHOLDER = 'e.g. 354, add files first';" in SRC
+    assert 'syncFiberBoxEnabled();' in _js_func('renderFilesPanel')
+    for fn in ('removeFile', 'removeSelectedFiles'):
+        assert 'unloadEmptiedSides();' in _js_func(fn), fn
+
+
+def test_the_page_hears_folders_move_through_api_mode():
+    port = TS.start_in_thread(8795)
+    was = (TS.CONFIG.get('dir_a'), TS.CONFIG.get('dir_b'))
+    try:
+        TS.set_dirs(str(FIXTURE_SPLICE_A_DIR), None)
+        with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/mode', timeout=4) as r:
+            j = json.loads(r.read())
+        assert j['dir_a'] == str(FIXTURE_SPLICE_A_DIR) and j['dir_b'] == ''
+    finally:
+        TS.set_dirs(*was)
+
+
+@pytest.fixture
+def _clean_server():
+    TS.set_dirs(None, None)
+    TS.CONFIG.pop('dropped_at', None)
+    yield
+    TS.set_dirs(None, None)
+    TS.CONFIG.pop('dropped_at', None)
+
+
+def _box(at, label):
+    return next(t for t in at.sidebar.text_input if t.label == label)
+
+
+def test_the_hub_boxes_empty_when_the_viewer_lets_go(_clean_server):
+    at = run_streamlit().run()
+    _box(at, 'A folder').input(str(FIXTURE_SPLICE_A_DIR)).run()
+    _box(at, 'B folder').input(str(FIXTURE_SPLICE_B_DIR)).run()
+    assert not at.exception, at.exception
+    TS.unload_sides('ab')                       # every file removed in the Viewer
+    at.run()                                    # the run the fragment asks for
+    assert not at.exception, at.exception
+    assert (_box(at, 'A folder').value, _box(at, 'B folder').value) == ('', '')
+    # one side only: the other box keeps its folder
+    _box(at, 'A folder').input(str(FIXTURE_SPLICE_A_DIR)).run()
+    _box(at, 'B folder').input(str(FIXTURE_SPLICE_B_DIR)).run()
+    TS.unload_sides('b')
+    at.run()
+    assert (_box(at, 'A folder').value, _box(at, 'B folder').value) == (str(FIXTURE_SPLICE_A_DIR), '')
+
+
+def test_the_hub_runs_itself_when_the_viewer_moves_the_folders():
+    app = open(APP_PATH, encoding='utf-8').read()
+    assert '@st.fragment(run_every=VIEWER_FOLDERS_TICK_S)\ndef _follow_viewer_folders():' in app
+    body = app.split('def _follow_viewer_folders():', 1)[1].split('\n\n\n', 1)[0]
+    assert "trace_server.CONFIG.get('dropped_at')" in body and "view_drop_seen" in body
+    assert 'st.rerun()' in body and "scope='fragment'" not in body
+    assert re.search(r'^    _follow_viewer_folders\(\)', app, re.M)   # drawn in the sidebar

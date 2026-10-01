@@ -100,6 +100,11 @@
   input[type=number] { width: 56px; padding: 4px 2px 4px 6px; }
   input[type=text]:focus, input[type=number]:focus { outline: none; border-color: var(--accent); }
   input[type=number]:disabled { background: #eef1f4; color: var(--text-sec); }
+  /* No files listed: the Fibers box and Add are off, the box grayed with an
+     example in it (Robert 2026-10-01). */
+  #fiber-input:disabled { background: #eef1f4; cursor: not-allowed; }
+  #fiber-input:disabled::placeholder { color: #8a97a6; font-style: italic; }
+  #btn-add:disabled { opacity: 0.45; cursor: not-allowed; }
   label.disabled { opacity: 0.5; }
   button {
     background: var(--chip-bg); border: 1px solid var(--border);
@@ -869,9 +874,8 @@ let gDropInFlight = false;          // a drop is going up (see pollAnalysisMode)
 let gGateOverride = null;          // set when the tech types their own
 let gTraces = [];                  // [{key, fiber, dir, color, visible, data}]
 // Files the tech took out of the FILES list ("Remove from viewer").  The list
-// is the selection, so a removed file is neither shown nor selectable until
-// its fiber is typed in the Fibers box again or the Viewer is opened again;
-// the file on disk is untouched.
+// is the selection, so a removed file is neither shown nor loadable until the
+// Viewer is opened again; the file on disk is untouched.
 const gRemovedFiles = new Set();     // "<dir>-<fiber>" keys
 // Per-file direction the tech set from the Files panel's right-click menu,
 // the way FastReporter's Files > Direction does.  Keyed by folder + fiber;
@@ -1479,6 +1483,29 @@ function _dropOk(f) {
 // The server still points at those folders, so without this a drop after
 // removing everything was placed as if they were still loaded (a new span's
 // A went to B, beside the invisible old A).
+// The Fibers box is only for files the FILES list holds.  With no folder on
+// either side, or every listed file removed, there is nothing a typed fiber
+// could load: the box and Add are switched off and the box shows a grayed
+// example instead (Robert 2026-10-01), so the red "no A/B folder is set"
+// cannot come up.  Both come back as soon as a folder lists a file.
+const FIBERS_PLACEHOLDER = '64, 67, 169-180';
+const FIBERS_OFF_PLACEHOLDER = 'e.g. 354, add files first';
+function filesListed() {
+  if (!gInfo) return true;                  // not asked yet: stay usable
+  return ['a', 'b'].some(dir => (gInfo['dir_' + dir] || '')
+    && ((gInfo['fibers_' + dir]) || []).some(f => !gRemovedFiles.has(`${dir}-${f}`)));
+}
+function syncFiberBoxEnabled() {
+  const box = document.getElementById('fiber-input');
+  const add = document.getElementById('btn-add');
+  if (!box || !add) return;
+  const on = filesListed();
+  box.disabled = !on;
+  add.disabled = !on;
+  box.placeholder = on ? FIBERS_PLACEHOLDER : FIBERS_OFF_PLACEHOLDER;
+  box.title = on ? '' : 'Load an A or B folder, or drop files on the Viewer, to type fiber numbers';
+  if (!on) box.value = '';
+}
 function emptiedSides() {
   return ['a', 'b'].filter(dir => {
     const fibers = (gInfo && gInfo['fibers_' + dir]) || [];
@@ -1486,13 +1513,19 @@ function emptiedSides() {
   }).join('');
 }
 
-// Removing every file of a side used to let go of that side's folder on the
-// server (/api/unload_sides).  The hub's box still showed the folder until
-// its next run, and a fiber typed in the meantime said "no A/B folder is set"
-// (demo list #34).  Remove now only takes rows out of the list, the
-// way removing some of them always has; the folders stay what the hub set,
-// a typed fiber loads from them, and a drop still treats an emptied side as
-// free (emptiedSides, sent with drop_end).
+// Every file of a side removed: that side is empty to the tech, so the
+// server lets go of its folder and the hub's A/B box clears with it.
+async function unloadEmptiedSides() {
+  const sides = emptiedSides();
+  syncFiberBoxEnabled();             // off at once when nothing is left listed
+  if (!sides) return;
+  try {
+    const r = await fetch(`/api/unload_sides?sides=${sides}`, { method: 'POST' });
+    if (!r.ok) return;
+  } catch (e) { return; }
+  await loadInfo();
+  renderChips();
+}
 
 // Everything this session pinned to one side's folder: loaded traces, hidden
 // rows, direction overrides.  Dropped when that folder is replaced under us.
@@ -2013,7 +2046,20 @@ async function pollAnalysisMode() {
   try {
     const j = await (await fetch('/api/mode', { cache: 'no-store' })).json();
     const m = j && j.analysis_mode === 'fr' ? 'fr' : 'suite';
-    if (m !== gAnalysisMode) await loadInfo();
+    // The folders can move under the page too: the hub's A/B boxes, or
+    // another window.  A side whose folder changed forgets what this page
+    // pinned to the old one (removed rows, loaded traces), as a drop does.
+    const moved = j && 'dir_a' in j
+      ? ['a', 'b'].filter(d => (j['dir_' + d] || '') !== ((gInfo && gInfo['dir_' + d]) || ''))
+      : [];
+    if (moved.length) {
+      moved.forEach(forgetSide);
+      await loadInfo();
+      renderChips();
+      if (gAutoFit) fit();
+      draw();
+      renderEventTable();
+    } else if (m !== gAnalysisMode) await loadInfo();
   } catch (e) { /* server busy or restarting: the next tick asks again */ }
   finally { gModePollBusy = false; }
 }
@@ -2032,9 +2078,6 @@ async function addFibers() {
   const absentTail = plan.absent.length ? ', ' + absentNote(plan) : '';
 
   const tasks = [];
-  // A fiber typed in the box is asked for by name: one taken out of the
-  // FILES list with Remove comes back to it (#34).
-  for (const { f, d } of plan.pairs) gRemovedFiles.delete(`${d}-${f}`);
   for (const { f, d } of plan.pairs) {
     const key = `${d}-${f}`;
     // A trace still on its way (a second click on Add while the first is
@@ -2365,9 +2408,10 @@ function removeFile(key, fiber) {
   const next = fileAfterRemove(fileRowKeys(), new Set([key]));
   gRemovedFiles.add(key);
   removeTrace(key);
-  const msg = `F${fiber} removed from the viewer (type its fiber number to load it again)`;
+  const msg = `F${fiber} removed from the viewer (reopen the Viewer to list it again)`;
   setReadout(msg);
   selectAfterRemove(next, msg);
+  unloadEmptiedSides();
 }
 
 function removeSelectedFiles() {
@@ -2383,9 +2427,10 @@ function removeSelectedFiles() {
   draw();
   renderEventTable();
   const msg = `${keys.length} file${keys.length === 1 ? '' : 's'} removed from the viewer`
-    + ` (type a fiber number to load it again)`;
+    + ` (reopen the Viewer to list ${keys.length === 1 ? 'it' : 'them'} again)`;
   setReadout(msg);
   selectAfterRemove(next, msg);
+  unloadEmptiedSides();
 }
 
 // FastReporter never leaves the list with nothing selected: after a Remove
@@ -2467,6 +2512,7 @@ function fiberRangeText(fibers) {
 // colour) toggles its visibility.  Hovering a row shows the whole file name,
 // which the column cuts short.
 function renderFilesPanel() {
+  syncFiberBoxEnabled();
   const list = document.getElementById('files-list');
   if (!list) return;
   const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));

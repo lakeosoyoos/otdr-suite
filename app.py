@@ -420,6 +420,24 @@ def _render_analysis_mode_control():
         st.rerun()
 
 
+# The Viewer moves the trace server's folders from inside its own page: a
+# drop points it at the staged files, and Remove taking the last file off a
+# side lets go of that side's folder (trace_server.unload_sides).  Both stamp
+# CONFIG['dropped_at'], and the Trace Folders block puts the new folders in
+# the A/B boxes on the hub's next run.  Nothing made that run happen, so the
+# boxes kept the old path until the tech clicked something (Robert,
+# 2026-10-01: removing the files must clear the boxes).  This fragment looks
+# every VIEWER_FOLDERS_TICK_S and asks for a whole-page run only when a stamp
+# is newer than the one this session last took.
+VIEWER_FOLDERS_TICK_S = 1.5
+
+
+@st.fragment(run_every=VIEWER_FOLDERS_TICK_S)
+def _follow_viewer_folders():
+    if (trace_server.CONFIG.get('dropped_at') or 0) > st.session_state.get('view_drop_seen', 0):
+        st.rerun()
+
+
 def secretsauce_cmd(folder, out_dir, fmt):
     """Argv to run the Secret Sauce engine in a clean subprocess.
     Frozen: re-invoke this exe with the --run-secretsauce sentinel (the
@@ -3107,6 +3125,7 @@ with st.sidebar:
     # nothing until the tech presses Allow.
     _ask_clear_traces = st.button('Clear Traces', key='side_clear_traces',
                                   use_container_width=True)
+    _follow_viewer_folders()          # the Viewer's own folder changes reach the boxes
 
     # Secret Sauce takes ONE folder holding both directions: build it from the
     # A and B folders whenever that pair changes, as the span loader did.
