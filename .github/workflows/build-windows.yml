@@ -46,10 +46,15 @@ jobs:
         run: python -m pip install --upgrade pip wheel
 
       - name: Install desktop requirements
-        run: pip install -r requirements-desktop.txt
+        run: pip install -r requirements-desktop.txt -c constraints-desktop.txt
 
       - name: Re-pin setuptools 65.5.1 LAST so it wins
         run: pip install --force-reinstall "setuptools==65.5.1"
+
+      # Every installed package must be in constraints-desktop.txt at its
+      # locked version: a new dependency must not slip in at its newest.
+      - name: Installed packages match the lock
+        run: python check_lock.py
 
       # ── TEST SUITE ─ runs ahead of the bundle step so a regression fails
       #    in seconds instead of after the multi-minute build.  Covers: hub
