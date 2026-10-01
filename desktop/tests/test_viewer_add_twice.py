@@ -63,6 +63,7 @@ function fetch(url) {
 }
 function effDir(d) { return d; }
 function nextColor() { return 0; }
+function traceColor() { return 0; }
 function syncFileMarks() {} function renderChips() {} function fit() {} function draw() {}
 function renderEventTable() {} function setReadout() {}
 async function loadOverview() { throw new Error('not in this test'); }
