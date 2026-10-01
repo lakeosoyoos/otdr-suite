@@ -1782,7 +1782,10 @@ HUB_DROP_CATCH_JS = r"""
     function walk(entry, out) {
       return new Promise(function(resolve){
         if (entry.isFile) {
-          entry.file(function(f){ out.push(f); resolve(); }, function(){ resolve(); });
+          // with the folder it came from, so the Viewer names the side after it
+          var parts = String(entry.fullPath || '').split('/').filter(Boolean);
+          entry.file(function(f){ out.push({ f: f, dir: parts.length > 1 ? parts[parts.length - 2] : '' });
+                                  resolve(); }, function(){ resolve(); });
         } else if (entry.isDirectory) {
           var rd = entry.createReader();
           var page = function(){
@@ -1804,10 +1807,11 @@ HUB_DROP_CATCH_JS = r"""
       var done = ents.length
         ? ents.reduce(function(p, e){ return p.then(function(){ return walk(e, out); }); },
                       Promise.resolve())
-        : Promise.resolve(Array.prototype.push.apply(out, dt.files || []));
+        : Promise.resolve(Array.prototype.forEach.call(dt.files || [], function(f){
+            out.push({ f: f, dir: '' }); }));
       return done.then(function(){
-        return out.filter(function(f){
-          var n = (f.name || '').toLowerCase();
+        return out.filter(function(o){
+          var n = (o.f.name || '').toLowerCase();
           return n.charAt(0) !== '.' && EXTS.some(function(x){ return n.slice(-x.length) === x; });
         });
       });
@@ -1823,9 +1827,11 @@ HUB_DROP_CATCH_JS = r"""
       var fr = viewerFrame();
       if (!fr) return;
       var origin = new URL(fr.getAttribute('src')).origin;
-      collect(ev.dataTransfer).then(function(files){
-        if (files.length && fr.contentWindow)
-          fr.contentWindow.postMessage({ type: 'otdr-drop', files: files }, origin);
+      collect(ev.dataTransfer).then(function(got){
+        if (got.length && fr.contentWindow)
+          fr.contentWindow.postMessage({ type: 'otdr-drop',
+            files: got.map(function(o){ return o.f; }),
+            folders: got.map(function(o){ return o.dir; }) }, origin);
       });
     }
     function hook(win) {
@@ -2456,9 +2462,46 @@ st.markdown('<style>[data-testid="stAppDeployButton"]{display:none}</style>',
 # would bring the report straight back from the copy.  The traces themselves
 # and the report files the tech saved to a folder are never touched.
 def _panel_boxes():
-    """What the left panel's two Trace Folders boxes hold, as typed."""
-    return tuple((st.session_state.get(_k) or '').strip().strip('"')
-                 for _k in ('view_dir_a_input', 'view_dir_b_input'))
+    """The folders the left panel's two Trace Folders boxes stand for: what
+    was typed, or, for a box showing a Viewer drop's name, the folder the drop
+    was staged in (see _label_drop_boxes)."""
+    out = []
+    for side in ('a', 'b'):
+        v = (st.session_state.get(f'view_dir_{side}_input') or '').strip().strip('"')
+        shown = st.session_state.get(f'_drop_box_{side}')
+        if shown and v == shown[0]:
+            v = shown[1]
+        out.append(v)
+    return tuple(out)
+
+
+def _drop_box_label(path):
+    """What a Trace Folders box shows for a folder a drop on the Viewer
+    staged: the folder or file the tech dropped, never the staging folder
+    (/var/folders/.../T/otdr_viewer_drop_jnwvux7o/A, demo list #31).
+    None for any other folder."""
+    try:
+        name = trace_server.drop_name(path)
+    except Exception:
+        return None
+    if not name:
+        return None
+    return name if name.startswith('Dropped files') else f'{name} (dropped)'
+
+
+def _label_drop_boxes():
+    """Put the drop's name in each box that holds a staged drop folder, and
+    remember which folder that name stands for (_panel_boxes reads it back).
+    Run before the boxes are drawn, on every run: a drop, a link back from the
+    Viewer and a new session seeded from the trace server all bring the
+    staged path in."""
+    for side in ('a', 'b'):
+        key = f'view_dir_{side}_input'
+        v = (st.session_state.get(key) or '').strip().strip('"')
+        label = _drop_box_label(v) if v else None
+        if label:
+            st.session_state[f'_drop_box_{side}'] = (label, v)
+            st.session_state[key] = label
 
 
 def _panel_traces():
@@ -2580,7 +2623,7 @@ def _report_folders(which):
     draws no box."""
     ss = st.session_state
     if which == 'sr':
-        cands = [(ss.get('sr_dirs') or (None,))[0], ss.get('view_dir_a_input')]
+        cands = [(ss.get('sr_dirs') or (None,))[0], _panel_boxes()[0]]
     elif which == 'uni':
         cands = [(ss.get('uni_result') or {}).get('_folder'),
                  ss.get('uni_folder_input'), *_panel_boxes()]
@@ -2696,6 +2739,8 @@ def _clear_traces():
     for _k in ('view_dir_a_input', 'view_dir_b_input', 'ss_folder_input',
                'uni_folder_input', 'sr_one_folder'):
         st.session_state[_k] = ''
+    st.session_state.pop('_drop_box_a', None)
+    st.session_state.pop('_drop_box_b', None)
     # What the pages' own boxes kept goes too (_seed_box): Streamlit drops
     # the writes above on a page that is not drawn, and the old folders
     # would come back from the kept copy.  Unidirectional's landmarks and
@@ -3038,6 +3083,8 @@ with st.sidebar:
         (st.session_state['view_dir_a_input'],
          st.session_state['view_dir_b_input']) = st.session_state.pop('_panel_restore')
         st.session_state.pop('_ss_nav_folder', None)
+    # A drop's staged folder shows as what was dropped (demo list #31).
+    _label_drop_boxes()
 
     for _side, _lbl in (('a', 'A'), ('b', 'B')):
         _key = f'view_dir_{_side}_input'
@@ -3063,8 +3110,7 @@ with st.sidebar:
 
     # Secret Sauce takes ONE folder holding both directions: build it from the
     # A and B folders whenever that pair changes, as the span loader did.
-    _pa = (st.session_state.get('view_dir_a_input') or '').strip().strip('"')
-    _pb = (st.session_state.get('view_dir_b_input') or '').strip().strip('"')
+    _pa, _pb = _panel_boxes()
     if _pa and _pa == st.session_state.get('_ss_nav_folder'):
         # A pair click put the Secret Sauce folder itself in the A box (the
         # Viewer reads the pair from it; see _handle_nav).  It IS the folder
@@ -6386,8 +6432,7 @@ def _sr_span_inputs(span):
         # Span 1's A and B are the sidebar's Trace Folders (Robert
         # 2026-09-26): one place to pick them, shared with the Viewer, so the
         # page shows what is loaded instead of a second pair of boxes.
-        dir_a = (st.session_state.get(k_a) or '').strip().strip('"')
-        dir_b = (st.session_state.get(k_b) or '').strip().strip('"')
+        dir_a, dir_b = _panel_boxes()
         # Plain text, not a disabled box: a keyed widget would keep its first
         # value= forever (the key + value footgun).
         c1, c2 = st.columns(2)
@@ -6907,9 +6952,7 @@ def page_splice_report():
         # Back from the Viewer (or any session reset): restore the last grid
         # from the disk cache.  Candidate dirs: this page's own sr_dirs if it
         # survived, else the viewer slots the deep link seeded (sra/srb).
-        for _cand in (st.session_state.get(f'{_p}_dirs'),
-                      (st.session_state.get('view_dir_a_input'),
-                       st.session_state.get('view_dir_b_input'))):
+        for _cand in (st.session_state.get(f'{_p}_dirs'), _panel_boxes()):
             if not (_cand and _cand[0] and os.path.isdir(_cand[0])):
                 continue
             try:

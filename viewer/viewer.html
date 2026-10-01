@@ -199,6 +199,7 @@
   #chip-empty { color: var(--text-sec); font-style: italic; font-size: 11px; align-self: center; }
   /* The FILES panel is a drop target: files, a folder, or a zip. */
   #files-panel.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; background: #f3f7fb; }
+  #canvas-wrap.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; }
   #files-drop-hint { color: var(--text-sec); font-size: 11px; padding: 6px 8px; border-top: 1px dashed var(--border); }
 
   /* Main */
@@ -1367,10 +1368,19 @@ function parseFibers(str) {
 // trace server, which stages the drop into a temp folder, splits it into A
 // and B by filename prefix (the hub's rule) and points itself at it.
 const DROP_EXTS = ['.sor', '.json', '.trc', '.zip'];
+// The folder each dropped file came from (its parent's name, '' for a file
+// dropped on its own), so a staged side can go by the folder the tech dropped
+// rather than its staging name (see trace_server.drop_name).
+const gDropFolder = new WeakMap();
+function _parentName(fullPath) {
+  const parts = String(fullPath || '').split('/').filter(Boolean);
+  return parts.length > 1 ? parts[parts.length - 2] : '';
+}
 function _dropWalk(entry, out) {
   return new Promise((resolve) => {
     if (entry.isFile) {
-      entry.file(f => { out.push(f); resolve(); }, () => resolve());
+      entry.file(f => { gDropFolder.set(f, _parentName(entry.fullPath)); out.push(f); resolve(); },
+                 () => resolve());
     } else if (entry.isDirectory) {
       const rd = entry.createReader();
       const batch = () => rd.readEntries(async (ents) => {
@@ -1543,7 +1553,14 @@ async function handleFilesDrop(dt) {
     await Promise.all([worker(), worker()]);
     at.stage = 'end';
     const before = { a: (gInfo && gInfo.dir_a) || '', b: (gInfo && gInfo.dir_b) || '' };
-    const j = await post(`/api/drop_end?token=${token}&emptied=${emptiedSides()}`);
+    // Where each file came from, so each side is named after its folder.
+    const from = {};
+    for (const f of files) {
+      const dir = gDropFolder.get(f);
+      if (dir) from[f.name] = dir;
+    }
+    const j = await post(`/api/drop_end?token=${token}&emptied=${emptiedSides()}`,
+                         JSON.stringify({ folders: from }));
     at.stage = 'after';
     // Whatever was loaded off a folder this drop REPLACED is now pointing at
     // another span's fibers, so that side is forgotten.  A side the drop left
@@ -1633,10 +1650,30 @@ async function handleFilesDrop(dt) {
       fail.push(`${j.repeated.length} file(s) not loaded: they arrived under a name already dropped,`
            + ` kept the first: ${shown}. Drop one direction at a time`);
     }
-    renderChips();
-    if (gAutoFit) fit();
-    draw();
-    renderEventTable();
+    // Draw what was dropped (demo list #31): the drop used to list
+    // its files and leave the chart blank, "0 of 4 selected".  Every file of
+    // each side this drop wrote is selected, beside whatever the other side
+    // already had on the chart; a whole cable goes through the overview, as
+    // a Select All does.
+    const want = new Set(gTraces.map(t => t.key));
+    for (const d of ['a', 'b']) {
+      if (!String(j.added || '').toLowerCase().includes(d)) continue;
+      for (const f of ((gInfo && gInfo['fibers_' + d]) || [])) {
+        const key = `${d}-${f}`;
+        if (!gRemovedFiles.has(key)) want.add(key);
+      }
+    }
+    gDropInFlight = false;             // the load below is the page's own, not the drop's
+    const loading = want.size !== gTraces.length;
+    if (loading) {
+      await selectFiles(want);
+    } else {
+      renderChips();
+      if (gAutoFit) fit();
+      draw();
+      renderEventTable();
+    }
+    if (loading) msg += loadFailNote();   // a dropped file that would not load stays red
     setReadout(msg, { warn: warn.join(' · '), fail: fail.join(' · ') });
   } catch (e) {
     setReadout('drop failed: ' + ((e && e.message) || e));
@@ -1684,6 +1721,13 @@ async function reportDropFailure(e, at, count, total, ms) {
     }
   } catch (e4) { /* reporting must never break the viewer */ }
 }
+// The FILES panel and the chart (with the event table under it) both take a
+// drop; a drop on the chart used to be thrown away in silence (demo
+// list #31).  Only files count: text dragged out of a box is not a drop.
+function _dragHasFiles(ev) {
+  const t = ev.dataTransfer && ev.dataTransfer.types;
+  return !!t && Array.prototype.indexOf.call(t, 'Files') >= 0;
+}
 (() => {
   const panel = document.getElementById('files-panel');
   let depth = 0;
@@ -1693,6 +1737,22 @@ async function reportDropFailure(e, at, count, total, ms) {
   panel.addEventListener('drop', (ev) => {
     ev.preventDefault(); depth = 0; panel.classList.remove('dragging');
     handleFilesDrop(ev.dataTransfer);
+  });
+  // The chart and the event table under it take the same drop.
+  const main = document.getElementById('main'), wrap = document.getElementById('canvas-wrap');
+  let mdepth = 0;
+  main.addEventListener('dragenter', (ev) => {
+    if (!_dragHasFiles(ev)) return;
+    ev.preventDefault(); mdepth += 1; wrap.classList.add('dragging');
+  });
+  main.addEventListener('dragover', (ev) => {
+    if (!_dragHasFiles(ev)) return;
+    ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy';
+  });
+  main.addEventListener('dragleave', () => { mdepth = Math.max(0, mdepth - 1); if (!mdepth) wrap.classList.remove('dragging'); });
+  main.addEventListener('drop', (ev) => {
+    ev.preventDefault(); mdepth = 0; wrap.classList.remove('dragging');
+    if (_dragHasFiles(ev)) handleFilesDrop(ev.dataTransfer);
   });
   // A drop anywhere else must not navigate the page away to the file.
   window.addEventListener('dragover', ev => ev.preventDefault());
@@ -7452,7 +7512,9 @@ function folderLabel(side) {
   if (!gInfo) return '';
   const name = gInfo[`dir_${side}_name`];
   if (!name || name === '(none)') return '';
-  if (!/^[ab]$/i.test(name)) return name;
+  // A dropped side is served under what was dropped (trace_server.drop_name):
+  // its staging folder's parent is a temp name, never a job.
+  if (gInfo[`dir_${side}_dropped`] || !/^[ab]$/i.test(name)) return name;
   const parts = String(gInfo[`dir_${side}`] || '').split(/[\/\\]+/).filter(Boolean);
   return parts.length > 1 ? parts[parts.length - 2] : name;
 }
@@ -8229,6 +8291,12 @@ window.addEventListener('message', function (ev) {
     // a download (the boss, 2026-09-30: A loaded, the B set went to
     // Downloads).
     if (d && d.type === 'otdr-drop' && Array.isArray(d.files)) {
+      // the folder each file came from, for the name its side goes by
+      if (Array.isArray(d.folders)) {
+        d.files.forEach((f, i) => {
+          if (f && typeof d.folders[i] === 'string') gDropFolder.set(f, d.folders[i]);
+        });
+      }
       handleFilesDrop(d.files);
       return;
     }

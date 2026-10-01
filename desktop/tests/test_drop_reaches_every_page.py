@@ -22,6 +22,14 @@ TS = import_trace_server()
 X_A, X_B = str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR)
 
 
+def _shown(d):
+    """What a box shows for a staged drop folder: the drop's own name (here
+    the site the file names carry), never the staging path."""
+    name = TS.drop_name(d)
+    assert name and 'otdr_viewer_drop_' not in name and os.sep not in name
+    return f'{name} (dropped)'
+
+
 @pytest.fixture(autouse=True)
 def _own_temp(tmp_path, monkeypatch):
     monkeypatch.setenv('TMPDIR', str(tmp_path))
@@ -61,13 +69,16 @@ def test_a_drop_then_a_tool_click_loads_the_dropped_folders(page):
     # Straight to the tool: no Viewer pass in between.
     at.sidebar.radio[0].set_value(page).run()
     assert not at.exception, at.exception
-    assert _box(at, 'A folder').value == y_a
-    assert _box(at, 'B folder').value == y_b
-    assert (at.session_state['view_dir_a_input'],
-            at.session_state['view_dir_b_input']) == (y_a, y_b)
+    # The boxes name what was dropped, never the staging folder (#31)...
+    assert _box(at, 'A folder').value == _shown(y_a)
+    assert _box(at, 'B folder').value == _shown(y_b)
+    # ...and stand for the staged folders, which the tools run on.
+    assert (TS.CONFIG['dir_a'], TS.CONFIG['dir_b']) == (y_a, y_b)
+    assert at.session_state['_drop_box_a'] == (_shown(y_a), y_a)
+    assert at.session_state['_drop_box_b'] == (_shown(y_b), y_b)
     # ...and a hub rerun does not put the old paths back.
     at.run()
-    assert (_box(at, 'A folder').value, _box(at, 'B folder').value) == (y_a, y_b)
+    assert (_box(at, 'A folder').value, _box(at, 'B folder').value) == (_shown(y_a), _shown(y_b))
     assert (TS.CONFIG['dir_a'], TS.CONFIG['dir_b']) == (y_a, y_b)
 
 
@@ -75,7 +86,8 @@ def test_a_drop_is_taken_once_so_a_later_pick_stands():
     at = run_streamlit().run()
     y_a, y_b = _drop_three_and_three()
     at.sidebar.radio[0].set_value('Splice Report').run()
-    assert _box(at, 'A folder').value == y_a
+    assert _box(at, 'A folder').value == _shown(y_a)
+    assert TS.CONFIG['dir_a'] == y_a
     _box(at, 'A folder').input(X_A).run()
     _box(at, 'B folder').input(X_B).run()
     at.run()
