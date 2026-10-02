@@ -1810,6 +1810,57 @@ def _install_theme_pick_clear():
 _install_theme_pick_clear()
 
 
+# The browser tab read "Streamlit" while the hub reran.  Streamlit's page
+# resets the tab title to "Streamlit" at the start of every run and sets it
+# back when the script reaches st.set_page_config, so the tab flips for as
+# long as that takes (seconds on a slow start).  The page config cannot stop
+# it, so this pins the title on the hub page: Streamlit's own reset
+# writes the product's name (PRODUCT_NAME) instead, and every other title
+# passes through.
+# Installed once per browser tab; a no-op if the page is not reachable.
+PAGE_TITLE = PRODUCT_NAME
+TITLE_KEEP_JS = """
+<script>
+(function(){
+  var w; try { w = window.parent; void w.document; } catch (e) { return; }
+  if (!w || w.__otdrTitleKeep) return;
+  var d = w.document, proto = w.Document && w.Document.prototype;
+  var own = proto && Object.getOwnPropertyDescriptor(proto, 'title');
+  if (!own || !own.get || !own.set) return;
+  w.__otdrTitleKeep = true;
+  var KEEP = '__TITLE__';
+  Object.defineProperty(d, 'title', {
+    configurable: true,
+    get: function(){ return own.get.call(d); },
+    set: function(v){ own.set.call(d, String(v) === 'Streamlit' ? KEEP : v); }
+  });
+  if (own.get.call(d) === 'Streamlit') own.set.call(d, KEEP);
+})();
+</script>
+""".replace('__TITLE__', PAGE_TITLE)
+
+
+def _install_title_keep():
+    """Render the script above out of the page's flow, as the theme clear
+    does (best effort, never fatal)."""
+    try:
+        box = st.container(key='title_keep')
+        box.markdown('<style>[data-testid="stLayoutWrapper"]:has(> .st-key-title_keep)'
+                     '{position:absolute;width:0;height:0;overflow:hidden}</style>',
+                     unsafe_allow_html=True)
+        with box:
+            st_components_html(TITLE_KEEP_JS, height=0)
+    except Exception:
+        pass
+
+
+
+# OTDR Suite App: installed here, with the theme clear, so the home
+# screen's tab keeps its title too (main installs it after its page gate,
+# and the App's home screen stops before that).
+_install_title_keep()
+
+
 # ─── Sidebar drag-to-widen must not close the sidebar ────────────────────
 # Robert, 2026-09-17: "when I go to click and drag it closes it instead".
 # Streamlit (1.50) closes the sidebar on any mouse press OUTSIDE its content
@@ -5966,7 +6017,7 @@ def page_viewer(fec=False):
 
         na = len(trace_server.list_fibers(dir_a)) if dir_a else 0
         nb = len(trace_server.list_fibers(dir_b)) if dir_b else 0
-        st.caption(f'A: {na} fibers · B: {nb} fibers')
+        st.caption(f"A: {_count(na, 'fiber')} · B: {_count(nb, 'fiber')}")
         for _k, _t in _notes:
             if _k == 'caption' and 'both directions' in _t:
                 st.caption(_t)
