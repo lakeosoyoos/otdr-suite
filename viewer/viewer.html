@@ -2485,6 +2485,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) poll
 // ─── Add traces ───────────────────────────────────────────────────────
 async function addFibers() {
   gSelNext = null;                   // the box (or a report jump) is the newer ask
+  gKeepReady = true;                 // what the tech loads is kept (keepState)
   const raw = document.getElementById('fiber-input').value;
   const fibers = parseFibers(raw);
   if (!fibers.length) { setReadout('no valid fibers in input'); return; }
@@ -2920,6 +2921,7 @@ async function selectAfterRemove(next, msg) {
 function clearAll() {
   gSelNext = null;                   // a FILES selection still queued is dropped too
   newLoadEpoch();                    // and a load still landing stops (gLoadEpoch)
+  gKeepReady = true;                 // an empty Viewer is kept too (keepState)
   gTraces = [];
   COLORS_USED.clear();
   clearFileSelection();
@@ -4019,6 +4021,7 @@ function markFiles(keys) {
 
 async function applyFileSelection(want) {
   newLoadEpoch();                     // the selection is the chart now: an older load stops
+  gKeepReady = true;
   const epoch = gLoadEpoch;
   const drop = gTraces.filter(x => !want.has(x.key)).map(x => x.key);
   gTraces = gTraces.filter(x => want.has(x.key));
@@ -9908,6 +9911,65 @@ async function applyTarget(t) {
   await autoloadDefault();
 }
 
+// ─── Kept across a trip to another tool ───────────────────────────────
+// Robert 2026-10-02: the Viewer starts empty when the software starts, but
+// traces loaded and then a trip to another tool and back keep them.  The hub
+// drops this frame on every page switch, so the page keeps what it shows in
+// sessionStorage under the hub session's token (?s=): a new launch, or a hub
+// Clear Traces, comes with a new token and starts empty.  Kept only for the
+// same folders and the same report jump (the address's fiber / fibers / km /
+// dir): a new cell click still shows the fiber clicked.  What is kept: the
+// loaded traces (and those still on their way), hidden ones, files taken off
+// the list, unsaved Direction changes, and the zoom.  A Clear All is kept
+// too: back on the Viewer it is still empty.
+const KEEP_KEY = 'otdr_viewer_keep' + (gFecMode ? '_fec' : '');
+const gKeepToken = new URLSearchParams(location.search).get('s') || '';
+let gKeepReady = false;            // nothing is written until boot has tried to restore
+let gKeepLast = '';
+function keepLinkSig() {
+  const p = new URLSearchParams(location.search);
+  return ['fiber', 'fibers', 'km', 'dir', 'src'].map(k => p.get(k) || '').join('|');
+}
+function keepState() {
+  if (!gKeepToken || !gKeepReady || !gInfo) return;
+  const st = {
+    token: gKeepToken, link: keepLinkSig(),
+    dir_a: gInfo.dir_a || '', dir_b: gInfo.dir_b || '',
+    keys: [...new Set([...gTraces.map(t => t.key), ...gLoadingKeys])],
+    hidden: gTraces.filter(t => !t.visible).map(t => t.key),
+    removed: [...gRemovedFiles],
+    dirOverride: gDirOverride,
+    view: gAutoFit ? null : gView,
+  };
+  const j = JSON.stringify(st);
+  if (j === gKeepLast) return;
+  gKeepLast = j;
+  try { sessionStorage.setItem(KEEP_KEY, j); } catch (e) { /* storage off: nothing kept */ }
+}
+setInterval(keepState, 1000);
+window.addEventListener('pagehide', keepState);
+// True when this page put back what it showed before the trip (or found it
+// cleared): the address's own jump is then spent.
+async function restoreKept() {
+  if (!gKeepToken || !gInfo) return false;
+  let st = null;
+  try { st = JSON.parse(sessionStorage.getItem(KEEP_KEY) || 'null'); } catch (e) { st = null; }
+  if (!st || st.token !== gKeepToken || st.link !== keepLinkSig()
+      || st.dir_a !== (gInfo.dir_a || '') || st.dir_b !== (gInfo.dir_b || '')) return false;
+  for (const k of st.removed || []) gRemovedFiles.add(k);
+  Object.assign(gDirOverride, st.dirOverride || {});
+  gKeepReady = true;
+  if (!(st.keys || []).length) { renderChips(); return true; }
+  await selectFiles(new Set(st.keys));
+  const hidden = new Set(st.hidden || []);
+  let again = false;
+  for (const t of gTraces) if (hidden.has(t.key)) { t.visible = false; again = true; }
+  if (st.view) { gView = st.view; gAutoFit = false; again = true; }
+  if (again) { renderChips(); draw(); }
+  if (hidden.size) renderEventTable();
+  return true;
+}
+
 // ─── The URL's deep link is applied once ──────────────────────────────
 // ?fiber= / ?fibers= in the page URL is what the report cell that OPENED this
 // window asked for.  Once it has put a trace on the canvas, or a later cell
@@ -9927,6 +9989,11 @@ let gDeepLinkDone = false;
 
 async function bootLoad() {
   if (!gInfo || gDeepLinkDone) return;
+  // Back from another tool: what the Viewer showed comes back instead.
+  if (await restoreKept()) { gDeepLinkDone = true; return; }
+  // Only once the folders are known: a boot that met no folders yet must
+  // not write an empty Viewer over the one kept.
+  if (gInfo.dir_a || gInfo.dir_b) gKeepReady = true;
   const p = new URLSearchParams(location.search);
   await applyTarget({ fibers: p.get('fibers'), fiber: p.get('fiber'),
                       km: p.get('km'), dir: p.get('dir'), src: p.get('src') });

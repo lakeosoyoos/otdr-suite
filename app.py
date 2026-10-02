@@ -2835,6 +2835,8 @@ def _clear_traces():
     # The trace server's folders are process-wide: left set, the next
     # session would seed the boxes from them and the span would be back.
     trace_server.set_dirs(None, None)
+    # ...and the Viewer forgets what it kept for this session (see page_viewer).
+    st.session_state.pop('_viewer_keep', None)
 
 
 # The pop-ups' buttons act in click callbacks, which run whether or not the
@@ -2852,7 +2854,8 @@ def _confirm_clear_traces():
     _c1, _c2 = st.columns(2)
     if _c1.button('Cancel', key='clear_traces_cancel', use_container_width=True):
         st.rerun()
-    if _c2.button('Allow', key='clear_traces_allow', type='primary',
+    # Named for what it does (Robert 2026-10-02); it read 'Allow'.
+    if _c2.button('Clear Traces', key='clear_traces_allow', type='primary',
                   use_container_width=True, on_click=_allow_clear_traces):
         st.rerun()
 
@@ -3142,7 +3145,7 @@ with st.sidebar:
         st.session_state['sr_input_mode'] = 'Two folders (A + B)'
         st.session_state.pop('sr_input_mode_saved', None)     # _seed_box
 
-    # The tech pressed Allow, or Clear Report and Traces, in a pop-up (see
+    # The tech pressed Clear Traces, or Clear Report and Traces, in a pop-up (see
     # _clear_traces above the sidebar).  Done HERE, on the run that follows,
     # because the boxes must be emptied in the same run that draws them and
     # before they are drawn: a value written in an earlier run reaches the
@@ -3205,7 +3208,7 @@ with st.sidebar:
                    'Paste the folder paths instead.')
 
     # Asks first (the pop-up is drawn below the sidebar): a click here clears
-    # nothing until the tech presses Allow.
+    # nothing until the tech presses Clear Traces in the pop-up.
     _ask_clear_traces = st.button('Clear Traces', key='side_clear_traces',
                                   use_container_width=True)
     _follow_viewer_folders()          # the Viewer's own folder changes reach the boxes
@@ -3688,7 +3691,14 @@ document.getElementById("vpop2").addEventListener("click", function(){
     else:
         _b = abs(hash(_key)) % 100000
     st.session_state['_viewer_b'] = _b
-    q = {'b': _b}
+    # This session's token (Robert 2026-10-02: the Viewer starts empty when
+    # the software starts, and keeps what it loaded across a trip to another
+    # tool).  The page keeps its traces under it; a new session, or Clear
+    # Traces, brings a new one, so nothing old comes back.
+    if '_viewer_keep' not in st.session_state:
+        import secrets
+        st.session_state['_viewer_keep'] = secrets.token_hex(6)
+    q = {'b': _b, 's': st.session_state['_viewer_keep']}
     if fec:
         q['fec'] = 1
     # PERSISTENT deep-link target (read, NOT consumed).  Keeping the last
