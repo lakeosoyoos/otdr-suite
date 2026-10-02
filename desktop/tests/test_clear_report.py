@@ -82,8 +82,8 @@ def hub(manifests, tmp_path, monkeypatch):
     saved maps each report to the files of its saved copy."""
     monkeypatch.setenv('OTDR_CACHE_DIR', str(tmp_path / 'cache'))
     at = run_streamlit(default_timeout=180).run()
-    _box(at, 'A folder').input(A).run()
-    _box(at, 'B folder').input(B).run()
+    _box(at, 'A Folder').input(A).run()
+    _box(at, 'B Folder').input(B).run()
     ss_folder = os.path.abspath(at.session_state['ss_folder_input'])
     at.session_state['uni_folder_input'] = A
     at.session_state['sr_result'] = manifests['sr']
@@ -136,8 +136,8 @@ def test_a_report_page_offers_clear_report_with_its_report(hub, which):
 def test_no_report_no_button(which, tmp_path, monkeypatch):
     monkeypatch.setenv('OTDR_CACHE_DIR', str(tmp_path / 'cache'))
     at = run_streamlit(default_timeout=180).run()
-    _box(at, 'A folder').input(A).run()
-    _box(at, 'B folder').input(B).run()
+    _box(at, 'A Folder').input(A).run()
+    _box(at, 'B Folder').input(B).run()
     at.session_state['uni_folder_input'] = A
     at.run()
     _open(at, which)
@@ -165,7 +165,7 @@ def test_clear_report_asks_with_three_answers(hub, which):
     assert 'left panel' in said and 'fresh run' in said
     # asking takes nothing
     assert _on_screen(at, which) and os.path.exists(saved[which])
-    assert _box(at, 'A folder').value == A
+    assert _box(at, 'A Folder').value == A
 
 
 @pytest.mark.parametrize('which', ['sr', 'uni', 'ss'])
@@ -179,7 +179,7 @@ def test_skip_changes_nothing(hub, which):
     for w in ('sr', 'uni', 'ss'):
         assert _on_screen(at, w), w
         assert os.path.exists(saved[w]), w
-    assert _box(at, 'A folder').value == A and _box(at, 'B folder').value == B
+    assert _box(at, 'A Folder').value == A and _box(at, 'B Folder').value == B
     assert _has(at, 'Clear Report')
 
 
@@ -202,7 +202,7 @@ def test_clear_report_only_takes_this_report_and_leaves_the_traces(hub, which):
         assert os.path.exists(saved[w]), w
     assert os.path.exists(saved['other'])
     # the traces stay, in the left panel and in every tool
-    assert _box(at, 'A folder').value == A and _box(at, 'B folder').value == B
+    assert _box(at, 'A Folder').value == A and _box(at, 'B Folder').value == B
     assert at.session_state['uni_folder_input'] == A
     assert at.session_state['ss_folder_input']
     at.sidebar.radio[0].set_value('Viewer').run()
@@ -247,7 +247,7 @@ def test_clear_report_and_traces_empties_the_left_panel_and_every_tool(hub, whic
     _btn(at, 'Clear Report and Traces').click().run()
     assert not at.exception, at.exception
     assert not _has(at, 'Skip')
-    assert _box(at, 'A folder').value == '' and _box(at, 'B folder').value == ''
+    assert _box(at, 'A Folder').value == '' and _box(at, 'B Folder').value == ''
     for k in ('uni_folder_input', 'ss_folder_input'):
         assert at.session_state[k] == '', k
     for w in ('sr', 'uni', 'ss'):
@@ -259,7 +259,7 @@ def test_clear_report_and_traces_empties_the_left_panel_and_every_tool(hub, whic
     # the site names read out of the cleared traces go back to A and B
     at.sidebar.radio[0].set_value('Splice Report').run()
     sites = {t.label: t.value for t in at.main.text_input if 'ILA' in t.label}
-    assert sites == {'A-direction ILA / site': 'A', 'B-direction ILA / site': 'B'}
+    assert sites == {'A-Direction ILA / Site': 'A', 'B-Direction ILA / Site': 'B'}
     for page in PAGE.values():
         at.sidebar.radio[0].set_value(page).run()
         assert not at.exception, (page, at.exception)
@@ -293,8 +293,8 @@ def test_the_same_folder_needs_a_fresh_run_after_a_clear(hub):
     at, saved = hub
     next(b for b in at.sidebar.button if b.label == 'Clear Traces').click().run()
     _btn(at, 'Allow').click().run()
-    _box(at, 'A folder').input(A).run()
-    _box(at, 'B folder').input(B).run()
+    _box(at, 'A Folder').input(A).run()
+    _box(at, 'B Folder').input(B).run()
     at.session_state['uni_folder_input'] = A
     at.run()
     for which in ('sr', 'uni', 'ss'):

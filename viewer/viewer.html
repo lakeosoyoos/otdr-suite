@@ -423,6 +423,7 @@
   #edit-dlg .fr-panel td:first-child { color: var(--text-sec); white-space: nowrap; }
   #edit-dlg .fr-panel td.off { color: #99a; }
   #edit-dlg .fr-panel input[type=number] { border: 0; padding: 0; height: 16px; }
+  #edit-dlg .fr-panel input#edit-bs { width: 64px; }
   @media (max-width: 680px) { #edit-dlg.has-panel { width: calc(100vw - 32px); }
     #edit-dlg .fr-panels { grid-template-columns: 1fr; } }
   #edit-dlg .btns button { font-size: 11px; padding: 4px 12px; border-radius: 3px; border: 1px solid #c9d5e1; background: #fff; cursor: pointer; }
@@ -791,8 +792,10 @@
           <input id="set-avg-only" type="checkbox"> Show Averages Only</label>
         <label title="Untick to blank every gainer: a single-direction reading with a negative loss (FastReporter's 'Positive').  A hidden gainer is not judged, so it cannot fail its row.  The bidirectional Average is always shown.">
           <input id="set-gainers" type="checkbox" checked> Show Gainers</label>
-        <label title="Draw each event's line and its loss label on the chart: the A / B readings and the Event / end tags.  Off, the chart shows only the traces.">
+        <label title="Label every event of the table on the chart: the A / B losses, the Splice / end tags and their bands.  Off, the chart shows each event's line and number only.">
           <input id="set-event-labels" type="checkbox"> Show Event Labels</label>
+        <label title="Every event keeps its line and number on the chart; only the failed events also get their A / B losses and tag.">
+          <input id="set-failed-labels" type="checkbox"> Show Failed Event Labels</label>
         <label title="Keep the Minimum / Maximum / Average rows pinned to the bottom of the panel.  Off, they sit under the last row and never cover the table.">
           <input id="set-pin-agg" type="checkbox"> Pin Min/Max/Average</label>
         </span>
@@ -913,11 +916,17 @@ let gStoredDir = {};
 let gAddDir = 'both';              // 'a' | 'b' | 'both'
 let gView = null;                  // {x0, x1, y0, y1} in data coords
 let gAutoFit = true;
-// The event lines and their loss labels on the chart.  Off unless the tech
-// turns them on in the gear (the boss, 2026-10-01: an option, not always on);
-// the choice is remembered.
+// Show Event Labels: the event table's marks on the chart (its A / B values,
+// tags and bands) on every event; Show Failed Event Labels: on the failed
+// ones only.  One or the other, both off unless the tech turns one on in the
+// gear (the boss, 2026-10-01: an option, not always on); off, each event
+// keeps its line and number (see draw).  The choice is remembered.
 let gShowEvents = false;
-try { gShowEvents = localStorage.getItem('otdr_viewer_event_labels') === '1'; } catch (e) {}
+let gShowFailedLabels = false;
+try {
+  gShowEvents = localStorage.getItem('otdr_viewer_event_labels') === '1';
+  gShowFailedLabels = !gShowEvents && localStorage.getItem('otdr_viewer_failed_labels') === '1';
+} catch (e) {}
 let gStacked = true;
 // FastReporter's "Y Spacing" ribbon control, and its default.  FR ships this
 // OFF: both directions are drawn on ONE true dB scale, so the gap between an A
@@ -3883,20 +3892,27 @@ function draw() {
   // to change when we hover over it, just give us the box").
   const hovered = hoverTrace();
   ctx.globalAlpha = 1;
-  if (gShowEvents) {
-    // The mode's table marks its own pairing on the traces it covers (see
-    // drawPairing); a trace it does not cover -- a fibre loaded one way, one
-    // the table left out, or every trace while the table is not in -- keeps
-    // its file's own event numbers.
-    const covered = gDrawerMarks.length ? drawPairing(gDrawerMarks, r) : null;
-    // A picked trace's numbers take their spots before the others'.
-    const numOrder = gPickKey
-      ? [...order.filter(t => isPicked(t.key)), ...order.filter(t => !isPicked(t.key))]
-      : order;
-    for (const t of numOrder) {
-      if (!t.visible || (covered && covered.has(t))) continue;
-      drawEventMarkers(t, r);        // dims itself: its ticks set their own alpha
-    }
+  // Every event's line and number is always drawn, as before the drawer
+  // marked the table (Robert 2026-10-01: "unless Display Events is selected
+  // we don't show anything in our chart except the vertical lines and the
+  // event numbers").  With Show Event Labels on, the mode's table marks its
+  // own pairing on the traces it covers instead (see drawPairing): its
+  // bands, tags and A / B values; a trace it does not cover -- a fibre
+  // loaded one way, one the table left out, or every trace while the table
+  // is not in -- keeps its file's own event numbers.  Show Failed Event
+  // Labels keeps every trace's lines and numbers and adds the table's marks
+  // on the failed events only ("with failed on we still want all the event
+  // numbers").
+  let covered = null;
+  if (gShowEvents && gDrawerMarks.length) covered = drawPairing(gDrawerMarks, r);
+  else if (gShowFailedLabels && gDrawerMarks.length) drawPairing(gDrawerMarks, r, true);
+  // A picked trace's numbers take their spots before the others'.
+  const numOrder = gPickKey
+    ? [...order.filter(t => isPicked(t.key)), ...order.filter(t => !isPicked(t.key))]
+    : order;
+  for (const t of numOrder) {
+    if (!t.visible || (covered && covered.has(t))) continue;
+    drawEventMarkers(t, r);        // dims itself: its ticks set their own alpha
   }
   ctx.globalAlpha = 1;
   ctx.restore();
@@ -4308,7 +4324,7 @@ function eventNumberSpots(px, py, tw) {
 // cursor while it is over that label's tick.  The tick's click still goes to
 // its cell.
 function drawLabelTip() {
-  if (!gShowEvents || gMarkerMode || gDragging) return;
+  if (gMarkerMode || gDragging) return;
   const h = labelHit(gMouse.px, gMouse.py);
   if (!h || !h.hiddenText) return;
   ctx.font = "600 11px 'Segoe UI', sans-serif";
@@ -4424,11 +4440,25 @@ function drawEventMarkers(t, r) {
 // there keep theirs -- the ones the tag counts, what the tech is hunting --
 // which also keeps a whole cable cheap to redraw.  A picked
 // trace (click its row) gets the full per-fibre marks on top of the summary.
+//
+// Show Failed Event Labels marks only what fails (Robert 2026-10-01: "Show
+// Event Labels is all and Failed is only failed"; "with failed on we still
+// want all the event numbers").  Every event keeps its file's line and
+// number (see draw); the drawer adds its band, ticks, values and tag on the
+// failed cells only, and a column none of whose fibres fails gets nothing.
 const DRAWER_DETAIL_MAX = 3;       // fibres drawn in full, labels and all
 const DRAWER_TICK_MAX = 24;        // fibres whose every leg keeps a tick
 const DRAWER_LANES = 3;            // rows of tags before a tag shortens
 const DRAWER_COLOR = { fail: '#e74c3c', warn: '#ffeb00', pass: '#2f6fb3', gray: '#8a97a6' };
 let gDrawerMarks = [];             // [{mode, single, have, cols, goCell}], one per table shown
+
+// Whether a cell fails, for Show Failed Event Labels: its Average fails (a
+// one-direction table's own loss).  One direction over the gate on its own
+// does not count: on a cable nearly every splice has a fibre like that, so
+// every event would keep its label.  The tags' FAIL counts the same way.
+function drawerCellFailed(cell) {
+  return !!cell.avgFail;
+}
 
 // One column's summary over its fibres' cells: how many, how many fail or
 // warn on the Average, the worst Average and which fibre holds it (a failing
@@ -4487,8 +4517,11 @@ function layoutDrawerTags(tags, w, lo, hi, lanes = DRAWER_LANES) {
 }
 
 // Draw the marks of every table in the panel (`sets`, see gDrawerMarks);
-// returns the traces they covered.
-function drawPairing(sets, r) {
+// returns the traces they covered.  `failedOnly` marks only the cells that
+// fail (Show Failed Event Labels); the rest are left to the files' own
+// event numbers.
+function drawPairing(sets, r, failedOnly = false) {
+  const marked = cell => !failedOnly || drawerCellFailed(cell);
   const covered = new Set();
   const colorOf = (fail, warn) => fail ? DRAWER_COLOR.fail : warn ? DRAWER_COLOR.warn : DRAWER_COLOR.pass;
   const yAt = (t, km) => {
@@ -4610,6 +4643,7 @@ function drawPairing(sets, r) {
     // One fibre at one column, in full: band, labeled ticks, its own tag.
     // A one-direction reading's number is on its tag, so its tick is bare.
     const fullCell = (col, cell, many) => {
+      if (!marked(cell)) return;
       const p = D.have[cell.fi];
       const qs = ['a', 'b'].map(w => legAt(p, cell, w)).filter(Boolean);
       const xs = qs.map(q => q.dx);
@@ -4633,10 +4667,14 @@ function drawPairing(sets, r) {
         continue;
       }
       // The column as one: a band over its fibres' readings, their ticks,
-      // one tag.  The picked fibre is drawn in full on top.
+      // one tag.  The picked fibre is drawn in full on top.  With Show
+      // Failed Event Labels only the failing fibres are marked, and a column
+      // with none is skipped; the tag still counts every fibre ("1/24 FAIL").
+      const drawn = col.cells.filter(marked);
+      if (!drawn.length) continue;
       let lo = Infinity, hi = -Infinity;
       const legs = [];
-      for (const cell of col.cells) {
+      for (const cell of drawn) {
         if (cell.fi === pickFi) continue;
         for (const w of ['a', 'b']) {
           const q = legAt(D.have[cell.fi], cell, w);
@@ -7459,8 +7497,10 @@ function spanRow(dir) {
 // FR's Test Parameters and Test Settings, row for row.  Formats are FR's:
 // the boss reads that panel daily, and one that rounds differently is one he
 // has to stop and re-check.  A value the file does not carry prints '---'.
-// IOR is the one row that can be changed here, so it is the input itself.
-function frPanelHtml(p, iorVal) {
+// IOR and Backscatter are the rows that can be changed here, so they are the
+// inputs themselves.  Backscatter goes in 0.1 dB steps: the .sor's own field
+// holds tenths, and FR stores what was typed (-80.5 stays -80.5).
+function frPanelHtml(p, iorVal, bsVal) {
   const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const n = (v, dp, unit) => (v == null || !isFinite(v)) ? '---' : `${(+v).toFixed(dp)}${unit}`;
   const row = (label, val, cls) => `<tr><td>${label}</td><td${cls ? ` class="${cls}"` : ''}>${val}</td></tr>`;
@@ -7476,7 +7516,7 @@ function frPanelHtml(p, iorVal) {
   const splitOn = !!p.splitter_on;
   const settings = [
     ['IOR', `<input type="number" id="edit-ior" step="0.000001" min="1.40" max="1.55" value="${iorVal}" title="type a new IOR to write it into the copies">`],
-    ['Backscatter', n(p.backscatter_db, 2, ' dB')],
+    ['Backscatter', `<input type="number" id="edit-bs" step="0.1" min="-100" max="-40" value="${bsVal}" title="type a new backscatter coefficient (dB) to write it into the copies; every reflectance and the ORL move by the same change, the trace does not"> dB`],
     ['Helix Factor', n(p.helix_pct, 2, ' %')],
     ['Splice Loss Detection Threshold', n(p.splice_thr_db, 3, ' dB')],
     [`<label><input type="checkbox" disabled${splitOn ? ' checked' : ''}> Splitter Loss (SM Only)</label>`,
@@ -7515,13 +7555,16 @@ async function showEditDialog(dir, fiber) {
   // the fallback.  Either way the dialog compares against what it SHOWED.
   const shownIor = (s.panel && s.panel.ior != null) ? s.panel.ior : s.ior;
   const iorVal = shownIor == null ? '' : shownIor.toFixed(s.panel && s.panel.ior != null ? 6 : 5);
+  // Backscatter: FR's float64 Rbs when the panel has it, else the FxdParams one.
+  const shownBs = (s.panel && s.panel.backscatter_db != null) ? s.panel.backscatter_db : s.backscatter;
+  const bsVal = shownBs == null ? '' : shownBs.toFixed(2);
   const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   d.innerHTML = `<h3>Trace Settings: ${arrow}</h3>`
     + `<div class="sub">read from ${esc(s.filename)}${s.editable ? '' : ': <b>' + esc(s.why) + '</b>'}</div>`
     + `<div class="scope"><label><input type="radio" name="edit-scope" value="all" checked> All Fibers in This Folder</label>`
     + `<label><input type="radio" name="edit-scope" value="one"> Only F${fiber}</label></div>`
     + (s.panel
-       ? frPanelHtml(s.panel, iorVal)
+       ? frPanelHtml(s.panel, iorVal, bsVal)
        : `<div class="row"><label>IOR</label><input type="number" id="edit-ior" step="0.00001" min="1.40" max="1.55" value="${iorVal}"></div>`)
     + EDIT_FIELDS.map(([k, label]) =>
         `<div class="row"><label>${label}</label><input type="text" id="edit-${k}" data-key="${k}" value="${esc(ids[k])}"></div>`).join('')
@@ -7537,7 +7580,7 @@ async function showEditDialog(dir, fiber) {
   // change: the writer re-lays the proprietary stream for every field it is
   // handed, and "same text" is still a rewrite.
   if (s.panel) d.classList.add('has-panel');
-  const original = { ior: iorVal === '' ? null : +iorVal, ids };
+  const original = { ior: iorVal === '' ? null : +iorVal, bs: bsVal === '' ? null : +bsVal, ids };
   const fid = d.querySelector('#edit-fiber_id');
   const syncScope = () => {
     const all = d.querySelector('input[name=edit-scope]:checked').value === 'all';
@@ -7583,12 +7626,17 @@ async function submitEdit(dir, fiber, original) {
     fields[inp.dataset.key] = v;
   }
   const iorChanged = ior != null && (original.ior == null || Math.abs(ior - original.ior) > 5e-7);
+  const bsBox = d.querySelector('#edit-bs');
+  const bsTxt = bsBox ? bsBox.value.trim() : '';
+  const bs = bsTxt === '' ? null : Math.round(+bsTxt * 10) / 10;
+  const bsChanged = bs != null && (original.bs == null || Math.abs(bs - original.bs) > 0.04);
   const spanBox = d.querySelector('#edit-span');
   const span = (spanBox && spanBox.checked && gSpanDecl[dir])
     ? { start_km: gSpanDecl[dir].start_km ?? null, end_km: gSpanDecl[dir].end_km ?? null } : {};
   const spanOn = span.start_km != null || span.end_km != null;
-  if (!iorChanged && !Object.keys(fields).length && !spanOn) { err.textContent = 'nothing changed'; return; }
+  if (!iorChanged && !bsChanged && !Object.keys(fields).length && !spanOn) { err.textContent = 'nothing changed'; return; }
   if (ior != null && !(ior >= 1.40 && ior <= 1.55)) { err.textContent = 'IOR must be between 1.40 and 1.55'; return; }
+  if (bsChanged && !(bs >= -100 && bs <= -40)) { err.textContent = 'Backscatter must be between -100 and -40 dB'; return; }
   err.textContent = '';
   d.querySelector('#edit-save').disabled = true;
   let j;
@@ -7596,6 +7644,7 @@ async function submitEdit(dir, fiber, original) {
     const r = await fetch('/api/trace_edit', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ dir, fibers: all ? 'all' : [+fiber], ior: iorChanged ? ior : null,
+                             backscatter: bsChanged ? bs : null,
                              fields, span, dest_name: d.querySelector('#edit-dest').value }),
     });
     j = await r.json();
@@ -8888,7 +8937,7 @@ canvas.addEventListener('mousedown', (ev) => {
   }
   // An event number is a link to its row in the table: pressing on one
   // does not start a pan.
-  if (!gMarkerMode && gShowEvents) {
+  if (!gMarkerMode) {
     const lh = labelHit(ev.offsetX, ev.offsetY);
     if (lh) { gLabelClick = { hit: lh, x: ev.offsetX, y: ev.offsetY }; return; }
   }
@@ -8937,7 +8986,7 @@ canvas.addEventListener('mousemove', (ev) => {
   }
   // The trace under the cursor, for the hover box: the nearest one, none
   // while dragging, and none over an event number (a link of its own).
-  const overLabel = gShowEvents && !gMarkerMode && labelHit(ev.offsetX, ev.offsetY);
+  const overLabel = !gMarkerMode && labelHit(ev.offsetX, ev.offsetY);
   const near = (gDragging || gLabelClick || overLabel) ? []
     : traceHits(ev.offsetX, ev.offsetY, plotRect());
   gHoverKey = near.length ? near[0].t.key : null;
@@ -9023,7 +9072,6 @@ canvas.addEventListener('dblclick', () => { if (!gMarkerMode) fit(); });
 // the same menu a right-click on the grid cell opens, fed the same way (the
 // trace names the direction, the event its own raw km).
 canvas.addEventListener('contextmenu', (ev) => {
-  if (!gShowEvents) return;
   const lh = labelHit(ev.offsetX, ev.offsetY);
   if (!lh || !lh.t) return;          // a tag or a filled-in leg is no event
   ev.preventDefault();
@@ -9077,13 +9125,23 @@ document.getElementById('btn-zoom-out').onclick = () => { const r = plotRect(); 
 document.getElementById('btn-markers').onclick = toggleMarkerMode;
 document.getElementById('btn-markers-clear').onclick = clearMarkers;
 document.getElementById('btn-report').onclick = showReportDialog;
-// Not counted on the gear, like the pin: it hides nothing in the table.
-document.getElementById('set-event-labels').checked = gShowEvents;
-document.getElementById('set-event-labels').onchange = (e) => {
-  gShowEvents = e.target.checked;
-  try { localStorage.setItem('otdr_viewer_event_labels', gShowEvents ? '1' : '0'); } catch (e2) {}
+// Not counted on the gear, like the pin: they hide nothing in the table.
+// One or the other: ticking one unticks the other.
+function setEventLabels(all, failed) {
+  gShowEvents = all;
+  gShowFailedLabels = failed && !all;
+  document.getElementById('set-event-labels').checked = gShowEvents;
+  document.getElementById('set-failed-labels').checked = gShowFailedLabels;
+  try {
+    localStorage.setItem('otdr_viewer_event_labels', gShowEvents ? '1' : '0');
+    localStorage.setItem('otdr_viewer_failed_labels', gShowFailedLabels ? '1' : '0');
+  } catch (e2) {}
   draw();
-};
+}
+document.getElementById('set-event-labels').checked = gShowEvents;
+document.getElementById('set-failed-labels').checked = gShowFailedLabels;
+document.getElementById('set-event-labels').onchange = (e) => setEventLabels(e.target.checked, false);
+document.getElementById('set-failed-labels').onchange = (e) => setEventLabels(false, e.target.checked);
 document.getElementById('cb-colors').checked = gFiberColors;
 document.getElementById('cb-colors').onchange = (e) => setFiberColors(e.target.checked);
 document.getElementById('set-failcells').checked = gFailCellsOnly;

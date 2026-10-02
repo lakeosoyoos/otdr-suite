@@ -160,7 +160,7 @@ def dest(tmp_path, monkeypatch):
 
 def _hub(a='', b=''):
     at = run_streamlit(default_timeout=180).run()
-    for label, v in (('A folder', a), ('B folder', b)):
+    for label, v in (('A Folder', a), ('B Folder', b)):
         if v:
             next(t for t in at.sidebar.text_input if t.label == label).input(v).run()
     assert not at.exception, at.exception
@@ -192,8 +192,8 @@ def _splice_report(at, dest):
 
 def test_hub_splice_report_from_typed_sites_at_the_tuned_gate(dest):
     at = _open(_hub(A, B), 'Splice Report')
-    _box(at, 'A-direction ILA / site').input('SITE/A').run()
-    _box(at, 'B-direction ILA / site').input('SITEB').run()
+    _box(at, 'A-Direction ILA / Site').input('SITE/A').run()
+    _box(at, 'B-Direction ILA / Site').input('SITEB').run()
     tuned = copy.deepcopy(at.session_state['otdr_settings'])
     tuned['bidir_splice_loss']['fail'] = 0.12
     at.session_state['otdr_settings'] = tuned
@@ -208,11 +208,11 @@ def test_hub_splice_report_in_fr_mode_from_the_stored_sites(dest):
     at = _hub(A, B)
     at.session_state['analysis_mode'] = 'fr'
     _open(at, 'Splice Report')
-    stored = (_box(at, 'A-direction ILA / site').value,
-              _box(at, 'B-direction ILA / site').value)
+    stored = (_box(at, 'A-Direction ILA / Site').value,
+              _box(at, 'B-Direction ILA / Site').value)
     assert all(stored) and stored != ('A', 'B')
-    _box(at, 'A-direction ILA / site').input('').run()
-    _box(at, 'B-direction ILA / site').input('').run()
+    _box(at, 'A-Direction ILA / Site').input('').run()
+    _box(at, 'B-Direction ILA / Site').input('').run()
     res = _splice_report(at, dest)
     want = f'{stored[0]}_to_{stored[1]}_SpliceReport_FR_0.160.xlsx'
     assert _saved(dest) == [want]
@@ -221,11 +221,11 @@ def test_hub_splice_report_in_fr_mode_from_the_stored_sites(dest):
 
 def test_hub_unidirectional_b_run_is_named_in_the_shots_direction(dest):
     at = _open(_hub(B), 'Unidirectional')
-    a_end, b_end = _box(at, 'A-End site').value, _box(at, 'B-End site').value
+    a_end, b_end = _box(at, 'A-End Site').value, _box(at, 'B-End Site').value
     at.session_state['uni_report_dest'] = dest
     at.run()
     next(b for b in at.main.button
-         if b.label == 'Run unidirectional report').click().run()
+         if b.label == 'Run Unidirectional Report').click().run()
     finish_engine_run(at, 'uni')
     assert not at.exception, at.exception
     res = at.session_state['uni_result']

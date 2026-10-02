@@ -58,8 +58,8 @@ def _drop_three_and_three():
 @pytest.mark.parametrize('page', ['Splice Report', 'Unidirectional', 'Viewer'])
 def test_a_drop_then_a_tool_click_loads_the_dropped_folders(page):
     at = run_streamlit().run()
-    _box(at, 'A folder').input(X_A).run()
-    _box(at, 'B folder').input(X_B).run()
+    _box(at, 'A Folder').input(X_A).run()
+    _box(at, 'B Folder').input(X_B).run()
     assert not at.exception, at.exception
     assert (TS.CONFIG['dir_a'], TS.CONFIG['dir_b']) == (X_A, X_B)
 
@@ -70,15 +70,15 @@ def test_a_drop_then_a_tool_click_loads_the_dropped_folders(page):
     at.sidebar.radio[0].set_value(page).run()
     assert not at.exception, at.exception
     # The boxes name what was dropped, never the staging folder (#31)...
-    assert _box(at, 'A folder').value == _shown(y_a)
-    assert _box(at, 'B folder').value == _shown(y_b)
+    assert _box(at, 'A Folder').value == _shown(y_a)
+    assert _box(at, 'B Folder').value == _shown(y_b)
     # ...and stand for the staged folders, which the tools run on.
     assert (TS.CONFIG['dir_a'], TS.CONFIG['dir_b']) == (y_a, y_b)
     assert at.session_state['_drop_box_a'] == (_shown(y_a), y_a)
     assert at.session_state['_drop_box_b'] == (_shown(y_b), y_b)
     # ...and a hub rerun does not put the old paths back.
     at.run()
-    assert (_box(at, 'A folder').value, _box(at, 'B folder').value) == (_shown(y_a), _shown(y_b))
+    assert (_box(at, 'A Folder').value, _box(at, 'B Folder').value) == (_shown(y_a), _shown(y_b))
     assert (TS.CONFIG['dir_a'], TS.CONFIG['dir_b']) == (y_a, y_b)
 
 
@@ -86,10 +86,10 @@ def test_a_drop_is_taken_once_so_a_later_pick_stands():
     at = run_streamlit().run()
     y_a, y_b = _drop_three_and_three()
     at.sidebar.radio[0].set_value('Splice Report').run()
-    assert _box(at, 'A folder').value == _shown(y_a)
+    assert _box(at, 'A Folder').value == _shown(y_a)
     assert TS.CONFIG['dir_a'] == y_a
-    _box(at, 'A folder').input(X_A).run()
-    _box(at, 'B folder').input(X_B).run()
+    _box(at, 'A Folder').input(X_A).run()
+    _box(at, 'B Folder').input(X_B).run()
     at.run()
     assert not at.exception, at.exception
-    assert (_box(at, 'A folder').value, _box(at, 'B folder').value) == (X_A, X_B)
+    assert (_box(at, 'A Folder').value, _box(at, 'B Folder').value) == (X_A, X_B)

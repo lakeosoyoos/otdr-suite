@@ -5,7 +5,7 @@ draw (test_sr_settings_down_blocks_report).  The Unidirectional page reads the
 same box (three of its rows reach the Uni engine) plus its own Unidirectional
 settings panel, and it used to warn "running with default thresholds" and run.
 Now a failure of ANY of the three (the threshold table, the Connector &
-Launch knobs, Uni's own panel) turns "Run unidirectional report" off, says why
+Launch knobs, Uni's own panel) turns "Run Unidirectional Report" off, says why
 right above the button, and says what to do.  A click made while the
 settings were up, landing on the failed run, starts nothing.  The Viewer
 runs no report and is not blocked: only that is pinned here, because what
@@ -21,7 +21,7 @@ import pytest
 
 from conftest import FIXTURE_SPLICE_A_DIR, run_streamlit
 
-RUN = "Run unidirectional report"
+RUN = "Run Unidirectional Report"
 BLOCK_TEXT = "The settings did not load completely, so Run is turned off"
 POLICY_BLOCK = ("DLL load failed while importing indexers: "
                 "An Application Control policy has blocked this file.")

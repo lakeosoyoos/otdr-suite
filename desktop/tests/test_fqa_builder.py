@@ -821,7 +821,7 @@ def test_app_starts_and_asks_for_a_production_sheet(tmp_path):
     # Drag-and-drop / Browse is the front door; the path box is the
     # way round the browser for the 250 MB sheets.
     assert len(at.get('file_uploader')) == 1
-    assert at.text_input[0].label == 'Production sheet path'
+    assert at.text_input[0].label == 'Production Sheet Path'
 
 
 def test_app_reads_a_sheet_and_prefills_the_job(production_sheet, tmp_path):
@@ -830,8 +830,8 @@ def test_app_reads_a_sheet_and_prefills_the_job(production_sheet, tmp_path):
     assert not at.exception
     assert any('14 locations' in s.value for s in at.success)
     labels = {t.label: t.value for t in at.text_input}
-    assert labels['A alias'] == 'Flagler'
-    assert labels['Z alias'] == 'Bethune'
+    assert labels['A Alias'] == 'Flagler'
+    assert labels['Z Alias'] == 'Bethune'
     assert labels['Aisle'] == '100'          # first Aisle box is Site A's
 
 
@@ -866,8 +866,8 @@ def test_app_builds_a_package_from_pasted_distances(production_sheet, tmp_path):
     out_dir = tmp_path / 'out'
     out_dir.mkdir()
     by_label = {t.label: t for t in at.text_input}
-    by_label['Save to'].set_value(str(out_dir))
-    by_label['File name'].set_value('built.xlsm')
+    by_label['Save To'].set_value(str(out_dir))
+    by_label['File Name'].set_value('built.xlsm')
     at.text_area[0].set_value(' '.join(str(d) for d in SPAN4_CLOSURES))
     at.text_area[1].set_value('195, 6, .162 REBURNED 3 TIMES')
     at.number_input[0].set_value(SPAN4_LENGTH_M)     # span length
@@ -1249,7 +1249,7 @@ def test_the_calibration_date_starts_empty_not_today(production_sheet, tmp_path)
     at = _fqa_app(tmp_path).run()
     at.text_input[0].set_value(production_sheet).run()
     cal = next(d for d in at.date_input
-               if d.label == 'Test-equipment calibration')
+               if d.label == 'Test-Equipment Calibration')
     assert cal.value is None
     # ...and the completeness table says so.  The page draws several
     # tables; the blocking one is the table with a 'Missing' column.

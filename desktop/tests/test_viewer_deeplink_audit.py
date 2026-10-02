@@ -54,7 +54,7 @@ def test_cell_links_drive_popout_viewer():
     assert s.count('_render_clickable_grid(') == 3      # def + 2 guarded calls
     # Both entry points open the SAME named window (one Viewer, not two).
     assert s.count('"otdr_viewer"') == 2
-    assert 'Open Viewer in its own window' in s         # Viewer-page pop-out
+    assert 'Open Viewer in Its Own Window' in s         # Viewer-page pop-out
     # Secret Sauce pair deep-link path stays (separate from the grids).
     assert '?nav=viewer&fibers=' in s
 

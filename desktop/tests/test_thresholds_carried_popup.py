@@ -142,7 +142,9 @@ def test_the_pop_up_names_the_selected_profile(which):
     box = lines[1]
     assert box.startswith('<div style="background:#e7f5ea;border:1px solid #9fd3aa;')
     assert f"Customer Profile: <span" in box
-    assert box.endswith(f">{html.escape(picked)}</span></div>")
+    # The two built-in profiles print in Title Case; customer names as stored.
+    shown = {DEFAULT: "Default (Engine Baseline)"}.get(picked, picked)
+    assert box.endswith(f">{html.escape(shown)}</span></div>")
 
 
 def test_secret_sauce_gets_no_popup_and_the_way_back_asks():
