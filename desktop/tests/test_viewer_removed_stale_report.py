@@ -74,7 +74,7 @@ def test_a_remove_after_the_run_says_the_report_is_out_of_date():
 
 
 def test_every_report_records_its_removed_set_when_its_run_starts():
-    assert "'removed': _removed_now(_da, _db)," in APP
+    assert "'removed': _removed_now(_da, _db)})" in APP
     assert "manifest['_viewer_removed'] = _run.get('removed')" in APP
     assert "st.session_state['uni_run_removed'] = _removed_now(folder)" in APP
     assert "manifest['_viewer_removed'] = st.session_state.pop('uni_run_removed', None)" in APP

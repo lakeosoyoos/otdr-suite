@@ -7319,16 +7319,16 @@ def page_splice_report():
             used_names.add(_name)
             out_xlsx = _unused_report_path(os.path.join(_sr_dest, _name),
                                            [q['out'] for q in queue])
-            # The files removed in the Viewer that this run leaves out, for
-            # the note over the report it makes (_viewer_removed_report_note).
             queue.append({'span': _n, 'dirs': (_da, _db), 'out': out_xlsx,
-                          'removed': _removed_now(_da, _db),
                           'cmd': splicereport_cmd(_run_folder(_da), _run_folder(_db),
                                                   out_xlsx, _sa, _sb,
                                                   contract=_contract,
                                                   overrides=overrides,
                                                   show=sr_show,
-                                                  viewer_table=_viewer_table_path(_da, _db))})
+                                                  viewer_table=_viewer_table_path(_da, _db)),
+                          # The files removed in the Viewer this run leaves
+                          # out, for the note over its report.
+                          'removed': _removed_now(_da, _db)})
         st.session_state[f'{_p}_queue'] = queue
         for _n in range(1, SR_MAX_SPANS + 1):
             _rk, _dk = _sr_result_slot(_p, _n)
