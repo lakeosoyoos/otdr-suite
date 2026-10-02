@@ -3606,14 +3606,38 @@ def page_viewer(fec=False):
         st.button('← Back to Unidirectional', key='view_back_uni',
                   on_click=_back_to_uni)
 
+    # No "Trace Viewer" heading: the sidebar already says where you are
+    # (Robert 2026-10-01), and it pushed the Viewer further down the page.
+    # The Viewer FEC page keeps its heading, at half the old size (Robert
+    # 2026-10-01: 0.75rem, the #### was 1.5rem), and its line on FEC mode.
     if fec:
-        st.markdown('#### Viewer FEC')
+        st.markdown('<p style="font-size:0.75rem;font-weight:600;margin:0">'
+                    'Viewer FEC</p>', unsafe_allow_html=True)
         st.caption('Facility entrance (FEC) shots: the short traces from '
                    'each end. A and B are drawn as shot and never paired; '
                    'each trace’s panel connector is graded at the customer '
                    'profile’s FEC gates, as Splice Report FEC does.')
-    else:
-        st.markdown('#### Trace Viewer')
+    # Pop the Viewer into its own window from HERE too — a tech who came to
+    # the Viewer page first (rather than clicking a report cell) had no way
+    # to detach it.  Same window NAME as the report grids' button, so the two
+    # entry points share ONE window: opening from here and then clicking
+    # report cells drives this same window instead of spawning a second.
+    # From Viewer FEC it opens in FEC mode (?fec=1).
+    _pop_doc = """
+<style>body{margin:0;padding:3px 0}</style>
+<button id="vpop2" style="padding:4px 10px;border:1px solid #c9d5e1;border-radius:4px;
+    background:#eef3f8;cursor:pointer;font-weight:600;color:#000000;white-space:nowrap;
+    font-family:sans-serif;font-size:13px"
+    title="Keeps this page free for the report. Report cell clicks drive the same window."
+    >&#8862; Open Viewer in Its Own Window</button>
+<script>
+try { window.top.name = "otdr_hub"; } catch (e) {}
+document.getElementById("vpop2").addEventListener("click", function(){
+  var w = window.open("__ORIGIN__/__POPQ__", "otdr_viewer", "width=1400,height=900");
+  if (w) w.focus();
+});
+</script>
+""".replace('__ORIGIN__', f'http://127.0.0.1:{port}').replace('__POPQ__', '?fec=1' if fec else '')
     # The OTDR Settings, same box as the report pages and sharing their
     # values (Robert 2026-09-28).  With no report behind it the Viewer judges
     # pass/fail at these and runs its own report with them; a report on
@@ -3624,41 +3648,29 @@ def page_viewer(fec=False):
     # Streamlit rebuilt it: the Viewer reloaded and the tech lost every
     # trace they had loaded and highlighted (Robert 2026-09-29: "keep traces
     # highlighted if changing setting as long as you don't leave viewer").
+    # One row for the profile dropdown and the pop-out button, and the line
+    # that explained the button is its tooltip now (window-size audit
+    # 2026-10-01): the heading, the dropdown, the button and its line took
+    # 432 px above the Viewer, so a 1366 x 768 laptop showed only the
+    # toolbar and the top of the chart; and under ~1030 px the line wrapped
+    # and its second half was cut off in the button's 42 px frame.
     with st.container():
-        _render_profile_picker_box('viewer')
+        with st.container(horizontal=True, vertical_alignment='center', gap='medium'):
+            _render_profile_picker_box('viewer', compact=True)
+            st_components_html(theme_recolor(_pop_doc), height=36, width=270)
         _viewer_box_exc = _render_settings_box('viewer')
         if _viewer_box_exc is None and trace_server.settings_differ_from_report():
             st.caption('Pass/fail in the Viewer follows the Splice Report on '
                        'screen, at the settings it ran with. Generate the report '
                        'again to judge by the settings above.')
-    # Pop the Viewer into its own window from HERE too — a tech who came to
-    # the Viewer page first (rather than clicking a report cell) had no way
-    # to detach it.  Same window NAME as the report grids' button, so the two
-    # entry points share ONE window: opening from here and then clicking
-    # report cells drives this same window instead of spawning a second.
-    _pop_doc = """
-<button id="vpop2" style="padding:4px 10px;border:1px solid #c9d5e1;border-radius:4px;
-    background:#eef3f8;cursor:pointer;font-weight:600;color:#000000;
-    font-family:sans-serif;font-size:13px">&#8862; Open Viewer in Its Own Window</button>
-<span style="margin-left:8px;font-size:11px;color:#000000;font-family:sans-serif">
-    keeps this page free for the report &middot; report cell clicks drive the same window</span>
-<script>
-try { window.top.name = "otdr_hub"; } catch (e) {}
-document.getElementById("vpop2").addEventListener("click", function(){
-  var w = window.open("__ORIGIN__/__POPQ__", "otdr_viewer", "width=1400,height=900");
-  if (w) w.focus();
-});
-</script>
-""".replace('__ORIGIN__', f'http://127.0.0.1:{port}').replace('__POPQ__', '?fec=1' if fec else '')
-    st_components_html(theme_recolor(_pop_doc), height=42)
     # The note above the frame keeps ONE slot whether it shows or not:
-    # Streamlit places the frame by its position on the page, so this note
+    # Streamlit places the frame by its position on the page, so a note
     # going away after the first drop moved the frame up a place and rebuilt
-    # it, and the Viewer lost the traces it had just loaded.
+    # it, and the Viewer lost the traces it had just loaded.  The blue "Pick
+    # an A and/or B folder" box that sat here is gone (Robert 2026-10-01): the
+    # Viewer's own Files panel says where to drop them.  The slot stays for
+    # the one-shot jump captions below.
     _note = st.empty()
-    if not dir_a and not dir_b:
-        _note.info('Pick an A and/or B folder of OTDR `.sor` / `.json` / `.trc` files in the '
-                'sidebar, then type fiber numbers in the viewer to plot them.')
     # Embed the canvas viewer.  Cache-bust on folder change so the iframe
     # re-reads /api/list.  A deep-link target is appended so the viewer
     # auto-loads:  a single fiber + km (Splice Report cell), OR a pair of
@@ -5210,7 +5222,7 @@ def _overrides_from_settings(otdr_settings):
     return out
 
 
-def _render_customer_profile_picker():
+def _render_customer_profile_picker(compact=False):
     """The Customer profile dropdown, on its own above the A/B boxes.
 
     Robert, 2026-09-16: a tech chooses default or customer settings BEFORE
@@ -5218,6 +5230,10 @@ def _render_customer_profile_picker():
     (which stays where it is, below); the dropdown alone moved up.  Same
     state, same reload-on-change: session_state.otdr_profile drives the
     settings table and the connector knobs exactly as before.
+
+    `compact` (the Viewer page, window-size audit 2026-10-01): the heading
+    becomes a bold label beside the dropdown, in the row the caller set up,
+    so the Viewer frame starts higher up the page.
     """
     # Initialise persisted settings + active profile on first run.
     if 'otdr_profile' not in st.session_state:
@@ -5229,11 +5245,15 @@ def _render_customer_profile_picker():
     # Robert, 2026-09-24: more prominent -- larger letters, and only as wide
     # as the longest name instead of the full page width.  The CSS is
     # scoped to this one widget by its key class.
-    st.markdown('#### Select Customer Profile')
-    st.markdown(
-        '<style>.st-key-otdr_profile_select div[data-baseweb="select"] '
-        '{font-size:1.2rem;font-weight:600;}</style>',
-        unsafe_allow_html=True)
+    _big = ('<style>.st-key-otdr_profile_select div[data-baseweb="select"] '
+            '{font-size:1.2rem;font-weight:600;}</style>')
+    if compact:
+        # One element: a style of its own in the Viewer's row took a gap there.
+        st.markdown('**Customer profile**' + _big, unsafe_allow_html=True,
+                    width='content')
+    else:
+        st.markdown('#### Select Customer Profile')
+        st.markdown(_big, unsafe_allow_html=True)
     _profile_names = list(CUSTOMER_PROFILES.keys())
     # ~11 px a character at 1.2rem semibold, plus the arrow and padding.
     _profile_w = min(700, 11 * max(len(n) for n in _profile_names) + 70)
@@ -5523,11 +5543,11 @@ def _uni_overrides_from_settings(otdr_settings):
     return out
 
 
-def _render_profile_picker_box(where):
+def _render_profile_picker_box(where, compact=False):
     """The Customer profile dropdown, guarded: a failure here must not take
     the page down, and the tool runs with the default profile."""
     try:
-        _render_customer_profile_picker()
+        _render_customer_profile_picker(compact)
     except Exception as _exc:
         st.warning('Customer profile picker unavailable, running with the '
                    'default profile. (Details sent to support.)')
