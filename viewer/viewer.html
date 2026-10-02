@@ -47,9 +47,41 @@
     padding: 8px 12px;
     background: var(--panel);
     border-bottom: 1px solid var(--border);
-    flex-wrap: wrap;
+    /* One row at every width, as tall as the Fibers box (Robert
+       2026-10-01: "never make it go two rows tall").  What does not fit
+       is clipped in #tb-strip, not wrapped. */
+    flex-wrap: nowrap; white-space: nowrap;
     flex-shrink: 0;
   }
+  #toolbar .group { flex-shrink: 0; }
+  #tb-strip { flex: 1 1 auto; min-width: 0; display: flex; align-items: center;
+              position: relative; }
+  #tb-scroll { flex: 1 1 auto; min-width: 0; display: flex; align-items: center;
+               gap: 6px; overflow: hidden; }
+  /* Clipped: the cut edge fades out and a » / « button sits on it. */
+  #tb-strip.more-r #tb-scroll {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+            mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); }
+  #tb-strip.more-l #tb-scroll {
+    -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 36px), transparent);
+            mask-image: linear-gradient(to left, #000 calc(100% - 36px), transparent); }
+  #tb-strip.more-l.more-r #tb-scroll {
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent);
+            mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent); }
+  #toolbar .tb-more { flex-shrink: 0; padding: 4px 6px; font-weight: 700; }
+  #toolbar.collapsed #tb-strip .tb-more { display: none; }
+  #tb-scroll .group:first-of-type { border-left: 1px solid var(--border); padding-left: 6px; }
+  #tb-right { margin-left: auto; }
+  #tb-gear { font-size: 16px; line-height: 1; padding: 3px 7px; }
+  /* Fixed, not absolute: the toolbar clips its overflow. */
+  #tb-gear-menu {
+    position: fixed; z-index: 50; display: flex; flex-direction: column; gap: 6px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 5px;
+    box-shadow: 0 3px 10px rgba(0,0,0,.15); padding: 8px 10px;
+  }
+  #tb-gear-menu[hidden] { display: none; }
+  #tb-gear-menu label { display: flex; gap: 5px; align-items: center; color: var(--text);
+                        cursor: pointer; }
   /* The toolbar folds away (the boss: "minimize so we don't see all the
      settings and toggles").  The bar under it is the handle: drag it up to
      fold, down to unfold, double-click to toggle.  Folded, only the Back button
@@ -89,7 +121,10 @@
   #toolbar button { padding: 4px 7px; }
   #toolbar .seg button { padding: 4px 8px; }
   #toolbar .group > label[style] { margin-left: 4px !important; }
-  #toolbar #fiber-input { width: 150px; }
+  /* Narrower (Robert 2026-10-01): fits '64, 67, 169-180'.  Grayed with no
+     files, it widens to fit its longer example. */
+  #toolbar #fiber-input { width: 110px; }
+  #toolbar #fiber-input:disabled { width: 140px; }
   label { color: var(--text-sec); font-size: 12px; }
   input[type=text], input[type=number] {
     background: #ffffff; color: var(--text);
@@ -741,6 +776,13 @@
     <input type="text" id="fiber-input" placeholder="64, 67, 169-180" autocomplete="off">
   </div>
 
+  <!-- One row, never two (Robert 2026-10-01): a narrow window clips this
+       strip at its right edge, fades it, and shows the » button; click it
+       (or the mouse wheel over the strip) to slide the rest into view. -->
+  <div id="tb-strip">
+  <button id="tb-more-l" class="tb-more" type="button" hidden
+          title="More controls to the left">&laquo;</button>
+  <div id="tb-scroll">
   <div class="group">
     <label>Dir:</label>
     <div class="seg" id="dir-seg">
@@ -758,20 +800,30 @@
     <button id="btn-fit-y" title="Fit Y: dB axis to the visible distance window (keep distance zoom)">Fit Y</button>
     <button id="btn-zoom-in" title="Zoom in (+)">+</button>
     <button id="btn-zoom-out" title="Zoom out (−)">&minus;</button>
-    <label style="margin-left:8px;"><input type="checkbox" id="cb-stack" checked> Stack A/B</label>
-    <label id="lbl-yspace" style="margin-left:6px;"
-           title="Y Spacing: push the B traces down this many dB so they do not overlap. 0 = FastReporter's default, one true common dB scale.">Y
-      Spacing: <input type="number" id="num-yspace" value="0" step="1" min="0" max="60"> dB</label>
-    <label style="margin-left:8px;" title="On: TIA-598 fiber colors by ribbon position. Off: FastReporter's scheme, A blue and B dark gray."><input type="checkbox" id="cb-colors" checked> Fiber Colors</label>
   </div>
 
   <div class="group">
     <button id="btn-markers" title="A/B measurement markers (m)">A/B Markers</button>
     <button id="btn-markers-clear" title="Clear markers">Clear M</button>
   </div>
+  </div>
+  <button id="tb-more" class="tb-more" type="button" hidden
+          title="More controls to the right">&raquo;</button>
+  </div>
 
-  <div class="group">
+  <!-- Summary Report, then the chart's settings behind the gear, at the
+       bar's right end (Robert 2026-10-01). -->
+  <div class="group" id="tb-right">
     <button id="btn-report" title="Summary Report: the event table, then a page per fiber, as a PDF or an Excel workbook">Summary Report…</button>
+    <button id="tb-gear" type="button" title="Chart settings"
+            aria-haspopup="true" aria-expanded="false">&#9881;</button>
+    <span id="tb-gear-menu" role="menu" hidden>
+      <label><input type="checkbox" id="cb-stack" checked> Stack A/B</label>
+      <label id="lbl-yspace"
+             title="Y Spacing: push the B traces down this many dB so they do not overlap. 0 = FastReporter's default, one true common dB scale.">Y
+        Spacing: <input type="number" id="num-yspace" value="0" step="1" min="0" max="60"> dB</label>
+      <label title="On: TIA-598 fiber colors by ribbon position. Off: FastReporter's scheme, A blue and B dark gray."><input type="checkbox" id="cb-colors" checked> Fiber Colors</label>
+    </span>
   </div>
 </div>
 <div id="toolbar-resizer" title="Drag up to hide the settings and toggles, down to show them; double-click to toggle"></div>
@@ -1325,6 +1377,62 @@ function setToolbarCollapsed(on) {
   bar.addEventListener('dblclick', () => setToolbarCollapsed(!toolbarCollapsed()));
   document.getElementById('toolbar-show').addEventListener('click', () => setToolbarCollapsed(false));
 })();
+// ─── Toolbar: one row ─────────────────────────────────────────────────
+// The middle strip clips instead of wrapping.  While anything is cut off,
+// its edge fades and a » (or «) button sits on it; the button, or the mouse
+// wheel over the strip, slides the hidden controls into view.
+(function () {
+  const strip = document.getElementById('tb-strip');
+  const box = document.getElementById('tb-scroll');
+  const more = document.getElementById('tb-more');
+  const less = document.getElementById('tb-more-l');
+  function sync() {
+    const max = box.scrollWidth - box.clientWidth;
+    const r = max > 1 && box.scrollLeft < max - 1;
+    const l = max > 1 && box.scrollLeft > 1;
+    strip.classList.toggle('more-r', r);
+    strip.classList.toggle('more-l', l);
+    more.hidden = !r;
+    less.hidden = !l;
+  }
+  more.addEventListener('click', () => { box.scrollLeft = box.scrollWidth; });
+  less.addEventListener('click', () => { box.scrollLeft = 0; });
+  box.addEventListener('wheel', (e) => {
+    if (box.scrollWidth <= box.clientWidth) return;
+    box.scrollLeft += Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    e.preventDefault();
+  }, { passive: false });
+  box.addEventListener('scroll', sync);
+  window.addEventListener('resize', sync);
+  if (window.ResizeObserver) new ResizeObserver(sync).observe(box);
+  sync();
+})();
+
+// The gear at the bar's right end: Stack A/B, Y Spacing, Fiber Colors.
+// A click anywhere else or Escape shuts it.
+function setTbGearMenu(open) {
+  const btn = document.getElementById('tb-gear');
+  const menu = document.getElementById('tb-gear-menu');
+  menu.hidden = !open;
+  if (open) {
+    const r = btn.getBoundingClientRect();
+    menu.style.top = (r.bottom + 3) + 'px';
+    menu.style.left = Math.max(4, Math.min(r.right - menu.offsetWidth,
+                                           window.innerWidth - 4 - menu.offsetWidth)) + 'px';
+  }
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+document.getElementById('tb-gear').addEventListener('click', (e) => {
+  e.stopPropagation();
+  setTbGearMenu(document.getElementById('tb-gear-menu').hidden);
+});
+document.addEventListener('mousedown', (e) => {
+  const menu = document.getElementById('tb-gear-menu');
+  if (!menu.hidden && !menu.contains(e.target)
+      && !document.getElementById('tb-gear').contains(e.target)) setTbGearMenu(false);
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setTbGearMenu(false); });
+
 // The Viewer always opens with the toolbar showing (Robert: "dont auto hide
 // the top bar").  A fold from an earlier visit is not brought back.
 try { localStorage.removeItem(TOOLBAR_KEY); } catch (e) {}
