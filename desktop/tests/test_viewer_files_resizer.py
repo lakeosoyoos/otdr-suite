@@ -23,6 +23,7 @@ def test_drag_resizes_clamped_remembered_and_double_click_resets():
     assert "const KEY   = 'viewer.filesPanelWidth';" in fn
     assert "apply(startW + (startX - ev.clientX));" in fn
     assert "Math.max(MIN_PANEL, Math.min(w, Math.max(MIN_PANEL, max)))" in fn
-    assert "localStorage.setItem(KEY, String(panel.offsetWidth));" in fn
+    assert "want = panel.offsetWidth;" in fn
+    assert "localStorage.setItem(KEY, String(want));" in fn
     assert "bar.addEventListener('dblclick'" in fn
     assert "resizeCanvas();" in fn
