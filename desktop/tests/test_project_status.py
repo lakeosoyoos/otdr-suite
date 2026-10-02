@@ -398,7 +398,7 @@ def test_status_page_in_a_project_shows_the_four_sections(settings_dir, span_dir
     at = run_streamlit().run()
     next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
     at.text_input(key="home_folder").set_value(str(span_dir)).run()
-    next(b for b in at.button if b.label == "Open this folder").click().run()
+    next(b for b in at.button if b.label == "Open This Folder").click().run()
     assert not at.exception, list(at.exception)
     text = " ".join(m.value for m in at.markdown)
     for title in ("1 · Site Survey Data", "2 · FAT", "3 · Event Log", "4 · Data Files"):
@@ -635,7 +635,7 @@ def test_project_widgets_take_a_second_click(settings_dir, span_dir, monkeypatch
     at = run_streamlit().run()
     next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
     at.text_input(key="home_folder").set_value(str(span_dir)).run()
-    next(b for b in at.button if b.label == "Open this folder").click().run()
+    next(b for b in at.button if b.label == "Open This Folder").click().run()
     for lab in ("", "reshoot"):
         at.text_input(key="ps_tr_a").set_value(str(span_dir / "A")).run()
         at.text_input(key="ps_tr_b").set_value(str(span_dir / "B")).run()

@@ -3870,7 +3870,7 @@ def _render_sample_photos_box():
     with st.expander('Sample Span Photos'):
         st.caption('The Sample Span shows drawn photos. If you were sent the real ones '
                    'as a .zip, add it here. They stay on this computer.')
-        up = st.file_uploader('Sample photos (.zip)', type=['zip'],
+        up = st.file_uploader('Sample Photos (.zip)', type=['zip'],
                               key='home_sample_photos', label_visibility='collapsed')
         if up is None:
             return
@@ -11423,7 +11423,7 @@ def _render_phone_job(prod, job_id, work, kp='ps'):
         # An unsent .eml, not a mailto: link -- a long span's job link runs past
         # the ~2,000 characters a mailto: survives on Windows.  Outlook opens a
         # draft marked X-Unsent as a new message, ready to address and send.
-        if st.button('✉️ Email the link to the tech', key=f'{kp}_job_email', type='primary'):
+        if st.button('✉️ Email the Link to the Tech', key=f'{kp}_job_email', type='primary'):
             try:
                 eml = write_job_email(work, subject, body)
                 from fieldcapture.email_draft import open_with_default_app
@@ -11638,7 +11638,7 @@ def _render_audit(work):
                                       for i in open_items if audit_key(i) in skipped))
             c1, c2 = st.columns(2)
             if skipped:
-                c1.button('Go through the skipped ones again', key='aud_again')
+                c1.button('Go Through the Skipped Ones Again', key='aud_again')
             c2.button('Finish', key='aud_finish', type='primary')
         return
 
@@ -11674,29 +11674,29 @@ def _render_audit(work):
                 else:
                     _bind(key, str(cur or ''), (work, k))
                     vals[path] = col.text_input(label, key=key)
-            st.button('Save and continue', key='aud_save', type='primary')
+            st.button('Save and Continue', key='aud_save', type='primary')
         elif 'photos' in n or 'labels match' in n or 'GPS' in n:
             if _drop_into('Save what the phone sent (capture package, workbook)',
                           'aud_drop_field', 'field', ['zip', 'xlsm', 'xlsx']):
                 st.success('Saved. The audit moves on once it counts.')
-            st.button('📱 Email the tech the job link (on the status page)', key='aud_go_phone')
+            st.button('📱 Email the Tech the Job Link (On the Status Page)', key='aud_go_phone')
         elif n.startswith(('2.', '3.')):
             st.button('🧮 Open the FQA Builder', key='aud_go_fqa', type='primary')
         elif n.startswith('4.01'):
-            st.button('📂 Go to the Traces tab', key='aud_go_status', type='primary')
+            st.button('📂 Go to the Traces Tab', key='aud_go_status', type='primary')
         elif n.startswith('4.02'):
             if _drop_into('Power meter files', 'aud_drop_pm', 'power', None):
                 st.success('Saved.')
         elif n.startswith('4.03'):
-            st.button('The file names follow the convention', key='aud_403', type='primary')
+            st.button('The File Names Follow the Convention', key='aud_403', type='primary')
         elif n.startswith(('4.04', '4.05')):
             if _drop_into('Splice logs and exception documents', 'aud_drop_logs',
                           'splice_logs', None):
                 st.success('Saved.')
-            st.button('Not needed on this job', key='aud_na')
+            st.button('Not Needed on This Job', key='aud_na')
         c1, c2, c3 = st.columns(3)
-        c1.button('Skip for now ⏭', key='aud_skip', use_container_width=True)
-        c3.button('Exit audit', key='aud_exit', use_container_width=True)
+        c1.button('Skip for Now ⏭', key='aud_skip', use_container_width=True)
+        c3.button('Exit Audit', key='aud_exit', use_container_width=True)
 
 
 # ── Project events: everything that happened in the project ──────────────
@@ -12698,10 +12698,10 @@ def project_files(work):
 def _work_folder_picker(work):
     """The work folder as a drop-down (Robert, 2026-09-27): pick any file in
     the project and open it, or show it in its folder."""
-    with st.popover(f'📁 Work folder: {work}', use_container_width=True):
+    with st.popover(f'📁 Work Folder: {work}', use_container_width=True):
         files = project_files(work)
         labels = {p: l for l, p in files}
-        pick = st.selectbox('Files in this project', [p for _l, p in files], index=None,
+        pick = st.selectbox('Files in This Project', [p for _l, p in files], index=None,
                             key='wf_pick', format_func=lambda p: labels.get(p, p),
                             placeholder='Choose a file or a set of traces…')
         c1, c2, c3 = st.columns(3)
@@ -12947,8 +12947,8 @@ def _project_tab_traces(work):
             ss.pop('ps_tr_a', None)
             ss.pop('ps_tr_b', None)
         c1, c2, c3 = st.columns(3)
-        for col, key, label in ((c1, 'ps_tr_a', 'A-direction folder'),
-                                (c2, 'ps_tr_b', 'B-direction folder'),
+        for col, key, label in ((c1, 'ps_tr_a', 'A-Direction Folder'),
+                                (c2, 'ps_tr_b', 'B-Direction Folder'),
                                 (c3, 'ps_tr_one', 'One folder, both directions')):
             with col:
                 if st.button('📂 ' + label, key=key + '_pick', use_container_width=True):
@@ -12957,7 +12957,7 @@ def _project_tab_traces(work):
                         ss[key] = p
                 st.text_input(label, key=key, label_visibility='collapsed',
                               placeholder='or paste a path')
-        drop = st.file_uploader('…or drop the traces: a .zip, loose files, or .bdr',
+        drop = st.file_uploader('…or Drop the Traces: a .zip, Loose Files, or .bdr',
                                 type=['zip', 'sor', 'json', 'bdr'],
                                 accept_multiple_files=True, key='ps_tr_drop')
         # The project's own SharePoint folder (kept in the project file): on
@@ -12978,7 +12978,7 @@ def _project_tab_traces(work):
                             help='Read from the .sor files when they carry it.')
         lab = d2.text_input('Label (optional)', key='ps_tr_label',
                             placeholder='e.g. reshoot after repair')
-        if st.button('Add this shoot', key='ps_tr_copy', type='primary'):
+        if st.button('Add This Shoot', key='ps_tr_copy', type='primary'):
             if not (a and b) and (one or drop):
                 a, b = _resolve_bidir_from_single(one, drop)
             if a and b and os.path.isdir(a) and os.path.isdir(b):
@@ -13132,7 +13132,7 @@ def _project_tab_pictures(work):
     with st.expander('➕ Add Pictures'):
         c1, c2 = st.columns([1, 2])
         with c1:
-            end = st.radio('Where they were taken', list(PICTURE_ENDS), key='pic_end',
+            end = st.radio('Where They Were Taken', list(PICTURE_ENDS), key='pic_end',
                            format_func=lambda k: PICTURE_ENDS[k])
         with c2:
             for dest in _drop_into('Photos (.jpg, .png)', 'pic_drop',
@@ -13149,7 +13149,7 @@ def _project_tab_pictures(work):
     # Robert, 2026-09-27: "a button where we can verify that the labels are
     # legible".  Field Capture's own label reader (Tesseract, on this PC)
     # reads every photo; its server hands it the photos in-process.
-    if st.toggle('🔍 Check the labels are legible', key='pic_check',
+    if st.toggle('🔍 Check the Labels Are Legible', key='pic_check',
                  help='Reads the labels in every photo on this PC. It takes a few '
                       'seconds a photo.'):
         from fieldcapture import server as _fc
@@ -13287,17 +13287,17 @@ def _project_tab_audit(work):
         st.markdown('**Production Sheet** (the project workbook)')
         about = st.empty()
         c1, c2 = st.columns([1, 2])
-        if c1.button('📄 Choose production sheet', key='ps_prod_pick', use_container_width=True):
+        if c1.button('📄 Choose Production Sheet', key='ps_prod_pick', use_container_width=True):
             p = pick_file('Choose the production sheet', [('Excel', '*.xlsx *.xlsm')])
             if p:
                 ss['ps_prod_path'] = p
             elif p is None:
                 st.info('No file picker on this machine: paste the path.')
-        c2.text_input('Production sheet path', key='ps_prod_path',
+        c2.text_input('Production Sheet Path', key='ps_prod_path',
                       label_visibility='collapsed',
                       placeholder='…or paste the production sheet\'s path')
         src = _clean_path(ss.get('ps_prod_path'))
-        if src and st.button('Add it to the project', key='ps_prod_add'):
+        if src and st.button('Add It to the Project', key='ps_prod_add'):
             if not os.path.isfile(src):
                 st.error(f'No file at {src}')
             else:
@@ -13395,7 +13395,7 @@ def _project_tab_audit(work):
         for col, no in ((m2, '4.04'), (m3, '4.05')):
             k = 'ps_tick_' + no.replace('.', '')
             _bind(k, manual.get(no) == 'na', work)
-            v = col.checkbox(f'{no} not needed on this job', key=k)
+            v = col.checkbox(f'{no} Not Needed on This Job', key=k)
             if v:
                 manual[no] = 'na'
             else:
@@ -13488,14 +13488,14 @@ def _render_fqa_build(work, prod_path, pkgs):
                    f"final traces found ({trace.get('method')}); span "
                    f"{(trace.get('span_length_m') or 0):,.0f} m.")
     if not trace.get('read') and final_shoot(work):
-        st.button('📏 Read distances from the final traces', key='ps_fqa_read_dist',
+        st.button('📏 Read Distances from the Final Traces', key='ps_fqa_read_dist',
                   help='Runs the Splice Report engine on the final traces to find each '
                        'closure. Takes as long as a Splice Report; the result is kept.')
     if missing:
         st.caption('Blank on the cover page: ' + ', '.join(str(m) for m in missing[:8])
                    + (' …' if len(missing) > 8 else '') + '. Fill them in the job details or '
                    'with the audit.')
-    st.button('Build the FQA package', key='ps_fqa_build', type='primary')
+    st.button('Build the FQA Package', key='ps_fqa_build', type='primary')
     if ss.get('_fqa_build_error'):
         st.error(ss.pop('_fqa_build_error'))
     m = ss.get('_fqa_built')
@@ -13883,7 +13883,7 @@ def _render_export(work):
     ss = st.session_state
     sizes = {m: export_size(work, m) for m in EXPORT_MODES}
     _bind('ps_export_mode', ss.get('ps_export_mode') or 'none', work)
-    mode = st.radio('What to include', list(EXPORT_MODES), key='ps_export_mode',
+    mode = st.radio('What to Include', list(EXPORT_MODES), key='ps_export_mode',
                     format_func=lambda m: f'{EXPORT_MODES[m]} · about {_fmt_size(sizes[m])}')
     dests = export_destinations(work)
     paths = [p for _l, p in dests] + [EXPORT_OTHER]
@@ -13893,7 +13893,7 @@ def _render_export(work):
     _bind('ps_export_where', last if last in paths else paths[0], (work, tuple(paths)))
     if ss.get('ps_export_where') not in paths:
         ss['ps_export_where'] = paths[0]
-    where = st.selectbox('Export to', paths, key='ps_export_where',
+    where = st.selectbox('Export To', paths, key='ps_export_where',
                          format_func=lambda p: labels.get(p, p))
     if where == EXPORT_OTHER:
         import folder_intake as _fi
@@ -13916,7 +13916,7 @@ def _render_export(work):
         size = os.path.getsize(out)
         st.success(f'Exported `{out}` ({_fmt_size(size)}).')
         if size <= EMAIL_LIMIT_BYTES:
-            if st.button('✉️ Email it', key='ps_export_email'):
+            if st.button('✉️ Email It', key='ps_export_email'):
                 try:
                     from fieldcapture.email_draft import write_draft, open_with_default_app
                     eml = write_draft(out, '', f'{PRODUCT_NAME} project: {os.path.basename(work)}',
@@ -13961,20 +13961,20 @@ def _render_open_project():
         st.caption('A project (.zdb, or an older .otdrproject) someone sent you, or a Field '
                    'Capture (.zfc) for the open project.')
         c1, c2 = st.columns([1, 2])
-        if c1.button('📦 Choose the file', key='open_pkg_pick', use_container_width=True):
+        if c1.button('📦 Choose the File', key='open_pkg_pick', use_container_width=True):
             p = pick_file('Choose the file', [(f'{PRODUCT_NAME} file',
                                                ' '.join('*' + e for e in OPEN_FILE_EXTS))])
             if p:
                 ss['open_pkg_path'] = p
-        c2.text_input('File path', key='open_pkg_path', label_visibility='collapsed',
+        c2.text_input('File Path', key='open_pkg_path', label_visibility='collapsed',
                       placeholder='…or paste its path')
-        up = st.file_uploader('…or drop it here (up to 200 MB)',
+        up = st.file_uploader('…or Drop It Here (Up to 200 MB)',
                               type=[e.lstrip('.') for e in OPEN_FILE_EXTS], key='open_pkg_up')
         st.caption(f'A project is unpacked into `{_default_projects_root()}` and opened.')
         src = _clean_path(ss.get('open_pkg_path'))
         if up is not None and not src:
             src = _staged_setup_upload(up)
-        if st.button('Open this file', key='open_pkg', type='primary', disabled=not src):
+        if st.button('Open This File', key='open_pkg', type='primary', disabled=not src):
             with st.spinner('Opening…'):
                 level, msg = open_share_file(src)
             if level == 'error':
@@ -13989,12 +13989,12 @@ def _render_open_project():
     with st.container(border=True):
         st.markdown('**Another Project Folder**')
         c1, c2 = st.columns([1, 2])
-        c1.button('📁 Choose its work folder', key='home_project', use_container_width=True)
-        c2.text_input('Work folder', key='home_folder', label_visibility='collapsed',
+        c1.button('📁 Choose Its Work Folder', key='home_project', use_container_width=True)
+        c2.text_input('Work Folder', key='home_folder', label_visibility='collapsed',
                       placeholder='…or paste the work folder\'s path')
         if ss.get('_home_need_path'):
             st.caption('No folder picker on this machine: paste the work folder\'s path.')
-        st.button('Open this folder', key='home_open_path')
+        st.button('Open This Folder', key='home_open_path')
 
 
 def new_project(work, customer=None, sheet=None, traces=None, sharepoint=None):
@@ -14114,7 +14114,7 @@ def _render_sp_link_form(link):
                'nothing else.')
     if 'sp_link_input' not in ss:
         ss['sp_link_input'] = link
-    st.text_input('SharePoint folder link', key='sp_link_input', label_visibility='collapsed',
+    st.text_input('SharePoint Folder Link', key='sp_link_input', label_visibility='collapsed',
                   placeholder='https://….sharepoint.com/…')
     c1, c2 = st.columns(2)
     if c1.button('Save Folder', key='sp_link_save', type='primary', use_container_width=True):
@@ -14545,18 +14545,18 @@ def page_project_setup():
         st.markdown('**2 · The Production Sheet** (optional)')
         st.caption('The span\'s ZeroDB production sheet. It is copied into the project.')
         c1, c2 = st.columns([1, 2])
-        if c1.button('📄 Choose production sheet', key='setup_prod_pick',
+        if c1.button('📄 Choose Production Sheet', key='setup_prod_pick',
                      use_container_width=True):
             p = pick_file('Choose the production sheet', [('Excel', '*.xlsx *.xlsm')])
             if p:
                 ss['setup_prod_path'] = p
             elif p is None:
                 st.caption('No file picker here: paste the path, or drop the file.')
-        c2.text_input('Production sheet path', key='setup_prod_path',
+        c2.text_input('Production Sheet Path', key='setup_prod_path',
                       label_visibility='collapsed',
                       placeholder='…or paste the production sheet\'s path')
-        up = st.file_uploader('…or drop it here (up to 200 MB; paste the path for '
-                              'bigger sheets)', type=['xlsx', 'xlsm'], key='setup_prod_up')
+        up = st.file_uploader('…or Drop It Here (Up to 200 MB; Paste the Path for '
+                              'Bigger Sheets)', type=['xlsx', 'xlsm'], key='setup_prod_up')
         src = _clean_path(ss.get('setup_prod_path'))
         if not src and up is not None:
             src = _staged_setup_upload(up)
@@ -14592,8 +14592,8 @@ def page_project_setup():
         st.caption('Two folders (A and B), one folder holding both directions, or drop '
                    'them. They are copied into the project as its first shoot.')
         c1, c2, c3 = st.columns(3)
-        for col, key, label in ((c1, 'setup_tr_a', 'A-direction folder'),
-                                (c2, 'setup_tr_b', 'B-direction folder'),
+        for col, key, label in ((c1, 'setup_tr_a', 'A-Direction Folder'),
+                                (c2, 'setup_tr_b', 'B-Direction Folder'),
                                 (c3, 'setup_tr_one', 'One folder, both directions')):
             with col:
                 if st.button('📂 ' + label, key=key + '_pick', use_container_width=True):
@@ -14604,7 +14604,7 @@ def page_project_setup():
                         st.caption('No folder picker here: paste the path.')
                 st.text_input(label, key=key, label_visibility='collapsed',
                               placeholder='or paste a path')
-        drop = st.file_uploader('…or drop the traces: a .zip, loose files, or .bdr',
+        drop = st.file_uploader('…or Drop the Traces: a .zip, Loose Files, or .bdr',
                                 type=['zip', 'sor', 'json', 'bdr'],
                                 accept_multiple_files=True, key='setup_tr_drop')
         # The same SharePoint folder as Quick Analysis's left panel (the panel
@@ -14660,11 +14660,11 @@ def page_project_setup():
         with n2:
             # Robert, 2026-09-30: no OneDrive-synced libraries here; a project
             # goes to SharePoint through the sign-in (Export Project tab).
-            if st.button('📁 Save projects in…', key='setup_parent_pick'):
+            if st.button('📁 Save Projects In…', key='setup_parent_pick'):
                 p = pick_folder('Where new projects are kept')
                 if p:
                     ss['setup_parent'] = p
-            st.text_input('Save projects in', key='setup_parent', label_visibility='collapsed')
+            st.text_input('Save Projects In', key='setup_parent', label_visibility='collapsed')
         name = _safe_folder_name(ss.get('setup_name') or '')
         parent = _clean_path(ss.get('setup_parent')) or _default_projects_root()
         work = os.path.join(parent, name)
@@ -14674,7 +14674,7 @@ def page_project_setup():
     have_source = bool(sheet_src or traces_src)
     if not have_source:
         st.caption('Load a production sheet or traces (or both) to create the project.')
-    if st.button('Create project', key='setup_create', type='primary',
+    if st.button('Create Project', key='setup_create', type='primary',
                  disabled=not (have_source and customer and (ss.get('setup_name') or '').strip())):
         if os.path.isdir(work) and project_file_for_folder(work)[1]:
             st.error('That folder is already a project. Open it from the home screen, or '
