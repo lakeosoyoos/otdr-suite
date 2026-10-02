@@ -100,40 +100,45 @@ def test_the_b_side_is_staged_in_a_folder_named_b():
     assert os.path.basename(b['dir_a']) == 'A'
 
 
-def test_the_same_folder_again_refreshes_its_own_side():
-    """Re-dropping a folder is a refresh of the side it is already on — it
-    must not turn into the other direction and give the span two A sides."""
+def test_the_same_folder_again_is_already_in_the_viewer():
+    """Robert 2026-10-02: a drop adds, and a file byte for byte one already
+    loaded is not loaded twice -- the page says it is already in there.
+    Re-dropping a folder changes nothing: no side is restaged or cleared."""
     a = _drop('ROMTUC001_1550.sor', 'ROMTUC002_1550.sor')
     b = _drop('TUCROM001_1550.sor', 'TUCROM002_1550.sor')
     again = _drop('ROMTUC001_1550.sor', 'ROMTUC002_1550.sor')
-    assert again['added'] == 'A'
-    assert again['dir_a'] not in (a['dir_a'], None)      # the fresh staging
-    assert again['dir_b'] == b['dir_b']                  # B kept as it was
-    assert again['a_prefix'] == 'ROMTUC' and again['b_prefix'] == 'TUCROM'
+    assert again['added'] == ''
+    assert again['already'] == ['ROMTUC001_1550.sor', 'ROMTUC002_1550.sor']
+    assert again['dir_a'] == a['dir_a'] and again['dir_b'] == b['dir_b']
+    assert again['a_count'] == 2 and again['b_count'] == 2
+    assert again['new_keys'] == []
     once_more = _drop('TUCROM001_1550.sor', 'TUCROM002_1550.sor')
-    assert once_more['added'] == 'B'
-    assert once_more['dir_a'] == again['dir_a']
+    assert once_more['added'] == '' and len(once_more['already']) == 2
+    assert TS.CONFIG['dir_a'] == a['dir_a'] and TS.CONFIG['dir_b'] == b['dir_b']
 
+def test_a_single_drop_with_both_sides_full_adds_to_them():
+    """Both sides loaded and more files arrive: they are ADDED, nothing loaded
+    is cleared (Robert 2026-10-02: "nothing gets reset until the person does
+    it").  Files named like neither side still land on one."""
+    a = _drop('ROMTUC001_1550.sor', 'ROMTUC002_1550.sor')
+    b = _drop('TUCROM001_1550.sor', 'TUCROM002_1550.sor')
+    more = _drop('ROMTUC003_1550.sor', 'ROMTUC004_1550.sor')
+    assert more['added'] == 'A' and more['grown'] == 'A'
+    assert more['dir_a'] == a['dir_a'] and more['dir_b'] == b['dir_b']
+    assert more['a_count'] == 4 and more['b_count'] == 2
+    assert sorted(more['new_keys']) == ['a-3', 'a-4']
+    other = _drop('SEANOR001_1550.sor', 'SEANOR002_1550.sor')
+    assert other['added'] in ('A', 'B')
+    assert other['a_count'] + other['b_count'] == 8
+    assert TS.CONFIG['dir_b'] == b['dir_b']
 
-def test_a_single_drop_with_both_sides_full_starts_a_new_span():
-    """Both sides loaded and an unrelated folder arrives: it is a different
-    span, not a third direction — and this is the way back to a clean slate."""
+def test_both_directions_in_one_drop_add_to_both_sides():
     _drop('ROMTUC001_1550.sor', 'ROMTUC002_1550.sor')
-    _drop('TUCROM001_1550.sor', 'TUCROM002_1550.sor')
-    new = _drop('SEANOR001_1550.sor', 'SEANOR002_1550.sor')
-    assert new['added'] == 'A'
-    assert new['a_prefix'] == 'SEANOR'
-    assert new['dir_b'] is None and new['b_prefix'] is None and new['b_count'] == 0
-    assert TS.CONFIG['dir_b'] is None
-
-
-def test_both_directions_in_one_drop_still_replace_both_sides():
-    _drop('SEANOR001_1550.sor', 'SEANOR002_1550.sor')
-    out = _drop('ROMTUC001_1550.sor', 'TUCROM001_1550.sor')
+    out = _drop('ROMTUC003_1550.sor', 'TUCROM003_1550.sor')
     assert out['added'] == 'AB'
     assert out['a_prefix'] == 'ROMTUC' and out['b_prefix'] == 'TUCROM'
+    assert out['a_count'] == 3 and out['b_count'] == 1     # A kept its two
     assert TS.CONFIG['dir_a'] == out['dir_a'] and TS.CONFIG['dir_b'] == out['dir_b']
-
 
 def test_a_side_whose_folder_has_gone_is_not_treated_as_loaded(tmp_path):
     """A path left in CONFIG for a folder that has since moved is not a loaded
@@ -265,15 +270,14 @@ def test_both_directions_in_one_drop_take_their_sides_from_the_files():
     assert out['b_prefix'] == 'AAAAAA'             # the B-direction files
 
 
-def test_the_same_folder_again_still_refreshes_its_own_side():
-    """The signature check outranks the declaration, so re-dropping the A
-    folder cannot be read as 'this is the A side' twice over and clear B."""
-    _drop_real(_real('a'))
+def test_the_same_real_folder_again_changes_nothing():
+    """Real files that stamp their direction: re-dropping the A folder can
+    neither be read as 'this is the A side' and clear B, nor go to B."""
+    a = _drop_real(_real('a'))
     b = _drop_real(_real('b'))
     again = _drop_real(_real('a'))
-    assert again['added'] == 'A'
-    assert again['dir_b'] == b['dir_b']
-
+    assert again['added'] == '' and len(again['already']) == 3
+    assert again['dir_a'] == a['dir_a'] and again['dir_b'] == b['dir_b']
 
 def test_files_that_do_not_declare_still_fill_the_empty_side():
     """A synthetic .sor has no proprietary block, so the positional rule is
@@ -302,22 +306,25 @@ def test_a_folder_holding_both_directions_declares_nothing():
     assert out['added'] == 'A' and out['added_by'] == 'position'
 
 
-def test_the_page_forgets_only_the_side_the_drop_replaced():
+def test_the_page_forgets_only_a_side_the_drop_let_go_of():
     h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
     fn = h.split('async function handleFilesDrop(dt) {', 1)[1].split('\n}', 1)[0]
     assert "const before = { a: (gInfo && gInfo.dir_a) || '', b: (gInfo && gInfo.dir_b) || '' };" in fn
-    assert "if ((j['dir_' + d] || '') !== before[d]) forgetSide(d);" in fn
+    assert "if ((j['dir_' + d] || '') !== before[d] && !grown.includes(d)) forgetSide(d);" in fn
     assert fn.index('const before =') < fn.index('/api/drop_end')
     fs = h.split('function forgetSide(dir) {', 1)[1].split('\n}', 1)[0]
     assert "gTraces = gTraces.filter(t => t.src !== dir);" in fs
-    # and the hint names the side the next drop fills
+    # only what the drop added joins the chart
+    assert "for (const key of [...(j.new_keys || []), ...back])" in fn
+    # and the hint says the next drop adds
     panel = h.split('function renderFilesPanel() {', 1)[1].split('\n}\n', 1)[0]
     assert "'drop the other direction here, A stays loaded'" in panel
-    assert "'drop the other direction here, B stays loaded'" in panel
+    assert "'drop more files here, they are added to what is loaded'" in panel
     # and the readout says when the FILES named the side, not the drop order
     assert "j.added_by === 'file'" in fn
     assert 'the files name this folder the ${j.added} side' in fn
-
+    # and says what was already in
+    assert 'already in the Viewer, not added again' in fn
 
 def test_the_page_and_hub_are_wired():
     h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
@@ -362,28 +369,49 @@ def _unnamed(files):
 
 
 def _staged(out):
-    """{name: bytes} of everything a drop actually put on a side."""
+    """{name: bytes} of the files a drop put in a side folder itself (copies
+    under COPIES_DIR are not)."""
     got = {}
     for d in (out['dir_a'], out['dir_b']):
         for f in (sorted(os.listdir(d)) if d else []):
+            if f == TS.COPIES_DIR:
+                continue
             with open(os.path.join(d, f), 'rb') as fh:
                 got[f] = fh.read()
     return got
 
 
-def test_a_repeated_name_keeps_the_first_file_and_is_reported():
+def test_a_repeated_name_with_other_bytes_is_loaded_as_a_copy():
+    """Two different files under one name: both load (Robert 2026-10-02:
+    "show as separate rows if they are not identical, even if the directions
+    are the same").  The first keeps the name in the side folder; the second
+    sits under COPIES_DIR and is listed as the fibre's copy."""
     tok = TS.drop_begin()
     first, second = _sized(b'\xa1', 40), _sized(b'\xb2', 90)
     assert TS.drop_file(tok, 'ROMTUC001_1550.sor', first)['files'] == 1
     again = TS.drop_file(tok, 'ROMTUC001_1550.sor', second)
-    assert again['files'] == 0                        # not written
-    assert 'already dropped' in again['skipped']
+    assert again['files'] == 0                        # kept aside, not over the first
     TS.drop_file(tok, 'ROMTUC002_1550.sor', first)
     out = TS.drop_end(tok)
-    assert out['repeated'] == ['ROMTUC001_1550.sor']
-    assert out['a_count'] == 2                        # one file of each name
+    assert out['repeated'] == [] and out['already'] == []
+    assert out['copies'] == ['ROMTUC001_1550.sor']
+    assert out['a_count'] == 3
     assert _staged(out)['ROMTUC001_1550.sor'] == first   # kept, not clobbered
+    ids = dict(TS.list_fibers(out['dir_a']))
+    assert sorted(ids) == [1, 2, TS.COPY_BASE + 1]
+    with open(os.path.join(out['dir_a'], ids[TS.COPY_BASE + 1]), 'rb') as fh:
+        assert fh.read() == second
+    assert sorted(out['new_keys']) == ['a-1', 'a-100001', 'a-2']
 
+
+def test_the_same_bytes_twice_in_one_drop_load_once():
+    tok = TS.drop_begin()
+    data = _sized(b'\xa1', 40)
+    TS.drop_file(tok, 'ROMTUC001_1550.sor', data)
+    TS.drop_file(tok, 'ROMTUC001_1550.sor', data)
+    out = TS.drop_end(tok)
+    assert out['already'] == ['ROMTUC001_1550.sor'] and out['copies'] == []
+    assert out['a_count'] == 1
 
 def test_the_repeat_is_caught_whatever_case_the_name_arrives_in():
     """The hub matches names case-insensitively (folder_intake.stage_uploads
@@ -394,9 +422,9 @@ def test_the_repeat_is_caught_whatever_case_the_name_arrives_in():
     TS.drop_file(tok, 'ROMTUC001_1550.sor', _sized(b'\xa1', 40))
     assert TS.drop_file(tok, 'RomTuc001_1550.SOR', _sized(b'\xb2', 90))['files'] == 0
     out = TS.drop_end(tok)
-    assert out['repeated'] == ['RomTuc001_1550.SOR']
-    assert out['a_count'] == 1
-
+    assert out['repeated'] == [] and out['copies'] == ['RomTuc001_1550.SOR']
+    assert out['a_count'] == 2
+    assert _staged(out)['ROMTUC001_1550.sor'] == _sized(b'\xa1', 40)
 
 def test_a_dragged_parent_folder_loads_both_directions():
     """The reported case, with the real fixture spans: both direction folders
@@ -422,9 +450,10 @@ def test_a_dragged_parent_folder_loads_both_directions():
     assert {TS.read_direction(v) for v in got_b.values()} == {'b'}
 
 
-def test_a_zip_of_a_parent_folder_keeps_the_first_of_each_name():
+def test_a_zip_of_a_parent_folder_loads_every_file():
     """A zip is flattened into the same one folder, so its two direction
-    subfolders collide exactly as a dragged folder's do."""
+    subfolders collide exactly as a dragged folder's do; with nothing in the
+    files to say the other direction, the second file of a name is a copy."""
     buf = io.BytesIO()
     first, second = _sized(b'\xa1', 40), _sized(b'\xb2', 90)
     with zipfile.ZipFile(buf, 'w') as zf:
@@ -434,24 +463,20 @@ def test_a_zip_of_a_parent_folder_keeps_the_first_of_each_name():
     tok = TS.drop_begin()
     assert TS.drop_file(tok, 'span.zip', buf.getvalue())['files'] == 2
     out = TS.drop_end(tok)
-    assert out['repeated'] == ['ROMTUC001_1550.sor']
-    assert out['a_count'] == 2
+    assert out['repeated'] == [] and out['copies'] == ['ROMTUC001_1550.sor']
+    assert out['a_count'] == 3
     assert _staged(out)['ROMTUC001_1550.sor'] == first
-
 
 def test_a_clean_drop_reports_no_repeats():
     out = _drop('ROMTUC001_1550.sor', 'ROMTUC002_1550.sor', 'TUCROM001_1550.sor')
     assert out['repeated'] == []
 
 
-def test_the_same_folder_again_is_recognised_after_a_collided_drop():
-    """_single_drop_side asks whether a drop is the SAME folder a side already
-    holds, by the (name, size) signature of the staged files — so which copy
-    of a repeated name survives decides what the drop signs as.  Keeping the
-    FIRST keeps that honest: the parent folder whose A subfolder was
-    enumerated first signs as the A folder and REFRESHES the A side, leaving B
-    loaded.  (Keeping the last used to leave a signature matching neither
-    side, which with both sides full starts a new span and drops B.)"""
+def test_the_same_folder_again_beside_other_files_of_its_names():
+    """A parent folder: the A folder again (byte for byte what A holds) and
+    another subfolder under the same names.  The A files are already in; the
+    others are different files, so they are added to A -- named like it -- as
+    copies, and B stays loaded."""
     a = _drop('ROMTUC001_1550.sor', 'ROMTUC002_1550.sor')
     b = _drop('TUCROM001_1550.sor', 'TUCROM002_1550.sor')
     tok = TS.drop_begin()
@@ -460,11 +485,11 @@ def test_the_same_folder_again_is_recognised_after_a_collided_drop():
     for name in ('ROMTUC001_1550.sor', 'ROMTUC002_1550.sor'):
         TS.drop_file(tok, name, _sized(b'\x55', 200))        # the other subfolder
     again = TS.drop_end(tok)
-    assert sorted(again['repeated']) == ['ROMTUC001_1550.sor', 'ROMTUC002_1550.sor']
-    assert again['added'] == 'A'
-    assert again['dir_a'] not in (a['dir_a'], None)          # the fresh staging
+    assert again['already'] == ['ROMTUC001_1550.sor', 'ROMTUC002_1550.sor']
+    assert sorted(again['copies']) == ['ROMTUC001_1550.sor', 'ROMTUC002_1550.sor']
+    assert again['added'] == 'A' and again['grown'] == 'A'
+    assert again['dir_a'] == a['dir_a'] and again['a_count'] == 4
     assert again['dir_b'] == b['dir_b']                      # B still loaded
-
 
 def test_the_readout_says_which_names_arrived_twice():
     """A repeat that was not loaded is a failure: bold red (#401's rule)."""
@@ -609,17 +634,14 @@ def test_a_named_folder_is_still_split_by_its_names():
     assert out['a_prefix'] == 'ROMTUC' and out['b_prefix'] == 'TUCROM'
 
 
-def test_a_letterless_folder_dropped_again_refreshes_its_own_side():
-    """The (name, size) signature is what recognises the same folder, and the
-    unnamed drop must not lose that: re-dropping the A folder cannot become a
-    second B side and clear the real one."""
+def test_a_letterless_folder_dropped_again_is_already_in():
+    """The unnamed drop too: re-dropping the A folder cannot become a second
+    B side and clear the real one."""
     a = _drop_real(_unnamed(_real('a', 3)))
     b = _drop_real(_unnamed(_real('b', 3)))
     again = _drop_real(_unnamed(_real('a', 3)))
-    assert again['added'] == 'A'
-    assert again['dir_b'] == b['dir_b']                # B left as it was
-    assert again['dir_a'] not in (a['dir_a'], None)    # the fresh staging
-
+    assert again['added'] == '' and len(again['already']) == 3
+    assert again['dir_b'] == b['dir_b'] and again['dir_a'] == a['dir_a']
 
 def test_the_readout_says_when_nothing_could_split_the_drop():
     h = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
@@ -921,11 +943,13 @@ def test_a_retried_upload_is_not_a_repeat(tmp_path):
     assert again['files'] == 1 and again.get('retried')
     out = TS.drop_end(tok)
     assert out['repeated'] == []
-    # a real second copy (no retry mark) is still a repeat
+    # a real second copy (no retry mark) is loaded once and said to be in
+    TS.set_dirs(None, None)
     tok = TS.drop_begin()
     TS.drop_file(tok, name, data)
     assert TS.drop_file(tok, name, data)['files'] == 0
-    assert TS.drop_end(tok)['repeated'] == [name]
+    out = TS.drop_end(tok)
+    assert out['repeated'] == [] and out['already'] == [name]
 
 
 def test_a_retried_drop_end_gets_the_first_answer():
@@ -1026,9 +1050,12 @@ def test_a_new_a_after_removing_the_only_side_lands_on_a():
     out = _drop_real_emptied('a', _real('a'))
     assert out['added'] == 'A'
     assert out['dir_a'] != str(FIXTURE_SPLICE_A_DIR) and out['dir_b'] is None
-    # without `emptied` it is still the other direction, as before
+    # without `emptied` the same files are already in: not loaded again,
+    # and not on B (they used to land there as "the other direction")
     TS.set_dirs(str(FIXTURE_SPLICE_A_DIR), None)
-    assert _drop_real(_real('a'))['added'] == 'B'
+    out = _drop_real(_real('a'))
+    assert out['added'] == '' and len(out['already']) == 3
+    assert TS.CONFIG['dir_a'] == str(FIXTURE_SPLICE_A_DIR) and TS.CONFIG['dir_b'] is None
 
 
 def test_after_removing_both_sides_a_then_b_load_the_new_span():
@@ -1042,7 +1069,8 @@ def test_after_removing_both_sides_a_then_b_load_the_new_span():
 def test_an_emptied_side_is_not_kept_beside_the_drop():
     TS.set_dirs(str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR))
     out = _drop_real_emptied('b', _real('a', n=1000))
-    assert out['added'] == 'A'                     # the A folder again: refresh A
+    assert out['added'] == ''                      # the A folder again: already in
+    assert out['dir_a'] == str(FIXTURE_SPLICE_A_DIR)
     assert out['dir_b'] is None                    # the removed B is not kept
 
 

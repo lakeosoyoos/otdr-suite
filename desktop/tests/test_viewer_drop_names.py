@@ -238,7 +238,8 @@ _CASES = r"""
   var fb = [{ name: 'B1.sor', size: 1 }, { name: 'B2.sor', size: 1 }];
   fa.forEach(function (f) { gDropFolder.set(f, 'A side'); });
   fb.forEach(function (f) { gDropFolder.set(f, 'B side'); });
-  answer = { dir_a: '/t/A', dir_b: '/t/B', added: 'AB', a_count: 2, b_count: 2 };
+  answer = { dir_a: '/t/A', dir_b: '/t/B', added: 'AB', a_count: 2, b_count: 2,
+             new_keys: ['a-1', 'a-2', 'b-1', 'b-2'] };
   listing = { dir_a: '/t/A', dir_b: '/t/B', fibers_a: [1, 2], fibers_b: [1, 2] };
   await handleFilesDrop(fa.concat(fb));
   out.folders = JSON.parse(sent.end).folders;
@@ -248,16 +249,25 @@ _CASES = r"""
   // B dropped on its own next to A traces already on the chart: A stays, B is added
   gTraces = [{ key: 'a-1' }, { key: 'a-2' }];
   picked = null;
-  answer = { dir_a: '/t/A', dir_b: '/t/B2', added: 'B', b_count: 2 };
+  answer = { dir_a: '/t/A', dir_b: '/t/B2', added: 'B', b_count: 2, new_keys: ['b-1', 'b-2'] };
   listing = { dir_a: '/t/A', dir_b: '/t/B2', fibers_a: [1, 2], fibers_b: [1, 2] };
   await handleFilesDrop([{ name: 'B1.sor', size: 1 }, { name: 'B2.sor', size: 1 }]);
   out.second = picked;
   // a removed file stays out
   gTraces = []; picked = null; gRemovedFiles = new Set(['a-2']);
-  answer = { dir_a: '/t/A3', added: 'A', a_count: 2 };
+  answer = { dir_a: '/t/A3', added: 'A', a_count: 2, new_keys: ['a-1', 'a-2'] };
   listing = { dir_a: '/t/A3', dir_b: '', fibers_a: [1, 2], fibers_b: [] };
   await handleFilesDrop([{ name: 'A1.sor', size: 1 }, { name: 'A2.sor', size: 1 }]);
   out.removed = picked;
+  // more of A dropped beside it: A grows in place, only the new rows join,
+  // and a removed file dragged in again is put back
+  gTraces = [{ key: 'a-1' }]; picked = null; gRemovedFiles = new Set(['a-2']);
+  answer = { dir_a: '/t/A3', added: 'A', a_count: 3, grown: 'A', new_keys: ['a-3'],
+             already: ['A2.sor'], already_keys: ['a-2'] };
+  listing = { dir_a: '/t/A3', dir_b: '', fibers_a: [1, 2, 3], fibers_b: [] };
+  await handleFilesDrop([{ name: 'A2.sor', size: 1 }, { name: 'A3.sor', size: 1 }]);
+  out.grown = picked;
+  out.grown_removed = [...gRemovedFiles];
   // the Summary Report's job name: a dropped side's served name, as is
   gInfo = { dir_a_name: 'A', dir_a: '/x/otdr_viewer_drop_q/A', dir_a_dropped: true,
             dir_b_name: 'B side', dir_b: '/x/otdr_viewer_drop_q/B', dir_b_dropped: true };
@@ -297,6 +307,9 @@ def test_a_drop_draws_what_it_dropped(page):
     # the other side's traces stay on the chart beside the new side
     assert page['second'] == ['a-1', 'a-2', 'b-1', 'b-2']
     assert page['removed'] == ['a-1']
+    # a drop that grows a side adds its new rows and puts back a removed one
+    assert page['grown'] == ['a-1', 'a-2', 'a-3']
+    assert page['grown_removed'] == []
 
 
 @needs_jsc
