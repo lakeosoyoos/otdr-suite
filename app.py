@@ -6247,13 +6247,13 @@ OTDR_ROWS = [
     # control per engine global — see _CONN_ROWS.
     # Per-FIBER span attenuation: EXFO's stored span loss (the number FR
     # prints as Span Loss) over the stored span length, both directions
-    # averaged.  Off by default (0 = off in the engine); IIG sets 0.250.
+    # averaged.  Off by default (0 = off in the engine); the contract profile sets 0.250.
     ("fiber_section_atten",       "Fiber Attenuation",          0.400,        "dB/km", True),
     ("span_loss",                 "Span Loss",                  20.000,       "dB",    False),
     ("span_length",               "Span Length",                0.0000,       "km",    False),
     # ORL FLOOR: the OTDR's own total ORL per direction, from the file; a
     # reading below the value fails.  Not the OLTS ORL a contract names, and
-    # the sheet says so.  Off by default; IIG sets 30.
+    # the sheet says so.  Off by default; the contract profile sets 30.
     ("span_orl",                  "Span ORL (Floor)",           15.00,        "dB",    True),
     # Bend/damage clusters within this distance of a validated splice column
     # stay IN that splice column (cells keep their bend labels); farther out
@@ -6265,7 +6265,7 @@ OTDR_ROWS = [
     # signed mean of (A->B + B->A)/2 over every splice either direction
     # recorded.  A per-span statistic, not a per-cell gate, so it grades on
     # its own sheet and never colours the grid.  Off by default (0 = off in
-    # the engine); the AWS / IIG contract sets it at 0.08 dB.
+    # the engine); the contract sets it at 0.08 dB.
     ("avg_splice_loss",           "Avg. Splice Loss (per Fiber)", 0.080,      "dB",    True),
 ]
 # Pre-checked rows (match what the splice report flags out of the box):
@@ -6311,11 +6311,11 @@ CUSTOMER_PROFILES = {
         "thresholds": {},
     },
     # ── FastReporter3 customer templates (Sep 2026) ────────────────────
-    # Source: the customer .prj templates NCT runs FastReporter3 with,
+    # Source: the customer .prj templates the prime contractor runs FastReporter3 with,
     # forwarded 16 Sep 2026 (FW: FastReporter3 Customer Templates).  Every
     # template applies ONE threshold set to all 16 wavelengths, so each
     # customer is the handful of numbers below.  The mapping is the one the
-    # AWS / IIG profile established:
+    # the contract profile established:
     #
     #   FR Splice Loss           -> unidir_splice_loss
     #   FR Bidir Splice Loss     -> bidir_splice_loss
@@ -6334,7 +6334,7 @@ CUSTOMER_PROFILES = {
     # event is left out of FR's table) and the Macrobend tolerance pairs
     # (1310/1550, 1310/1490, 1490/1550 at 0.5 dB in every template).
     #
-    # Lumen and Zayo existed before these templates arrived; their previous
+    # customer L and customer Z existed before these templates arrived; their previous
     # hand-set values are kept in the comment so the change is visible.
     "Lumen": {
         # FR: splice warn 0.15 / fail 0.25, bidir splice 0.15, connector
@@ -6451,7 +6451,7 @@ CUSTOMER_PROFILES = {
                  "LAUNCH_CONN_AVG_MIN_DB": 0.50},
     },
     "BrightSpeed": {
-        # FR: identical to Lumen's template (splice warn 0.15 / fail 0.25,
+        # FR: identical to customer L's template (splice warn 0.15 / fail 0.25,
         # bidir splice 0.15, connectors 0.5, reflectance -50, ORL 30).
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
@@ -6491,9 +6491,9 @@ CUSTOMER_PROFILES = {
     "Intermountain (FR template)": {
         # FR: splice 0.2, bidir splice 0.08, connector 0.3, bidir connector
         # 0.3, reflectance -55, ORL 30, span end kept.
-        # NOT the same numbers as "AWS / IIG MT.1085" below: the template
+        # NOT the same numbers as the contract profile below: the template
         # grades every bidir splice at 0.08 and connectors at 0.30 (the RFP
-        # figures), while the contract profile follows NCT's 24 Aug 2026
+        # figures), while the contract profile follows the prime contractor's 24 Aug 2026
         # reconciliation (0.20 per splice, 0.08 as the per-fiber AVERAGE,
         # 0.50 connectors per the executed SOW).  Pick the contract profile
         # for MT.1085 deliverables; this one reproduces the FR template.
@@ -6548,9 +6548,9 @@ CUSTOMER_PROFILES = {
         "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.50,
                  "LAUNCH_CONN_AVG_MIN_DB": 0.50},
     },
-    # ── AWS / IIG MT.1085 (Intermountain Infrastructure Group) ────────
+    # ── Contract customer profile ────────
     # Sources: RFP-FOT-2025-001 (issued 09 Jul 2026) and the Zero DB SOW
-    # (DocuSigned 06 Aug 2026), as reconciled by Northcentral Telcom on
+    # (DocuSigned 06 Aug 2026), as reconciled by the prime contractor on
     # 24 Aug 2026.  Only the three rows below are contract thresholds the
     # engine can grade on:
     #
@@ -6558,7 +6558,7 @@ CUSTOMER_PROFILES = {
     #     is LOOSER than the engine baseline (0.160), so this profile flags
     #     FEWER splice cells than Default, by contract.
     #   Bidir connector loss  <= 0.50 dB  — the executed SOW governs.  The
-    #     RFP says 0.30, but the SOW incorporates it nowhere and NCT's
+    #     RFP says 0.30, but the SOW incorporates it nowhere and the prime contractor's
     #     counterparty is Zero DB.  On Span 29 the choice is 3 failures at
     #     0.50 against 152 at 0.30, which is why the Legend sheet prints the
     #     value actually applied.  0.500 is also today's engine baseline, so
@@ -6624,7 +6624,7 @@ CUSTOMER_PROFILES = {
         # into 'Connector loss (1 direction)' to restore it for a run.
         # The contract's connector gate is the BIDIRECTIONAL AVERAGE at 0.50
         # dB (Span 29 F97 near 0.480 / far 0.589 = 0.535, F108 0.503 / 0.755
-        # = 0.629, both failures in NCT's own review).  The min gate at 0.62
+        # = 0.629, both failures in the prime contractor's own review).  The min gate at 0.62
         # misses both, so the average gate runs beside it at the contract
         # value.
         "conn": {"LAUNCH_CONN_UNI_MIN_DB": 0.0,
@@ -6645,7 +6645,7 @@ CUSTOMER_PROFILES = {
                      # ends early, or an IOR that stretched the distance.
                      "span_km_range": [64.8, 72.6]},
         # Engine settings the threshold table has no row for.  Grade at
-        # 1550 nm -- NCT's ruling of 22 Aug 2026: splice loss falls with
+        # 1550 nm -- the prime contractor's ruling of 22 Aug 2026: splice loss falls with
         # wavelength, so 1550 is always the worse wavelength for a real
         # splice, and an event worse at 1625 is carrying bend loss rather
         # than splice loss.  Both wavelengths are still delivered; only
@@ -6661,7 +6661,7 @@ CUSTOMER_PROFILES = {
         # switches, each off for every other profile, handle that.
         # The contract line reads "0.20 dB or less", so the splice gate is a
         # strict > on the unrounded loss: exactly 0.200 passes and 0.2005
-        # fails even though it prints ".200" (NCT's 2026-09-12 ruling,
+        # fails even though it prints ".200" (the prime contractor's 2026-09-12 ruling,
         # matched against their Span 17/19/25/27 reviews).
         "engine": {"GRADE_WAVELENGTH_NM": 1550.0, "RIBBON_SIZE": 24,
                    "IOLM_END_FALLBACK": 1, "PANEL_CONN_DIRECT": 1,
@@ -6907,11 +6907,11 @@ def _conn_settings_from_profile(profile_name):
     overrides applied on top.
 
     Profiles carry connector knobs because some customer rules ARE connector
-    rules — AWS / IIG MT.1085 turns the one-sided connector gate off, and a
+    rules — the contract profile turns the one-sided connector gate off, and a
     profile that could only reach the threshold table would silently keep
     firing it.  Only a profile that declares a "conn" block differs from
-    _CONN_DEFAULTS, so every profile that predates this (Default / Lumen /
-    Zayo) keeps byte-identical connector behavior.
+    _CONN_DEFAULTS, so every profile that predates this (Default / customer L /
+    customer Z) keeps byte-identical connector behavior.
 
     A global the panel does not render is ignored rather than set, so a typo
     in a profile can never invent a knob or push an unwired constant at the
@@ -6984,7 +6984,7 @@ def _splicereport_json_reader():
     puts its own directory on sys.path and its own json_reader.py (a trace
     parser with no span_site_names) is already in sys.modules by the time
     the Splice Report page runs.  The by-name import then raises, the
-    except below swallowed it, and every IIG span showed "A" / "B" in the
+    except below swallowed it, and every contract span showed "A" / "B" in the
     site boxes -- the feature shipped in #177 never once ran in the hub.
     Same class of fault as the sor_reader shadowing the tests guard against."""
     import importlib.util
@@ -7005,8 +7005,8 @@ def _site_names_for(dir_a, dir_b, profile_name=None):
     the folder-derived ILA names this has always used, and the tech can
     still type over whatever lands in the box.
 
-    The FOLDER NAME is never the source: AWS / IIG MT.1085 span 27 sits in
-    a folder whose two ends are the wrong way round (NCT, 2026-09-12)."""
+    The FOLDER NAME is never the source: the contract job's span 27 sits in
+    a folder whose two ends are the wrong way round (the prime contractor, 2026-09-12)."""
     if profile_name is None:
         profile_name = st.session_state.get('otdr_profile')
     if _engine_extras_from_profile(profile_name).get(
@@ -7089,7 +7089,7 @@ def _overrides_from_settings(otdr_settings):
     Byte-identical baseline: the Default profile ticks all five mapped rows at
     their engine-default values, so its overrides are the engine defaults and
     the report is unchanged.  Only an explicitly UNticked mapped row differs
-    from today (it now disables instead of reverting to default — e.g. the Zayo
+    from today (it now disables instead of reverting to default — e.g. the customer Z
     profile leaves unidir splice loss + launch reflectance off).
     """
     # No table at all (the panel failed to draw and its slot was dropped) is
@@ -7242,7 +7242,7 @@ def _render_customer_profile_picker(compact=False):
         if 'Custom' not in _picked:
             st.session_state.otdr_settings = _otdr_settings_from_profile(_picked)
             # The connector & launch knobs travel with the profile as
-            # well — a customer rule that lives on that panel (IIG's
+            # well — a customer rule that lives on that panel (the contract profile's
             # one-sided connector gate) has to actually arrive when the
             # tech picks the customer.  'Custom' keeps the tech's own
             # edits, exactly as it does for the threshold table above.
@@ -8667,7 +8667,7 @@ def _sr_site_inputs(span, dir_a, dir_b):
                 st.session_state[_key] = _v
     if dir_a and dir_b and os.path.isdir(dir_a) and os.path.isdir(dir_b):
         # The profile is part of the signature: a tech who loads the span
-        # and THEN picks the IIG profile must still get the identifier-based
+        # and THEN picks the contract profile must still get the identifier-based
         # names, not the "A"/"B" derived under the profile that was active
         # at load time (hub click-through, 2026-09-15).
         _sig = (dir_a, dir_b, st.session_state.get('otdr_profile'))
@@ -9173,7 +9173,7 @@ def page_splice_report():
     # ...and at the gates THIS report ran at, so a cell that is unflagged in
     # the grid is unflagged in the Viewer.  Without this the Viewer judged
     # every run at the engine baseline while a customer profile had moved the
-    # engine (IIG 0.200 vs 0.160 — a 40 mdB band where the two disagreed).
+    # engine (the contract profile 0.200 vs 0.160 — a 40 mdB band where the two disagreed).
     # Sourced from the manifest, which is the report on screen: it is the run's
     # own echo of what it applied, and it rides the disk cache too, so a grid
     # restored after 'Back' keeps its own gates instead of the panel's current
@@ -10123,11 +10123,11 @@ def page_unidirectional():
 
 
 # ═════════════════════════════════════════════════════════════════════════
-#  PAGE: FQA Builder — Lumen submittal package from a production sheet
+#  PAGE: FQA Builder — customer submittal package from a production sheet
 # ═════════════════════════════════════════════════════════════════════════
 # The only page that takes no traces.  It reads the span's ZeroDB
 # production sheet -- one tab per location, in route order -- and fills
-# the Lumen Site Survey form: cover page, Fiber Assignment Table, Event
+# the customer's Site Survey form: cover page, Fiber Assignment Table, Event
 # Log, Exception Reporting.
 #
 # It runs IN-PROCESS rather than as a subprocess.  The three engine tools
@@ -10462,7 +10462,7 @@ def fqa_trace_distances(dir_a, dir_b, prod, **kwargs):
 #  PAGE: Field Capture — FQA section 1.2 with the labels in the photos checked
 # ═════════════════════════════════════════════════════════════════════════
 # The tech's A-Location / Z-Location form: rack location and panel details
-# for section 1.2 of the Lumen FQA Site Survey, photos, and a check that the
+# for section 1.2 of the customer's FQA Site Survey, photos, and a check that the
 # rack, RMU and panel labels read out of the photos match what was entered.
 # It fills the span's FQA (or the blank form) and hands it to Outlook.
 #

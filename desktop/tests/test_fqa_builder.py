@@ -32,7 +32,7 @@ from fqa.writer import (EXPECTED_FORM_VERSION, Exception_, FqaBuild,
                         form_version, write_fqa)                               # noqa: E402
 from fqa.xlsx_patch import Cell, Formula, WorkbookPatch                              # noqa: E402
 
-# Span 4's real Event Log, as Lumen received it: metres from Site A for
+# Span 4's real Event Log, as the customer received it: metres from Site A for
 # each of the twelve splice locations, then the span length.
 SPAN4_CLOSURES = [60, 5010, 7650, 13540, 18700, 23500, 27160,
                   32970, 38950, 44910, 50790, 54330]
@@ -93,7 +93,7 @@ def _write_termination_sheet(ws, building, address, bay_shelf, laterals):
     ws['C3'] = 'Termination Location Worksheet'
     ws['AJ3'] = 'Pictures Insert Below'
     ws['C5'] = 'Location Information'
-    ws['C6'], ws['G6'] = 'Customer', 'HP/Lumen'
+    ws['C6'], ws['G6'] = 'Customer', 'HP/Customer L'
     ws['C7'], ws['G7'] = 'Building', building
     ws['C8'], ws['G8'] = 'Address', address
     ws['C10'], ws['G10'] = 'Bay/Shelf', bay_shelf
@@ -363,8 +363,8 @@ def test_patch_preserves_every_part_but_the_calc_chain(tmp_path):
     assert openpyxl.load_workbook(out, data_only=True)['Event Log']['W8'].value == 1234
 
 
-def test_the_package_is_lumens_form_part_for_part(production_sheet, tmp_path):
-    """The deliverable must BE Lumen's form, not a copy of it.
+def test_the_package_is_the_customers_form_part_for_part(production_sheet, tmp_path):
+    """The deliverable must BE the customer's form, not a copy of it.
 
     Everything except the sheets we write, the calc chain we have to drop
     and the workbook part that carries fullCalcOnLoad comes through with
@@ -400,7 +400,7 @@ def test_the_package_is_lumens_form_part_for_part(production_sheet, tmp_path):
 
 
 def test_the_writer_never_changes_a_cell_style(production_sheet, tmp_path):
-    """The tan and blue on this form are Lumen's, and the package has to
+    """The tan and blue on this form are the customer's, and the package has to
     look like the form a reviewer knows. A written cell keeps the style
     index it had; only its value changes."""
     out = tmp_path / 'styled.xlsm'
@@ -523,7 +523,7 @@ def test_the_shipped_template_declares_every_prefix_it_names():
     assert not {n: v for n, v in bad.items() if v}
     # Excel never writes a numbered prefix in a workbook or sheet part, so
     # one there was put there by ElementTree.  (customXml/item2.xml has
-    # ns2..ns4 of its own, as Lumen issued it.)
+    # ns2..ns4 of its own, as the customer issued it.)
     numbered = {n: _numbered_prefixes(x) for n, x in parts.items()
                 if n.startswith('xl/')}
     assert not {n: v for n, v in numbered.items() if v}
@@ -608,7 +608,7 @@ def built_package(production_sheet, tmp_path_factory):
             'market': 'Denver', 'contractor': 'ZERODB CHRIS LINDSAY',
             'tester_1': 'DS', 'tester_2': 'TD',
             'calibration_date': '2025-01-04',
-            'project': 'P.259588 / Denver to Kansas City', 'customer': 'Lumen',
+            'project': 'P.259588 / Denver to Kansas City', 'customer': 'Customer L',
         },
         closures=SPAN4_CLOSURES, span_length_m=SPAN4_LENGTH_M,
         exceptions=[{'fiber': 195, 'event': 6,
@@ -717,7 +717,7 @@ def test_the_shipped_template_is_the_revision_the_cell_map_was_read_off():
     assert form_version(DEFAULT_TEMPLATE) == EXPECTED_FORM_VERSION
 
 
-def test_any_revision_of_the_lumen_form_is_accepted(production_sheet, tmp_path):
+def test_any_revision_of_the_customer_form_is_accepted(production_sheet, tmp_path):
     """Two revisions are in circulation and a tech's own blank may be
     either. Refusing one would block the work; the revision is reported
     in the completeness list instead."""
@@ -1260,11 +1260,11 @@ def test_every_event_row_carries_the_forms_formulas(built_package):
     """Four of the Event Log's columns are the form's own arithmetic, and
     building the template blanks them on every row (it has to, or a short
     span prints DEL ROW down the page). Each row we use must have them
-    put back, or the package goes to Lumen with no event numbers and no
+    put back, or the package goes to the customer with no event numbers and no
     from-Z or to-next distances.
 
     This was invisible to a spot check of the cells we write. It only
-    showed up in a sweep of every cell Lumen's own package fills.
+    showed up in a sweep of every cell the customer's own package fills.
     """
     _, out = built_package
     ws = openpyxl.load_workbook(out)['Event Log']

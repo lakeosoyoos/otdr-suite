@@ -13,7 +13,7 @@ import textwrap
 
 from conftest import REPO_ROOT, VIEWER_DIR
 
-FIX = REPO_ROOT / "desktop" / "tests" / "fixtures" / "zayo_sor"
+FIX = REPO_ROOT / "desktop" / "tests" / "fixtures" / "span432_sor"
 RUNNER = REPO_ROOT / "splicereport" / "run_splicereport.py"
 
 

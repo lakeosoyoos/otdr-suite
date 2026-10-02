@@ -1,7 +1,7 @@
 """Show/Hide 'Connectors' covers every connector finding in the end columns.
 
 The switch used to zero only the 1-direction connector-loss gate, so with it
-off the boss's Lumen Span 7 report (7AM 9-25) still printed 27 end-column
+off the boss's Span 7 report (7AM 9-25) still printed 27 end-column
 connector entries -- launch/tailbox reflectance like '94 REFL-49.7dB'.
 Robert, 2026-09-25: connectors off should only affect connectors, and never
 something at a splice.  Grid cells are not touched by this filter.

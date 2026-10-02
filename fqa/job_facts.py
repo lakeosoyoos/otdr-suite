@@ -92,7 +92,7 @@ class SiteFacts:
         """'001.0001..100.007.8 & 19' -- floor.room..aisle.bay.rmu.
 
         The empty field between room and aisle is the form's own; every
-        Lumen example has the double dot.
+        customer example has the double dot.
         """
         parts = (self.floor, self.room, self.aisle, self.bay, self.rmu)
         if not all(parts):
@@ -118,7 +118,7 @@ class JobFacts:
 
     network_type: str = NETWORK_LONG_HAUL
     package_type: str = 'Package Type: New Backbone'
-    customer: str | None = None             # 'Lumen'
+    customer: str | None = None             # the customer's name
     ring_loop_id: str = 'N/A'
 
     cable_manufacturer: str | None = None   # 'Corning'
@@ -153,7 +153,7 @@ class JobFacts:
     def missing(self) -> list[str]:
         """Fields the FQA will show as blank if nobody fills them.
 
-        Only the ones a Lumen reviewer bounces the package for: the
+        Only the ones a customer reviewer bounces the package for: the
         Submittal Checklist has a line for each.
         """
         out = []

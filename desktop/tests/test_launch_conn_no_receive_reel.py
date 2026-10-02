@@ -1,7 +1,7 @@
 """Launch connector graded when the far direction has no receive reel.
 
 Both launch-connector gates need a reading from each direction.  With a
-launch reel at each end and no receive reel (Lumen Span 7, Monument <->
+launch reel at each end and no receive reel (Span 7, Monument <->
 Grainfield), each trace ENDS at the other end's panel, so the far direction
 never stores that connector as an event, and no gate could fire: a 4.787 dB
 Monument connector on fiber 229 went unreported.

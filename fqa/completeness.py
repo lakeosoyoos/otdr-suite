@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 from .production_sheet import SPLICE, TERMINATION
 
-# How serious a gap is.  'blocking' means Lumen will send the package back;
+# How serious a gap is.  'blocking' means the customer will send the package back;
 # 'check' means it is probably fine but somebody should have looked.
 BLOCKING = 'blocking'
 CHECK = 'check'
@@ -164,10 +164,10 @@ def audit(prod, job, chain, fat_rows, exceptions=None,
     gaps: list[Gap] = []
 
     if form_revision != VERIFIED_FORM_VERSION:
-        what = (f'this form is Lumen revision {form_revision}, not '
+        what = (f'this form is revision {form_revision}, not '
                 f'{VERIFIED_FORM_VERSION}') if form_revision else \
                ('this form has no Version History tab, so its revision is '
-                'unknown: it is the older Lumen form')
+                'unknown: it is the older form')
         gaps.append(Gap(
             'Form', what,
             f'the cell map was read off revision {VERIFIED_FORM_VERSION} and '

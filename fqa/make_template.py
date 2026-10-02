@@ -2,12 +2,12 @@
 Turn a finished FQA package into a blank template
 =================================================
 
-Lumen publishes the blank Site Survey form on an internal share that we
+The customer publishes the blank Site Survey form on an internal share that we
 cannot reach from here, so the template that ships with this tool is
 built from a package we HAVE: every span-specific value cleared, every
 site photo stripped, and the form's own formulas and macros untouched.
 
-Run it again whenever Lumen publishes a new revision of the form (the
+Run it again whenever the customer publishes a new revision of the form (the
 Version History tab records them) against a package built on that
 revision:
 

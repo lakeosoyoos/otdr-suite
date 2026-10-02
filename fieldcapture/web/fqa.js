@@ -14,7 +14,7 @@
        below anything already on the tab.
      * xl/workbook.xml gets fullCalcOnLoad="1" so the FAT and Event Log formulas that read
        section 1.2 recalculate when the file is opened.
-   The DOM parser keeps namespace prefixes as written, so the sheet XML stays as the customer wrote it. */
+   The DOM parser keeps namespace prefixes as written, so the sheet XML stays the customer's. */
 'use strict';
 (function () {
   const MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';

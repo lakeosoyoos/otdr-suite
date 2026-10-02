@@ -1,4 +1,4 @@
-"""Phase 2 of the AWS / IIG MT.1085 work: the acquisition checked against the
+"""Phase 2 of the contract profile work: the acquisition checked against the
 customer's own figures, and the grading wavelength made explicit.
 
 Everything the acquisition audit did before asked "do these traces agree with
@@ -16,7 +16,7 @@ Three properties matter and each has a quiet failure mode:
      contract is a dict of expected values, and the runner must whitelist it
      so a profile typo cannot put arbitrary content in a customer's report.
   3. Absence changes nothing.  A run with no customer profile (Default /
-     Lumen / Zayo) must render the audit sheet exactly as before.
+     customer L / customer Z) must render the audit sheet exactly as before.
 
 Plus the grading wavelength: a folder holding both wavelengths of a fiber
 collides on fiber number and the loader keeps the FIRST by name, so such a
@@ -40,8 +40,8 @@ from conftest import (
 
 import app as hub
 
-IIG = "AWS / IIG MT.1085"
-IIG_CONTRACT = {"name": IIG, "ior": 1.467, "backscatter_db": -81.4,
+CONTRACT_PROFILE = "AWS / IIG MT.1085"
+CONTRACT_BLOCK = {"name": CONTRACT_PROFILE, "ior": 1.467, "backscatter_db": -81.4,
                 "wavelengths_nm": [1550.0, 1625.0], "graded_nm": 1550.0}
 
 
@@ -84,7 +84,7 @@ def test_ior_mismatch_is_stated_in_metres():
     set to 1.4700 on 1.467 glass reports every distance SHORT -- true distance
     is d * 1.4700 / 1.467 -- so events sit ~204 m per 100 km farther out."""
     AA = _audit()
-    con = AA.compute_contract_conformance([_rec()], [_rec()], IIG_CONTRACT)
+    con = AA.compute_contract_conformance([_rec()], [_rec()], CONTRACT_BLOCK)
     row = next(r for r in con["rows"] if r["name"] == "Group index (IOR)")
     assert row["conforms"] is False
     assert "+2,045 ppm" in row["note"], row["note"]
@@ -219,10 +219,10 @@ def test_contract_reaches_the_audit_sheet_without_overrides(tmp_path):
     locally, so a contract block that borrowed it raised NameError on exactly
     the hub's most common invocation (no active overrides)."""
     out = tmp_path / "c.xlsx"
-    p = _run_raw(out, ["--contract", json.dumps(IIG_CONTRACT)])
+    p = _run_raw(out, ["--contract", json.dumps(CONTRACT_BLOCK)])
     assert p.returncode == 0, p.stderr[-1500:]
     text = _acq_text(out)
-    assert "Contract" in text and IIG in text
+    assert "Contract" in text and CONTRACT_PROFILE in text
     assert "Group index (IOR)" in text and "ppm" in text
     assert "Backscatter coefficient" in text
     assert "Graded wavelength" in text
@@ -265,7 +265,7 @@ def test_runner_whitelists_the_contract(tmp_path):
 
 
 def test_no_contract_leaves_the_audit_sheet_as_before(tmp_path):
-    """Property 3: Default / Lumen / Zayo runs carry no contract and their
+    """Property 3: Default / customer L / customer Z runs carry no contract and their
     audit sheet must not gain a block."""
     out = tmp_path / "n.xlsx"
     assert _run_raw(out, []).returncode == 0
@@ -273,18 +273,18 @@ def test_no_contract_leaves_the_audit_sheet_as_before(tmp_path):
     assert "Contract" not in head and "Group index (IOR)" not in head
 
 
-def test_iig_profile_carries_the_contract_and_grades_at_1550():
-    con = hub._contract_from_profile(IIG)
+def test_contract_profile_carries_the_contract_and_grades_at_1550():
+    con = hub._contract_from_profile(CONTRACT_PROFILE)
     assert con["ior"] == 1.467
     assert con["backscatter_db"] == -81.4
     assert con["wavelengths_nm"] == [1550.0, 1625.0]
     assert con["graded_nm"] == 1550.0
     assert con["span_km_range"] == [64.8, 72.6]
-    ex = hub._engine_extras_from_profile(IIG)
+    ex = hub._engine_extras_from_profile(CONTRACT_PROFILE)
     assert ex["GRADE_WAVELENGTH_NM"] == 1550.0 and ex["RIBBON_SIZE"] == 24.0
-    # The iOLM-export switches ride the same channel (test_iig_iolm_exports),
-    # as do the splice-loss boundary rule (test_iig_strict_boundary) and the
-    # read-the-ends-from-the-files switch (test_iig_site_identifiers).
+    # The iOLM-export switches ride the same channel (test_contract_iolm_exports),
+    # as do the splice-loss boundary rule (test_contract_strict_boundary) and the
+    # read-the-ends-from-the-files switch (test_contract_site_identifiers).
     assert set(ex) == {"GRADE_WAVELENGTH_NM", "RIBBON_SIZE", "IOLM_END_FALLBACK",
                        "PANEL_CONN_DIRECT", "FQA_DURATION_TAG",
                        "SPLICE_STRICT_BOUNDARY", "SITE_NAMES_FROM_IDENTIFIERS",
