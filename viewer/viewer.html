@@ -6500,17 +6500,15 @@ function paintFecGrid(traces, res, host, hint) {
   const hdr = table.querySelector('th.fr-evhdr');
   if (hdr) {
     hdr.style.cursor = 'pointer';
-    hdr.title = 'zoom to the panel connectors';
+    hdr.title = 'zoom to the panel connectors, span and settings';
     hdr.addEventListener('click', (ev) => {
       const shownG = rows.filter(r => r.g && r.g.found && evAt.get(r.t.key) && evAt.get(r.t.key).conn != null);
-      const btn = ev.target.closest('.fr-evmenu');
-      if (!btn) {                        // the header itself zooms, as on the other tables
-        const kms = shownG.map(r => r.g.conn_km).sort((a, b) => a - b);
-        if (kms.length) zoomToKm(kms[Math.floor(kms.length / 2)], 0.3);
-        return;
-      }
+      // The heading zooms to the connectors and opens the menu, as on the
+      // other tables.
       ev.stopPropagation();
-      const b = btn.getBoundingClientRect();
+      const b = (ev.target.closest('.fr-evmenu') || hdr).getBoundingClientRect();
+      const kms = shownG.map(r => r.g.conn_km).sort((a, b) => a - b);
+      if (kms.length) zoomToKm(kms[Math.floor(kms.length / 2)], 0.3);
       const picks = connPicks();
       if (picks.length) showColumnMenu(b.left, b.bottom + 2, picks);
     });
@@ -7195,7 +7193,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     const present = c.ev.filter(x => x);
     const isEnd = present.length > 0 && present.every(x => x.is_end);
     h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.km}" data-col="${i}" `
-        + `title="zoom to ${c.km.toFixed(3)} km">${isEnd ? 'End' : 'Event ' + (i + 1)}`
+        + `title="zoom to ${c.km.toFixed(3)} km, span and settings">${isEnd ? 'End' : 'Event ' + (i + 1)}`
         + `<button class="fr-evmenu" data-col="${i}" title="span and settings">⋯</button></th>`;
     h2 += `<th colspan="2" class="fr-evsub" data-col="${i}">${colKind(c)}<br>`
         + `<span class="fr-km">${kmFt(c.km - zeroKm)}</span></th>`;
@@ -7502,12 +7500,14 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   };
   table.querySelectorAll('th.fr-evhdr').forEach(th => {
     th.style.cursor = 'pointer';
+    // A click on the heading ("Event 1") zooms to the event and opens its
+    // span menu, as the ⋯ does (Robert 2026-10-02: the boss clicks the
+    // event's name, not the dots, to get Span START, END, Reset).
     th.addEventListener('click', (ev) => {
-      const btn = ev.target.closest('.fr-evmenu');
-      if (!btn) { zoomToKm(+th.dataset.km, 2); return; }
       ev.stopPropagation();
-      const r = btn.getBoundingClientRect();
-      const picks = colPicks(+btn.dataset.col);
+      const r = (ev.target.closest('.fr-evmenu') || th).getBoundingClientRect();
+      zoomToKm(+th.dataset.km, 2);
+      const picks = colPicks(+th.dataset.col);
       if (picks.length) showColumnMenu(r.left, r.bottom + 2, picks);
     });
   });
@@ -7906,7 +7906,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     if (!keepCol[i]) return;
     const n = c.ev.filter(x => x).length;
     const span = c.mixed ? 3 : 2;
-    h1 += `<th colspan="${span}" class="fr-evhdr" data-km="${c.km}" data-col="${i}" title="zoom to ${c.km.toFixed(3)} km">`
+    h1 += `<th colspan="${span}" class="fr-evhdr" data-km="${c.km}" data-col="${i}" title="zoom to ${c.km.toFixed(3)} km, span and settings">`
         + `Event ${i + 1} (${n}/${have.length})`
         + `<button class="fr-evmenu" data-col="${i}" title="span and settings">⋯</button></th>`;
     h2 += `<th colspan="${span}" class="fr-evsub" data-col="${i}">${colKind(c)}<br><span class="fr-km">${kmFt(c.km - zeroKm)}</span></th>`;
@@ -8136,12 +8136,14 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   };
   table.querySelectorAll('th.fr-evhdr').forEach(th => {
     th.style.cursor = 'pointer';
+    // A click on the heading ("Event 1") zooms to the event and opens its
+    // span menu, as the ⋯ does (Robert 2026-10-02: the boss clicks the
+    // event's name, not the dots, to get Span START, END, Reset).
     th.addEventListener('click', (ev) => {
-      const btn = ev.target.closest('.fr-evmenu');
-      if (!btn) { zoomToKm(+th.dataset.km, 2); return; }
       ev.stopPropagation();
-      const r = btn.getBoundingClientRect();
-      const picks = colPicks(+btn.dataset.col);
+      const r = (ev.target.closest('.fr-evmenu') || th).getBoundingClientRect();
+      zoomToKm(+th.dataset.km, 2);
+      const picks = colPicks(+th.dataset.col);
       if (picks.length) showColumnMenu(r.left, r.bottom + 2, picks);
     });
   });
@@ -8663,7 +8665,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   cols.forEach((c, i) => {
     if (!keepCol[i]) return;
     const n = c.ev.filter(x => x).length;
-    h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.viewKm}" data-col="${i}" title="zoom to ${c.km.toFixed(3)} km">`
+    h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.viewKm}" data-col="${i}" title="zoom to ${c.km.toFixed(3)} km, span and settings">`
         + `${esc(c.title)} (${n}/${have.length})`
         + `<button class="fr-evmenu" data-col="${i}" title="span and settings">⋯</button></th>`;
     // An event column's FastReporter word before the distance, as in FR
@@ -8868,12 +8870,14 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   };
   table.querySelectorAll('th.fr-evhdr').forEach(th => {
     th.style.cursor = 'pointer';
+    // A click on the heading ("Event 1") zooms to the event and opens its
+    // span menu, as the ⋯ does (Robert 2026-10-02: the boss clicks the
+    // event's name, not the dots, to get Span START, END, Reset).
     th.addEventListener('click', (ev) => {
-      const btn = ev.target.closest('.fr-evmenu');
-      if (!btn) { zoomToKm(+th.dataset.km, 2); return; }
       ev.stopPropagation();
-      const r = btn.getBoundingClientRect();
-      const picks = colPicks(+btn.dataset.col);
+      const r = (ev.target.closest('.fr-evmenu') || th).getBoundingClientRect();
+      zoomToKm(+th.dataset.km, 2);
+      const picks = colPicks(+th.dataset.col);
       if (picks.length) showColumnMenu(r.left, r.bottom + 2, picks);
     });
   });
