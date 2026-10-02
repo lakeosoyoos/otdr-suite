@@ -5458,12 +5458,31 @@ function drawPairing(sets, r, failedOnly = false) {
       const dx = dispKm(t, raw);
       return { t, leg, w, raw, dx, px: xToPx(dx, r) };
     };
+    // What a right-click on a mark or tag opens the span menu on: a leg that
+    // is a real event of its file, at that event's own raw km.  A filled-in
+    // leg is not one; the cell's other leg is (the boss, 2026-10-02: a
+    // right-click on a gray mark or on a tag gave the browser's own menu).
+    const legPick = (t, leg) => t && leg && !leg.hollow && leg.km != null
+      ? { dir: t.dir, km: leg.km, fiber: t.fiber, src: t.src || t.dir } : null;
+    const cellPicks = (p, cell) =>
+      [legPick(p.ta, cell.legs.a), legPick(p.tb, cell.legs.b)].filter(Boolean);
+    // A column's tag is every fibre's: each direction uses the first fibre
+    // (the worst first) with a real event there, as the header's ⋯ does.
+    const colPicks = (cells) => ['a', 'b'].map(w => {
+      for (const c of cells) {
+        const p = D.have[c.fi];
+        const pk = legPick(w === 'a' ? p.ta : p.tb, c.legs[w]);
+        if (pk) return pk;
+      }
+      return null;
+    }).filter(Boolean);
     // One leg's mark.  `label` prints "A 0.175" beside it: A above, B below,
     // so the two directions' numbers never sit on one another.  A filled-in
     // leg's goes to the other side and the LEFT of its ring, clear of the
     // readings beside it (FastReporter copies a leg onto the other
     // direction's reading, a band's width away from its own).
-    const legMark = (q, fi, ci, label, dim) => {
+    const legMark = (q, cell, ci, label, dim) => {
+      const fi = cell.fi;
       const py = yAt(q.t, q.raw);
       const color = q.leg.hollow ? DRAWER_COLOR.gray : colorOf(q.leg.fail, q.leg.warn);
       ctx.globalAlpha = dim;
@@ -5474,7 +5493,7 @@ function drawPairing(sets, r, failedOnly = false) {
       } else {
         ctx.beginPath(); ctx.moveTo(q.px, py - 12); ctx.lineTo(q.px, py + 12); ctx.stroke();
       }
-      const hit = { x0: q.px - 4, x1: q.px + 4, y0: py - 12, y1: py + 12 };
+      const hit = { x0: q.px - 6, x1: q.px + 6, y0: py - 12, y1: py + 12 };
       // An end or launch row has no loss to print: its mark alone says where.
       // Its value is placed after the tags, clear of them and of every
       // other value (placeValueLabels).
@@ -5485,7 +5504,8 @@ function drawPairing(sets, r, failedOnly = false) {
       // on the file's own event number.  A filled-in leg is not one.
       const rec = { ...hit, go: () => D.goCell(fi, q.w, ci), pick: q.t,
                     t: q.leg.hollow ? null : q.t,
-                    e: q.leg.hollow ? null : { dist_km: q.raw } };
+                    e: q.leg.hollow ? null : { dist_km: q.raw },
+                    menu: q.leg.hollow ? cellPicks(D.have[fi], cell) : [legPick(q.t, q.leg)] };
       gLabelHits.push(rec);
       if (valueTxt) pendingValues.push({ q, py, txt: valueTxt, color, dim, rec });
     };
@@ -5500,12 +5520,12 @@ function drawPairing(sets, r, failedOnly = false) {
       if (!inView(lo, hi)) return;
       const color = colorOf(cell.avgFail, cell.avgWarn);
       band(lo, hi, color, 0.13);
-      qs.forEach(q => legMark(q, cell.fi, col.i, !D.single, 1));
+      qs.forEach(q => legMark(q, cell, col.i, !D.single, 1));
       const v = (col.fmt || fmtV)(cell.avg);
       const who = many ? `F${p.fiber}${D.single ? ((p.ta ? ' A' : ' B')) : ''} ` : '';
       tags.push({ x: (xToPx(lo, r) + xToPx(hi, r)) / 2, color,
                   full: `${who}${col.title}${v ? `  ${col.word || word} ${v}` : ''}${cell.avgFail ? '  FAIL' : ''}`,
-                  short: `${who}${v || col.title}`,
+                  short: `${who}${v || col.title}`, menu: cellPicks(p, cell),
                   go: () => D.goCell(cell.fi, D.single ? (p.ta ? 'a' : 'b') : 'avg', col.i) });
     };
     for (const col0 of D.cols) {
@@ -5530,7 +5550,7 @@ function drawPairing(sets, r, failedOnly = false) {
           if (!q) continue;
           if (q.dx < lo) lo = q.dx;
           if (q.dx > hi) hi = q.dx;
-          if (allTicks || cell.avgFail) legs.push([q, cell.fi]);
+          if (allTicks || cell.avgFail) legs.push([q, cell]);
         }
       }
       if (lo > hi) lo = hi = col.km;           // no leg on screen: the column's own km
@@ -5539,13 +5559,15 @@ function drawPairing(sets, r, failedOnly = false) {
       if (inView(lo, hi)) {
         band(lo, hi, color, 0.09);
         const dim = pickFi >= 0 ? 0.3 : 0.75;
-        legs.forEach(([q, fi]) => legMark(q, fi, col.i, false, dim));
+        legs.forEach(([q, cell]) => legMark(q, cell, col.i, false, dim));
         const worst = (col.fmt || fmtV)(s.worst);
         const count = s.nFail ? `  ${s.nFail}/${s.n} FAIL` : s.nWarn ? `  ${s.nWarn}/${s.n} warn` : '';
         const wp = D.have[s.worstFi];
         tags.push({ x: (xToPx(lo, r) + xToPx(hi, r)) / 2, color,
                     full: `${col.title}${worst ? `  max ${worst}` : ''}${count}`,
                     short: s.nFail ? `${s.nFail}/${s.n}` : (worst || col.title),
+                    menu: colPicks([...drawn.filter(c => c.fi === s.worstFi),
+                                    ...drawn.filter(c => c.fi !== s.worstFi)]),
                     go: () => D.goCell(s.worstFi, D.single && wp ? (wp.ta ? 'a' : 'b') : 'avg', col.i) });
       }
       const picked = col.cells.find(c => c.fi === pickFi);
@@ -5563,14 +5585,14 @@ function drawPairing(sets, r, failedOnly = false) {
     if (g.text == null) {
       ctx.fillRect(g.x0, y + TAG_H - 8, g.x1 - g.x0, 8);
       gLabelHits.push({ x0: g.x0 - 2, x1: g.x1 + 2, y0: y + TAG_H - 10, y1: y + TAG_H + 2,
-                        go: t.go, t: null, e: null });
+                        go: t.go, t: null, e: null, menu: t.menu });
       return;
     }
     ctx.fillRect(g.x0, y, g.x1 - g.x0, TAG_H);
     ctx.fillStyle = t.color === DRAWER_COLOR.warn ? '#3d3300' : '#ffffff';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(g.text, (g.x0 + g.x1) / 2, y + TAG_H / 2 + 0.5);
-    gLabelHits.push({ x0: g.x0, x1: g.x1, y0: y, y1: y + TAG_H, go: t.go, t: null, e: null });
+    gLabelHits.push({ x0: g.x0, x1: g.x1, y0: y, y1: y + TAG_H, go: t.go, t: null, e: null, menu: t.menu });
   });
   // The tags are down: they and every value placed so far are taken space.
   placed.forEach(g => {
@@ -10692,10 +10714,15 @@ canvas.addEventListener('mousedown', (ev) => {
     return;
   }
   // An event number is a link to its row in the table: pressing on one
-  // does not start a pan.
+  // does not start a pan.  A right press is the span menu's alone: on
+  // Windows its mouse-up comes before the menu, and as a click it picked
+  // (or let go of) the fiber and jumped the table under the menu.
   if (!gMarkerMode) {
     const lh = labelHit(ev.offsetX, ev.offsetY);
-    if (lh) { gLabelClick = { hit: lh, x: ev.offsetX, y: ev.offsetY }; return; }
+    if (lh) {
+      if (ev.button === 0) gLabelClick = { hit: lh, x: ev.offsetX, y: ev.offsetY };
+      return;
+    }
   }
   // A press on a trace is a click (go to its row) or the start of a pan;
   // the mouse-up decides which, so the pan below starts either way.  A
@@ -10828,13 +10855,20 @@ window.addEventListener('mouseup', (ev) => {
 canvas.addEventListener('dblclick', () => { if (!gMarkerMode) fit(); });
 // Right-click an event number to make that event the span's start or end:
 // the same menu a right-click on the grid cell opens, fed the same way (the
-// trace names the direction, the event its own raw km).
+// trace names the direction, the event its own raw km).  A drawer mark or
+// tag names its own picks (`menu`); a tag or filled-in leg over both
+// directions asks which one first, as a header's ⋯ does.
 canvas.addEventListener('contextmenu', (ev) => {
   const lh = labelHit(ev.offsetX, ev.offsetY);
-  if (!lh || !lh.t) return;          // a tag or a filled-in leg is no event
+  if (!lh) return;
+  const picks = lh.menu || (lh.t && lh.e
+    ? [{ dir: lh.t.dir, km: lh.e.dist_km, fiber: lh.t.fiber, src: lh.t.src || lh.t.dir }] : []);
+  if (!picks.length) return;
   ev.preventDefault();
   gLabelClick = null;
-  showSpanMenu(ev.clientX, ev.clientY, lh.t.dir, lh.e.dist_km, lh.t.fiber, lh.t.src || lh.t.dir);
+  const p = picks[0];
+  if (picks.length === 1) showSpanMenu(ev.clientX, ev.clientY, p.dir, p.km, p.fiber, p.src);
+  else showDirChooser(ev.clientX, ev.clientY, picks);
 });
 canvas.addEventListener('mouseleave', () => { gMouse = null; gHoverKey = null; drawHover(); });
 
