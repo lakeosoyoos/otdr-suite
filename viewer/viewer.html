@@ -5088,9 +5088,7 @@ function drawPairing(sets, r, failedOnly = false) {
   };
   const fmtV = v => v != null && !isNaN(v) ? v.toFixed(3) : null;
   for (const D of sets) {
-    // A table that grades only some of a trace's events (FEC: the panel
-    // connector and what it combines) leaves the trace its own numbers.
-    if (!D.keepNumbers) D.have.forEach(p => { if (p.ta) covered.add(p.ta); if (p.tb) covered.add(p.tb); });
+    D.have.forEach(p => { if (p.ta) covered.add(p.ta); if (p.tb) covered.add(p.tb); });
     const pickFi = gPickKey ? D.have.findIndex(p => (p.ta && p.ta.key === gPickKey)
                                                  || (p.tb && p.tb.key === gPickKey)) : -1;
     // Counted over the fibres ON SCREEN, not the table's: the Report draws
@@ -5819,6 +5817,27 @@ function paintFecGrid(traces, res, host, hint) {
     return { t, side, g: (grades[side] || {})[String(t.fiber)] || null };
   });
   const fails = all.filter(r => r.g && (r.g.fail_loss || r.g.fail_refl)).length;
+  // The chart numbers only what the table prints, as on the Viewer's other
+  // tables (see tableMark; Robert 2026-10-01, "make FEC viewer match Viewer
+  // in all areas"): each graded trace's panel connector and the events the
+  // rule combines with it.  The grade's km comes from the engine's own read
+  // of the file, so each is matched to the trace's nearest event within
+  // FEC_MARK_TOL_KM.  A trace with no grade keeps every number, as a trace
+  // no table has taken does.
+  const FEC_MARK_TOL_KM = 0.005;
+  const graded0 = all.filter(r => r.g && r.g.found);
+  tableMarkReset(graded0.map(r => r.t));
+  for (const { t, g } of graded0) {
+    const evs = (t.data && t.data.events) || [];
+    for (const km of [g.conn_km, ...(g.combined || []).map(c => c.km)]) {
+      let best = null;
+      for (const e of evs) {
+        const d = Math.abs(e.dist_km - km);
+        if (d <= FEC_MARK_TOL_KM && (!best || d < best.d)) best = { d, e };
+      }
+      if (best) tableMark(t, best.e.dist_km);
+    }
+  }
   // The gear's switches, the FEC way.  A gainer (a negative connector or FEC
   // loss: one trace's reading) prints blank with Show Gainers off and leaves
   // the Minimum / Maximum / Average; it never fails, so no verdict moves.
@@ -5973,8 +5992,7 @@ function paintFecGrid(traces, res, host, hint) {
   // own loss) and the connector's reflectance, colored by the FEC verdict --
   // a combined event fails with the loss it is part of.  Each trace is its
   // own "fibre", on the side it came from.  Only the cells the table prints
-  // are marked, so the filters reach the chart.  The rule grades no other
-  // event, so every trace keeps its file's own event numbers (keepNumbers).
+  // are marked, so the filters reach the chart.
   const fecRows = rows.filter(r => r.g && r.g.found);
   const fecHave = fecRows.map(({ t, side }) => side === 'A' ? { fiber: t.fiber, ta: t } : { fiber: t.fiber, tb: t });
   const fecCell = (r, fi, km, v, fail) => {
@@ -5995,7 +6013,7 @@ function paintFecGrid(traces, res, host, hint) {
     g => { const v = g.combined[k].loss; return hideG(v) ? null : v; },
     g => g.fail_loss));
   if (fecRows.length) gDrawerMarks.push({
-    mode: 'fec', single: true, have: fecHave, keepNumbers: true,
+    mode: 'fec', single: true, have: fecHave,
     cols: [fecCol(0, 'Panel Connector', 'loss', g => g.conn_km,
                   g => hideG(g.loss) ? null : g.loss, g => g.fail_loss),
            ...combCols,

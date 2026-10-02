@@ -129,7 +129,7 @@ JSC = ('/System/Library/Frameworks/JavaScriptCore.framework/Versions/'
        'Current/Helpers/jsc')
 
 
-def _paint_fec(switches, with_marks=False):
+def _paint_fec(switches, with_marks=False, with_nums=False):
     """Run the real paintFecGrid under JavaScriptCore on three made-up
     grades and return the table markup it builds.  F1 fails on loss (the
     connector plus one event behind it), F2 on reflectance, F3 passes with a
@@ -154,8 +154,13 @@ def _paint_fec(switches, with_marks=False):
         '3': {'found': True, 'conn_km': 1.0050, 'conn_loss': -0.032, 'loss': -0.032,
               'combined': [], 'refl': -58.0, 'fail_loss': False, 'fail_refl': False},
     }}
+    # each file's own events: the panel, one 48 m behind it, the first FEC
+    # splice and the end; F1's panel is read 0.4 m off the engine's km
+    evs = lambda conn: [{'dist_km': conn}, {'dist_km': 1.0600}, {'dist_km': 2.16},
+                        {'dist_km': 4.993}]
     traces = [{'fiber': f, 'src': 'a', 'key': f'a-{f}', 'color': '#000',
-               'data': {'wavelength_nm': 1550}} for f in (1, 2, 3)]
+               'data': {'wavelength_nm': 1550, 'events': evs(conn)}}
+              for f, conn in ((1, 1.0125), (2, 1.0117), (3, 1.0050))]
     js = ("var gInfo=null, gGridGoTo=null, gTableExport=null, gPickKey=null, gDrawerMarks=[];"
           " const FR_ROW_H=22; var window={getSelection:()=>''};\n"
           "function draw(){} function zoomToKm(){} function pinnedFootH(){return 0}"
@@ -171,10 +176,15 @@ def _paint_fec(switches, with_marks=False):
           + line(r"let gFailCellsOnly = false;") + line(r"let gWarnCellsOnly = false;")
           + line(r"const cellFilterOn = .*") + "let gShowGainers = true;\n"
           + line(r"const gainerHidden = .*")
+          + "let gTableKm = null;\n" + fn('tableKmKey') + fn('tableMarkReset')
+          + fn('tableMark') + fn('inTable')
           + fn('isPicked') + fn('fecGateText') + fn('paintFecGrid')
           + ''.join(f"{k} = {json.dumps(v)};\n" for k, v in switches.items())
-          + f"var hint=el(); paintFecGrid({json.dumps(traces)}, {json.dumps({'grades': grades})}, el(), hint);\n"
-          + "print(hint.textContent); print(JSON.stringify(gDrawerMarks)); print(OUT);\n")
+          + f"var with_nums = {json.dumps(with_nums)};\n"
+          + f"var TRS = {json.dumps(traces)}, hint=el(); paintFecGrid(TRS, {json.dumps({'grades': grades})}, el(), hint);\n"
+          + "var NUMS = {}; TRS.forEach(t => { NUMS[t.key] = t.data.events"
+            ".filter(e => inTable(t, e)).map(e => e.dist_km); });\n"
+          + "print(hint.textContent); print(JSON.stringify(with_nums ? NUMS : gDrawerMarks)); print(OUT);\n")
     with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as fh:
         fh.write(js)
     try:
@@ -185,7 +195,7 @@ def _paint_fec(switches, with_marks=False):
     hint, marks, out = p.stdout.split('\n', 2)
     body = re.search(r'<tbody>(.*)</tbody>', out, re.S).group(1)
     foot = re.search(r'<tfoot>(.*)</tfoot>', out, re.S)
-    if with_marks:
+    if with_marks or with_nums:
         return json.loads(marks)
     return hint, body, foot.group(1) if foot else ''
 
@@ -256,9 +266,6 @@ def test_fec_marks_the_chart_at_the_connector_and_its_combined_events():
     combines (its own loss, failing with the sum) and the reflectance."""
     (D,) = _paint_fec({}, with_marks=True)
     assert D['mode'] == 'fec' and D['single'] is True
-    # FEC grades only the connector, so the traces keep their event numbers
-    assert D['keepNumbers'] is True
-    assert 'if (!D.keepNumbers) D.have.forEach(' in HTML
     cols = {c['title']: c for c in D['cols']}
     assert set(cols) == {'Panel Connector', 'Combined Event', 'Connector Refl.'}
     conn = {c['fi']: c for c in cols['Panel Connector']['cells']}
@@ -273,6 +280,18 @@ def test_fec_marks_the_chart_at_the_connector_and_its_combined_events():
     (D,) = _paint_fec({'gFailCellsOnly': True}, with_marks=True)
     cols = {c['title']: [x['fi'] for x in c['cells']] for c in D['cols']}
     assert cols == {'Panel Connector': [0], 'Combined Event': [0], 'Connector Refl.': [1]}
+
+
+def test_fec_chart_numbers_only_the_events_the_table_prints():
+    """Like the Viewer's other tables (tableMark): the chart numbers only
+    what the FEC table printed -- the panel connector and the events combined
+    with it -- not every event of every trace (Robert 2026-10-01: "make FEC
+    viewer match Viewer in all areas", the chart had a number on each)."""
+    nums = _paint_fec({}, with_nums=True)
+    assert nums['a-1'] == [1.0125, 1.06]       # panel (0.4 m off) + combined
+    assert nums['a-2'] == [1.0117]             # nothing combined
+    assert nums['a-3'] == [1.005]
+    assert "tableMarkReset(graded0.map(r => r.t));" in HTML
 
 
 def test_viewer_script_still_parses():
