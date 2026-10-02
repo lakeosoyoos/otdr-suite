@@ -1957,6 +1957,12 @@ def ensure_trace_server():
     trace_server.CONFIG['engine_argv'] = (
         [sys.executable, '--run-splicereport'] if FROZEN
         else [sys.executable, os.path.join(SPLICEREPORT_DIR, 'run_splicereport.py')])
+    # FEC mode's gates follow the customer profile (and any FEC Settings
+    # edits on the Splice Report FEC page), so the Viewer and the tool agree.
+    try:
+        trace_server.set_fec_gates(_fec_active_gates())
+    except Exception as exc:                            # noqa: BLE001
+        report_error('viewer — FEC gates', exc)
     return st.session_state['trace_port']
 
 
@@ -3030,7 +3036,8 @@ PROJECT_LAYOUT_HELP = (
     'Meter and Splice Logs. The project saves itself as you work; there is no Save button.')
 # Run Traces is the trace tools only; the FQA Builder and Field Capture are
 # project work (Robert, 2026-09-24).
-TOOLS_TRACES = ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce']
+TOOLS_TRACES = ['Viewer', 'Splice Report', 'Splice Report FEC', 'Viewer FEC',
+                'Unidirectional', 'Secret Sauce']   # FEC: Robert 2026-10-02 (main #525)
 TOOLS_PROJECT = ['Project Status'] + TOOLS_TRACES + ['FQA Builder', 'Field Capture']
 def work_dir(project_path=None):
     p = project_path or st.session_state.get('project_path')
@@ -3425,8 +3432,10 @@ def _mode_actions():
 
 # Each shoot's row on the Traces tab has its own Run In… button (Robert,
 # 2026-09-27: "instead of selecting them and clicking buttons at the bottom
-# we can just click a button in the trace's row").
-RUN_IN_TOOLS = ('Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce')
+# we can just click a button in the trace's row").  The FEC tools start there
+# too (Robert, 2026-10-02): a project opens them from a shoot's Run In….
+RUN_IN_TOOLS = ('Viewer', 'Splice Report', 'Splice Report FEC', 'Viewer FEC',
+                'Unidirectional', 'Secret Sauce')
 
 
 def run_in_key(sh, page):
@@ -3441,8 +3450,11 @@ def _run_shoot_in(page, sh):
         if str(k).startswith(('sr_result', 'sr_dirs', 'uni_result', 'ss_result',
                               'viewer_target')):
             ss.pop(k, None)
-    if page in ('Viewer', 'Splice Report'):
+    if page in ('Viewer', 'Splice Report', 'Viewer FEC'):
         ss['view_dir_a_input'], ss['view_dir_b_input'] = sh['a'], sh['b']
+    if page == 'Splice Report FEC':
+        # Its own A End / B End FEC boxes (the page shows what is in them).
+        ss['fec_dir_a'], ss['fec_dir_b'] = sh['a'], sh['b']
     if page == 'Splice Report':
         ss[_sr_span_keys(1)['mode']] = SR_MODE_TWO
         ss['sr_n_spans'] = 1
@@ -3922,7 +3934,7 @@ _CARRIED_SETTINGS = ('otdr_profile', 'otdr_settings', 'conn_settings',
                      # clicks open and where reports are saved came back as
                      # the defaults after "This tab" -> "← Back" (2026-09-29).
                      'sr_click_target_saved', 'uni_click_target_saved',
-                     'sr_report_dest', 'uni_report_dest')
+                     'sr_report_dest', 'uni_report_dest', 'fec_report_dest')
 _CARRY_ID_RE = re.compile(r'[0-9a-f]{12}')
 _CARRY_KEPT = 50
 
@@ -3990,7 +4002,7 @@ def _handle_nav():
         del st.query_params['cs']
     if qp.get('nav'):
         st.session_state['_nav_arrived'] = True     # the mode gate skips Home
-    if qp.get('nav') == 'viewer' and ('pa' in qp or 'pb' in qp):
+    if qp.get('nav') in ('viewer', 'viewerfec') and ('pa' in qp or 'pb' in qp):
         # The left panel's own folders rode the link (see _panel_qs).
         st.session_state['_panel_restore'] = (qp.get('pa') or '', qp.get('pb') or '')
     # Duplicate Check pair click: ?nav=viewer&fibers=410,418&dir=a[&ssfolder=…]
@@ -4042,6 +4054,24 @@ def _handle_nav():
         st.query_params.clear()
         return
 
+    # Splice Report FEC row click: ?nav=viewerfec&fiber=&km=&dir=a|b&fa=&fb=
+    # (the run's resolved folders) &ra=&rb= (what the FEC page's boxes held).
+    # Viewer FEC reads the left panel's folders, so they point at the run's;
+    # the tech's own come back on leaving (pa/pb -> _panel_restore).
+    if qp.get('nav') == 'viewerfec' and qp.get('fiber'):
+        _fa, _fb = qp.get('fa') or '', qp.get('fb') or ''
+        st.session_state['view_dir_a_input'] = _fa if os.path.isdir(_fa) else ''
+        st.session_state['view_dir_b_input'] = _fb if os.path.isdir(_fb) else ''
+        for _k, _v in (('fec_dir_a', qp.get('ra') or _fa), ('fec_dir_b', qp.get('rb') or _fb)):
+            st.session_state[_k] = st.session_state[_k + '_saved'] = _v
+        st.session_state['viewer_target'] = {
+            'fiber': qp.get('fiber'), 'km': qp.get('km'),
+            'dir': qp.get('dir') if qp.get('dir') in ('a', 'b') else 'a'}
+        st.session_state['viewer_jump_announce'] = True
+        st.session_state['came_from_fec'] = True
+        st.session_state['nav_radio'] = 'Viewer FEC'   # BEFORE the radio widget
+        st.query_params.clear()
+        return
     if qp.get('nav') == 'viewer' and qp.get('fiber'):
         # Splice Report / Unidirectional cell click: the link carries the
         # run's own dirs (incl. one-folder/zip staging) — seed the viewer
@@ -4888,7 +4918,7 @@ with st.sidebar:
         # folder the Viewer had to read: the tech's own A and B come back.  No
         # report is dropped, it is the same span.
         if ('_panel_restore' in st.session_state
-                and st.session_state.get('nav_radio') != 'Viewer'):
+                and st.session_state.get('nav_radio') not in ('Viewer', 'Viewer FEC')):
             (st.session_state['view_dir_a_input'],
              st.session_state['view_dir_b_input']) = st.session_state.pop('_panel_restore')
             st.session_state.pop('_ss_nav_folder', None)
@@ -5325,7 +5355,9 @@ def _panel_dirs():
     return out['A'], out['B'], notes
 
 
-def page_viewer():
+def page_viewer(fec=False):
+    """The Trace Viewer.  fec=True is the Viewer FEC tool (Robert 2026-10-01):
+    the same Viewer, opened in FEC mode (?fec=1), which it cannot leave."""
     port = ensure_trace_server()
 
     with st.sidebar:
@@ -5431,6 +5463,12 @@ def page_viewer():
             st.session_state['nav_radio'] = 'Splice Report'
         st.button('← Back to Splice Report', key='view_back_sr',
                   on_click=_back_to_sr)
+    if fec and st.session_state.get('came_from_fec'):
+        def _back_to_fec():
+            st.session_state['came_from_fec'] = False
+            st.session_state['nav_radio'] = 'Splice Report FEC'
+        st.button('← Back to Splice Report FEC', key='view_back_fec',
+                  on_click=_back_to_fec)
     if st.session_state.get('came_from_uni'):
         def _back_to_uni():
             st.session_state['came_from_uni'] = False
@@ -5438,7 +5476,38 @@ def page_viewer():
         st.button('← Back to Unidirectional', key='view_back_uni',
                   on_click=_back_to_uni)
 
-    st.markdown('#### Trace Viewer')
+    # No "Trace Viewer" heading: the sidebar already says where you are
+    # (Robert 2026-10-01), and it pushed the Viewer further down the page.
+    # The Viewer FEC page keeps its heading, at half the old size (Robert
+    # 2026-10-01: 0.75rem, the #### was 1.5rem), and its line on FEC mode.
+    if fec:
+        st.markdown('<p style="font-size:0.75rem;font-weight:600;margin:0">'
+                    'Viewer FEC</p>', unsafe_allow_html=True)
+        st.caption('Facility entrance (FEC) shots: the short traces from '
+                   'each end. A and B are drawn as shot and never paired; '
+                   'each trace’s panel connector is graded at the customer '
+                   'profile’s FEC gates, as Splice Report FEC does.')
+    # Pop the Viewer into its own window from HERE too — a tech who came to
+    # the Viewer page first (rather than clicking a report cell) had no way
+    # to detach it.  Same window NAME as the report grids' button, so the two
+    # entry points share ONE window: opening from here and then clicking
+    # report cells drives this same window instead of spawning a second.
+    # From Viewer FEC it opens in FEC mode (?fec=1).
+    _pop_doc = """
+<style>body{margin:0;padding:3px 0}</style>
+<button id="vpop2" style="padding:4px 10px;border:1px solid #c9d5e1;border-radius:4px;
+    background:#eef3f8;cursor:pointer;font-weight:600;color:#000000;white-space:nowrap;
+    font-family:sans-serif;font-size:13px"
+    title="Keeps this page free for the report. Report cell clicks drive the same window."
+    >&#8862; Open Viewer in Its Own Window</button>
+<script>
+try { window.top.name = "otdr_hub"; } catch (e) {}
+document.getElementById("vpop2").addEventListener("click", function(){
+  var w = window.open("__ORIGIN__/__POPQ__", "otdr_viewer", "width=1400,height=900");
+  if (w) w.focus();
+});
+</script>
+""".replace('__ORIGIN__', f'http://127.0.0.1:{port}').replace('__POPQ__', '?fec=1' if fec else '')
     # The OTDR Settings, same box as the report pages and sharing their
     # values (Robert 2026-09-28).  With no report behind it the Viewer judges
     # pass/fail at these and runs its own report with them; a report on
@@ -5449,41 +5518,29 @@ def page_viewer():
     # Streamlit rebuilt it: the Viewer reloaded and the tech lost every
     # trace they had loaded and highlighted (Robert 2026-09-29: "keep traces
     # highlighted if changing setting as long as you don't leave viewer").
+    # One row for the profile dropdown and the pop-out button, and the line
+    # that explained the button is its tooltip now (window-size audit
+    # 2026-10-01): the heading, the dropdown, the button and its line took
+    # 432 px above the Viewer, so a 1366 x 768 laptop showed only the
+    # toolbar and the top of the chart; and under ~1030 px the line wrapped
+    # and its second half was cut off in the button's 42 px frame.
     with st.container():
-        _render_profile_picker_box('viewer')
+        with st.container(horizontal=True, vertical_alignment='center', gap='medium'):
+            _render_profile_picker_box('viewer', compact=True)
+            st_components_html(theme_recolor(_pop_doc), height=36, width=270)
         _viewer_box_exc = _render_settings_box('viewer')
         if _viewer_box_exc is None and trace_server.settings_differ_from_report():
             st.caption('Pass/fail in the Viewer follows the Splice Report on '
                        'screen, at the settings it ran with. Generate the report '
                        'again to judge by the settings above.')
-    # Pop the Viewer into its own window from HERE too — a tech who came to
-    # the Viewer page first (rather than clicking a report cell) had no way
-    # to detach it.  Same window NAME as the report grids' button, so the two
-    # entry points share ONE window: opening from here and then clicking
-    # report cells drives this same window instead of spawning a second.
-    _pop_doc = """
-<button id="vpop2" style="padding:4px 10px;border:1px solid #c9d5e1;border-radius:4px;
-    background:#eef3f8;cursor:pointer;font-weight:600;color:#000000;
-    font-family:sans-serif;font-size:13px">&#8862; Open Viewer in Its Own Window</button>
-<span style="margin-left:8px;font-size:11px;color:#000000;font-family:sans-serif">
-    keeps this page free for the report &middot; report cell clicks drive the same window</span>
-<script>
-try { window.top.name = "otdr_hub"; } catch (e) {}
-document.getElementById("vpop2").addEventListener("click", function(){
-  var w = window.open("__ORIGIN__/", "otdr_viewer", "width=1400,height=900");
-  if (w) w.focus();
-});
-</script>
-""".replace('__ORIGIN__', f'http://127.0.0.1:{port}')
-    st_components_html(theme_recolor(_pop_doc), height=42)
     # The note above the frame keeps ONE slot whether it shows or not:
-    # Streamlit places the frame by its position on the page, so this note
+    # Streamlit places the frame by its position on the page, so a note
     # going away after the first drop moved the frame up a place and rebuilt
-    # it, and the Viewer lost the traces it had just loaded.
+    # it, and the Viewer lost the traces it had just loaded.  The blue "Pick
+    # an A and/or B folder" box that sat here is gone (Robert 2026-10-01): the
+    # Viewer's own Files panel says where to drop them.  The slot stays for
+    # the one-shot jump captions below.
     _note = st.empty()
-    if not dir_a and not dir_b:
-        _note.info('Pick an A and/or B folder of OTDR `.sor` / `.json` / `.trc` files in the '
-                'sidebar, then type fiber numbers in the viewer to plot them.')
     # Embed the canvas viewer.  Cache-bust on folder change so the iframe
     # re-reads /api/list.  A deep-link target is appended so the viewer
     # auto-loads:  a single fiber + km (Splice Report cell), OR a pair of
@@ -5502,6 +5559,8 @@ document.getElementById("vpop2").addEventListener("click", function(){
         _b = abs(hash(_key)) % 100000
     st.session_state['_viewer_b'] = _b
     q = {'b': _b}
+    if fec:
+        q['fec'] = 1
     # PERSISTENT deep-link target (read, NOT consumed).  Keeping the last
     # clicked/loaded fiber in the iframe URL makes the src STABLE across
     # Streamlit reruns.  Consuming it with .pop made the very next rerun rebuild
@@ -6585,6 +6644,25 @@ CUSTOMER_PROFILES = {
                    "PIGTAIL_SPLICE_WINDOW_M": 50.0,
                    "ONE_SIDED_TRUST_STORED": 1},
     },
+    # ── FEC tech styles (Robert 2026-10-01) ──────────────────────────
+    # Two techs' FEC OOS lists on one span.  Both grade the panel
+    # connector plus any event within 150 m behind it, from the event table,
+    # and fail reflectance above -50.0.  They differ on a loss of exactly
+    # 0.500: tech A fails it, tech C passes it.  Only the Splice Report
+    # FEC tool reads the "fec" block; every other tool runs these two at the
+    # engine baseline, same as Default.
+    "A": {
+        "apply":      set(OTDR_DEFAULT_APPLY),
+        "thresholds": {},
+        "fec": {"FEC_LOSS_GATE": 0.500, "FEC_LOSS_STRICT": 0,
+                "FEC_REFL_GATE": -50.0, "FEC_COMBINE_M": 150.0},
+    },
+    "C": {
+        "apply":      set(OTDR_DEFAULT_APPLY),
+        "thresholds": {},
+        "fec": {"FEC_LOSS_GATE": 0.500, "FEC_LOSS_STRICT": 1,
+                "FEC_REFL_GATE": -50.0, "FEC_COMBINE_M": 150.0},
+    },
     "Custom (edit table below)": {  # sentinel — uses session edits as-is
         "apply":      None,
         "thresholds": None,
@@ -7058,7 +7136,7 @@ def _profile_settings_changed():
     return False
 
 
-def _render_customer_profile_picker():
+def _render_customer_profile_picker(compact=False):
     """The Customer profile dropdown, on its own above the A/B boxes.
 
     Robert, 2026-09-16: a tech chooses default or customer settings BEFORE
@@ -7066,6 +7144,10 @@ def _render_customer_profile_picker():
     (which stays where it is, below); the dropdown alone moved up.  Same
     state, same reload-on-change: session_state.otdr_profile drives the
     settings table and the connector knobs exactly as before.
+
+    `compact` (the Viewer page, window-size audit 2026-10-01): the heading
+    becomes a bold label beside the dropdown, in the row the caller set up,
+    so the Viewer frame starts higher up the page.
     """
     # Initialise persisted settings + active profile on first run.
     if 'otdr_profile' not in st.session_state:
@@ -7077,11 +7159,15 @@ def _render_customer_profile_picker():
     # Robert, 2026-09-24: more prominent -- larger letters, and only as wide
     # as the longest name instead of the full page width.  The CSS is
     # scoped to this one widget by its key class.
-    st.markdown('#### Select Customer Profile')
-    st.markdown(
-        '<style>.st-key-otdr_profile_select div[data-baseweb="select"] '
-        '{font-size:1.2rem;font-weight:600;}</style>',
-        unsafe_allow_html=True)
+    _big = ('<style>.st-key-otdr_profile_select div[data-baseweb="select"] '
+            '{font-size:1.2rem;font-weight:600;}</style>')
+    if compact:
+        # One element: a style of its own in the Viewer's row took a gap there.
+        st.markdown('**Customer profile**' + _big, unsafe_allow_html=True,
+                    width='content')
+    else:
+        st.markdown('#### Select Customer Profile')
+        st.markdown(_big, unsafe_allow_html=True)
     _profile_names = list(CUSTOMER_PROFILES.keys())
     # ~11 px a character at 1.2rem semibold, plus the arrow and padding.
     _profile_w = min(700, 11 * max(len(n) for n in _profile_names) + 70)
@@ -7385,11 +7471,11 @@ def _uni_overrides_from_settings(otdr_settings):
     return out
 
 
-def _render_profile_picker_box(where):
+def _render_profile_picker_box(where, compact=False):
     """The Customer profile dropdown, guarded: a failure here must not take
     the page down, and the tool runs with the default profile."""
     try:
-        _render_customer_profile_picker()
+        _render_customer_profile_picker(compact)
     except Exception as _exc:
         st.warning('Customer profile picker unavailable, running with the '
                    'default profile. (Details sent to support.)')
@@ -10021,6 +10107,280 @@ def page_unidirectional():
 #
 # The interface itself lives in fqa/ui.py, which fqa/app.py also renders
 # when the tool is run standalone.  One copy, so the two cannot drift.
+# ═════════════════════════════════════════════════════════════════════════
+#  PAGE: Splice Report FEC
+# ═════════════════════════════════════════════════════════════════════════
+# FEC = the short facility-entrance shots from each END of a span (launch
+# reel, building panel connector at ~1 km, entrance cable).  The two ends
+# never see the same glass, so this tool grades each folder on its own and
+# never pairs A with B; the Splice Report and the Viewer both pair them.
+# Engine: run_splicereport.py --fec (same subprocess, no new engine file).
+# Tech C's style (0.500 passes) is the default, Robert 2026-10-01, until the
+# boss says which one the customer wants; profile A keeps tech A's.
+# The FEC Settings box's two loss rules (Title Case, the hub's label rule).
+_FEC_AT_OR_OVER, _FEC_OVER = 'At or Over the Gate', 'Over the Gate'
+FEC_DEFAULTS = {"FEC_LOSS_GATE": 0.500, "FEC_LOSS_STRICT": 1,
+                "FEC_REFL_GATE": -50.0, "FEC_COMBINE_M": 150.0}
+
+
+def _fec_settings_from_profile(profile_name):
+    """The FEC gates for a customer profile: its "fec" block over the
+    defaults (tech C's style).  Profiles without one get the defaults."""
+    out = dict(FEC_DEFAULTS)
+    prof = CUSTOMER_PROFILES.get(profile_name) or {}
+    for k, v in (prof.get("fec") or {}).items():
+        if k in out:
+            try:
+                out[k] = float(v)
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
+def _fec_active_gates():
+    """The FEC gates in force: the active profile's, with the FEC Settings
+    edits made on the Splice Report FEC page for that profile on top."""
+    prof = st.session_state.get('otdr_profile') or next(iter(CUSTOMER_PROFILES))
+    gates = _fec_settings_from_profile(prof)
+    sfx = f'::{prof}'
+    for k in ('FEC_LOSS_GATE', 'FEC_REFL_GATE', 'FEC_COMBINE_M'):
+        v = st.session_state.get(f'fec_{k}{sfx}')
+        if isinstance(v, (int, float)):
+            gates[k] = float(v)
+    strict = st.session_state.get(f'fec_FEC_LOSS_STRICT{sfx}')
+    if strict in (_FEC_OVER, _FEC_AT_OR_OVER):
+        gates['FEC_LOSS_STRICT'] = 1.0 if strict == _FEC_OVER else 0.0
+    return gates
+
+
+def fec_cmd(dir_a, dir_b, out_xlsx, overrides=None):
+    """Argv for the FEC report (the splice report runner's --fec mode)."""
+    common = ['--fec', '--dir-a', dir_a, '--out', out_xlsx]
+    if dir_b:
+        common += ['--dir-b', dir_b]
+    if overrides:
+        common += ['--overrides', json.dumps(overrides)]
+    if FROZEN:
+        return [sys.executable, '--run-splicereport', *common]
+    return [sys.executable, os.path.join(SPLICEREPORT_DIR, 'run_splicereport.py'), *common]
+
+
+def _fec_resync(key):
+    """Re-assign a box's value in THIS run, before it is drawn.  Streamlit
+    sends a keyed box's value to the browser only when it was set during the
+    run that draws it; a value set on an earlier run (a Viewer FEC link sets
+    the folders on the Viewer FEC run, a carried save folder lands on the
+    first run) is used by the page but shown as an EMPTY box."""
+    if key in st.session_state:
+        st.session_state[key] = st.session_state[key]
+
+
+def _fec_folder_row(slot, label, placeholder):
+    _seed_box(slot)                  # Streamlit forgets a box it did not draw
+    st.session_state.setdefault(slot, '')
+    _fec_resync(slot)
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        if st.button(f'📁 Browse: {label}', key=f'{slot}_browse',
+                     use_container_width=True):
+            p = pick_folder(f'Choose the {label} folder')
+            if p:
+                st.session_state[slot] = p
+    with c2:
+        st.text_input(f'{label} (Folder or .zip)', key=slot, placeholder=placeholder)
+    _keep_box(slot)
+    raw = (st.session_state.get(slot) or '').strip().strip('"')
+    if not raw:
+        return ''
+    d, note = _resolve_viewer_dir(raw)
+    if note and note != 'viewing from .zip':
+        st.warning(f'{label}: {note}')
+    if not d or not os.path.isdir(d):
+        st.warning(f'{label}: folder not found.')
+        return ''
+    return os.path.abspath(d)
+
+
+def _fec_rows_html(rows, dir_a, dir_b):
+    """The FEC fails as a table whose rows open Viewer FEC on that fiber,
+    from its own end, zoomed to the panel connector.  Every cell of a row is
+    the same link (Robert 2026-10-01: a click on a row jumps), so the whole
+    row is the target, not just the fiber number."""
+    import html as _h
+    from urllib.parse import quote as _q
+    raw_a = (st.session_state.get('fec_dir_a') or '').strip().strip('"')
+    raw_b = (st.session_state.get('fec_dir_b') or '').strip().strip('"')
+    common = (f"&fa={_q(dir_a, safe='')}&fb={_q(dir_b or '', safe='')}"
+              f"&ra={_q(raw_a, safe='')}&rb={_q(raw_b, safe='')}{_panel_qs()}")
+    head = ['Fiber Number', 'FAILING @', 'Distance', 'Side', 'Failed On',
+            'Connector Loss', 'Combined With']
+    # The theme's own colors (--otdr-*): a fixed light header was white
+    # lettering on a pale band under the Dark theme.
+    td = "padding:0;border:1px solid var(--otdr-line-soft,#eef2f6);white-space:nowrap"
+    th = ("padding:3px 8px;border:1px solid var(--otdr-line,#dbe4ee);white-space:nowrap;"
+          "background:var(--otdr-panel,#eef3f8);color:var(--otdr-text,#000000)")
+    out = ["<style>.fec-rows a{display:block;padding:3px 8px;color:inherit;"
+           "text-decoration:none}.fec-rows tbody tr{cursor:pointer}"
+           ".fec-rows tbody tr:hover{background:var(--otdr-hover,#dde7f1)}</style>"
+           "<div style='overflow-x:auto'><table class='fec-rows' "
+           "style='border-collapse:collapse;font-size:13px'><thead><tr>"
+           + ''.join(f"<th style='{th}'>{h}</th>" for h in head)
+           + "</tr></thead><tbody>"]
+    for r in rows:
+        href = (f"?nav=viewerfec&fiber={r['fiber']}&km={r['conn_km']}"
+                f"&dir={'b' if r['side'] == 'B' else 'a'}{common}")
+        comb = '; '.join(f"{c['loss']:.3f} @ {c['km']:.3f} km"
+                         for c in r.get('combined') or [])
+        link = (f"<a href='{_h.escape(href, quote=True)}' target='_self' "
+                f"title='Open F{r['fiber']} in Viewer FEC'")
+        cells = [f"<b>{_h.escape(r['fiber_id'])}</b>",
+                 r['failing_at'], r['distance'], r['side'],
+                 'Reflectance' if r['kind'] == 'refl' else 'Loss',
+                 f"{r['conn_loss']:.3f}", _h.escape(comb) or '&nbsp;']
+        out.append('<tr>' + ''.join(f"<td style='{td}'>{link}>{c}</a></td>"
+                                    for c in cells) + '</tr>')
+    out.append('</tbody></table></div>')
+    return ''.join(out)
+
+
+def page_splice_report_fec():
+    st.markdown('#### Splice Report FEC')
+    st.caption('Facility entrance (FEC) shots: the short traces from each end '
+               'of the span. Each end is graded on its own; A and B are never '
+               'paired. A fiber fails on its panel connector: loss (the '
+               'connector plus any event just behind it, "COMBINE") or '
+               'reflectance.')
+    _render_profile_picker_box('splice report fec')
+    prof = st.session_state.get('otdr_profile') or next(iter(CUSTOMER_PROFILES))
+    gates = _fec_settings_from_profile(prof)
+    sfx = f'::{prof}'
+    for k in ('FEC_LOSS_GATE', 'FEC_REFL_GATE', 'FEC_COMBINE_M'):
+        st.session_state.setdefault(f'fec_{k}{sfx}', float(gates[k]))
+    st.session_state.setdefault(f'fec_FEC_LOSS_STRICT{sfx}',
+                                _FEC_OVER if gates['FEC_LOSS_STRICT']
+                                else _FEC_AT_OR_OVER)
+    with st.expander('FEC Settings', expanded=False):
+        st.caption(f'From the customer profile **{prof}**. Edits last until '
+                   'the profile changes.')
+        g1, g2, g3, g4 = st.columns(4)
+        g1.number_input('Loss Gate (dB)', key=f'fec_FEC_LOSS_GATE{sfx}',
+                        min_value=0.0, max_value=5.0, step=0.01, format='%.3f')
+        g2.selectbox('Loss Fails When', [_FEC_AT_OR_OVER, _FEC_OVER],
+                     key=f'fec_FEC_LOSS_STRICT{sfx}')
+        g3.number_input('Reflectance Gate (dB)', key=f'fec_FEC_REFL_GATE{sfx}',
+                        min_value=-90.0, max_value=0.0, step=0.5, format='%.1f')
+        g4.number_input('Combine Reach (m)', key=f'fec_FEC_COMBINE_M{sfx}',
+                        min_value=0.0, max_value=2000.0, step=10.0, format='%.0f')
+    gates = {
+        'FEC_LOSS_GATE': float(st.session_state[f'fec_FEC_LOSS_GATE{sfx}']),
+        'FEC_LOSS_STRICT': 1.0 if st.session_state[f'fec_FEC_LOSS_STRICT{sfx}']
+                           == _FEC_OVER else 0.0,
+        'FEC_REFL_GATE': float(st.session_state[f'fec_FEC_REFL_GATE{sfx}']),
+        'FEC_COMBINE_M': float(st.session_state[f'fec_FEC_COMBINE_M{sfx}']),
+    }
+    st.caption(f"Fails: loss {'>' if gates['FEC_LOSS_STRICT'] else '≥'} "
+               f"{gates['FEC_LOSS_GATE']:.3f} dB (connector + events within "
+               f"{gates['FEC_COMBINE_M']:.0f} m behind it), or reflectance > "
+               f"{gates['FEC_REFL_GATE']:.1f} dB.")
+
+    dir_a = _fec_folder_row('fec_dir_a', 'A End FEC',
+                            r'C:\...\FEC shots, A end')
+    dir_b = _fec_folder_row('fec_dir_b', 'B End FEC (Optional)',
+                            r'C:\...\FEC shots, B end')
+    if not dir_a:
+        st.info('👆 Choose the A end FEC folder (and the B end, if you have '
+                'it). Each folder holds one end’s short `.sor` shots.')
+        return
+
+    import folder_intake as _fi_dest
+    _fec_resync('fec_report_dest')
+    _dest = _report_dest_row('fec_report_dest', _fi_dest.default_report_dir())
+    _stale = _report_gate('fec')
+    if st.button('Run FEC Report', type='primary', disabled=bool(_stale)):
+        out_xlsx = os.path.join(_dest, 'FEC_OOS.xlsx')
+        st.session_state['fec_pending_cmd'] = fec_cmd(dir_a, dir_b, out_xlsx, gates)
+        st.session_state.pop('fec_result', None)
+        st.rerun()
+
+    if 'fec_pending_cmd' in st.session_state or 'fec_job' in st.session_state:
+        try:
+            proc = run_engine_live('fec', running_title='Running FEC report')
+        except subprocess.TimeoutExpired:
+            st.error(f'The FEC report timed out after {ENGINE_TIMEOUT_S}s and '
+                     'was stopped.')
+            report_error('splice report fec — timeout',
+                         RuntimeError(f'engine exceeded {ENGINE_TIMEOUT_S}s'))
+            return
+        if proc is None:
+            return
+        manifest = _parse_manifest(proc.stdout)
+        if manifest is None or not manifest.get('ok'):
+            if manifest is None and _engine_damaged_notice(proc.stderr, 'fec'):
+                return
+            st.error((manifest or {}).get('error')
+                     or 'The FEC report did not return a result.')
+            with st.expander('Engine Log'):
+                st.code(proc.stderr[-4000:] or '(no output)')
+            report_error('splice report fec — failed',
+                         RuntimeError((manifest or {}).get('error', 'no manifest')),
+                         {'returncode': proc.returncode}, log=proc.stderr)
+            return
+        manifest['_dirs'] = [dir_a, dir_b]
+        st.session_state['fec_result'] = manifest
+        # A row click into Viewer FEC is a URL nav that wipes session_state:
+        # this is how the page shows the report again on the way back.
+        try:
+            with open(_hub_cache_path('fec_result_cache.json', dir_a, dir_b),
+                      'w', encoding='utf-8') as fh:
+                json.dump(manifest, fh)
+        except Exception:
+            pass
+
+    res = st.session_state.get('fec_result')
+    if not (res and res.get('ok') and res.get('_dirs') == [dir_a, dir_b]):
+        try:
+            with open(_hub_cache_path('fec_result_cache.json', dir_a, dir_b),
+                      encoding='utf-8') as fh:
+                _cached = json.load(fh)
+            if _cached.get('ok') and _cached.get('_dirs') == [dir_a, dir_b]:
+                res = st.session_state['fec_result'] = _cached
+        except Exception:
+            pass
+    if not (res and res.get('ok') and res.get('_dirs') == [dir_a, dir_b]):
+        return
+    fec = res.get('fec') or {}
+    sides = fec.get('sides') or []
+    st.success('Done: ' + ' · '.join(
+        f"{s['side']} end {s['label']}: {s['n_traces']} traces, "
+        f"{s['n_fail_fibers']} failing" for s in sides))
+    for s in sides:
+        pg = s.get('pulse_groups') or []
+        if len(pg) > 1:
+            st.info(f"{s['side']} end pulse widths: " + '; '.join(
+                f"{g['fibers']} at {g['pulse_ns']:g} ns" for g in pg))
+        if s.get('no_conn'):
+            st.warning(f"{s['side']} end: no panel connector found on "
+                       f"{len(s['no_conn'])} trace(s), not graded: "
+                       + ', '.join(s['no_conn'][:12])
+                       + (' …' if len(s['no_conn']) > 12 else ''))
+        if s.get('unreadable'):
+            st.warning(f"{s['side']} end: {len(s['unreadable'])} unreadable "
+                       'file(s), not graded.')
+    rows = [r for s in sides for r in s.get('rows') or []]
+    if rows:
+        st.caption('Click a row to open that fiber in Viewer FEC.')
+        st.markdown(_fec_rows_html(rows, dir_a, dir_b), unsafe_allow_html=True)
+    else:
+        st.info('No fiber fails.')
+    xlsx = res.get('xlsx')
+    if xlsx and os.path.isfile(xlsx):
+        st.caption(f'Saved: {xlsx}')
+        with open(xlsx, 'rb') as fh:
+            st.download_button('⬇ Download FEC Report (.xlsx)', fh.read(),
+                               file_name=os.path.basename(xlsx),
+                               key='fec_download')
+
+
 def page_fqa_builder():
     import folder_intake as _fi
     from fqa.ui import render
@@ -14675,6 +15035,10 @@ try:
         page_viewer()
     elif page == 'Splice Report':
         page_splice_report()
+    elif page == 'Splice Report FEC':
+        page_splice_report_fec()
+    elif page == 'Viewer FEC':
+        page_viewer(fec=True)
     elif page == 'Unidirectional':
         page_unidirectional()
     elif page == 'FQA Builder':

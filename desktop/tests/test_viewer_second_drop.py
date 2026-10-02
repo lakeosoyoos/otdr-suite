@@ -66,15 +66,14 @@ def _drop(prefix):
 def test_a_then_b_dropped_on_the_viewer_never_reload_its_frame():
     at = run_streamlit().run()
     assert not at.exception, at.exception
-    assert any('Pick an A and/or B folder' in i.value for i in at.info)
+    assert not any('Pick an A and/or B folder' in i.value for i in at.info)   # removed 2026-10-01
     before = _viewer_frame(at)
 
     out = _drop('ROMTUC')
     assert out['a_count'] == 3
     at.run()
     assert not at.exception, at.exception
-    # The note is gone and the boxes show the dropped folder...
-    assert not any('Pick an A and/or B folder' in i.value for i in at.info)
+    # The boxes show the dropped folder...
     shown = f"{TS.drop_name(TS.CONFIG['dir_a'])} (dropped)"
     assert 'otdr_viewer_drop_' not in shown
     assert at.session_state['view_dir_a_input'] == shown

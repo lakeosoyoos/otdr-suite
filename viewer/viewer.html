@@ -49,9 +49,41 @@
     padding: 8px 12px;
     background: var(--panel);
     border-bottom: 1px solid var(--border);
-    flex-wrap: wrap;
+    /* One row at every width, as tall as the Fibers box (Robert
+       2026-10-01: "never make it go two rows tall").  What does not fit
+       is clipped in #tb-strip, not wrapped. */
+    flex-wrap: nowrap; white-space: nowrap;
     flex-shrink: 0;
   }
+  #toolbar .group { flex-shrink: 0; }
+  #tb-strip { flex: 1 1 auto; min-width: 0; display: flex; align-items: center;
+              position: relative; }
+  #tb-scroll { flex: 1 1 auto; min-width: 0; display: flex; align-items: center;
+               gap: 6px; overflow: hidden; }
+  /* Clipped: the cut edge fades out and a » / « button sits on it. */
+  #tb-strip.more-r #tb-scroll {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+            mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); }
+  #tb-strip.more-l #tb-scroll {
+    -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 36px), transparent);
+            mask-image: linear-gradient(to left, #000 calc(100% - 36px), transparent); }
+  #tb-strip.more-l.more-r #tb-scroll {
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent);
+            mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent); }
+  #toolbar .tb-more { flex-shrink: 0; padding: 4px 6px; font-weight: 700; }
+  #toolbar.collapsed #tb-strip .tb-more { display: none; }
+  #tb-scroll .group:first-of-type { border-left: 1px solid var(--border); padding-left: 6px; }
+  #tb-right { margin-left: auto; }
+  #tb-gear { font-size: 16px; line-height: 1; padding: 3px 7px; }
+  /* Fixed, not absolute: the toolbar clips its overflow. */
+  #tb-gear-menu {
+    position: fixed; z-index: 50; display: flex; flex-direction: column; gap: 6px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 5px;
+    box-shadow: 0 3px 10px rgba(0,0,0,.15); padding: 8px 10px;
+  }
+  #tb-gear-menu[hidden] { display: none; }
+  #tb-gear-menu label { display: flex; gap: 5px; align-items: center; color: var(--text);
+                        cursor: pointer; }
   /* The toolbar folds away (the boss: "minimize so we don't see all the
      settings and toggles").  The bar under it is the handle: drag it up to
      fold, down to unfold, double-click to toggle.  Folded, only the Back button
@@ -91,7 +123,10 @@
   #toolbar button { padding: 4px 7px; }
   #toolbar .seg button { padding: 4px 8px; }
   #toolbar .group > label[style] { margin-left: 4px !important; }
-  #toolbar #fiber-input { width: 150px; }
+  /* Narrower (Robert 2026-10-01): fits '64, 67, 169-180'.  Grayed with no
+     files, it widens to fit its longer example. */
+  #toolbar #fiber-input { width: 110px; }
+  #toolbar #fiber-input:disabled { width: 140px; }
   label { color: var(--text-sec); font-size: 12px; }
   input[type=text], input[type=number] {
     background: #ffffff; color: var(--text);
@@ -205,6 +240,12 @@
   #files-list:focus { outline: none; }
   #files-list:focus .file-row.focus { outline: 1px dotted var(--accent); outline-offset: -2px; }
   .file-row .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Cut from the front, not the end (window-size audit 2026-10-01): at the
+     panel's narrowest every name read the same "AAA_BBB…", the part they share,
+     and the fiber number that tells them apart was gone.  Right to left
+     puts the ellipsis in front; the <bdi> keeps the name itself in order.
+     A name that fits sits left as before. */
+  .file-row .file-name { direction: rtl; text-align: left; }
   .file-row .file-vis { text-align: center; }
   .file-row.loaded .file-vis:hover { opacity: 0.6; }
   .chip {
@@ -743,6 +784,13 @@
     <input type="text" id="fiber-input" placeholder="64, 67, 169-180" autocomplete="off">
   </div>
 
+  <!-- One row, never two (Robert 2026-10-01): a narrow window clips this
+       strip at its right edge, fades it, and shows the » button; click it
+       (or the mouse wheel over the strip) to slide the rest into view. -->
+  <div id="tb-strip">
+  <button id="tb-more-l" class="tb-more" type="button" hidden
+          title="More controls to the left">&laquo;</button>
+  <div id="tb-scroll">
   <div class="group">
     <label>Dir:</label>
     <div class="seg" id="dir-seg">
@@ -760,20 +808,30 @@
     <button id="btn-fit-y" title="Fit Y: dB axis to the visible distance window (keep distance zoom)">Fit Y</button>
     <button id="btn-zoom-in" title="Zoom in (+)">+</button>
     <button id="btn-zoom-out" title="Zoom out (−)">&minus;</button>
-    <label style="margin-left:8px;"><input type="checkbox" id="cb-stack" checked> Stack A/B</label>
-    <label id="lbl-yspace" style="margin-left:6px;"
-           title="Y Spacing: push the B traces down this many dB so they do not overlap. 0 = FastReporter's default, one true common dB scale.">Y
-      Spacing: <input type="number" id="num-yspace" value="0" step="1" min="0" max="60"> dB</label>
-    <label style="margin-left:8px;" title="On: TIA-598 fiber colors by ribbon position. Off: FastReporter's scheme, A blue and B dark gray."><input type="checkbox" id="cb-colors" checked> Fiber Colors</label>
   </div>
 
   <div class="group">
     <button id="btn-markers" title="A/B measurement markers (m)">A/B Markers</button>
     <button id="btn-markers-clear" title="Clear markers">Clear M</button>
   </div>
+  </div>
+  <button id="tb-more" class="tb-more" type="button" hidden
+          title="More controls to the right">&raquo;</button>
+  </div>
 
-  <div class="group">
+  <!-- Summary Report, then the chart's settings behind the gear, at the
+       bar's right end (Robert 2026-10-01). -->
+  <div class="group" id="tb-right">
     <button id="btn-report" title="Summary Report: the event table, then a page per fiber, as a PDF or an Excel workbook">Summary Report…</button>
+    <button id="tb-gear" type="button" title="Chart settings"
+            aria-haspopup="true" aria-expanded="false">&#9881;</button>
+    <span id="tb-gear-menu" role="menu" hidden>
+      <label><input type="checkbox" id="cb-stack" checked> Stack A/B</label>
+      <label id="lbl-yspace"
+             title="Y Spacing: push the B traces down this many dB so they do not overlap. 0 = FastReporter's default, one true common dB scale.">Y
+        Spacing: <input type="number" id="num-yspace" value="0" step="1" min="0" max="60"> dB</label>
+      <label title="On: TIA-598 fiber colors by ribbon position. Off: FastReporter's scheme, A blue and B dark gray."><input type="checkbox" id="cb-colors"> Fiber Colors</label>
+    </span>
   </div>
 </div>
 <div id="toolbar-resizer" title="Drag up to hide the settings and toggles, down to show them; double-click to toggle"></div>
@@ -881,8 +939,8 @@ const LIGHT_EDGE = { '#ffffff': '#6b7785', '#ffd700': '#9a7d00' };
 // bidirectional overlay (FR_bidi_overlay_ground_truth.png: A #0000f7, B #000),
 // softened a step so the two traces read easier: A a light blue, B mid gray.
 const FR_COLORS = { a: '#7b96d8', b: '#8a8a8a' };
-let gFiberColors = true;           // "fiber colors" checkbox in the toolbar
-try { gFiberColors = localStorage.getItem('otdr_viewer_fiber_colors') !== '0'; } catch (e) {}
+let gFiberColors = false;          // "fiber colors" checkbox in the toolbar gear; off (FR blue/gray) unless turned on
+try { gFiberColors = localStorage.getItem('otdr_viewer_fiber_colors') === '1'; } catch (e) {}
 
 // ─── Global state ─────────────────────────────────────────────────────
 let gInfo = null;                  // {dir_a_name, dir_b_name, fibers_a, fibers_b}
@@ -971,6 +1029,8 @@ let gHoverKey = null;                  // the trace nearest the cursor, if one i
 let gTraceClick = null;                // trace under the mouse at mousedown, until mouseup
 let gTableExport = null;               // set by the grid: {table, rows(), headExtra} for the Report
 let gExportDpr = 0;                    // the Report draws the chart at this scale; 0 = the screen's
+let gBase = null;                      // the chart without its overlay (keepBase)
+let gBaseImg = null;                   // that copy's canvas, reused
 const MARKER_HIT_PX = 6;               // grab radius for dragging a marker
 
 // ─── Display transforms (stacked mode flips B to A's km frame + offsets Y) ─
@@ -989,8 +1049,16 @@ function effDir(src, fiber) {
 // opens a single direction; mirroring it about a reel origin with no A side
 // put it backward and ran its event table from the far end.
 let gHaveA = false;                // set in refreshMirrorFrame (renderChips)
-function isFlipped(t) { return gStacked && gHaveA && t.dir === 'b'; }
-function yOffsetFor(t) { return (gStacked && gHaveA && t.dir === 'b') ? -gStackSpacingDb : 0; }
+// FEC mode (Robert 2026-10-01): facility-entrance shots are short traces from
+// EACH END of a span, so A and B never see the same glass.  Nothing is
+// mirrored or paired: every trace is drawn the way it was shot, and the event
+// table grades each one's panel connector on its own (see renderFecGrid).
+// Only the hub's Viewer FEC tool turns it on, with a ?fec=1 address; the
+// Viewer tool has no switch for it (Robert 2026-10-01).
+let gFecMode = false;
+try { gFecMode = new URLSearchParams(location.search).get('fec') === '1'; } catch (e) {}
+function isFlipped(t) { return !gFecMode && gStacked && gHaveA && t.dir === 'b'; }
+function yOffsetFor(t) { return (!gFecMode && gStacked && gHaveA && t.dir === 'b') ? -gStackSpacingDb : 0; }
 
 // Mirror origin for a flipped B trace — the B-frame distance that must land on
 // display 0... or rather, on A's launch connector, because THAT is the frame
@@ -1092,9 +1160,12 @@ function refreshMirrorFrame() {
   gMirrorDelta = 0;
   gMirrorNote = '';
   gHaveA = gTraces.some(t => t.dir === 'a');
-  if (!gStacked || !gHaveA) return;
+  if (gFecMode || !gStacked || !gHaveA) return;
   if (spanIsDeclared()) {          // the tech has settled it; measuring is noise
-    gMirrorNote = '   ⓘ B mirrored on the span you set for these folders (every fiber uses its own event there).';
+    // The warning takes the note's place: the status line is one line, cut
+    // at the window edge, and the warning is the part the tech must read.
+    gMirrorNote = '   ' + (halfSpanWarning()
+      || 'ⓘ B mirrored on the span you set for these folders (every fiber uses its own event there).');
     return;
   }
   const byFiber = new Map();
@@ -1210,6 +1281,41 @@ function spanEventNumbers(t) {
     if (inDeclaredSpan(t, e)) out.set(e, ++n);
   }
   return out;
+}
+// A span declared on ONE side only, far past any launch reel (Robert
+// 2026-10-01, "add the warning").  A span START on A is read as "A's launch
+// reel ends here", the way FastReporter reads its Launch fiber length, and B
+// is mirrored to meet it there.  On a real reel that is right.  Picked on a
+// splice in the middle of the cable it slides every B trace along by that
+// distance, and FastReporter does the same until B's own span end (its
+// Receive length) is set as well.  So say so, and say where B's end goes:
+// the point on B that is A's start, by the same reel frame the mirror uses
+// (B's km = far connector + A's launch - A's km).  The other half mirrors it.
+const SPAN_HALF_WARN_KM = 3.0;   // past the longest launch reel in use
+function halfSpanWarning() {
+  const A = gSpanDecl && gSpanDecl.a, B = gSpanDecl && gSpanDecl.b;
+  const startRef = (A && A.start_km != null) ? Number(A.start_km) : null;
+  const endRef   = (B && B.end_km   != null) ? Number(B.end_km)   : null;
+  if ((startRef == null) === (endRef == null)) return '';   // none, or both set
+  for (const bT of gTraces) {
+    if (!bT.data || bT.dir !== 'b') continue;
+    const aT = gTraces.find(x => x.dir === 'a' && x.fiber === bT.fiber && x.data);
+    if (!aT) continue;
+    const origin = reelOriginKm(bT);          // B's far connector + A's reel
+    if (startRef != null) {
+      const start = declaredEdgeKm(aT, startRef);
+      if (start - gLaunchA <= SPAN_HALF_WARN_KM) return '';
+      return `⚠ Span START is set on A only, ${fmtDist(start)} in: B is drawn as if `
+        + `A had a launch reel that long. Set B's span END too, at about `
+        + `${fmtDist(origin - start)} on F${bT.fiber}'s B→A trace, so the two line up.`;
+    }
+    const end = declaredEdgeKm(bT, endRef);
+    if (origin - gLaunchA - end <= SPAN_HALF_WARN_KM) return '';
+    return `⚠ Span END is set on B only, ${fmtDist(origin - gLaunchA - end)} short of its `
+      + `far end: A is drawn as if B had a receive reel that long. Set A's span START `
+      + `too, at about ${fmtDist(origin - end)} on F${bT.fiber}'s A→B trace, so the two line up.`;
+  }
+  return '';
 }
 function spanIsDeclared() {
   return !!((gSpanDecl && gSpanDecl.a && gSpanDecl.a.start_km != null) ||
@@ -1330,6 +1436,62 @@ function setToolbarCollapsed(on) {
   bar.addEventListener('dblclick', () => setToolbarCollapsed(!toolbarCollapsed()));
   document.getElementById('toolbar-show').addEventListener('click', () => setToolbarCollapsed(false));
 })();
+// ─── Toolbar: one row ─────────────────────────────────────────────────
+// The middle strip clips instead of wrapping.  While anything is cut off,
+// its edge fades and a » (or «) button sits on it; the button, or the mouse
+// wheel over the strip, slides the hidden controls into view.
+(function () {
+  const strip = document.getElementById('tb-strip');
+  const box = document.getElementById('tb-scroll');
+  const more = document.getElementById('tb-more');
+  const less = document.getElementById('tb-more-l');
+  function sync() {
+    const max = box.scrollWidth - box.clientWidth;
+    const r = max > 1 && box.scrollLeft < max - 1;
+    const l = max > 1 && box.scrollLeft > 1;
+    strip.classList.toggle('more-r', r);
+    strip.classList.toggle('more-l', l);
+    more.hidden = !r;
+    less.hidden = !l;
+  }
+  more.addEventListener('click', () => { box.scrollLeft = box.scrollWidth; });
+  less.addEventListener('click', () => { box.scrollLeft = 0; });
+  box.addEventListener('wheel', (e) => {
+    if (box.scrollWidth <= box.clientWidth) return;
+    box.scrollLeft += Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    e.preventDefault();
+  }, { passive: false });
+  box.addEventListener('scroll', sync);
+  window.addEventListener('resize', sync);
+  if (window.ResizeObserver) new ResizeObserver(sync).observe(box);
+  sync();
+})();
+
+// The gear at the bar's right end: Stack A/B, Y Spacing, Fiber Colors.
+// A click anywhere else or Escape shuts it.
+function setTbGearMenu(open) {
+  const btn = document.getElementById('tb-gear');
+  const menu = document.getElementById('tb-gear-menu');
+  menu.hidden = !open;
+  if (open) {
+    const r = btn.getBoundingClientRect();
+    menu.style.top = (r.bottom + 3) + 'px';
+    menu.style.left = Math.max(4, Math.min(r.right - menu.offsetWidth,
+                                           window.innerWidth - 4 - menu.offsetWidth)) + 'px';
+  }
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+document.getElementById('tb-gear').addEventListener('click', (e) => {
+  e.stopPropagation();
+  setTbGearMenu(document.getElementById('tb-gear-menu').hidden);
+});
+document.addEventListener('mousedown', (e) => {
+  const menu = document.getElementById('tb-gear-menu');
+  if (!menu.hidden && !menu.contains(e.target)
+      && !document.getElementById('tb-gear').contains(e.target)) setTbGearMenu(false);
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setTbGearMenu(false); });
+
 // The Viewer always opens with the toolbar showing (Robert: "dont auto hide
 // the top bar").  A fold from an earlier visit is not brought back.
 try { localStorage.removeItem(TOOLBAR_KEY); } catch (e) {}
@@ -1463,8 +1625,31 @@ window.addEventListener('resize', resizeCanvas);
     const s = parseFloat(localStorage.getItem(SHARE_KEY));
     if (s > 0 && s < 1) share = s;
   } catch (e) {}
+  // Until the tech drags the bar, the table takes what its rows need, up to
+  // TABLE_SHARE, and the chart the rest (window-size audit 2026-10-01: one
+  // fiber on a 1080p screen left ~500 px of empty table under its six rows
+  // while the chart had 341).  Re-fitted whenever the table is redrawn.
+  const head = document.getElementById('event-panel-header');
+  const host = document.getElementById('event-tbody-wrap');
+  function scrollerNeeds(sc) {     // its content, plus a scroll bar it shows
+    let h = sc.offsetHeight - sc.clientHeight;
+    for (const c of sc.children) h += c.offsetHeight;
+    return h;
+  }
+  function tableNeeds() {
+    if (!head || !host) return Infinity;
+    let h = head.offsetHeight;
+    for (const c of host.children) {
+      if (c.classList.contains('fr-scroll')) { h += scrollerNeeds(c); continue; }
+      const sc = c.querySelector && c.querySelector('.fr-scroll');
+      if (!sc) { h += c.offsetHeight; continue; }
+      for (const k of c.children) h += k === sc ? scrollerNeeds(sc) : k.offsetHeight;
+    }
+    return h + 2;
+  }
   function fitShare() {
-    const h = Math.round((share != null ? share : TABLE_SHARE) * avail());
+    let h = Math.round((share != null ? share : TABLE_SHARE) * avail());
+    if (share == null) h = Math.min(h, tableNeeds());
     panel.style.height = (draggedNow ? clamp(h) : openHeight(h)) + 'px';
   }
   try {
@@ -1511,6 +1696,16 @@ window.addEventListener('resize', resizeCanvas);
     resizeCanvas();
   });
   window.addEventListener('resize', () => { fitShare(); resizeCanvas(); });
+  // Called once the redraw's script has finished (observer callbacks wait
+  // for it), so the whole table is there to measure.
+  if (host && window.MutationObserver) {
+    new MutationObserver(() => {
+      if (share != null) return;
+      const before = panel.style.height;
+      fitShare();
+      if (panel.style.height !== before) resizeCanvas();
+    }).observe(host, { childList: true });
+  }
   // The toolbar folding or wrapping changes the column's height too.
   if (window.ResizeObserver) {
     let lastH = main.clientHeight;
@@ -1637,9 +1832,25 @@ function forgetSide(dir) {
   for (const key of Object.keys(gDirOverride)) if (key.startsWith(dir + '-')) delete gDirOverride[key];
   for (const key of Object.keys(gStoredDir)) if (key.startsWith(dir + '-')) delete gStoredDir[key];
   for (const t of gTraces.filter(t => t.src === dir)) COLORS_USED.delete(t.key);
+  const had = gTraces.length;
   gTraces = gTraces.filter(t => t.src !== dir);
   syncFileMarks();                   // the side that stays keeps its selection
   gFileAnchor = gFileFocus = null;
+  if (had && !gTraces.length) newSpanView();
+}
+
+// The folders moved and nothing of the old span is left on the chart (a drop
+// of a new span, or the other window's drop reaching this one): the view
+// starts over as Clear All starts it.  The old zoom kept a 2 km span drawn
+// at 41.9-45.9 km, a blank chart (2026-10-01), and the Dir buttons stayed on
+// the last side forgotten, so the next Add loaded B alone.
+function newSpanView() {
+  gPickKey = null;
+  gAutoFit = true;
+  gView = null;
+  gMarkers = { a: null, b: null };
+  gDragMarker = null;
+  setAddDir('both');
 }
 
 // Trace files go up in BATCHES, not one request each.  One request per file
@@ -2051,10 +2262,7 @@ async function loadInfo() {
   // would fold B about wherever the acquisition happened to stop, which looks
   // completely plausible and is wrong by however much cable is missing.  Say
   // so wherever it is drawn (frameWarn).
-  gFrameWarn = (nB && gInfo.cable_end_known_b === false)
-    ? '   ⚠ B never reaches the end of the fiber: cable length unknown, so A/B '
-      + 'cannot be aligned. Check B is the full-length shot, not the short shot.'
-    : '';
+  gFrameWarn = frameWarnText(nB);
   setReadout(`A: ${gInfo.dir_a_name} (${nA} fibers)   ` +
              `B: ${gInfo.dir_b_name} (${nB} fibers)` +
              (gAnalysisMode === 'fr' ? '   ·   FastReporter analysis' : ''));
@@ -2145,6 +2353,7 @@ function openHubByName(url) {
 // Report of an A-only load, and of a short shot loaded by itself and drawn
 // as shot, where nothing is aligned.
 function frameWarn() {
+  if (gFecMode) return gFrameWarn;    // Viewer FEC: its note, not a warning
   return gFrameWarn && gTraces.some(t => t.visible && t.src === 'b' && isFlipped(t))
     ? gFrameWarn : '';
 }
@@ -2164,8 +2373,14 @@ function placeReadout() {
   }
   let left = 56;                       // the plot's left margin, M.l
   try { left = M.l; } catch (e) { /* not set up yet */ }
-  el.style.left = left + 'px';
   el.style.transform = 'none';
+  if (box.style.left) {                // the readout moved to the left corner
+    const from = box.offsetLeft + box.offsetWidth + 10;
+    el.style.left = from + 'px';
+    el.style.maxWidth = Math.max(60, el.parentElement.clientWidth - from - 16) + 'px';
+    return;
+  }
+  el.style.left = left + 'px';
   el.style.maxWidth = Math.max(60, box.offsetLeft - left - 10) + 'px';
 }
 function setReadout(s, extra = {}) {
@@ -2752,7 +2967,7 @@ function renderFilesPanel() {
       const cell = {
         pf: `<span class="file-pf${tr ? (tr.pf ? ' fpf-fail' : flagsOff() ? '' : ' fpf-pass') : ''}">`
           + `${tr ? pfMark(tr.pf) : ''}</span>`,
-        name: `<span class="file-name">${esc(files[i] || 'F' + f)}</span>`,
+        name: `<span class="file-name"><bdi>${esc(files[i] || 'F' + f)}</bdi></span>`,
         dir: `<span class="file-dir"${eff !== dir ? ' title="direction changed from the folder\'s"' : ''}>`
           + `${arrow}${eff !== dir ? '*' : ''}</span>`,
         fiber: `<span class="file-num">${f}</span>`,
@@ -3896,6 +4111,7 @@ function plotBg() {
 function draw() {
   const w = canvas.width / canvasDpr();
   const h = canvas.height / canvasDpr();
+  gBase = null;                          // kept again at the end, if a chart is drawn
   ctx.fillStyle = plotBg();
   ctx.fillRect(0, 0, w, h);
 
@@ -3926,10 +4142,6 @@ function draw() {
     dim(t);
     drawTrace(t, r);
   }
-  // The trace under the cursor is drawn as it was: the hover box names it
-  // and nothing else changes (the boss, 2026-10-01: "we dont want the trace
-  // to change when we hover over it, just give us the box").
-  const hovered = hoverTrace();
   ctx.globalAlpha = 1;
   // Every event's line and number is always drawn, as before the drawer
   // marked the table (Robert 2026-10-01: "unless Display Events is selected
@@ -3961,6 +4173,17 @@ function draw() {
   ctx.lineWidth = 1;
   ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w, r.h);
 
+  // A/B measurement markers (drawn above traces, below crosshair)
+  drawMarkers(r);
+  updateMarkerReadout();
+
+  keepBase();
+  drawOverlay(r);
+}
+
+// What only the mouse moves, over the chart: the box-zoom rectangle, the
+// crosshair and the hover box.
+function drawOverlay(r) {
   // Box-zoom rectangle
   if (gDragging && gDragging.kind === 'box') {
     const x0 = Math.min(gDragging.startPx, gDragging.curPx);
@@ -3972,15 +4195,49 @@ function draw() {
     ctx.strokeRect(x0 + 0.5, r.y + 0.5, x1 - x0, r.h);
     ctx.setLineDash([]);
   }
-
-  // A/B measurement markers (drawn above traces, below crosshair)
-  drawMarkers(r);
-  updateMarkerReadout();
-
-  // Crosshair + readout values for each visible trace at cursor x
+  // The trace under the cursor is drawn as it was: the hover box names it
+  // and nothing else changes (the boss, 2026-10-01: "we dont want the trace
+  // to change when we hover over it, just give us the box").
+  const hovered = hoverTrace();
   if (gMouse) drawCrosshair(r);
   if (gMouse && hovered) drawHoverBox(hovered);
   if (gMouse && !hovered) drawLabelTip();   // a label left off, over its tick
+}
+
+// ─── Mouse moves repaint only the overlay ─────────────────────────────
+// draw() paints every trace: with a whole cable on screen (864 traces of
+// a 432-fiber span) that is 35-50 ms, and every mouse move paid it, so hovering
+// lagged (2026-10-01).  The chart as draw() leaves it, before the overlay,
+// is kept here; a mouse move puts it back (a copy, well under a millisecond)
+// and draws the overlay on it.  Anything that changes the chart calls draw(),
+// which keeps it again; the few things a stale copy would show wrong are
+// checked too (baseSig), and a mismatch falls back to draw().
+function baseSig() {
+  const v = gView || {};
+  return [canvas.width, canvas.height, gTraces, gTraces.length,
+          gTraces.filter(t => t.visible).length, v.x0, v.x1, v.y0, v.y1,
+          gPickKey, gMarkers.a, gMarkers.b,
+          document.documentElement.getAttribute('data-theme')];
+}
+function keepBase() {
+  if (gExportDpr) return;              // a Report snapshot, not the screen
+  if (!gBaseImg) gBaseImg = document.createElement('canvas');
+  if (gBaseImg.width !== canvas.width) gBaseImg.width = canvas.width;
+  if (gBaseImg.height !== canvas.height) gBaseImg.height = canvas.height;
+  const c = gBaseImg.getContext('2d');
+  c.clearRect(0, 0, gBaseImg.width, gBaseImg.height);
+  c.drawImage(canvas, 0, 0);
+  gBase = { img: gBaseImg, sig: baseSig() };
+}
+function drawHover() {
+  const now = baseSig();
+  if (!gBase || gBase.sig.length !== now.length
+      || gBase.sig.some((x, i) => x !== now[i])) { draw(); return; }
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(gBase.img, 0, 0);
+  ctx.restore();
+  drawOverlay(plotRect());
 }
 
 // ─── A/B measurement markers ──────────────────────────────────────────
@@ -4059,14 +4316,17 @@ function updateMarkerReadout() {
   let html = `<div><span class="mr-a">A</span>: ${at(a)}` +
              ` &nbsp; <span class="mr-b">B</span>: ${at(b)}</div>`;
 
+  // The trace rows, at most `maxRows` of them (see the fit below).
+  let traceTable = () => '';
   if (a != null && b != null) {
     const dkm = Math.abs(b - a);
     html += `<div>Δ: <b>${dist(dkm)}</b></div>`;
     const vis = gTraces.filter(t => t.visible);
-    if (vis.length) {
+    if (vis.length) traceTable = (maxRows) => {
+      let html = '';
       // 240 traces made 240 rows, down over the event table: the picked
       // trace (a Min/Max cell click) and the first few, then a count.
-      const cap = capReadoutRows(vis.map(t => ({ t })), gPickKey, MARKER_MAX_ROWS);
+      const cap = capReadoutRows(vis.map(t => ({ t })), gPickKey, maxRows);
       html += '<table><thead><tr><th>Trace</th><th>dB@A</th><th>dB@B</th><th>Δ Loss</th><th>dB/km</th></tr></thead><tbody>';
       for (const { t } of cap.shown) {
         const va = traceDbAtDispKm(t, a);
@@ -4095,12 +4355,37 @@ function updateMarkerReadout() {
       }
       if (cap.more) html += `<tr><td colspan="5" class="hint">+${cap.more} more traces</td></tr>`;
       html += '</tbody></table>';
-    }
+      return html;
+    };
   } else if (gMarkerMode) {
     html += `<div class="hint">click to place ${a == null ? 'A' : 'B'}</div>`;
   }
-  box.innerHTML = html;
+  // As many trace rows as the chart has room for (window-size audit
+  // 2026-10-01): on a short chart eight rows ran past the box's bottom
+  // edge, the last one cut in half, and the "+N more" line never showed.
+  let rows = MARKER_MAX_ROWS;
+  box.innerHTML = html + traceTable(rows);
+  while (rows > 1 && box.scrollHeight > box.clientHeight + 1) {
+    rows--;
+    box.innerHTML = html + traceTable(rows);
+  }
+  if (typeof placeMarkerReadout === 'function') placeMarkerReadout(box);
   if (typeof placeReadout === 'function') placeReadout();   // the status keeps clear
+}
+
+// The readout holds the chart's top right corner, and sat over marker B
+// whenever B was there (window-size audit 2026-10-01).  A marker under it
+// sends it to the top left corner, unless a marker is under that one too.
+function placeMarkerReadout(box) {
+  box.style.left = box.style.right = '';
+  const r = plotRect();
+  const xs = [gMarkers.a, gMarkers.b].filter(v => v != null).map(v => xToPx(v, r));
+  const w = box.offsetWidth, right = box.offsetLeft;
+  const under = (x0) => xs.some(x => x >= x0 - 4 && x <= x0 + w + 4);
+  if (under(right) && !under(r.x + 6)) {
+    box.style.left = (r.x + 6) + 'px';
+    box.style.right = 'auto';
+  }
 }
 
 const X_LABEL_GAP_PX = 12;         // clear space between two distance labels
@@ -4174,13 +4459,19 @@ function drawGrid(r) {
     labels.take({ x0: r.x - 6 - w, x1: r.x - 6, y0: cy - 5.5, y1: cy + 5.5 });
   }
 
-  // Axis labels
+  // Axis labels.  The y title is centred on the plot and was cut off at
+  // the canvas edges on a short chart (window-size audit 2026-10-01: under
+  // ~200 px, 800 x 600 and the hub's narrow frames); the longest wording
+  // that fits is drawn.
   ctx.save();
   ctx.translate(14, r.y + r.h / 2);
   ctx.rotate(-Math.PI / 2);
   ctx.textAlign = 'center';
   ctx.fillStyle = '#000000';
-  ctx.fillText('signal (dB, descending = loss)', 0, 0);
+  const yRoom = 2 * Math.min(r.y + r.h / 2, canvas.clientHeight - (r.y + r.h / 2)) - 4;
+  const yTitle = ['signal (dB, descending = loss)', 'signal (dB)', 'dB']
+    .find(t => ctx.measureText(t).width <= yRoom) || 'dB';
+  ctx.fillText(yTitle, 0, 0);
   ctx.restore();
   ctx.fillStyle = '#000000';
   ctx.textAlign = 'center';
@@ -5270,6 +5561,14 @@ function pollEndVerdicts() {
     renderEventTable();
   }, 3000);
 }
+function frameWarnText(nB) {
+  if (gFecMode) return '   FEC mode: each end is graded on its own; A and B are not paired.';
+  return (nB && gInfo && gInfo.cable_end_known_b === false)
+    ? '   ⚠ B never reaches the end of the fiber: cable length unknown, so A/B '
+      + 'cannot be aligned. Check B is the full-length shot, not the short shot. '
+      + 'For facility-entrance (FEC) shots, use the Viewer FEC tool.'
+    : '';
+}
 function renderEventTable() {
   const host = document.getElementById('event-tbody-wrap');
   const hint = document.getElementById('event-hint');
@@ -5296,11 +5595,97 @@ function renderEventTable() {
   // B→A, Average), in the app's analysis mode: the Splice Report's own in
   // OTDR Suite mode, FastReporter's in FastReporter mode.  The
   // single-direction grid stands in when nothing is paired.
+  if (gFecMode && renderFecGrid(visible, host, hint)) return;
   if (gAnalysisMode === 'suite') {
     if (renderSuiteBidiGrid(visible, host, hint)) return;
   } else if (renderFrBidiGrid(visible, host, hint)) return;
   renderFastReporterGrid(visible, host, hint);
   return;
+}
+
+// ── FEC mode table ──────────────────────────────────────────────────────
+// One row per trace, never paired: the panel connector after the launch
+// reel, the events within the combine reach behind it, the combined loss and
+// the reflectance, judged by the engine's FEC rule (run_splicereport.py
+// fec_grade) at the customer profile's FEC gates -- the same numbers the
+// Splice Report FEC tool prints.  The side is the folder the trace came
+// from (A box / B box), not a direction.
+let gFecSeq = 0;
+function renderFecGrid(traces, host, hint) {
+  const fibers = [...new Set(traces.map(t => t.fiber))];
+  if (!fibers.length) return false;
+  const seq = ++gFecSeq;
+  hint.textContent = `FEC table: grading ${traces.length} trace${traces.length === 1 ? '' : 's'}…`;
+  fetch(`/api/fec_table?fibers=${fibers.join(',')}`)
+    .then(r => r.json())
+    .then(res => { if (seq === gFecSeq) paintFecGrid(traces, res || {}, host, hint); })
+    .catch(e => {
+      if (seq !== gFecSeq) return;
+      hint.textContent = `FEC table unavailable (${(e && e.message) || 'fetch failed'})`;
+    });
+  return true;
+}
+function fecGateText(g) {
+  if (!g) return '';
+  return `loss ${g.FEC_LOSS_STRICT ? '>' : '≥'} ${Number(g.FEC_LOSS_GATE).toFixed(3)} dB `
+       + `(connector + events within ${Number(g.FEC_COMBINE_M).toFixed(0)} m), `
+       + `reflectance > ${Number(g.FEC_REFL_GATE).toFixed(1)} dB`;
+}
+function paintFecGrid(traces, res, host, hint) {
+  host.innerHTML = '';
+  gGridGoTo = null;
+  const grades = res.grades || {};
+  const gates = res.gates || null;
+  const rows = traces.map(t => {
+    const side = t.src === 'b' ? 'B' : 'A';
+    return { t, side, g: (grades[side] || {})[String(t.fiber)] || null };
+  });
+  const fails = rows.filter(r => r.g && (r.g.fail_loss || r.g.fail_refl)).length;
+  hint.textContent = `FEC: ${rows.length} trace${rows.length === 1 ? '' : 's'}, ${fails} failing`
+    + (gates ? `  ·  fails on ${fecGateText(gates)}` : '')
+    + (res.error ? `  ·  ${res.error}` : '');
+  const scroller = document.createElement('div');
+  scroller.className = 'fr-scroll';
+  const table = document.createElement('table');
+  table.className = 'fr-table';
+  const H = ['Identifiers', 'P/F', 'λ (nm)', 'Side', 'Panel Connector<br>(km)',
+             'Connector<br>Loss (dB)', 'Combined With', 'FEC Loss<br>(dB)',
+             'Refl.<br>(dB)', 'Distance'];
+  const head = H.map((h, i) => `<th class="${i === 0 ? 'fr-rowlab ' : ''}${i === 4 ? 'fr-evhdr' : ''}">${h}</th>`).join('');
+  const f3 = v => (v == null || isNaN(v)) ? '---' : Number(v).toFixed(3);
+  const f1 = v => (v == null || isNaN(v)) ? '---' : Number(v).toFixed(1);
+  const fecHi = x => (x && !flagsOff()) ? 'fr-hi' : '';
+  const body = rows.map(({ t, side, g }) => {
+    const dot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;`
+      + `background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>`;
+    const lead = `<td class="fr-rowlab">${dot}F${t.fiber}</td>`;
+    if (!g || !g.found) {
+      return `<tr>${lead}<td></td><td>${(t.data && t.data.wavelength_nm) || '---'}</td><td>${side}</td>`
+        + `<td colspan="6">${g ? 'no panel connector found (not graded)' : 'not graded'}</td></tr>`;
+    }
+    const fail = g.fail_loss || g.fail_refl;
+    const comb = (g.combined || []).map(c => `${f3(c.loss)} @ ${Number(c.km).toFixed(3)} km`).join('; ');
+    const dist = g.fail_loss && (g.combined || []).length ? 'COMBINE' : `${Number(g.conn_km).toFixed(3)}km`;
+    return `<tr>${lead}`
+      + `<td class="${pfClass(fail)}" title="FEC rule: ${fecGateText(gates)}">${pfMark(fail)}</td>`
+      + `<td>${(t.data && t.data.wavelength_nm) || '---'}</td><td>${side}</td>`
+      + `<td class="fr-fec-km" data-km="${g.conn_km}" style="cursor:pointer" title="zoom to the connector">${Number(g.conn_km).toFixed(4)}</td>`
+      + `<td>${f3(g.conn_loss)}</td><td>${comb || '---'}</td>`
+      + `<td class="${fecHi(g.fail_loss)}">${f3(g.loss)}</td>`
+      + `<td class="${fecHi(g.fail_refl)}">${f1(g.refl)}</td>`
+      + `<td>${fail ? dist : ''}</td></tr>`;
+  });
+  table.innerHTML = `<thead><tr>${head}</tr></thead><tbody>${body.join('')}</tbody>`;
+  gTableExport = { table, rows: () => body };
+  scroller.appendChild(table);
+  host.appendChild(scroller);
+  // one header row: pin it at the top (the stylesheet's offsets are for the
+  // three-row FR headers, which set their own per row the same way)
+  table.querySelectorAll('thead th').forEach(th => { th.style.top = '0px'; });
+  table.querySelectorAll('td.fr-fec-km').forEach(td => {
+    td.addEventListener('click', () => zoomToKm(+td.dataset.km, 0.3));
+  });
+  draw();
 }
 
 // The flat per-trace list.  Nothing routes here any more — the grid scales, so
@@ -6171,6 +6556,18 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
     if (f !== lastFirst) { lastFirst = f; paintRows(); }
   });
+  // The slice is sized to the box when painted; a box made taller (the
+  // divider dragged, the window grown, the table fitted to its rows) left
+  // blank space under the last painted row until a scroll (window-size
+  // audit 2026-10-01).  Repaint when the box changes size.
+  if (window.ResizeObserver) {
+    let lastH = -1;
+    new ResizeObserver(() => {
+      if (scroller.clientHeight === lastH) return;
+      lastH = scroller.clientHeight;
+      paintRows();
+    }).observe(scroller);
+  }
   fitColumns(table, shown.map(rowHtml), statNameRow);   // widths from every row
   paintRows();
   // A click on the drawer's mark for a cell comes here (drawPairing).
@@ -6776,6 +7173,18 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
     if (f !== lastFirst) { lastFirst = f; paintRows(); }
   });
+  // The slice is sized to the box when painted; a box made taller (the
+  // divider dragged, the window grown, the table fitted to its rows) left
+  // blank space under the last painted row until a scroll (window-size
+  // audit 2026-10-01).  Repaint when the box changes size.
+  if (window.ResizeObserver) {
+    let lastH = -1;
+    new ResizeObserver(() => {
+      if (scroller.clientHeight === lastH) return;
+      lastH = scroller.clientHeight;
+      paintRows();
+    }).observe(scroller);
+  }
   fitColumns(table, descs.map(rowHtml));   // widths from every row
   paintRows();
   // A click on the drawer's mark for a cell comes here (drawPairing), and a
@@ -7419,6 +7828,18 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
     if (f !== lastFirst) { lastFirst = f; paintRows(); }
   });
+  // The slice is sized to the box when painted; a box made taller (the
+  // divider dragged, the window grown, the table fitted to its rows) left
+  // blank space under the last painted row until a scroll (window-size
+  // audit 2026-10-01).  Repaint when the box changes size.
+  if (window.ResizeObserver) {
+    let lastH = -1;
+    new ResizeObserver(() => {
+      if (scroller.clientHeight === lastH) return;
+      lastH = scroller.clientHeight;
+      paintRows();
+    }).observe(scroller);
+  }
   fitColumns(table, descs.map(rowHtml));   // widths from every row
   paintRows();
   // A click on the drawer's mark for a cell comes here (drawPairing), and a
@@ -8880,6 +9301,7 @@ async function submitReport() {
 // only B and zoomed to the A-frame km on B's own axis -- the far end of the
 // span on a long cable.
 function linkDispKm(km, src, dir, fiber) {
+  if (gFecMode) return km;         // nothing is mirrored: a link's km is the trace's own
   const traceOf = d => gTraces.find(x => x.dir === d && x.data && String(x.fiber) === String(fiber))
                     || gTraces.find(x => x.dir === d && x.data);
   if (src === 'uni' && (dir === 'a' || dir === 'b')) {
@@ -9048,7 +9470,9 @@ canvas.addEventListener('mousemove', (ev) => {
       gDragging.curPx = ev.offsetX;
     }
   }
-  draw();
+  // A pan moves the chart; anything else only moves the overlay.
+  if (gDragging && gDragging.kind === 'pan') draw();
+  else drawHover();
 });
 
 window.addEventListener('mouseup', (ev) => {
@@ -9117,7 +9541,7 @@ canvas.addEventListener('contextmenu', (ev) => {
   gLabelClick = null;
   showSpanMenu(ev.clientX, ev.clientY, lh.t.dir, lh.e.dist_km, lh.t.fiber, lh.t.src || lh.t.dir);
 });
-canvas.addEventListener('mouseleave', () => { gMouse = null; gHoverKey = null; draw(); });
+canvas.addEventListener('mouseleave', () => { gMouse = null; gHoverKey = null; drawHover(); });
 
 // Keyboard: + / - to zoom, f fit, m toggle markers, Esc clear markers
 window.addEventListener('keydown', (ev) => {
@@ -9387,7 +9811,8 @@ async function applyTarget(t) {
     setAddDir(t.dir || 'both');
     await addFibers();
     const km = parseFloat(t.km);
-    if (!isNaN(km)) zoomToKm(linkDispKm(km, t.src, t.dir || 'both', fiber), 2.5);
+    // FEC links point at a panel connector on a 5 km shot: zoom in close.
+    if (!isNaN(km)) zoomToKm(linkDispKm(km, t.src, t.dir || 'both', fiber), gFecMode ? 0.3 : 2.5);
     return;
   }
   await autoloadDefault();

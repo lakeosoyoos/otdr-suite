@@ -173,7 +173,8 @@ def test_run_traces_is_the_suite_as_it_was(home_on, settings_dir):
     # no project.
     assert "qa_stage" not in at.session_state
     tool = next(r for r in at.sidebar.radio if r.label == "Tool")
-    assert tool.options == ["Viewer", "Splice Report", "Unidirectional", "Secret Sauce"]
+    assert tool.options == ["Viewer", "Splice Report", "Splice Report FEC", "Viewer FEC",
+                            "Unidirectional", "Secret Sauce"]
     assert "##### Trace Folders" in [m.value for m in at.sidebar.markdown]
     assert not any(b.key == "qa_load" for b in at.button)
     assert "project_path" not in at.session_state

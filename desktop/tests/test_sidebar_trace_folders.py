@@ -33,7 +33,9 @@ def test_the_span_box_is_gone_and_a_b_loaders_take_its_place():
     assert md.index('##### Trace Folders') < md.index('##### Select Tool')
 
 
-TRACE_TOOLS = ['Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce']
+TRACE_TOOLS = ['Viewer', 'Splice Report', 'Splice Report FEC', 'Viewer FEC',
+               'Unidirectional',
+               'Secret Sauce']
 APP_TOOLS = ['FQA Builder', 'Field Capture']
 
 
@@ -61,9 +63,10 @@ def test_the_app_pages_open_in_a_project_without_trace_folders(page, monkeypatch
     assert not [t for t in at.sidebar.text_input if t.label in ('A Folder', 'B Folder')]
 
 
-def test_quick_analysis_lists_the_four_trace_tools_only(monkeypatch):
+def test_quick_analysis_lists_the_trace_tools_only(monkeypatch):
     """With or without OTDR_SUITE_EDITION (the App's launcher always sets
-    it), Quick Analysis lists the four trace tools."""
+    it), Quick Analysis lists the trace tools, the two FEC tools included
+    (Robert 2026-10-02, main #525)."""
     monkeypatch.delenv('OTDR_SUITE_EDITION', raising=False)
     at = run_streamlit().run()
     assert not at.exception

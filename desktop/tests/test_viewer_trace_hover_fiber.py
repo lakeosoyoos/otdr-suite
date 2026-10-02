@@ -196,11 +196,15 @@ def test_the_box_names_one_fiber_and_nothing_else():
     assert 'more' not in box and 'forEach' not in box      # one fiber, never a list
     assert 'km' not in box.replace('ctx.', '') and 'dB' not in box
     draw = _js_func('draw')
-    assert 'if (gMouse && hovered) drawHoverBox(hovered);' in draw
-    # hovering changes no trace: no bold redraw on top, no other width
-    assert 'drawTrace(hovered' not in draw
+    over = _js_func('drawOverlay')
+    assert 'if (gMouse && hovered) drawHoverBox(hovered);' in over
+    assert 'const hovered = hoverTrace();' in over
+    # hovering changes no trace: no bold redraw on top, no other width, and
+    # the chart under the overlay is drawn without asking what is hovered
+    assert 'drawTrace(hovered' not in draw and 'drawTrace(' not in over
+    assert 'hoverTrace()' not in draw and 'gHoverKey' not in draw
     assert 'gHoverKey' not in _js_func('drawTrace')
-    assert draw.index('const hovered = hoverTrace();') < draw.index('drawEventMarkers(t, r)')
+    assert draw.index('drawEventMarkers(t, r)') < draw.index('keepBase();') < draw.index('drawOverlay(r);')
 
 
 def test_hover_follows_the_mouse_and_stays_off_links_drags_and_paper():
@@ -208,7 +212,7 @@ def test_hover_follows_the_mouse_and_stays_off_links_drags_and_paper():
     assert "const near = (gDragging || gLabelClick || overLabel) ? []" in move
     assert "gHoverKey = near.length ? near[0].t.key : null;" in move   # the nearest only
     assert "gHoverKey != null ? 'pointer' : 'crosshair'" in move
-    assert "canvas.addEventListener('mouseleave', () => { gMouse = null; gHoverKey = null; draw(); });" in SRC
+    assert "canvas.addEventListener('mouseleave', () => { gMouse = null; gHoverKey = null; drawHover(); });" in SRC
     snap = _js_func('snapChart')
     assert 'gHoverKey = null;' in snap
     keep = _js_func('withPrintCanvas')
