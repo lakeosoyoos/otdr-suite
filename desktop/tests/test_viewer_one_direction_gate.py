@@ -77,3 +77,13 @@ def test_the_boxes_repaint_the_panel_as_the_tech_types():
     # the FR-mode two-direction table judges mid-span reflectance only on a typed band
     assert 'if (gReflOverride == null) return false;' in vw
     assert 'x.ti = fi;' in vw
+
+
+def test_the_loss_box_is_named_for_what_it_grades():
+    """Robert 2026-10-01: the box reads "Bidirectional Loss" -- the gate on
+    a two-direction load's Average; one direction loaded, "Unidirectional Loss"."""
+    vw = _viewer_src()
+    assert '<span id="set-loss-name">Bidirectional Loss</span> &ge; <input id="set-loss"' in vw
+    sync = _fn(vw, 'syncGateUI')
+    assert "? 'Unidirectional Loss' : 'Bidirectional Loss';" in sync
+    assert "(gSourceReport === 'uni' || oneDirOnly())" in sync

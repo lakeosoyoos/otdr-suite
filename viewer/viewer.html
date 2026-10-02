@@ -804,7 +804,7 @@
       <span class="hint" id="event-hint">add a trace to see events</span>
       <span id="evt-settings">
         <label title="An event at or above this loss is flagged. Seeded from the report that opened this Viewer, so the two agree; edit to explore.">
-          Loss &ge; <input id="set-loss" type="number" step="0.005" min="0" value="0.160"> dB</label>
+          <span id="set-loss-name">Bidirectional Loss</span> &ge; <input id="set-loss" type="number" step="0.005" min="0" value="0.160"> dB</label>
         <span id="gate-src" class="gate-src" title="Which report's threshold this Viewer is judging by."></span>
         <label title="Reflectance band low end: a reflection at or above it is flagged. Seeded from the report's mid-span reflectance rule; edit to explore. 0 turns the reflectance rule off; empty follows the report.">
           Refl Band <input id="set-refl-lo" type="number" step="1" max="0" value="-80"></label>
@@ -2059,6 +2059,12 @@ function syncGateUI() {
     lbl.classList.toggle('overridden', gGateOverride != null);
   }
   if (el) el.title = unusual ? gateLabel() : `following ${gateLabel()}`;
+  // The box is the gate on the Average of a two-direction load (Robert
+  // 2026-10-01: "Bidirectional Loss"); with one direction loaded it grades
+  // that direction's readings, and says so.
+  const name = document.getElementById('set-loss-name');
+  if (name) name.textContent = (gSourceReport === 'uni' || oneDirOnly())
+    ? 'Unidirectional Loss' : 'Bidirectional Loss';
   // The Refl Band boxes show the band the tables judge by: the report's,
   // until the tech types their own.
   const band = reflBand(), typed = gReflOverride != null;
