@@ -5223,34 +5223,54 @@ function flagEvent(e, t) {
   return { flag: why.length > 0, why: why.join('; ') };
 }
 
+// The boxes repaint the event panel as the tech types (a short pause after
+// the last key, so "0.25" is not painted at "0" and "0.2" on the way), and
+// at once on Enter or leaving the box.  Only that final 'change' puts back
+// a value it refuses; mid-typing ("-", "0.") it just waits.
+function liveBox(el, apply) {
+  let timer = null;
+  el.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => apply(false), 400);
+  });
+  el.addEventListener('change', () => { clearTimeout(timer); apply(true); });
+}
 function wireEventSettings() {
   const lossEl = document.getElementById('set-loss');
-  if (lossEl) lossEl.addEventListener('change', () => {
+  if (lossEl) liveBox(lossEl, (final) => {
     const v = parseFloat(lossEl.value);
+    let next;
     if (lossEl.value.trim() === '') {
-      // An emptied box follows the report again.
-      gGateOverride = null;
+      // An emptied box follows the report again, once the tech is done.
+      if (!final) return;
+      next = null;
     } else if (!Number.isFinite(v) || v < 0) {
       // A loss gate is 0 or more: a negative one would fail every event.
-      lossEl.value = gateIsOff() ? '' : activeGateDb().toFixed(3);
+      if (final) lossEl.value = gateIsOff() ? '' : activeGateDb().toFixed(3);
       return;
     } else {
       // Back to following the report when the tech types its value back in.
-      gGateOverride = (Math.abs(v - reportGateDb()) < 1e-9) ? null : v;
+      next = (Math.abs(v - reportGateDb()) < 1e-9) ? null : v;
     }
+    if (next === gGateOverride && !final) return;
+    gGateOverride = next;
+    // while typing, the box keeps what was typed ("0.16" is not made "0.160")
+    const typed = lossEl.value;
     syncGateUI();
+    if (!final) lossEl.value = typed;
     renderEventTable();
     renderFilesPanel();
   });
   const loEl = document.getElementById('set-refl-lo');
   const hiEl = document.getElementById('set-refl-hi');
-  const onBand = () => {
+  const onBand = (final) => {
     const T = gThresholds;
     // An emptied box takes the report's value for that end.
     const read = (el, dflt) => el.value.trim() === '' ? dflt : parseFloat(el.value);
     const lo = read(loEl, Number(T.refl_floor)), hi = read(hiEl, Number(T.refl_ceil));
     // Reflectance is 0 dB or below; anything else is put back.
     if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo > 0 || hi > 0) {
+      if (!final) return;
       syncGateUI();
       const band = reflBand();
       loEl.value = String(band.lo); hiEl.value = String(band.hi);
@@ -5258,14 +5278,20 @@ function wireEventSettings() {
     }
     const same = Math.abs(lo - Number(T.refl_floor)) < 1e-9
               && Math.abs(hi - Number(T.refl_ceil)) < 1e-9;
-    gReflOverride = same ? null : { lo, hi };
-    syncGateUI();
+    const next = same ? null : { lo, hi };
+    const was = gReflOverride;
+    if (!final && (was === next || (was && next && was.lo === lo && was.hi === hi))) return;
+    gReflOverride = next;
+    // while typing, leave the box as typed (syncGateUI refills an emptied
+    // one with the report's value only once the tech is done)
+    if (final) syncGateUI();
+    else for (const b of [loEl, hiEl]) b.classList.toggle('overridden', next != null);
     renderEventTable();
     renderFilesPanel();
   };
   if (loEl && hiEl) {
-    loEl.addEventListener('change', onBand);
-    hiEl.addEventListener('change', onBand);
+    liveBox(loEl, onBand);
+    liveBox(hiEl, onBand);
   }
 }
 
@@ -6496,6 +6522,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const eofOf = new Map();
   cols.forEach(c => c.ev.forEach((x, fi) => {
     if (!x) return;
+    x.ti = fi;                             // legReflFails reads eofOf by it
     for (const w of ['a', 'b']) {
       const L = x.row[w];
       if (L && L.pos_m != null) {
@@ -6525,6 +6552,10 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   });
   const legReflFails = (x, which) => {
     if (endBad[which].has(x)) return true;
+    // Mid-span reflectance only once the tech types a Refl Band: the FR-mode
+    // report has no mid-span reflectance rule, so the default table judges
+    // the two ends alone, as it always has.
+    if (gReflOverride == null) return false;
     const leg = x.row[which];
     if (!legOk(leg) || !isRefl(x)) return false;
     // The report's frame: its events start at the panel, past this

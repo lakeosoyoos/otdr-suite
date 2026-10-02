@@ -46,7 +46,7 @@ def test_the_warning_band_and_the_override_follow_the_same_gate():
     vw = _viewer_src()
     assert '((leg || oneDirOnly()) ? T.single_dir_warn : T.reburn_warn)' in _fn(vw, 'warnFor')
     # typing the report's own value back into the loss box clears the override
-    assert 'gGateOverride = (Math.abs(v - reportGateDb()) < 1e-9) ? null : v;' in vw
+    assert 'next = (Math.abs(v - reportGateDb()) < 1e-9) ? null : v;' in vw
     assert "', one direction'" in _fn(vw, 'gateLabel')
 
 
@@ -61,3 +61,19 @@ def test_the_gate_is_snapshotted_before_gInfo_moves():
 def test_an_unticked_uni_row_reaches_the_viewer_as_off():
     TS = import_trace_server()
     assert TS._gates({'SINGLE_DIR_THRESHOLD': 1e9})['single_dir'] >= 1e6
+
+
+def test_the_boxes_repaint_the_panel_as_the_tech_types():
+    """Robert 2026-10-01: changing the loss box or the Refl Band updates the
+    event panel by itself -- on typing (after a short pause), not only on
+    Enter.  Every box is wired the same way."""
+    vw = _viewer_src()
+    live = _fn(vw, 'liveBox')
+    assert "el.addEventListener('input'" in live and "setTimeout(() => apply(false), 400)" in live
+    assert "el.addEventListener('change', () => { clearTimeout(timer); apply(true); });" in live
+    wire = _fn(vw, 'wireEventSettings')
+    assert 'liveBox(lossEl,' in wire and 'liveBox(loEl, onBand);' in wire and 'liveBox(hiEl, onBand);' in wire
+    assert wire.count('renderEventTable();') == 2 and wire.count('renderFilesPanel();') == 2
+    # the FR-mode two-direction table judges mid-span reflectance only on a typed band
+    assert 'if (gReflOverride == null) return false;' in vw
+    assert 'x.ti = fi;' in vw
