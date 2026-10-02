@@ -370,7 +370,7 @@ def _render_analysis_mode_control():
     l.markdown(_mode_name('FR Mode', _on), unsafe_allow_html=True,
                help=("FR Mode: reproduce EXFO FastReporter's analysis from the same "
                      "files, to the digit, with only your pass/fail thresholds on top."))
-    _right = m.toggle('Analysis mode', value=not _on, label_visibility='collapsed')
+    _right = m.toggle('Analysis Mode', value=not _on, label_visibility='collapsed')
     r.markdown(_mode_name('OTDR Mode', not _on), unsafe_allow_html=True,
                help=("OTDR Mode: our own analysis, the numbers and columns we can "
                      "defend from the trace."))
@@ -701,7 +701,7 @@ def _engine_live_panel(prefix, running_title, timeout_s):
     tail = _engine_tail(job, 1)
     if tail:
         st.caption(f'current step · {tail[0][:140]}')
-    st.button('Cancel run', key=f'{prefix}_cancel_btn',
+    st.button('Cancel Run', key=f'{prefix}_cancel_btn',
               on_click=_flag_cancel, args=(cancel_key,))
     if on_page_pass:
         return          # a redraw of this panel alone cannot be asked for from a page pass
@@ -1044,7 +1044,7 @@ INSTALL_BLOCK_MSG = (
     '🔒 **Report generation is paused: OTDR Suite needs a fresh install.**\n\n'
     'This session is running **engine {running}**, but **engine {latest}** '
     'has been published, and it adds files this copy of OTDR Suite cannot '
-    'download on its own, so Update & restart will not apply it. Different '
+    'download on its own, so Update & Restart will not apply it. Different '
     'engines can print different numbers for the same traces, so reports are '
     'held until this copy is up to date.\n\n'
     '**Nothing is lost.** Finish what you are doing, close OTDR Suite '
@@ -1092,7 +1092,7 @@ def _report_gate(key):
         return stale
     st.error(STALE_BLOCK_MSG.format(latest=latest, running=running))
     if getattr(sys, 'frozen', False):
-        if st.button('⬇ Update & restart now', key=f'{key}_stale_restart',
+        if st.button('⬇ Update & Restart Now', key=f'{key}_stale_restart',
                      type='primary'):
             if _relaunch_and_exit():
                 _render_restart_watchdog()
@@ -1291,7 +1291,7 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
       + 'opacity:.55">Leave this window open \u2014 closing OTDR Suite now '
       + 'just means starting the update over.</div>'
       + '<button id="otdr-restart-esc" style="display:none;margin-top:22px;'
-      + 'padding:8px 18px;font-size:14px;cursor:pointer">Reload this page</button>';
+      + 'padding:8px 18px;font-size:14px;cursor:pointer">Reload This Page</button>';
     d.body.appendChild(el);
     msg  = d.getElementById("otdr-restart-msg");
     spin = d.getElementById("otdr-restart-spin");
@@ -1470,7 +1470,7 @@ def _render_update_nudge():
         return
     st.warning(f'Update {latest} is available (running {running}).{note}')
     if getattr(sys, 'frozen', False):
-        if st.button('⬇ Update & restart now', key='upd_nudge_restart',
+        if st.button('⬇ Update & Restart Now', key='upd_nudge_restart',
                      type='primary', use_container_width=True):
             if _relaunch_and_exit():
                 _render_restart_watchdog()
@@ -1604,7 +1604,7 @@ def _engine_file_missing_page(exc):
     # hourly in-process dedup keeps reruns of this page from repeating it.
     report_error('engine file missing', exc,
                  {'engine': HERE, 'source': os.environ.get('OTDR_SUITE_SOURCE', '?')})
-    if st.button('Repair and restart', type='primary'):
+    if st.button('Repair and Restart', type='primary'):
         _request_repair()
         if _relaunch_and_exit():
             _render_restart_watchdog()
@@ -1643,7 +1643,7 @@ def _engine_damaged_notice(stderr, key):
         'Security software removing a file after the app downloaded it is the '
         'usual reason. Repair and restart, then run this again. Nothing you '
         'have saved is affected.')
-    if st.button('Repair and restart', type='primary', key=f'repair_{key}'):
+    if st.button('Repair and Restart', type='primary', key=f'repair_{key}'):
         _request_repair()
         if _relaunch_and_exit():
             _render_restart_watchdog()
@@ -2048,14 +2048,14 @@ def _report_dest_row(key, default_dir):
         st.session_state[key] = st.session_state.get(saved, '')
     c1, c2 = st.columns([1, 2])
     with c1:
-        if st.button('📁 Save reports to…', use_container_width=True, key=key + '_browse'):
+        if st.button('📁 Save Reports To…', use_container_width=True, key=key + '_browse'):
             p = pick_folder('Choose where to save the reports')
             if p:
                 st.session_state[key] = p
             elif p is None:
                 st.info('No folder picker on this machine. Paste the path instead.')
     with c2:
-        st.text_input('Save reports to', key=key, placeholder=default_dir,
+        st.text_input('Save Reports To', key=key, placeholder=default_dir,
                       help='Leave blank to use the folder shown.')
     st.session_state[saved] = st.session_state.get(key) or ''
     chosen = (st.session_state.get(key) or '').strip().strip('"')
@@ -2978,6 +2978,16 @@ _CARRY_OK_CSS = (
     '</style>')
 
 
+# The two built-in profiles' names in Title Case, for the screen only: the
+# stored names are the keys of CUSTOMER_PROFILES (saved projects carry them).
+_PROFILE_SHOWN = {'Default (engine baseline)': 'Default (Engine Baseline)',
+                  'Custom (edit table below)': 'Custom (Edit Table Below)'}
+
+
+def _profile_label(name):
+    return _PROFILE_SHOWN.get(name, name)
+
+
 _CARRY_PROFILE_BOX = (
     '<div style="background:#e7f5ea;border:1px solid #9fd3aa;'
     'border-radius:6px;padding:8px 12px;font-size:1rem;color:#14532d">'
@@ -3008,7 +3018,7 @@ def _thresholds_carried_dialog(info):
     # option C of the mock-ups).  Escaped: a profile name can hold an '&'.
     import html
     _prof = st.session_state.get('otdr_profile') or next(iter(CUSTOMER_PROFILES))
-    st.markdown(_CARRY_PROFILE_BOX.format(name=html.escape(_prof)),
+    st.markdown(_CARRY_PROFILE_BOX.format(name=html.escape(_profile_label(_prof))),
                 unsafe_allow_html=True)
     st.markdown(_CARRY_OK_CSS, unsafe_allow_html=True)
     _c1, _c2 = st.columns(2)
@@ -3170,7 +3180,7 @@ with st.sidebar:
 
     for _side, _lbl in (('a', 'A'), ('b', 'B')):
         _key = f'view_dir_{_side}_input'
-        if st.button(f'📁 {_lbl}-direction folder', use_container_width=True,
+        if st.button(f'📁 {_lbl}-Direction Folder', use_container_width=True,
                      key=f'side_browse_{_side}'):
             _p = pick_folder(f'Choose the {_lbl}-direction folder')
             if _p:
@@ -3178,8 +3188,8 @@ with st.sidebar:
                 _trace_folders_changed()
             elif _p is None:
                 st.session_state['_picker_unavailable'] = True
-        st.text_input(f'{_lbl} folder', key=_key, label_visibility='collapsed',
-                      placeholder=f'{_lbl}-direction folder path',
+        st.text_input(f'{_lbl} Folder', key=_key, label_visibility='collapsed',
+                      placeholder=f'{_lbl}-Direction Folder Path',
                       on_change=_trace_folders_changed)
     if st.session_state.get('_picker_unavailable'):
         st.caption('⚠ The folder picker isn\'t available in this build. '
@@ -3604,7 +3614,7 @@ def page_viewer():
     _pop_doc = """
 <button id="vpop2" style="padding:4px 10px;border:1px solid #c9d5e1;border-radius:4px;
     background:#eef3f8;cursor:pointer;font-weight:600;color:#000000;
-    font-family:sans-serif;font-size:13px">&#8862; Open Viewer in its own window</button>
+    font-family:sans-serif;font-size:13px">&#8862; Open Viewer in Its Own Window</button>
 <span style="margin-left:8px;font-size:11px;color:#000000;font-family:sans-serif">
     keeps this page free for the report &middot; report cell clicks drive the same window</span>
 <script>
@@ -3749,19 +3759,19 @@ def page_duplicate_check():
     else:
         c1, c2 = st.columns([1, 2])
         with c1:
-            if st.button('📁 Browse for folder', type='primary', use_container_width=True):
+            if st.button('📁 Browse for Folder', type='primary', use_container_width=True):
                 p = pick_folder('Choose a folder of OTDR files')
                 if p:
                     st.session_state['ss_folder_input'] = p
         with c2:
-            st.text_input('…or paste a folder path',
+            st.text_input('…or Paste a Folder Path',
                           key='ss_folder_input',
                           placeholder=r'C:\Users\you\Desktop\fiber files')
 
         folder = (st.session_state.get('ss_folder_input') or '').strip().strip('"')
         _dropped = st.file_uploader(
-            '…or drag & drop the files here (.sor / .trc / .json, a whole '
-            'folder, or a .zip)',
+            '…or Drag & Drop the Files Here (.sor / .trc / .json, a Whole '
+            'Folder, or a .zip)',
             type=['sor', 'trc', 'json', 'zip'], accept_multiple_files=True,
             key='ss_drop')
     if _dropped:
@@ -3790,7 +3800,7 @@ def page_duplicate_check():
     import folder_intake as _fi
     folder, _foreign = _exclude_foreign_files(folder, _fi.OTDR_EXTS_WITH_TRC)
 
-    out_format = st.radio('Output', ['Excel (xlsx)', 'PDF', 'Stay in app'],
+    out_format = st.radio('Output', ['Excel (xlsx)', 'PDF', 'Stay in App'],
                           horizontal=True)
     fmt = {'Excel (xlsx)': 'xlsx', 'PDF': 'pdf'}.get(out_format, 'pairs')
 
@@ -3802,7 +3812,7 @@ def page_duplicate_check():
     _ss_dest = _report_dest_row(
         'ss_report_dest', os.path.join(_fi_dest.default_report_dir(), 'SecretSauce_reports'))
     _stale = _report_gate('ss')
-    if st.button('Run analysis', type='primary', disabled=bool(_stale)):
+    if st.button('Run Analysis', type='primary', disabled=bool(_stale)):
         out_dir = _ss_dest
         st.session_state['ss_pending_cmd'] = secretsauce_cmd(folder, out_dir, fmt)
         st.session_state['ss_out_dir'] = out_dir
@@ -4067,8 +4077,8 @@ def _render_near_splice(res):
         st.markdown('**Check Two Fibres**')
         key = f"ns_check_{ns.get('group', 'report')}"
         c1, c2 = st.columns(2)
-        a = c1.text_input('Fibre', key=key + '_a', placeholder='e.g. 350')
-        b = c2.text_input('Other fibre', key=key + '_b', placeholder='e.g. 351')
+        a = c1.text_input('Fiber', key=key + '_a', placeholder='e.g. 350')
+        b = c2.text_input('Other Fiber', key=key + '_b', placeholder='e.g. 351')
         if a and b:
             r = _near_splice_check(ns, a, b)
             if not r['ok']:
@@ -4275,19 +4285,19 @@ def _parse_manifest(stdout):
 #  _overrides_from_settings + splicereport_cmd + run_splicereport.py).
 OTDR_ROWS = [
     # (key,                       label,                       fail_default,  unit,    supported)
-    ("unidir_splice_loss",        "Unidir. splice loss",        0.200,        "dB",    True),
-    ("bidir_splice_loss",         "Bidir splice loss",          0.160,        "dB",    True),
-    ("unidir_connector_loss",     "Connector loss (1 direction)", 0.649,      "dB",    True),
-    ("bidir_connector_loss",      "Bidir connector loss",       0.500,        "dB",    True),
+    ("unidir_splice_loss",        "Unidir. Splice Loss",        0.200,        "dB",    True),
+    ("bidir_splice_loss",         "Bidir Splice Loss",          0.160,        "dB",    True),
+    ("unidir_connector_loss",     "Connector Loss (1 Direction)", 0.649,      "dB",    True),
+    ("bidir_connector_loss",      "Bidir Connector Loss",       0.500,        "dB",    True),
     ("splitter_loss",             "Splitter Loss",              4.500,        "dB",    False),
     ("reflectance",               "Reflectance",                -50.0,        "dB",    True),
-    ("reflectance_ceiling",       "Reflectance ceiling",        0.0,          "dB",    True),
-    ("midspan_reflectance",       "Mid-span reflectance band",  -50.0,        "dB",    True),
+    ("reflectance_ceiling",       "Reflectance Ceiling",        0.0,          "dB",    True),
+    ("midspan_reflectance",       "Mid-Span Reflectance Band",  -50.0,        "dB",    True),
     # Optional BAND ceiling for the row above: tick it to flag ONLY the
     # band [warn floor, ceiling] — e.g. -80..-40 isolates faint fusion
     # glints while connector-grade reflections stay with the connector
     # rules.  Unticked (default) = no ceiling, shipped behavior.
-    ("midspan_refl_ceiling",      "Mid-span refl ceiling",      -40.0,        "dB",    True),
+    ("midspan_refl_ceiling",      "Mid-Span Refl Ceiling",      -40.0,        "dB",    True),
     # NOTE: the launch-connector loss gates used to live here as two rows.
     # They moved to the 'Connector & launch' knobs panel below, which carries
     # per-knob help text and holds the REST of the connector path beside them
@@ -4296,25 +4306,25 @@ OTDR_ROWS = [
     # Per-FIBER span attenuation: EXFO's stored span loss (the number FR
     # prints as Span Loss) over the stored span length, both directions
     # averaged.  Off by default (0 = off in the engine); IIG sets 0.250.
-    ("fiber_section_atten",       "Fiber attenuation",          0.400,        "dB/km", True),
-    ("span_loss",                 "Span loss",                  20.000,       "dB",    False),
-    ("span_length",               "Span length",                0.0000,       "km",    False),
+    ("fiber_section_atten",       "Fiber Attenuation",          0.400,        "dB/km", True),
+    ("span_loss",                 "Span Loss",                  20.000,       "dB",    False),
+    ("span_length",               "Span Length",                0.0000,       "km",    False),
     # ORL FLOOR: the OTDR's own total ORL per direction, from the file; a
     # reading below the value fails.  Not the OLTS ORL a contract names, and
     # the sheet says so.  Off by default; IIG sets 30.
-    ("span_orl",                  "Span ORL (floor)",           15.00,        "dB",    True),
+    ("span_orl",                  "Span ORL (Floor)",           15.00,        "dB",    True),
     # Bend/damage clusters within this distance of a validated splice column
     # stay IN that splice column (cells keep their bend labels); farther out
     # they get their own "Bends @ X km" column.  Unchecking reverts to the
     # legacy 75 m gate (Platteville-Cheyenne: short-lay fibers put splice
     # events 107-128 m before the column and grew phantom bend columns).
-    ("bend_fold_distance",        "Bend fold distance",         0.200,        "km",    True),
+    ("bend_fold_distance",        "Bend Fold Distance",         0.200,        "km",    True),
     # Per-FIBER average splice loss, FastReporter's "Avg. Splice Loss": the
     # signed mean of (A->B + B->A)/2 over every splice either direction
     # recorded.  A per-span statistic, not a per-cell gate, so it grades on
     # its own sheet and never colours the grid.  Off by default (0 = off in
     # the engine); the AWS / IIG contract sets it at 0.08 dB.
-    ("avg_splice_loss",           "Avg. splice loss (per fiber)", 0.080,      "dB",    True),
+    ("avg_splice_loss",           "Avg. Splice Loss (per Fiber)", 0.080,      "dB",    True),
 ]
 # Pre-checked rows (match what the splice report flags out of the box):
 OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
@@ -4336,7 +4346,7 @@ _OTDR_WARN_DEFAULT = {"midspan_reflectance": -80.0}
 # comment above) and how the unidirectional panel renders its own bands.
 #   ("weak end label", "strong end label")
 _OTDR_BAND_ROWS = {
-    "midspan_reflectance": ("band low", "band high"),
+    "midspan_reflectance": ("Band Low", "Band High"),
     # Launch/tailbox reflectance reads as a band for the same reason: a
     # connector has an acceptable WINDOW, not a single edge.  -49.9 was
     # calibrated for a fusion-spliced launch pigtail (Tulsa measures -51.8
@@ -4346,7 +4356,7 @@ _OTDR_BAND_ROWS = {
     # inside 0.15 dB) and every one of them trips a fusion-splice threshold.
     # With a band the panel job sets the low end to -40 and only genuinely bad
     # mates flag; FTH's -39.2 outliers still stand out at 12x the floor.
-    "reflectance": ("band low", "band high"),
+    "reflectance": ("Band Low", "Band High"),
 }
 
 # ── Customer threshold profiles ──────────────────────────────────────
@@ -4816,7 +4826,7 @@ _OTDR_KEY_DISABLE_VALUE = {
 #     Splitting a dedicated connector-search constant out of it is its own
 #     change.
 _CONN_ROWS = [
-    {'key': 'conn_bidi', 'label': 'Connector loss (bidirectional)', 'unit': 'dB',
+    {'key': 'conn_bidi', 'label': 'Connector Loss (Bidirectional)', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_LOSS_MIN_DB'},
      'defaults': {'value': 0.650}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
      'int': False,
@@ -4829,7 +4839,7 @@ _CONN_ROWS = [
               '/ 0.690 / 0.645, the next fiber at 0.587). 0 turns this gate '
               'off.')},
 
-    {'key': 'conn_avg', 'label': 'Connector loss (bidirectional average)', 'unit': 'dB',
+    {'key': 'conn_avg', 'label': 'Connector Loss (Bidirectional Average)', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_AVG_MIN_DB'},
      'defaults': {'value': 0.500}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
      'int': False,
@@ -4840,12 +4850,12 @@ _CONN_ROWS = [
               'move. Sacramento↔Suisun F1013 is why it exists: near 0.318 / '
               'far 1.088 averages 0.703, exactly the value the field sheet '
               'carries, but min = 0.318 never reached 0.62. On at 0.50, the '
-              'Bidir connector loss value, so a connector is flagged when '
+              'Bidir Connector Loss value, so a connector is flagged when '
               'either direction or its average is over its limit. Cells that '
               'fire only here print the average, without the side marker. '
               '0 turns this gate off.')},
 
-    {'key': 'conn_confirm', 'label': 'Connector re-measure tolerance', 'unit': 'dB',
+    {'key': 'conn_confirm', 'label': 'Connector Re-measure Tolerance', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_CONFIRM_TOL_DB'},
      'defaults': {'value': 0.050}, 'min': 0.001, 'max': 1.0, 'step': 0.005,
      'int': False,
@@ -4858,7 +4868,7 @@ _CONN_ROWS = [
               'all the flag stands. A defect is never hidden because the '
               'check could not run.')},
 
-    {'key': 'tailbox_outlier', 'label': 'Tailbox reflectance outlier margin', 'unit': 'dB',
+    {'key': 'tailbox_outlier', 'label': 'Tailbox Reflectance Outlier Margin', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'TAILBOX_OUTLIER_DB'},
      'defaults': {'value': 7.5}, 'min': 0.0, 'max': 30.0, 'step': 0.5,
      'int': False,
@@ -4875,7 +4885,7 @@ _CONN_ROWS = [
               'fiber on that span reaches the absolute threshold at all. '
               '0 drops the population test and judges on the threshold alone.')},
 
-    {'key': 'conn_far_window', 'label': 'Far-end connector search window', 'unit': 'km',
+    {'key': 'conn_far_window', 'label': 'Far-End Connector Search Window', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_FAR_WINDOW_KM'},
      'defaults': {'value': 2.0}, 'min': 0.1, 'max': 10.0, 'step': 0.1,
      'int': False,
@@ -4886,7 +4896,7 @@ _CONN_ROWS = [
               'it starts pulling real plant near the tail into a connector '
               'rule.')},
 
-    {'key': 'conn_reel_slack', 'label': 'Reel-length match slack', 'unit': 'km',
+    {'key': 'conn_reel_slack', 'label': 'Reel-Length Match Slack', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_REEL_SLACK_KM'},
      'defaults': {'value': 0.3}, 'min': 0.01, 'max': 2.0, 'step': 0.01,
      'int': False,
@@ -4897,7 +4907,7 @@ _CONN_ROWS = [
               'formed, so nothing is bidirectional; too loose and a nearby '
               'splice can be mistaken for the far view of the connector.')},
 
-    {'key': 'launch_step_guard', 'label': 'Launch step guard', 'unit': 'km',
+    {'key': 'launch_step_guard', 'label': 'Launch Step Guard', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_STEP_GUARD_KM'},
      'defaults': {'value': 0.150}, 'min': 0.0, 'max': 2.0, 'step': 0.005,
      'int': False,
@@ -4912,7 +4922,7 @@ _CONN_ROWS = [
               'guard buys the missing cells at the price of connector skirt '
               'reported as plant.')},
 
-    {'key': 'launch_high_loss', 'label': 'Launch event loss rule', 'unit': 'dB',
+    {'key': 'launch_high_loss', 'label': 'Launch Event Loss Rule', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_HIGH_LOSS_DB'},
      'defaults': {'value': 0.0}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
      'int': False,
@@ -5195,6 +5205,7 @@ def _render_customer_profile_picker():
     _picked = st.selectbox(
         'Customer', _profile_names,
         index=_profile_names.index(_cur),
+        format_func=_profile_label,
         label_visibility='collapsed',
         key='otdr_profile_select',
         width=_profile_w,
@@ -5605,7 +5616,7 @@ def _render_cable_type_select():
 
     _cur = st.session_state['cable_type']
     _picked = st.selectbox(
-        'Cable type', options,
+        'Cable Type', options,
         index=options.index(_cur),
         format_func=_fmt,
         label_visibility='collapsed',
@@ -5643,11 +5654,13 @@ def _viewer_click_target(page_key):
     if k not in st.session_state:
         st.session_state[k] = st.session_state.get(saved, 'Separate window')
     choice = st.radio(
-        'Cell clicks open in', ['Separate window', 'This tab (Viewer page)'],
+        'Cell Clicks Open In', ['Separate window', 'This tab (Viewer page)'],
         key=k, horizontal=True,
-        help='Separate window: one Viewer window stays open beside the report '
+        format_func={'Separate window': 'Separate Window',
+                     'This tab (Viewer page)': 'This Tab (Viewer Page)'}.get,
+        help='Separate Window: one Viewer window stays open beside the report '
              'and re-plots as you click cells (shift-click adds a fiber). '
-             'This tab: cells load the in-app Viewer page with a Back button.')
+             'This Tab: cells load the in-app Viewer page with a Back button.')
     st.session_state[saved] = choice
     return choice == 'Separate window'
 
@@ -5682,7 +5695,7 @@ def _render_clickable_grid(table_html, port, height=560, src=''):
 <div style="font-family:Consolas,monospace">
   <button id="vpop" style="margin:0 0 6px;padding:4px 10px;border:1px solid #c9d5e1;
       border-radius:4px;background:#eef3f8;cursor:pointer;font-weight:600;color:#000000">
-      &#8862; Open / focus Viewer window</button>
+      &#8862; Open / Focus Viewer Window</button>
   <span style="margin-left:8px;font-size:11px;color:#000000">click any cell &rarr;
       it plots in the Viewer window (stays open, updates in place) &middot;
       <b>shift-click</b> to add a fiber instead of replacing</span>
@@ -6460,7 +6473,7 @@ def _render_tech_comparison(page, our_xlsx, upload, dest_dir, site_a, site_b):
     st.caption(f"Saved to `{cached['xlsx']}`")
     try:
         with open(cached['xlsx'], 'rb') as fh:
-            st.download_button('⬇ Differences vs tech (Excel)', data=fh.read(),
+            st.download_button('⬇ Differences vs Tech (Excel)', data=fh.read(),
                                file_name=os.path.basename(cached['xlsx']),
                                key=f'{page}_techcmp_dl')
     except OSError:
@@ -6517,7 +6530,9 @@ def _sr_span_inputs(span):
         # they show across a trip to another tool (_seed_box).  A dropped
         # file does not: Streamlit does not let code fill an uploader.
         _seed_box(k_mode, [two, one])
-        mode = st.radio('Select Traces', [two, one], horizontal=True, key=k_mode)
+        mode = st.radio('Select Traces', [two, one], horizontal=True, key=k_mode,
+                        format_func={two: 'Two Folders (A + B)',
+                                     one: 'One Folder / Zip (Both Directions)'}.get)
         _keep_box(k_mode)
 
     if mode is None:
@@ -6530,7 +6545,7 @@ def _sr_span_inputs(span):
         # Plain text, not a disabled box: a keyed widget would keep its first
         # value= forever (the key + value footgun).
         c1, c2 = st.columns(2)
-        for _c, _lbl, _d in ((c1, 'A folder', dir_a), (c2, 'B folder', dir_b)):
+        for _c, _lbl, _d in ((c1, 'A Folder', dir_a), (c2, 'B Folder', dir_b)):
             with _c:
                 st.markdown(f'**{_lbl}**')
                 if _d:
@@ -6542,17 +6557,17 @@ def _sr_span_inputs(span):
         _seed_box(k_b)
         c1, c2 = st.columns(2)
         with c1:
-            if st.button('📁 A-direction folder', use_container_width=True, key=k_ba):
+            if st.button('📁 A-Direction Folder', use_container_width=True, key=k_ba):
                 p = pick_folder('Choose the A-direction folder')
                 if p:
                     st.session_state[k_a] = p
-            st.text_input('A folder', key=k_a, placeholder='A-direction folder')
+            st.text_input('A Folder', key=k_a, placeholder='A-Direction Folder')
         with c2:
-            if st.button('📁 B-direction folder', use_container_width=True, key=k_bb):
+            if st.button('📁 B-Direction Folder', use_container_width=True, key=k_bb):
                 p = pick_folder('Choose the B-direction folder')
                 if p:
                     st.session_state[k_b] = p
-            st.text_input('B folder', key=k_b, placeholder='B-direction folder')
+            st.text_input('B Folder', key=k_b, placeholder='B-Direction Folder')
         _keep_box(k_a)
         _keep_box(k_b)
         dir_a = _typed_trace_dir(st.session_state.get(k_a), 'A')
@@ -6561,19 +6576,19 @@ def _sr_span_inputs(span):
         _seed_box(k_one)
         c1, c2 = st.columns(2)
         with c1:
-            if st.button('📁 Folder with BOTH directions', use_container_width=True,
+            if st.button('📁 Folder with BOTH Directions', use_container_width=True,
                          key=k_bone):
                 p = pick_folder('Choose a folder containing both directions')
                 if p:
                     st.session_state[k_one] = p
-            st.text_input('Folder (both directions)', key=k_one,
-                          placeholder='one folder with both directions '
+            st.text_input('Folder (Both Directions)', key=k_one,
+                          placeholder='One Folder with Both Directions '
                                       '(.sor / .json / .trc, or .bdr)')
             _keep_box(k_one)
         with c2:
-            zf = st.file_uploader('…or drop the span here: its traces '
-                                  '(a whole folder works), a .zip, or the '
-                                  '.bdr files themselves',
+            zf = st.file_uploader('…or Drop the Span Here: Its Traces '
+                                  '(a Whole Folder Works), a .zip, or the '
+                                  '.bdr Files Themselves',
                                   type=['zip', 'bdr', 'sor', 'json', 'trc'],
                                   key=k_zip, accept_multiple_files=True)
         dir_a, dir_b = _resolve_bidir_from_single(
@@ -6584,7 +6599,7 @@ def _sr_span_inputs(span):
     # that highlights every cell where the two disagree — the tech_compare block.
     # Sits under the A/B inputs on both input modes (the boss's placement).
     tech_xlsx = st.file_uploader(
-        "Tech's splice report to compare against (.xlsx, optional)",
+        "Tech's Splice Report to Compare Against (.xlsx, Optional)",
         type=['xlsx', 'xlsm'], key=k_tech,
         help='Upload the splice report the tech built. After the report runs, '
              'a second workbook highlighting every difference is saved next '
@@ -6646,8 +6661,8 @@ def _sr_site_inputs(span, dir_a, dir_b):
     st.session_state.setdefault(k_b, 'B')
 
     s1, s2 = st.columns(2)
-    site_a = s1.text_input('A-direction ILA / site', key=k_a)
-    site_b = s2.text_input('B-direction ILA / site', key=k_b)
+    site_a = s1.text_input('A-Direction ILA / Site', key=k_a)
+    site_b = s2.text_input('B-Direction ILA / Site', key=k_b)
     st.session_state[k_saved] = ((dir_a, dir_b), (site_a, site_b))
     if site_a and site_b and (site_a, site_b) != ('A', 'B'):
         st.caption(f"📍 **A direction:** {site_a} → {site_b}  ·  "
@@ -6709,7 +6724,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     xp = res.get('xlsx')
     if xp and os.path.exists(xp):
         with open(xp, 'rb') as fh:
-            st.download_button('⬇ Excel report', data=fh.read(),
+            st.download_button('⬇ Excel Report', data=fh.read(),
                                file_name=os.path.basename(xp), key=f'{_p}_dl{sfx}')
         if tech_xlsx is not None:
             _render_tech_comparison(f'{_p}{sfx}', xp, tech_xlsx, dest,
@@ -6792,7 +6807,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
 # Its own box, apart from the threshold settings: these switches never
 # change what the engine finds, only which findings the report prints.
 # Anything switched off is listed on the workbook's Display sheet.
-_SHOW_ROWS = [('loss', 'Splice loss'), ('bend', 'Bend/Damage'),
+_SHOW_ROWS = [('loss', 'Splice Loss'), ('bend', 'Bend/Damage'),
               ('break', 'Breaks')]
 
 
@@ -6865,7 +6880,7 @@ def page_splice_report():
         h1, h2 = st.columns([3, 1])
         h1.markdown(f'**Span {_n}**: its own A/B folders; runs after span {_n - 1} '
                     'and saves to the same folder.')
-        if _n == n_spans and h2.button(f'✖ Remove span {_n}', key=f'sr_del_span{_n}',
+        if _n == n_spans and h2.button(f'✖ Remove Span {_n}', key=f'sr_del_span{_n}',
                                        use_container_width=True):
             st.session_state['sr_n_spans'] = _n - 1
             # Drop its finished result too — a report block for a span the
@@ -6882,7 +6897,7 @@ def page_splice_report():
         _sa, _sb = _sr_site_inputs(_n, _da, _db)
         extra[_n] = (_da, _db, _sa, _sb, _tech)
     if n_spans < SR_MAX_SPANS:
-        if st.button('➕ Add span…', key='sr_add_span',
+        if st.button('➕ Add Span…', key='sr_add_span',
                      help='Run another span in the same click: its own A/B '
                           'folders and its own report, saved to the same folder.'):
             st.session_state['sr_n_spans'] = n_spans + 1
@@ -7169,19 +7184,19 @@ def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None,
 #  The return value is still {GLOBAL_NAME: number}, exactly what uni_cmd
 #  feeds to --overrides, so nothing downstream changed.
 _UNI_ROWS = [
-    {'key': 'flag_threshold', 'label': 'Flag threshold', 'unit': 'dB',
+    {'key': 'flag_threshold', 'label': 'Flag Threshold', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'UNI_BEND_THRESHOLD'},
      'defaults': {'value': 0.250}, 'min': 0.005, 'max': 2.0, 'step': 0.005,
      'int': False,
      'help': 'A-side event this far off a validated closure is flagged.'},
 
-    {'key': 'min_pop', 'label': 'Min fibers for a splice column', 'unit': 'fibers',
+    {'key': 'min_pop', 'label': 'Min Fibers for a Splice Column', 'unit': 'fibers',
      'kind': 'scalar', 'globals': {'value': 'UNI_MIN_POP_SPLICE'},
      'defaults': {'value': 20}, 'min': 2, 'max': 500, 'step': 1, 'int': True,
      'help': 'Population in a 1 km bin needed to call a candidate closure. '
              'A job of 50 fibers or fewer lists its events instead.'},
 
-    {'key': 'closure_radius', 'label': 'At-splice radius', 'unit': 'km',
+    {'key': 'closure_radius', 'label': 'At-Splice Radius', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'UNI_CLOSURE_MATCH_KM'},
      'defaults': {'value': 0.075}, 'min': 0.005, 'max': 1.0, 'step': 0.005,
      'int': False,
@@ -7197,37 +7212,37 @@ _UNI_ROWS = [
     # because one direction cannot separate the backscatter step between the
     # fibers it joins.
 
-    {'key': 'break_floor', 'label': 'Break floor: min EOF', 'unit': 'km',
+    {'key': 'break_floor', 'label': 'Break Floor: Min EOF', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'UNI_BREAK_MIN_KM'},
      'defaults': {'value': 0.3}, 'min': 0.05, 'max': 10.0, 'step': 0.05,
      'int': False,
      'help': 'A fiber ending below this is too short to count as a break.'},
 
-    {'key': 'break_short_by', 'label': 'Break: EOF short of span by', 'unit': 'km',
+    {'key': 'break_short_by', 'label': 'Break: EOF Short of Span By', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'UNI_BREAK_PREMATURE_KM'},
      'defaults': {'value': 3.0}, 'min': 0.1, 'max': 50.0, 'step': 0.1,
      'int': False,
      'help': 'A fiber ending this far short of the cable end is a break.'},
 
-    {'key': 'end_region', 'label': 'End exclusion, full-span fibers', 'unit': 'km',
+    {'key': 'end_region', 'label': 'End Exclusion, Full-Span Fibers', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'UNI_END_REGION_KM'},
      'defaults': {'value': 0.5}, 'min': 0.0, 'max': 10.0, 'step': 0.1,
      'int': False,
      'help': 'Tail of a fiber that reaches the far end, excluded from flags.'},
 
-    {'key': 'zone_certify', 'label': 'Damage-zone certify radius', 'unit': 'km',
+    {'key': 'zone_certify', 'label': 'Damage-Zone Certify Radius', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'UNI_DAMAGE_ZONE_BREAK_KM'},
      'defaults': {'value': 0.5}, 'min': 0.05, 'max': 5.0, 'step': 0.05,
      'int': False,
      'help': 'A damage anchor this close to a break column certifies the zone.'},
 
-    {'key': 'zone_anchor', 'label': 'Damage-zone anchor confirm', 'unit': 'dB',
+    {'key': 'zone_anchor', 'label': 'Damage-Zone Anchor Confirm', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'UNI_PREBREAK_CONFIRM_DB'},
      'defaults': {'value': 0.03}, 'min': 0.005, 'max': 1.0, 'step': 0.005,
      'int': False,
      'help': 'Step a stored zone event must show in the trace to anchor a zone.'},
 
-    {'key': 'zone_member', 'label': 'Zone membership floor (stored / sweep)',
+    {'key': 'zone_member', 'label': 'Zone Membership Floor (Stored / Sweep)',
      'unit': 'dB',
      'kind': 'range', 'globals': {'low': 'UNI_PREBREAK_STORED_DB',
                                   'high': 'UNI_PREBREAK_MEMBER_DB'},
@@ -7238,7 +7253,7 @@ _UNI_ROWS = [
               'membership, where the bar is higher because nothing '
               'corroborates it (control noise tops out near 0.026 dB).')},
 
-    {'key': 'landmark_radius', 'label': 'Landmark radius (demote / label)',
+    {'key': 'landmark_radius', 'label': 'Landmark Radius (Demote / Label)',
      'unit': 'km',
      'kind': 'range', 'globals': {'low': 'UNI_LANDMARK_DEMOTE_KM',
                                   'high': 'UNI_LANDMARK_MATCH_KM'},
@@ -7248,7 +7263,7 @@ _UNI_ROWS = [
               'Handholes row; within the tighter low radius a NON-closure '
               'landmark also demotes a splice column to Bend/Damage.')},
 
-    {'key': 'ribbon_size', 'label': 'Ribbon size', 'unit': 'fibers',
+    {'key': 'ribbon_size', 'label': 'Ribbon Size', 'unit': 'fibers',
      'kind': 'scalar', 'globals': {'value': 'RIBBON_SIZE'},
      'defaults': {'value': 12}, 'min': 1, 'max': 48, 'step': 1, 'int': True,
      'help': 'Fibers per grid row.'},
@@ -7452,10 +7467,10 @@ def _uni_site_inputs(folder):
     st.session_state.setdefault(k_a, '')
     st.session_state.setdefault(k_b, '')
     s1, s2 = st.columns(2)
-    site_a = s1.text_input('A-End site', key=k_a,
+    site_a = s1.text_input('A-End Site', key=k_a,
                            help='The site at the A end of the cable. Prints in '
                                 'the report in the direction of the shot.')
-    site_b = s2.text_input('B-End site', key=k_b,
+    site_b = s2.text_input('B-End Site', key=k_b,
                            help='The site at the B end of the cable.')
     st.session_state[k_saved] = (folder, (site_a, site_b))
     return site_a.strip(), site_b.strip()
@@ -7494,8 +7509,8 @@ def _uni_upload_box(box_folder):
     forgets the upload, as does Clear upload."""
     gen = int(st.session_state.get('uni_drop_gen', 0))
     dropped = st.file_uploader(
-        '…or drag & drop the shots here (.sor / .json / .trc files, a whole '
-        'folder, or a .zip)',
+        '…or Drag & Drop the Shots Here (.sor / .json / .trc Files, a Whole '
+        'Folder, or a .zip)',
         type=['sor', 'json', 'trc', 'zip'], accept_multiple_files=True,
         key=f'uni_drop_{gen}')
     if dropped:
@@ -7554,7 +7569,7 @@ def _uni_pick_direction(folder):
     for side in ('a', 'b'):
         origin, far = _shot_sites(split[side])
         sites = f'{origin} → {far}, ' if origin and far else ''
-        labels[side] = (f"{side.upper()} direction ({sites}"
+        labels[side] = (f"{side.upper()} Direction ({sites}"
                         f"{_count(split[side + '_count'], 'file')})")
     # Kept in a slot no widget owns, with the folder it was picked for.
     _was = st.session_state.get('uni_both_side')
@@ -7603,8 +7618,8 @@ def page_unidirectional():
     # tech never saw is worse than no report.  Uni's own settings panel,
     # further down, blocks the same way.
     _settings_exc = _render_settings_box('unidirectional', blocks_report=True)
-    st.caption('Unidirectional reads three of these settings: Connector loss '
-               '(1 direction), the Mid-span reflectance band and its ceiling. '
+    st.caption('Unidirectional reads three of these settings: Connector Loss '
+               '(1 Direction), Mid-Span Reflectance Band and Mid-Span Refl Ceiling. '
                'The others grade the bidirectional report.')
 
     # The page's own boxes keep what they show across a trip to another
@@ -7629,6 +7644,7 @@ def page_unidirectional():
             _sides = ['A folder', 'B folder']
             _was = st.session_state.get('uni_panel_side', 'A folder')
             _side = st.radio('Run On', _sides, horizontal=True,
+                             format_func=lambda o: o.replace('folder', 'Folder'),
                              index=_sides.index(_was) if _was in _sides else 0)
             st.session_state['uni_panel_side'] = _side
             folder = _pa if _side == 'A folder' else _pb
@@ -7640,12 +7656,12 @@ def page_unidirectional():
     else:
         c1, c2 = st.columns([1, 2])
         with c1:
-            if st.button('📁 Browse for folder', type='primary', use_container_width=True):
+            if st.button('📁 Browse for Folder', type='primary', use_container_width=True):
                 p = pick_folder('Choose a folder of OTDR files')
                 if p:
                     st.session_state['uni_folder_input'] = p
         with c2:
-            st.text_input('…or paste a folder path',
+            st.text_input('…or Paste a Folder Path',
                           key='uni_folder_input',
                           placeholder=r'C:\Users\you\Desktop\uni shots')
             _keep_box('uni_folder_input')
@@ -7674,7 +7690,7 @@ def page_unidirectional():
             st.caption(f'📥 {_sn} trace file(s) from the upload, used as the '
                        'input. A new upload replaces them.')
             folder = _sdir
-            st.button('Clear upload', key='uni_upload_clear',
+            st.button('Clear Upload', key='uni_upload_clear',
                       on_click=lambda: st.session_state.pop('uni_upload', None))
         else:
             st.warning('The drop contained no readable `.sor` / `.json` / `.trc` files.')
@@ -7737,7 +7753,8 @@ def page_unidirectional():
                                           for sig, n in sorted(counts.items(),
                                                                key=lambda kv: -kv[1])]
             _seed_box('uni_dir_pick', opts)
-            pick = st.selectbox('Direction', opts, key='uni_dir_pick')
+            pick = st.selectbox('Direction', opts, key='uni_dir_pick',
+                                format_func=lambda o: '(Most Populous)' if o == '(most populous)' else o)
             _keep_box('uni_dir_pick')
             if pick != '(most populous)':
                 dir_choice = pick.rsplit('  (', 1)[0]
@@ -7770,7 +7787,7 @@ def page_unidirectional():
         # Checked twice, as on the Splice Report: a click made while the
         # settings were up still arrives on the run where they failed.
         _no_settings = _settings_exc is not None
-        _run_uni = st.button('Run unidirectional report', type='primary',
+        _run_uni = st.button('Run Unidirectional Report', type='primary',
                              disabled=bool(_stale) or _no_settings) \
             and not _no_settings
         st.caption('⏳ Large folders can take a few minutes. Leave this '
@@ -8134,7 +8151,7 @@ else:
     st.sidebar.caption(f'OTDR Suite · app {_appv} · engine: {_engv}')
 
 
-if st.sidebar.button('🔄 Check for updates', key='upd_check',
+if st.sidebar.button('🔄 Check for Updates', key='upd_check',
                      use_container_width=True):
     st.session_state['upd_latest'] = _latest_manifest_version()
     st.session_state['upd_checked'] = True
@@ -8156,7 +8173,7 @@ if st.session_state.get('upd_checked'):
         elif _needs_install():
             _render_install_notice(_latest, _cur, sidebar=True)
         elif getattr(sys, 'frozen', False):
-            if st.sidebar.button('⬇ Update & restart now', key='upd_restart',
+            if st.sidebar.button('⬇ Update & Restart Now', key='upd_restart',
                                  type='primary', use_container_width=True):
                 if _relaunch_and_exit():
                     _render_restart_watchdog(sidebar=True)

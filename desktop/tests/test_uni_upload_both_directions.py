@@ -108,7 +108,7 @@ def _drop(at, drops, files):
 
 
 def _run_on(at):
-    next(b for b in at.main.button if b.label == 'Run unidirectional report').click().run()
+    next(b for b in at.main.button if b.label == 'Run Unidirectional Report').click().run()
     finish_engine_run(at, 'uni')
     assert not at.exception, at.exception
     return at
@@ -128,8 +128,8 @@ def test_a_mixed_upload_offers_the_direction_and_runs_b_when_b_is_picked(tmp_pat
     side = _run_on_radio(at)
     assert side is not None, [r.label for r in at.main.radio]
     assert side.value == side.options[0]                       # A by default
-    assert side.options[0].startswith(f'A direction ({A_TO_B}, 3 files')
-    assert side.options[1].startswith(f'B direction ({B_TO_A}, 3 files')
+    assert side.options[0].startswith(f'A Direction ({A_TO_B}, 3 files')
+    assert side.options[1].startswith(f'B Direction ({B_TO_A}, 3 files')
     side.set_value(side.options[1]).run()
     _run_on(at)
     ran = at.session_state['uni_result']['_folder']
@@ -159,8 +159,8 @@ def test_the_sides_come_from_the_files_not_the_names(tmp_path, drops):
     _drop(at, drops, _files(A, {1, 2, 3})
           + _files(B, {1, 2, 3}, rename=lambda n: 'AAAZZZ' + n[6:]))
     side = _run_on_radio(at)
-    assert side.options[0].startswith(f'A direction ({A_TO_B}')
-    assert side.options[1].startswith(f'B direction ({B_TO_A}')
+    assert side.options[0].startswith(f'A Direction ({A_TO_B}')
+    assert side.options[1].startswith(f'B Direction ({B_TO_A}')
 
 
 def test_a_zip_holding_both_directions_offers_the_direction(tmp_path, drops):
@@ -224,7 +224,7 @@ def test_typing_a_folder_forgets_the_upload(tmp_path, drops):
     drops.clear()
     folder = tmp_path / 'typed'
     shutil.copytree(B, folder)
-    next(t for t in at.main.text_input if 'paste a folder' in t.label).input(str(folder)).run()
+    next(t for t in at.main.text_input if 'Paste a Folder' in t.label).input(str(folder)).run()
     assert 'uni_upload' not in at.session_state
     _run_on(at)
     assert at.session_state['uni_result']['_folder'] == str(folder)
@@ -234,6 +234,6 @@ def test_clear_upload_forgets_it(tmp_path, drops):
     at = _uni_page(tmp_path)
     _drop(at, drops, _files(A, {1, 2, 3}))
     drops.clear()
-    next(b for b in at.main.button if b.label == 'Clear upload').click().run()
+    next(b for b in at.main.button if b.label == 'Clear Upload').click().run()
     assert 'uni_upload' not in at.session_state
-    assert not [b for b in at.main.button if b.label == 'Clear upload']
+    assert not [b for b in at.main.button if b.label == 'Clear Upload']

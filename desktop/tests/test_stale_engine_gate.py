@@ -284,10 +284,10 @@ def test_every_report_control_is_gated():
     """All three report-producing buttons must consult the gate AND honour it.
     A gate that renders a message but leaves the button live is the exact
     failure being fixed (a tech in a hurry clicks anyway)."""
-    for anchor in ("st.button('Run analysis'",          # Secret Sauce
+    for anchor in ("st.button('Run Analysis'",          # Secret Sauce
                    "st.button(_gen_label,",             # Splice Report (+ FR):
                                                         # label says 1 or 2 spans
-                   "st.button('Run unidirectional report'"):   # Unidirectional
+                   "st.button('Run Unidirectional Report'"):   # Unidirectional
         label = anchor
         i = APP_SRC.index(anchor)
         window = APP_SRC[i - 400:i + 220]
@@ -665,14 +665,14 @@ def test_stale_engine_disables_secret_sauce(monkeypatch, tmp_path):
     _arm(monkeypatch, tmp_path, APPLIED_238, _fake_manifest(239))
     at = _page("Secret Sauce", ss_folder_input=str(FIXTURE_SPLICE_A_DIR))
     assert not at.exception, f"page raised: {list(at.exception)}"
-    assert _find_button(at, "Run analysis").disabled is True
+    assert _find_button(at, "Run Analysis").disabled is True
 
 
 def test_stale_engine_disables_unidirectional(monkeypatch, tmp_path):
     _arm(monkeypatch, tmp_path, APPLIED_238, _fake_manifest(239))
     at = _page("Unidirectional", uni_folder_input=str(FIXTURE_SPLICE_A_DIR))
     assert not at.exception, f"page raised: {list(at.exception)}"
-    assert _find_button(at, "Run unidirectional report").disabled is True
+    assert _find_button(at, "Run Unidirectional Report").disabled is True
 
 
 def test_the_tech_is_told_why_and_given_a_way_forward(monkeypatch, tmp_path):

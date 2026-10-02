@@ -137,7 +137,7 @@ def test_page_wires_panel_into_uni_cmd():
     assert 'overrides=uni_overrides' in src
     body = src.split('def page_unidirectional', 1)[1]
     assert body.index('_render_uni_settings_panel') < body.index(
-        "st.button('Run unidirectional report'")
+        "st.button('Run Unidirectional Report'")
 
 
 def test_panel_uses_the_shared_component_in_knobs_mode():
