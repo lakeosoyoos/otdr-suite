@@ -1832,10 +1832,12 @@ def _install_sidebar_drag_fix():
 # Viewer and the B folder "goes straight to downloads and isn't populating".
 # The Viewer frame is a box in the middle of the hub page; a second folder let
 # go of a little off it (the sidebar's B box, the settings box above, the
-# header) was a download.  So the hub page catches every file drop: on the
-# Viewer page the files go on to the Viewer, which loads them as a drop on its
-# FILES panel; on any other page the drop is refused (no download either).
-# A file box of a page (st.file_uploader) still takes its own drops.
+# header) was a download.  So the hub page catches every file drop and refuses
+# it: the cursor says no and nothing loads or downloads.  Only the Viewer's
+# FILES panel takes a drop, where it lights up (Robert 2026-10-01); on the
+# Viewer page a drag over the hub tells the Viewer, which shows the panel as
+# the place to drop.  A file box of a page (st.file_uploader) still takes its
+# own drops.
 #
 # The page's frames are covered too: the settings box and the other boxes
 # drawn by the hub are frames of the hub's own address, and a drop on one of
@@ -1853,7 +1855,6 @@ HUB_DROP_CATCH_JS = r"""
   w.__otdrDropCatch = true;
   var s = w.document.createElement('script');
   s.textContent = '(' + function(){
-    var EXTS = ['.sor', '.json', '.trc', '.zip'];
     function isFiles(ev) {
       var t = ev.dataTransfer && ev.dataTransfer.types;
       return !!t && Array.prototype.indexOf.call(t, 'Files') >= 0;
@@ -1866,69 +1867,21 @@ HUB_DROP_CATCH_JS = r"""
       }
       return null;
     }
-    function walk(entry, out) {
-      return new Promise(function(resolve){
-        if (entry.isFile) {
-          // with the folder it came from, so the Viewer names the side after it
-          var parts = String(entry.fullPath || '').split('/').filter(Boolean);
-          entry.file(function(f){ out.push({ f: f, dir: parts.length > 1 ? parts[parts.length - 2] : '' });
-                                  resolve(); }, function(){ resolve(); });
-        } else if (entry.isDirectory) {
-          var rd = entry.createReader();
-          var page = function(){
-            rd.readEntries(function(ents){
-              if (!ents.length) { resolve(); return; }
-              ents.reduce(function(p, e){ return p.then(function(){ return walk(e, out); }); },
-                          Promise.resolve()).then(page);
-            }, function(){ resolve(); });
-          };
-          page();
-        } else resolve();
-      });
-    }
-    function collect(dt) {
-      var items = dt.items ? Array.prototype.slice.call(dt.items) : [];
-      var ents = items.map(function(i){ return i.webkitGetAsEntry && i.webkitGetAsEntry(); })
-                      .filter(Boolean);
-      var out = [];
-      var done = ents.length
-        ? ents.reduce(function(p, e){ return p.then(function(){ return walk(e, out); }); },
-                      Promise.resolve())
-        : Promise.resolve(Array.prototype.forEach.call(dt.files || [], function(f){
-            out.push({ f: f, dir: '' }); }));
-      return done.then(function(){
-        return out.filter(function(o){
-          var n = (o.f.name || '').toLowerCase();
-          return n.charAt(0) !== '.' && EXTS.some(function(x){ return n.slice(-x.length) === x; });
-        });
-      });
-    }
-    var lastLit = 0;
+    var lastHint = 0;
     function onOver(ev) {
       if (ev.defaultPrevented || !isFiles(ev)) return;   // a file box's own
       ev.preventDefault();
-      var fr = viewerFrame();
-      ev.dataTransfer.dropEffect = fr ? 'copy' : 'none';
-      // Light the Viewer's FILES panel ("Drop to load"), as a drag over the
-      // Viewer itself does: the tech sees the drop will be taken.
-      var now = Date.now();
-      if (fr && fr.contentWindow && now - lastLit > 200) {
-        lastLit = now;
+      ev.dataTransfer.dropEffect = 'none';
+      // Show the Viewer's FILES panel as the place to drop.
+      var fr = viewerFrame(), now = Date.now();
+      if (fr && fr.contentWindow && now - lastHint > 200) {
+        lastHint = now;
         fr.contentWindow.postMessage({ type: 'otdr-drag' }, new URL(fr.getAttribute('src')).origin);
       }
     }
     function onDrop(ev) {
       if (ev.defaultPrevented || !isFiles(ev)) return;
       ev.preventDefault();
-      var fr = viewerFrame();
-      if (!fr) return;
-      var origin = new URL(fr.getAttribute('src')).origin;
-      collect(ev.dataTransfer).then(function(got){
-        if (got.length && fr.contentWindow)
-          fr.contentWindow.postMessage({ type: 'otdr-drop',
-            files: got.map(function(o){ return o.f; }),
-            folders: got.map(function(o){ return o.dir; }) }, origin);
-      });
     }
     function hook(win) {
       try {

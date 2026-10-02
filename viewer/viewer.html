@@ -223,15 +223,15 @@
   .chip .vis { cursor: pointer; padding: 0 2px; color: var(--text-sec); }
   .chip .vis:hover { color: var(--accent); }
   #chip-empty { color: var(--text-sec); font-style: italic; font-size: 11px; align-self: center; }
-  /* The FILES panel is a drop target: files, a folder, or a zip. */
-  #files-panel.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; background: #f3f7fb; }
-  #canvas-wrap.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; }
+  /* The FILES panel is THE drop target: files, a folder, or a zip. */
   #files-drop-hint { color: var(--text-sec); font-size: 11px; padding: 6px 8px; border-top: 1px dashed var(--border); }
-  /* A file dragged anywhere over the Viewer, or over the hub page around it,
-     lights the FILES panel up and says what letting go will do, so the tech
-     sees the drop will be taken before letting go (Robert 2026-10-01, after
-     the boss's B set went to Downloads with nothing on screen to say it
-     would).  The sign stays up while the drop uploads, then says what loaded. */
+  /* A file dragged over the FILES panel lights it up and says what letting
+     go will do, so the tech sees the drop will be taken before letting go
+     (Robert 2026-10-01, after the boss's B set went to Downloads with nothing
+     on screen to say it would).  Dragged anywhere else on the Viewer or the
+     hub page around it, where a drop does nothing, the panel shows a paler
+     "Drop here".  The sign stays up while the drop uploads, then says what
+     loaded. */
   #files-panel { position: relative; }
   #drop-sign {
     display: none; position: absolute; inset: 0; z-index: 20; pointer-events: none;
@@ -242,6 +242,7 @@
   #drop-sign.on { display: flex; }
   #drop-sign .ds-big { font-size: 20px; font-weight: 700; }
   #drop-sign .ds-small { font-size: 12px; font-weight: 600; }
+  #drop-sign.hint { background: rgba(243, 247, 251, 0.85); box-shadow: inset 0 0 0 2px var(--accent); outline: 2px dashed var(--accent); outline-offset: -8px; }
   #drop-sign.done { color: #2e7d32; background: rgba(226, 245, 230, 0.96); box-shadow: inset 0 0 0 3px #2e7d32; }
 
   /* Main */
@@ -701,8 +702,8 @@
   html[data-theme="dark"] .file-row.selected, html[data-theme="dark"] .fiber-row.selected { background: #1e293b; }
   html[data-theme="dark"] .fiber-row:hover { background: #1c1917; }
   html[data-theme="dark"] .fiber-row.partial { box-shadow: inset 3px 0 0 #57534e; background: #171412; }
-  html[data-theme="dark"] #files-panel.dragging { background: #1c1917; }
   html[data-theme="dark"] #drop-sign { background: rgba(23, 37, 58, 0.94); }
+  html[data-theme="dark"] #drop-sign.hint { background: rgba(28, 25, 23, 0.85); }
   html[data-theme="dark"] #drop-sign.done { color: #4ade80; background: rgba(20, 45, 30, 0.96); box-shadow: inset 0 0 0 3px #4ade80; }
   html[data-theme="dark"] .file-row .file-pf.fpf-pass { color: #4ade80; }
   html[data-theme="dark"] .file-row .file-pf.fpf-fail,
@@ -1648,8 +1649,7 @@ function _packDropBatch(files) {
   return new Blob(parts);
 }
 async function handleFilesDrop(dt) {
-  // A list of files is a drop the hub caught outside this frame and passed
-  // on (see the 'otdr-drop' message below); a DataTransfer is our own.
+  // A DataTransfer from the FILES panel; a list of files is the tests' own.
   showDropSign('load', 'reading the files');
   let files;
   try {
@@ -1906,50 +1906,40 @@ function _dragHasFiles(ev) {
   const t = ev.dataTransfer && ev.dataTransfer.types;
   return !!t && Array.prototype.indexOf.call(t, 'Files') >= 0;
 }
+// Only the FILES panel takes a drop, where the sign lights up (Robert
+// 2026-10-01).  Anywhere else on the Viewer a file dragged in is refused:
+// the cursor says no, letting go does nothing, and the page never navigates
+// to the file or lets the browser save it.  The panel shows where to go.
 (() => {
   const panel = document.getElementById('files-panel');
-  let depth = 0;
-  panel.addEventListener('dragenter', (ev) => { ev.preventDefault(); depth += 1; panel.classList.add('dragging'); });
-  panel.addEventListener('dragover', (ev) => { ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; });
-  panel.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) panel.classList.remove('dragging'); });
+  const take = (ev) => {
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = 'copy';
+    showDropSign('drag');
+  };
+  panel.addEventListener('dragenter', take);
+  panel.addEventListener('dragover', take);
   panel.addEventListener('drop', (ev) => {
-    ev.preventDefault(); depth = 0; panel.classList.remove('dragging');
+    ev.preventDefault();
     handleFilesDrop(ev.dataTransfer);
   });
-  // The chart and the event table under it take the same drop.
-  const main = document.getElementById('main'), wrap = document.getElementById('canvas-wrap');
-  let mdepth = 0;
-  main.addEventListener('dragenter', (ev) => {
-    if (!_dragHasFiles(ev)) return;
-    ev.preventDefault(); mdepth += 1; wrap.classList.add('dragging');
-  });
-  main.addEventListener('dragover', (ev) => {
-    if (!_dragHasFiles(ev)) return;
-    ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy';
-  });
-  main.addEventListener('dragleave', () => { mdepth = Math.max(0, mdepth - 1); if (!mdepth) wrap.classList.remove('dragging'); });
-  main.addEventListener('drop', (ev) => {
-    ev.preventDefault(); mdepth = 0; wrap.classList.remove('dragging');
-    if (_dragHasFiles(ev)) handleFilesDrop(ev.dataTransfer);
-  });
-  // A drop anywhere else must not navigate the page away to the file, and
-  // it loads like a drop on the panel: the sign below says "Drop to load"
-  // over the whole Viewer.  The panel and the chart took their own drops
-  // already (defaultPrevented).
-  window.addEventListener('dragover', ev => {
+  window.addEventListener('dragover', (ev) => {
+    if (panel.contains(ev.target)) return;
     ev.preventDefault();
-    if (_dragHasFiles(ev)) showDropSign('drag');
+    ev.dataTransfer.dropEffect = 'none';
+    if (_dragHasFiles(ev)) showDropSign('hint');
   });
-  window.addEventListener('drop', ev => {
-    if (ev.defaultPrevented) return;
+  window.addEventListener('drop', (ev) => {
+    if (panel.contains(ev.target)) return;
     ev.preventDefault();
-    if (_dragHasFiles(ev)) handleFilesDrop(ev.dataTransfer);
-    else hideDropSign();
+    hideDropSign();
   });
 })();
 
 // The sign over the FILES panel (#drop-sign): 'drag' while files are dragged
-// over the Viewer or the hub page around it, 'load' while a drop uploads,
+// over the panel, 'hint' while they are dragged over the rest of the Viewer or
+// the hub page around it (where a drop does nothing), 'load' while a drop
+// uploads,
 // 'done' for a few seconds once it has loaded.  Dragover repeats while the
 // drag is over the page, so a 'drag' sign goes by itself shortly after the
 // drag leaves or is let go of elsewhere; a drag over the page during a drop
@@ -1957,14 +1947,15 @@ function _dragHasFiles(ev) {
 const DROP_SIGN_DRAG_MS = 800, DROP_SIGN_DONE_MS = 4000;
 let gDropSignTimer = null;
 function showDropSign(state, small = '', big = '') {
-  if (state === 'drag' && gDropInFlight) return;
+  if ((state === 'drag' || state === 'hint') && gDropInFlight) return;
   const el = document.getElementById('drop-sign');
   clearTimeout(gDropSignTimer);
-  el.className = 'on' + (state === 'done' ? ' done' : '');
+  el.className = 'on' + (state === 'done' || state === 'hint' ? ' ' + state : '');
   el.querySelector('.ds-big').textContent =
-    big || { drag: 'Drop to load', load: 'Loading…', done: 'Loaded' }[state];
+    big || { drag: 'Drop to load', hint: 'Drop here', load: 'Loading…', done: 'Loaded' }[state];
   el.querySelector('.ds-small').textContent = small
-    || (state === 'drag' ? 'an A or B folder, .sor / .json / .trc files, or a .zip' : '');
+    || { drag: 'an A or B folder, .sor / .json / .trc files, or a .zip',
+         hint: 'drag the files onto this Files panel' }[state] || '';
   if (state !== 'load') {
     gDropSignTimer = setTimeout(hideDropSign, state === 'done' ? DROP_SIGN_DONE_MS : DROP_SIGN_DRAG_MS);
   }
@@ -9397,24 +9388,10 @@ window.addEventListener('message', function (ev) {
   try {
     if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(ev.origin)) return;
     const d = ev.data;
-    // Files dropped on the hub page around this frame (its sidebar, the
-    // settings box above): the hub catches them and passes them here, so they
-    // load as a drop on the FILES panel would.  Chrome used to take them as
-    // a download (the boss, 2026-09-30: A loaded, the B set went to
-    // Downloads).
-    // A file dragged over the hub page around this frame: light the sign,
-    // as a drag over this page does (the drop itself comes as 'otdr-drop').
-    if (d && d.type === 'otdr-drag') { showDropSign('drag'); return; }
-    if (d && d.type === 'otdr-drop' && Array.isArray(d.files)) {
-      // the folder each file came from, for the name its side goes by
-      if (Array.isArray(d.folders)) {
-        d.files.forEach((f, i) => {
-          if (f && typeof d.folders[i] === 'string') gDropFolder.set(f, d.folders[i]);
-        });
-      }
-      handleFilesDrop(d.files);
-      return;
-    }
+    // A file dragged over the hub page around this frame (its sidebar, the
+    // settings box above): the hub refuses the drop there, and the panel
+    // shows where to take it, as a drag over the rest of this page does.
+    if (d && d.type === 'otdr-drag') { showDropSign('hint'); return; }
     if (!d || d.type !== 'otdr-jump') return;
     // This jump is newer than the page URL, so the URL's link is spent (see
     // gDeepLinkDone).  Set here, before anything awaits, so no focus retry
