@@ -330,7 +330,7 @@ def _render_theme_control(where, compact=False):
     knob is read every run (no on_change).  Knob right = Light.
     compact=True is the top bar's: one row, no title (the bar draws the CSS)."""
     if compact:
-        box = where.container(key='theme_box', width=150, horizontal=True,
+        box = where.container(key='theme_box', width=130, horizontal=True,
                               vertical_alignment='center', gap='small')
     else:
         box = where.container(key='theme_box')
@@ -371,7 +371,7 @@ def _render_analysis_mode_control(compact=False):
     # mode in use and that name is bold.  Knob right = OTDR Mode.
     # compact=True is the top bar's: one row, no title (the bar draws the CSS).
     if compact:
-        box = st.container(key='analysis_mode_box', width=270, horizontal=True,
+        box = st.container(key='analysis_mode_box', width=245, horizontal=True,
                            vertical_alignment='center', gap='small')
     else:
         box = st.container(key='analysis_mode_box')
@@ -3130,18 +3130,17 @@ def _after_page(page):
 # every Back button and report link that writes it keeps working.
 NAV_TABS = [('Traces', 'Traces'), ('Splice Report', 'Splice Report'),
             ('Uni', 'Unidirectional'), ('Splice Report FEC', 'Splice Report FEC'),
-            ('Secret Sauce', 'Secret Sauce'), ('Viewer', 'Viewer')]
+            ('Secret Sauce', 'Secret Sauce'), ('Viewer', 'Viewer'),
+            ('Viewer FEC', 'Viewer FEC')]
 # FQA Builder and Field Capture belong to OTDR Suite App (Robert
 # 2026-09-28); the App's launcher exports OTDR_SUITE_EDITION.
 if os.environ.get('OTDR_SUITE_EDITION'):
     NAV_TABS += [('FQA Builder', 'FQA Builder'), ('Field Capture', 'Field Capture')]
-# The tab lit while a page with no tab of its own is open.
-NAV_TAB_OF = {'Viewer FEC': 'Viewer'}
 NAV_HEIGHT_PX = 48
 # Narrower than this, the whole bar does not fit on one line: the items hide
 # and a double arrow, centered, drops them down as a list (Robert
-# 2026-10-01).  The bar's items measure about 1,350 px with their gaps.
-NAV_MENU_BELOW_PX = 1360
+# 2026-10-01).  The bar's items measure about 1,325 px with their gaps.
+NAV_MENU_BELOW_PX = 1340
 
 _TOP_NAV_CSS = '''<style>
 :root{--nav-bg:%(bg)s;--nav-fg:%(fg)s;--nav-hi:%(hi)s;--nav-line:%(line)s}
@@ -3149,7 +3148,7 @@ _TOP_NAV_CSS = '''<style>
 [data-testid="stSidebarCollapsedControl"],[data-testid="stExpandSidebarButton"]{display:none !important}
 [data-testid="stMainBlockContainer"]{padding-top:calc(%(h)dpx + 1.25rem) !important}
 .st-key-top_nav{position:fixed;top:0;left:0;right:0;z-index:1000;height:%(h)dpx;
-  padding:0 max(16px, calc((100vw - 1500px) / 2));flex-wrap:nowrap !important;
+  padding:0 max(16px, calc((100vw - 1500px) / 2));flex-wrap:nowrap !important;gap:12px !important;
   background:var(--nav-bg);backdrop-filter:saturate(180%%) blur(20px);
   border-bottom:1px solid var(--nav-line)}
 .st-key-analysis_mode_box,.st-key-theme_box{justify-content:center}
@@ -3223,7 +3222,7 @@ def _render_update_menu():
         label, key = 'Dev Build', 'nav_update'
     else:
         label, key = f'Version {_cur}', 'nav_update'
-    with st.container(key=key, width=170, horizontal=True,
+    with st.container(key=key, width=165, horizontal=True,
                       horizontal_alignment='right'):
         with st.popover(label, icon=':material/system_update_alt:'):
             if _appv == 'dev' and _engv == 'dev':
@@ -3269,7 +3268,6 @@ def _render_top_nav(page):
     st.markdown(_TOP_NAV_CSS % dict(colors, h=NAV_HEIGHT_PX, menu_px=NAV_MENU_BELOW_PX)
                 + _MODE_SWITCH_CSS,
                 unsafe_allow_html=True)
-    lit = NAV_TAB_OF.get(page, page)
     with st.container(key='top_nav', horizontal=True,
                       horizontal_alignment='distribute',
                       vertical_alignment='center', gap='small'):
@@ -3286,13 +3284,13 @@ def _render_top_nav(page):
             'stroke="currentColor" stroke-width="2" stroke-linecap="round" '
             'stroke-linejoin="round"><path d="M7 6l5 5 5-5"/><path d="M7 13l5 5 5-5"/>'
             f'</svg></label></{_wrap}>', unsafe_allow_html=True)
-        with st.container(key='nav_logo', width=150):
+        with st.container(key='nav_logo', width=125):
             st.button(PRODUCT_NAME, key='nav_logo_btn', type='tertiary',
                       icon=':material/show_chart:', on_click=_nav_go,
-                      args=('Traces',))
+                      args=('Viewer',))         # home = the page the app opens on
         for _label, _target in NAV_TABS:
             st.button(_label, key=f'nav_tab_{_target}',
-                      type='primary' if _target == lit else 'tertiary',
+                      type='primary' if _target == page else 'tertiary',
                       on_click=_nav_go, args=(_target,))
         _render_analysis_mode_control(compact=True)
         _render_theme_control(st, compact=True)
@@ -3311,7 +3309,8 @@ for _k in _TRACE_BOXES:
     elif _k + '_saved' in st.session_state:
         st.session_state[_k] = st.session_state[_k + '_saved']
 
-st.session_state.setdefault('nav_radio', 'Traces')
+# The app opens on the Viewer (Robert 2026-10-01).
+st.session_state.setdefault('nav_radio', 'Viewer')
 page = st.session_state['nav_radio']
 _render_top_nav(page)
 
