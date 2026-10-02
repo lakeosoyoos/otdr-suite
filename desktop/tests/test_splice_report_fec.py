@@ -418,12 +418,15 @@ _GATES = {'FEC_LOSS_GATE': 0.5, 'FEC_LOSS_STRICT': 1.0,
 
 
 def _fec_page(tmp_path, monkeypatch):
-    """The FEC page with an empty A end folder in its box and nothing run."""
+    """The FEC page with an A end folder in its box and nothing run.  The
+    folder holds traces: an empty one is warned about (no trace files)."""
     import os
+    import shutil
     from conftest import run_streamlit
     monkeypatch.setenv('OTDR_CACHE_DIR', str(tmp_path / 'cache'))
     a = tmp_path / 'endA'
-    a.mkdir(exist_ok=True)
+    if not a.exists():
+        shutil.copytree(FIXTURE_SPLICE_A_DIR, a)
     at = run_streamlit(default_timeout=180).run()
     at.sidebar.radio[0].set_value('Splice Report FEC').run()
     next(t for t in at.text_input if t.label.startswith('A End FEC')).set_value(str(a)).run()
