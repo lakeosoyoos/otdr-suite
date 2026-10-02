@@ -253,13 +253,14 @@ def test_no_new_engine_file_so_the_fleet_hot_updates():
 
 # ── the page renders with the box on both input modes ─────────────────────
 def _splice_page(**state):
-    from conftest import FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, run_streamlit
+    from conftest import (FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, run_streamlit,
+                          go_tab)
     at = run_streamlit().run()
     at.session_state['view_dir_a_input'] = str(FIXTURE_SPLICE_A_DIR)
     at.session_state['view_dir_b_input'] = str(FIXTURE_SPLICE_B_DIR)
     for k, v in state.items():
         at.session_state[k] = v
-    at.sidebar.radio[0].set_value('Splice Report').run()
+    go_tab(at, 'Splice Report')
     return at
 
 

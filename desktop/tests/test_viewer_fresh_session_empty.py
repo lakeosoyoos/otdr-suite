@@ -17,7 +17,8 @@ import re
 
 import pytest
 
-from conftest import (VIEWER_DIR, run_streamlit, import_trace_server,
+from conftest import (VIEWER_DIR, run_streamlit, import_trace_server, go_tab,
+                      load_traces, clear_traces,
                       FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
 
 A, B = str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR)
@@ -61,18 +62,17 @@ def test_a_report_link_keeps_the_chart(_span):
 def test_a_trip_inside_one_session_keeps_the_chart(_span):
     at = run_streamlit().run()
     T.set_viewer_state(KEPT)                    # the Viewer loaded, then the tech left
-    at.sidebar.radio[0].set_value('Splice Report').run()
-    at.sidebar.radio[0].set_value('Viewer').run()
+    go_tab(at, 'Splice Report')
+    go_tab(at, 'Viewer')
     assert T.viewer_state()['keys'] == KEPT['keys']
 
 
 def test_clear_traces_forgets_the_chart():
     at = run_streamlit().run()
-    next(t for t in at.sidebar.text_input if t.label == 'A Folder').input(A).run()
-    next(t for t in at.sidebar.text_input if t.label == 'B Folder').input(B).run()
+    load_traces(at, a=A)
+    load_traces(at, b=B)
     T.set_viewer_state(KEPT)
-    next(b for b in at.sidebar.button if b.label == 'Clear Traces').click().run()
-    next(b for b in at.button if b.key == 'clear_traces_allow').click().run()
+    clear_traces(at, allow=True)
     assert not at.exception, at.exception
     st = T.viewer_state()
     assert st['keys'] == []

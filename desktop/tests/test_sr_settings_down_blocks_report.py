@@ -27,7 +27,7 @@ import types
 import pytest
 
 from conftest import (REPO_ROOT, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
-                      run_streamlit)
+                      run_streamlit, go_tab)
 
 APP = REPO_ROOT / "app.py"
 GENERATE = "Generate Splice Report"
@@ -120,7 +120,7 @@ def _run_started(at):
 
 def test_healthy_table_leaves_generate_on(tmp_path):
     at = _page(tmp_path)
-    at.sidebar.radio[0].set_value("Splice Report").run()
+    go_tab(at, "Splice Report")
     assert not at.exception, list(at.exception)
     assert _generate(at).disabled is False
     assert not any(BLOCK_TEXT in e.value for e in at.error)
@@ -138,7 +138,7 @@ def test_settings_box_that_cannot_draw_turns_generate_off(
     monkeypatch.setitem(sys.modules, "components.otdr_settings",
                         _broken_component(message, exc_type, only_knobs))
     at = _page(tmp_path)
-    at.sidebar.radio[0].set_value("Splice Report").run()
+    go_tab(at, "Splice Report")
     assert not at.exception, list(at.exception)
     assert ("otdr_settings" in at.session_state) is only_knobs
     assert "conn_settings" not in at.session_state
@@ -154,7 +154,7 @@ def test_settings_box_that_cannot_draw_turns_generate_off(
 def test_a_click_that_lands_on_the_failed_run_starts_nothing(monkeypatch,
                                                               tmp_path):
     at = _page(tmp_path)
-    at.sidebar.radio[0].set_value("Splice Report").run()
+    go_tab(at, "Splice Report")
     gen = _generate(at)
     assert gen.disabled is False
     # The table breaks between drawing the button and the click's rerun.

@@ -5,8 +5,10 @@ Two field failures motivate this file:
   * an always-on machine never restarts, so it never reaches the launcher's
     signed-update path (the launcher's already-serving guard runs BEFORE it)
     and sits on an old engine forever — the boss ran 134 while 136 was live.
-    Fix: a fail-silent per-session manifest check that raises a sidebar banner
-    ABOVE the page radio, wired to the SAME restart the footer button uses.
+    Fix: a fail-silent per-session manifest check.  It used to raise a
+    sidebar banner above the page radio; since the top bar (Robert
+    2026-10-01) it puts an orange "Update" under the bar's build menu, on
+    every page, and the menu offers the SAME restart the manual check does.
   * clicking "Update & restart now" could RACE its own shutdown: the new
     launcher health-checked port 8510, found the dying instance still
     answering, printed "Another instance is already serving" and re-attached —
@@ -71,7 +73,7 @@ def _fn_source(name):
 #  1. _nudge_check — the decision, with fetcher + applied version injected
 # ═════════════════════════════════════════════════════════════════════════
 def test_nudge_fires_when_published_version_is_newer():
-    """The boss's case: engine 134 applied, 136 published → banner data."""
+    """The boss's case: engine 134 applied, 136 published → the update flag."""
     check = _load_helper("_nudge_check")
     assert check(lambda: 136, 134) == (136, 134)
 
@@ -219,10 +221,11 @@ def test_nudge_renders_above_the_page_radio():
 
 
 def test_nudge_reuses_the_existing_restart_path():
-    """One restart implementation, shared with the footer button.  A second
+    """One restart implementation, shared by the menu's two restart buttons
+    (the one the bar offers and the one after a manual check).  A second
     copy is how the two paths drift apart."""
-    src = _fn_source("_render_update_nudge")
-    assert "_relaunch_and_exit()" in src, "the banner button must call the shared restart"
+    src = _fn_source("_update_actions")
+    assert "_relaunch_and_exit()" in src, "the menu's button must call the shared restart"
     for dup in ("Popen", "os._exit", "Start-Process", "/bin/sh"):
         assert dup not in src, f"{dup} must live only in _relaunch_and_exit"
     assert APP_SRC.count("\ndef _relaunch_and_exit(") == 1
@@ -244,16 +247,18 @@ def test_nudge_fetches_once_per_recheck_window_with_a_short_timeout():
 
     The cache MOVED out of this function into _stale_check, because a
     once-per-session check meant a machine that stays open for days never
-    noticed a publish.  The banner must now READ that shared answer instead of
-    keeping a second one of its own — one cache, one fetch, and a banner that
-    can never disagree with the report block about whether this engine is
-    stale.  (Behaviour, not just shape, is asserted in
+    noticed a publish.  The bar's menu must now READ that shared answer
+    instead of keeping a second one of its own — one cache, one fetch, and a
+    flag that can never disagree with the report block about whether this
+    engine is stale.  (Behaviour, not just shape, is asserted in
     test_stale_engine_gate.py.)"""
-    src = _fn_source("_render_update_nudge")
-    assert "_update_state()" in src, "the banner must use the shared check"
-    # The session_state KEY, quoted — bare 'upd_nudge' also matches the
-    # banner's own button key 'upd_nudge_restart', which must stay.
+    src = _fn_source("_render_update_menu")
+    assert "_update_state()" in src, "the menu must use the shared check"
+    # The session_state KEY, quoted: no per-session cache of its own.
     assert "'upd_nudge'" not in src, "no second per-session cache of its own"
+    # The menu's only fetch of its own is the tech's Check for Updates click.
+    assert src.count("_latest_manifest") == 1
+    assert "_latest_manifest_version()" in src
     state = _fn_source("_update_state")
     assert "_latest_manifest(timeout=3)" in state, "3 s cap on the fetch"
     assert "_stale_check(" in state
@@ -262,11 +267,17 @@ def test_nudge_fetches_once_per_recheck_window_with_a_short_timeout():
 
 
 def test_manual_check_for_updates_button_survives_unchanged():
-    """The loud path stays: same label, same key, same helpers."""
-    assert "'🔄 Check for Updates', key='upd_check'" in APP_SRC
-    assert "st.session_state['upd_latest'] = _latest_manifest_version()" in APP_SRC
-    assert "key='upd_restart'" in APP_SRC          # footer's own restart button
-    assert "key='upd_nudge_restart'" in APP_SRC    # banner's, distinct key
+    """The loud path stays: same label, same key, same helpers, now in the
+    bar's update menu."""
+    menu = _fn_source("_render_update_menu")
+    assert "'🔄 Check for Updates', key='upd_check'" in menu
+    assert "st.session_state['upd_latest'] = _latest_manifest_version()" in menu
+    # Two restart buttons, two distinct keys, one button in _update_actions:
+    # the manual check's own (upd_restart, was the footer's) and the one the
+    # bar offers when it already knows of the update (upd_menu_restart).
+    assert "_update_actions(_latest, _cur, 'upd_restart')" in menu
+    assert "_update_actions(_nudge[0], _nudge[1], 'upd_menu_restart')" in menu
+    assert "key=key" in _fn_source("_update_actions")
 
 
 def test_app_py_is_the_only_engine_file_touched():
@@ -330,35 +341,45 @@ def _arm(monkeypatch, tmp_path, applied_label, urlopen):
     return marker
 
 
-def _sidebar_text(at):
+def _shown_text(at):
+    """Everything the tech can read: the page, the bar and its update menu
+    (AppTest lists a popover's contents with the page's)."""
     out = []
     for kind in ("warning", "error", "info", "success", "caption"):
-        out += [e.value for e in getattr(at.sidebar, kind)]
+        out += [e.value for e in getattr(at, kind)]
     return out
 
 
-def test_apptest_banner_shows_applied_134_vs_live_136(monkeypatch, tmp_path):
-    """(a) applied 134 + published 136 → the banner, worded for a tech."""
+def _flagged(at):
+    """The orange Update under the bar's build menu."""
+    return any('<p class="nav-update-flag">Update</p>' in m.value for m in at.markdown)
+
+
+def test_apptest_menu_shows_applied_134_vs_live_136(monkeypatch, tmp_path):
+    """(a) applied 134 + published 136 → the flag, and the menu says it,
+    worded for a tech."""
     _arm(monkeypatch, tmp_path,
          ("build 134 (2026-08-01)", "update 134 applied 2026-08-01 09:00 PDT"),
          _fake_manifest(136))
     at = run_streamlit().run()
     assert not at.exception, f"page raised: {list(at.exception)}"
     assert any("Update 136 is available (running 134)" in t
-               for t in _sidebar_text(at)), _sidebar_text(at)
+               for t in _shown_text(at)), _shown_text(at)
+    assert _flagged(at)
 
 
-def test_apptest_no_banner_when_current(monkeypatch, tmp_path):
+def test_apptest_no_flag_when_current(monkeypatch, tmp_path):
     """(a) applied 136 + published 136 → nothing at all."""
     _arm(monkeypatch, tmp_path,
          ("build 136 (2026-08-05)", "update 136 applied 2026-08-05 09:00 PDT"),
          _fake_manifest(136))
     at = run_streamlit().run()
     assert not at.exception, f"page raised: {list(at.exception)}"
-    assert not any("is available" in t for t in _sidebar_text(at)), _sidebar_text(at)
+    assert not any("is available" in t for t in _shown_text(at)), _shown_text(at)
+    assert not _flagged(at)
 
 
-def test_apptest_no_banner_when_fetch_raises(monkeypatch, tmp_path):
+def test_apptest_no_flag_when_fetch_raises(monkeypatch, tmp_path):
     """(a) the update server is unreachable → silence, not an error box."""
     def boom(*a, **k):
         raise OSError("no route to host")
@@ -366,7 +387,8 @@ def test_apptest_no_banner_when_fetch_raises(monkeypatch, tmp_path):
     _arm(monkeypatch, tmp_path, ("build 134 (2026-08-01)", "bundled"), boom)
     at = run_streamlit().run()
     assert not at.exception, f"page raised: {list(at.exception)}"
-    assert not any("is available" in t for t in _sidebar_text(at)), _sidebar_text(at)
+    assert not any("is available" in t for t in _shown_text(at)), _shown_text(at)
+    assert not _flagged(at)
 
 
 def test_apptest_dev_checkout_never_touches_the_network(monkeypatch, tmp_path):
@@ -386,15 +408,17 @@ def test_apptest_dev_checkout_never_touches_the_network(monkeypatch, tmp_path):
 
 
 def test_apptest_frozen_build_gets_the_restart_button(monkeypatch, tmp_path):
-    """The banner is actionable on a real install: a primary button keyed
-    upd_nudge_restart, distinct from the footer's."""
+    """The menu is actionable on a real install: a primary button keyed
+    upd_menu_restart, distinct from the manual check's upd_restart."""
     _arm(monkeypatch, tmp_path, ("build 134 (2026-08-01)", "bundled"),
          _fake_manifest(136))
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     at = run_streamlit().run()
     assert not at.exception, f"page raised: {list(at.exception)}"
-    assert any(b.key == "upd_nudge_restart" for b in at.sidebar.button), (
-        [b.key for b in at.sidebar.button])
+    restart = [b for b in at.button if b.key == "upd_menu_restart"]
+    assert restart, [b.key for b in at.button]
+    assert restart[0].proto.type == "primary"
+    assert not any(b.key == "upd_restart" for b in at.button)
 
 
 def test_apptest_blocked_restart_marker_becomes_a_visible_message(monkeypatch, tmp_path):
@@ -407,6 +431,6 @@ def test_apptest_blocked_restart_marker_becomes_a_visible_message(monkeypatch, t
         fh.write("blocked")
     at = run_streamlit().run()
     assert not at.exception, f"page raised: {list(at.exception)}"
-    assert any("previous OTDR Suite is still running" in t
-               for t in _sidebar_text(at)), _sidebar_text(at)
+    assert any("previous OTDR Suite is still running" in e.value
+               for e in at.error), _shown_text(at)
     assert not os.path.exists(marker), "the marker must be consumed once shown"

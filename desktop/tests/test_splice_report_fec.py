@@ -18,7 +18,7 @@ import sys
 import textwrap
 
 from conftest import (FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
-                      SPLICEREPORT_DIR)
+                      SPLICEREPORT_DIR, clear_traces, go_tab, page_of)
 
 
 def _run(body):
@@ -206,9 +206,9 @@ def test_fec_cmd_runs_the_splice_report_runner():
 
 
 def test_the_fec_page_draws_and_asks_for_a_folder():
-    from conftest import run_streamlit
+    from conftest import run_streamlit, go_tab
     at = run_streamlit().run()
-    at.sidebar.radio[0].set_value('Splice Report FEC').run()
+    go_tab(at, 'Splice Report FEC')
     assert not at.exception, at.exception
     assert any('Splice Report FEC' in m.value for m in at.markdown)
     assert any('A end FEC folder' in i.value for i in at.info)
@@ -225,9 +225,9 @@ def _viewer_src(at):
 
 
 def test_the_fec_viewer_is_the_viewer_locked_in_fec_mode():
-    from conftest import run_streamlit
+    from conftest import run_streamlit, go_tab
     at = run_streamlit().run()
-    at.sidebar.radio[0].set_value('Viewer FEC').run()
+    go_tab(at, 'Viewer FEC')
     assert not at.exception, at.exception
     # the heading at half the old #### size (Robert 2026-10-01)
     assert any('font-size:0.75rem' in m.value and 'Viewer FEC</p>' in m.value
@@ -235,7 +235,7 @@ def test_the_fec_viewer_is_the_viewer_locked_in_fec_mode():
     assert 'fec=1' in _viewer_src(at)
     pop = [e.proto.srcdoc for e in at.get('iframe') if 'vpop2' in (e.proto.srcdoc or '')]
     assert pop and '/?fec=1"' in pop[0]       # the pop-out window stays in FEC mode
-    at.sidebar.radio[0].set_value('Viewer').run()
+    go_tab(at, 'Viewer')
     assert not at.exception, at.exception
     assert 'fec=1' not in _viewer_src(at)
 
@@ -428,7 +428,7 @@ def _fec_page(tmp_path, monkeypatch):
     if not a.exists():
         shutil.copytree(FIXTURE_SPLICE_A_DIR, a)
     at = run_streamlit(default_timeout=180).run()
-    at.sidebar.radio[0].set_value('Splice Report FEC').run()
+    go_tab(at, 'Splice Report FEC')
     next(t for t in at.text_input if t.label.startswith('A End FEC')).set_value(str(a)).run()
     assert not at.exception, at.exception
     return at, os.path.abspath(str(a))
@@ -459,7 +459,7 @@ def test_a_second_run_into_the_same_folder_keeps_the_first_report(tmp_path, monk
     dest.mkdir()
     (dest / 'FEC_OOS.xlsx').write_bytes(b'the first span')
     at = run_streamlit(default_timeout=180).run()
-    at.sidebar.radio[0].set_value('Splice Report FEC').run()
+    go_tab(at, 'Splice Report FEC')
     next(t for t in at.text_input if t.label.startswith('A End FEC')).set_value(str(a)).run()
     next(t for t in at.text_input if t.label == 'Save Reports To').set_value(str(dest)).run()
     next(b for b in at.button if b.label == 'Run FEC Report').click().run()
@@ -505,8 +505,11 @@ def test_the_same_gates_are_judged_as_the_engine_gets_them():
 
 
 def _clear_traces(at):
-    next(b for b in at.sidebar.button if b.label == 'Clear Traces').click().run()
-    next(b for b in at.button if b.key == 'clear_traces_allow').click().run()
+    """Clear Traces (on the Traces tab), then back to the page it was on."""
+    was = page_of(at)
+    clear_traces(at, allow=True)
+    assert not at.exception, at.exception
+    go_tab(at, was)
     assert not at.exception, at.exception
 
 
@@ -557,5 +560,5 @@ def test_clear_traces_after_a_row_click_forgets_the_fec_report(tmp_path, monkeyp
     assert not at.exception, at.exception
     _clear_traces(at)
     assert not os.path.exists(saved)
-    at.sidebar.radio[0].set_value('Splice Report FEC').run()
+    go_tab(at, 'Splice Report FEC')
     assert next(t for t in at.text_input if t.label.startswith('A End FEC')).value == ''

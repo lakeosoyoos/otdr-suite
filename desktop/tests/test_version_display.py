@@ -9,7 +9,7 @@ confirm a tech runs the latest, and so a field error identifies its build:
   * both specs bundle it (conditional datas — absent in dev checkouts),
   * error_report.version_labels() turns it + the launcher's update state into
     ('build 54 (2026-07-14)', 'bundled' | 'update 56 applied'), 'dev' fallback,
-  * app.py shows it as a sidebar footer caption,
+  * app.py shows it in the top bar's update menu (the sidebar footer once),
   * every Slack error payload gains an ADDITIVE `build:` line (the existing
     lines stay byte-identical — the Slack→issues bridge parses them),
   * the launcher records the applied manifest version (engine.meta.json) on a
@@ -74,7 +74,7 @@ def test_version_labels_reads_version_json(tmp_path, monkeypatch):
 
 def test_version_labels_malformed_version_json_is_dev(tmp_path, monkeypatch):
     """A corrupt/partial version.json must degrade to 'dev', never raise —
-    a bad build stamp must not take error reporting (or the sidebar) down."""
+    a bad build stamp must not take error reporting (or the top bar) down."""
     monkeypatch.delenv("OTDR_SUITE_SOURCE", raising=False)
     (tmp_path / "version.json").write_bytes(b"\x00not json {{{")
     app, _ = R.version_labels(bundle_dir=str(tmp_path),
@@ -252,14 +252,39 @@ def test_version_json_is_gitignored():
 
 
 # ═════════════════════════════════════════════════════════════════════════
-#  5. Sidebar footer (AppTest) — dev run shows the dev identity
+#  5. Top bar update menu (AppTest) — dev run shows the dev identity
 # ═════════════════════════════════════════════════════════════════════════
-def test_sidebar_footer_shows_build_identity_in_dev(monkeypatch):
-    """The hub renders the build-identity footer in the sidebar.  A dev checkout
-    (no version.json, no launcher) collapses to 'OTDR Suite · dev'."""
+def test_update_menu_shows_build_identity_in_dev(monkeypatch):
+    """The hub renders the build identity in the top bar's update menu (the
+    sidebar footer before the bar).  A dev checkout (no version.json, no
+    launcher) is labelled 'Dev Build' and collapses to 'OTDR Suite · dev'."""
     monkeypatch.delenv("OTDR_SUITE_SOURCE", raising=False)
     at = run_streamlit().run()
     assert not at.exception, f"page raised: {list(at.exception)}"
-    caps = [c.value for c in at.sidebar.caption]
+    (menu,) = at.get("popover")
+    assert menu.proto.popover.label == "Dev Build"
+    caps = [c.value for c in menu.get("caption")]
     assert any(v.strip() == "OTDR Suite · dev" for v in caps), (
-        f"sidebar footer missing; captions were: {caps}")
+        f"build identity missing from the update menu; captions were: {caps}")
+
+
+def test_update_menu_shows_build_identity_of_a_build(monkeypatch, temp_home):
+    """An installed build: the menu is labelled with the running engine and
+    names the app build and the engine, as the footer did.  Offline, in its
+    own home, so neither the update check nor the rollout ping leaves."""
+    import urllib.request
+
+    def offline(*a, **k):
+        raise OSError("offline")
+
+    monkeypatch.setattr(R, "version_labels", lambda *a, **k: (
+        "build 54 (2026-07-14)", "update 56 applied 2026-07-15 09:00 PDT"))
+    monkeypatch.delenv("SS_ERROR_WEBHOOK", raising=False)
+    monkeypatch.setattr(urllib.request, "urlopen", offline)
+    at = run_streamlit().run()
+    assert not at.exception, f"page raised: {list(at.exception)}"
+    (menu,) = at.get("popover")
+    assert menu.proto.popover.label == "Version 56"
+    caps = [c.value for c in menu.get("caption")]
+    assert ("OTDR Suite · app build 54 (2026-07-14) · engine: "
+            "update 56 applied 2026-07-15 09:00 PDT") in caps, caps

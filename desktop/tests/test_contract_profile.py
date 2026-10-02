@@ -200,7 +200,7 @@ def test_picking_the_contract_profile_in_the_dropdown_moves_both_panels():
     helpers.  Picking the customer must move the threshold table AND the
     connector knob — and switching to another customer must take the contract profile's
     connector setting back off, or the next span silently inherits it."""
-    from conftest import run_streamlit
+    from conftest import run_streamlit, go_tab
 
     def _get(at, key, default=None):
         # AppTest's session_state proxy has no .get().
@@ -212,7 +212,7 @@ def test_picking_the_contract_profile_in_the_dropdown_moves_both_panels():
     at = run_streamlit().run()
     at.session_state["view_dir_a_input"] = str(FIXTURE_SPLICE_A_DIR)
     at.session_state["view_dir_b_input"] = str(FIXTURE_SPLICE_B_DIR)
-    at.sidebar.radio[0].set_value("Splice Report").run()
+    go_tab(at, "Splice Report")
     assert not at.exception, list(at.exception)
 
     assert CONTRACT_PROFILE in at.selectbox[0].options, "the contract profile must be pickable"

@@ -1133,8 +1133,8 @@ def test_the_hub_page_renders_the_same_ui_as_the_standalone_app(tmp_path, monkey
     at = goto(at, 'FQA Builder')
     assert not at.exception
     assert any('FQA Builder' in m.value for m in at.markdown)
-    # The hub's own trace drop-zone lives in the sidebar, so count only
-    # the uploader the page itself drew.
+    # Count only the uploader the page itself drew (the hub draws none of
+    # its own: the trace folders are on the Traces tab).
     assert len(at.main.get('file_uploader')) == 1
 
 

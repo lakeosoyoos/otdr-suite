@@ -30,6 +30,7 @@ import urllib.request
 import pytest
 
 from conftest import (VIEWER_DIR, APP_PATH, run_streamlit, import_trace_server,
+                      go_tab, trace_box, trace_box_value,
                       FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
 
 SRC = (VIEWER_DIR / 'viewer.html').read_text(encoding='utf-8')
@@ -196,23 +197,33 @@ def _clean_server():
 
 
 def _box(at, label):
-    return next(t for t in at.sidebar.text_input if t.label == label)
+    """The Traces tab's box (goes to the Traces tab first)."""
+    return trace_box(at, label[0])
+
+
+def _held(at):
+    """What the A and B boxes hold, read without leaving the page."""
+    return trace_box_value(at, 'a'), trace_box_value(at, 'b')
 
 
 def test_the_hub_boxes_empty_when_the_viewer_lets_go(_clean_server):
     at = run_streamlit().run()
     _box(at, 'A Folder').input(str(FIXTURE_SPLICE_A_DIR)).run()
     _box(at, 'B Folder').input(str(FIXTURE_SPLICE_B_DIR)).run()
+    go_tab(at, 'Viewer')                        # where the files are removed
     assert not at.exception, at.exception
     TS.unload_sides('ab')                       # every file removed in the Viewer
     at.run()                                    # the run the fragment asks for
     assert not at.exception, at.exception
+    assert _held(at) == ('', '')
     assert (_box(at, 'A Folder').value, _box(at, 'B Folder').value) == ('', '')
     # one side only: the other box keeps its folder
     _box(at, 'A Folder').input(str(FIXTURE_SPLICE_A_DIR)).run()
     _box(at, 'B Folder').input(str(FIXTURE_SPLICE_B_DIR)).run()
+    go_tab(at, 'Viewer')
     TS.unload_sides('b')
     at.run()
+    assert _held(at) == (str(FIXTURE_SPLICE_A_DIR), '')
     assert (_box(at, 'A Folder').value, _box(at, 'B Folder').value) == (str(FIXTURE_SPLICE_A_DIR), '')
 
 

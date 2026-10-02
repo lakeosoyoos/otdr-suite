@@ -21,8 +21,8 @@ import sys
 
 import pytest
 
-from conftest import (run_streamlit, SPLICEREPORT_DIR, FIXTURE_SPLICE_A_DIR,
-                      FIXTURE_SPLICE_B_DIR)
+from conftest import (run_streamlit, go_tab, clear_traces, SPLICEREPORT_DIR,
+                      FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
 
 A, B = str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR)
 PAGES = [("Splice Report", "sr"), ("Unidirectional", "uni")]
@@ -45,7 +45,7 @@ def _on_screen(at):
 
 
 def _open(at, page):
-    at.sidebar.radio[0].set_value(page).run()
+    go_tab(at, page)
     assert not at.exception, at.exception
     return at
 
@@ -122,10 +122,10 @@ def test_clear_traces_keeps_the_folder(tmp_path, page, prefix):
     choice of the tech's, not part of the span."""
     keep = str(tmp_path / "my reports")
     at = _typed(page, keep)
-    next(b for b in at.sidebar.button if b.label == "Clear Traces").click().run()
-    next(b for b in at.button if b.key == "clear_traces_allow").click().run()
+    clear_traces(at, allow=True)                 # on the Traces tab
     assert not at.exception, at.exception
     assert at.session_state["view_dir_a_input"] == ""
+    _open(at, page)
     _hub_again = at
     _hub_again.session_state["view_dir_a_input"] = A
     _hub_again.session_state["view_dir_b_input"] = B

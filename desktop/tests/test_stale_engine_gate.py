@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 from conftest import (REPO_ROOT, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
-                      run_streamlit)
+                      run_streamlit, go_tab)
 import error_report as R
 
 APP = REPO_ROOT / "app.py"
@@ -535,7 +535,7 @@ def test_clock_reads_like_a_wall_clock():
     assert clock(23, 30) == "11:30 PM"
 
 
-def test_sidebar_note_names_the_hour_then_goes_quiet():
+def test_the_update_note_names_the_hour_then_goes_quiet():
     def note(due):
         return _load_helper("_deadline_note",
                             _update_due=lambda running: (due, T_1100),
@@ -566,12 +566,13 @@ def test_gate_fails_open_if_the_hour_check_explodes():
 
 
 def test_the_banner_and_the_block_share_one_hour_rule():
-    """One copy, so the sidebar can never promise an hour the block ignores."""
+    """One copy, so the update menu can never promise an hour the block
+    ignores."""
     assert APP_SRC.count("\ndef _update_due(") == 1
     assert APP_SRC.count("\ndef _next_top_of_hour(") == 1
     assert "_update_due(running)" in _fn_code("_report_gate")
     assert "_update_due(running)" in _fn_code("_deadline_note")
-    assert "_deadline_note(running)" in _fn_code("_render_update_nudge")
+    assert "_deadline_note(running)" in _fn_code("_update_actions")
     due = _fn_code("_update_due")
     assert "_next_top_of_hour(" in due and "_behind_since(" in due
 
@@ -635,13 +636,19 @@ APPLIED_238 = ("build 238 (2026-08-20)", "update 238 applied 2026-08-20 09:00 PD
 
 def _page(name, **state):
     """Boot the hub, seed the page's folder slots, then switch to it — the
-    run()-first order the rest of the suite uses (the nav radio does not exist
-    as a widget until the first render)."""
+    run()-first order the rest of the suite uses (the top bar's tabs do not
+    exist until the first render)."""
     at = run_streamlit().run()
     for k, v in state.items():
         at.session_state[k] = v
-    at.sidebar.radio[0].set_value(name).run()
-    return at
+    return go_tab(at, name)
+
+
+def _update_menu(at):
+    """The top bar's update menu (the build label's pop-over), which says
+    what the old update banner said."""
+    (menu,) = at.get("popover")
+    return menu
 
 
 def _splice_page():
@@ -752,8 +759,8 @@ def test_a_garbled_manifest_does_not_block(monkeypatch, tmp_path):
 # ── the hour rule, end to end ────────────────────────────────────────────
 def test_a_fresh_publish_does_not_stop_a_report(monkeypatch, tmp_path):
     """238 applied, 239 published and seen for the first time just now: the
-    button stays clickable, and both the page and the sidebar say when the
-    update will be needed."""
+    button stays clickable, and both the page and the top bar's update menu
+    say when the update will be needed."""
     _arm(monkeypatch, tmp_path, APPLIED_238, _fake_manifest(239),
          behind_since=None)
     started = time.time()
@@ -768,7 +775,7 @@ def test_a_fresh_publish_does_not_stop_a_report(monkeypatch, tmp_path):
     page = " ".join(i.value for i in at.info)
     assert "Update 239 is available (running 238)" in page, page
     assert "Reports keep working until" in page, page
-    side = " ".join(w.value for w in at.sidebar.warning)
+    side = " ".join(w.value for w in _update_menu(at).warning)
     assert "Update 239 is available (running 238)" in side, side
     assert "Reports keep working until" in side, side
 
@@ -786,7 +793,7 @@ def test_the_block_starts_once_the_hour_has_passed(monkeypatch, tmp_path):
     assert not at.exception, f"page raised: {list(at.exception)}"
     assert _find_button(at, "Generate Splice Report").disabled is True
     assert "Report generation is paused" in " ".join(e.value for e in at.error)
-    side = " ".join(w.value for w in at.sidebar.warning)
+    side = " ".join(w.value for w in _update_menu(at).warning)
     assert "Update 239 is available (running 238)" in side, side
     assert "Reports keep working" not in side, side
 
@@ -876,12 +883,13 @@ def test_stamp_degrades_instead_of_taking_the_sheet_down(monkeypatch):
     assert A.engine_stamp_text() == "OTDR Suite · unknown"
 
 
-def test_stamp_matches_the_sidebar_vocabulary():
-    """The boss compares the workbook stamp against what the tech's sidebar
-    shows; two different wordings for one fact is a translation step."""
-    assert "'OTDR Suite · app {_appv} · engine: {_engv}'" in APP_SRC.replace(
-        'f\'OTDR Suite · app {_appv} · engine: {_engv}\'',
-        "'OTDR Suite · app {_appv} · engine: {_engv}'")
+def test_stamp_matches_the_update_menu_vocabulary():
+    """The boss compares the workbook stamp against what the tech's update
+    menu (top bar, far right) shows; two different wordings for one fact is a
+    translation step.  The menu names the product, which is "OTDR Suite"
+    unless the App's launcher says otherwise (test_product_name.py)."""
+    assert ("f'{PRODUCT_NAME} · app {_appv} · engine: {_engv}'"
+            in _fn_source("_render_update_menu"))
 
 
 def test_stamp_is_resolved_in_the_engine_not_handed_down_by_the_hub():

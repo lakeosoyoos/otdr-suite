@@ -1,6 +1,6 @@
 """The Analysis setting: OTDR Suite / FastReporter.
 
-One switch in the hub sidebar, remembered across launches, carried to the
+One switch in the hub's top bar, remembered across launches, carried to the
 three engine subprocesses (--analysis) and the Viewer (trace_server.CONFIG),
 and echoed in every manifest.  Nothing branches on it yet -- the
 FastReporter rules land behind it one at a time -- so this pins the
@@ -43,7 +43,7 @@ def hub():
 @pytest.fixture
 def settings_dir(tmp_path, monkeypatch, hub):
     monkeypatch.setenv("OTDR_SETTINGS_DIR", str(tmp_path))
-    # no live sidebar in a test: the accessor falls through to the file
+    # no live hub in a test: the accessor falls through to the file
     monkeypatch.setattr(hub, "analysis_mode", lambda: hub.load_analysis_mode())
     return tmp_path
 
@@ -103,11 +103,18 @@ def test_the_viewer_is_told_the_same_mode():
     assert "gInfo.analysis_mode" in VIEWER and "let gAnalysisMode = 'suite';" in VIEWER
 
 
-def test_the_sidebar_control_sits_under_the_tool_list():
-    # under, not above: the Tool radio stays sidebar.radio[0] for the AppTests
-    i_ctl = SRC.index("    _render_analysis_mode_control()\n")
-    i_tool = SRC.index("page = st.radio('Tool',")
-    assert i_tool < i_ctl < i_tool + 800
+def _top_nav():
+    return SRC.split("\ndef _render_top_nav(", 1)[1].split("\ndef ", 1)[0]
+
+
+def test_the_bar_control_sits_right_after_the_tool_tabs():
+    # The top bar (2026-10-01) draws the tool tabs, then the switch, on
+    # every page: the bar is drawn before the page is.
+    bar = _top_nav()
+    i_tool = bar.index("for _label, _target in NAV_TABS:")
+    i_ctl = bar.index("        _render_analysis_mode_control()\n")
+    assert i_tool < i_ctl < i_tool + 400
+    assert SRC.index("\n_render_top_nav(page)\n") < SRC.index("\n    if page == 'Traces':")
     body = SRC.split("def _render_analysis_mode_control():", 1)[1].split("\ndef ", 1)[0]
     assert "load_analysis_mode()" in body and "save_analysis_mode(_mode)" in body
     # FR Mode | switch | OTDR Mode (2026-09-24): knob right = OTDR Mode.
@@ -120,23 +127,33 @@ def test_the_sidebar_control_sits_under_the_tool_list():
     assert "st.session_state['analysis_mode'] = _mode" in body
 
 
-def test_the_mode_in_use_has_a_green_halo_and_the_switch_is_always_on(hub):
+def test_the_mode_in_use_is_marked_and_the_switch_is_always_on(hub):
     # Robert, 2026-09-30: a green halo round the name of the mode in use, and
-    # the switch always drawn "on"; only the knob moves.
+    # the switch always drawn "on"; only the knob moves.  In the top bar
+    # (Robert, 2026-10-01) the name in use is bold with no halo, as the open
+    # tab is, and the switch is always the same bright blue.
     body = SRC.split("def _render_analysis_mode_control():", 1)[1].split("\ndef ", 1)[0]
-    assert "st.container(key='analysis_mode_box')" in body
-    assert "_MODE_SWITCH_CSS" in body
+    assert "st.container(key='analysis_mode_box', width=245" in body
+    # one row in the bar, which draws the switches' CSS
+    assert "_MODE_SWITCH_CSS" in _top_nav()
     assert "_mode_name('FR Mode', _on)" in body and "_mode_name('OTDR Mode', not _on)" in body
     css = SRC.split("_MODE_SWITCH_CSS = (", 1)[1].split("'</style>')", 1)[0]
     assert ".mode-on{" in css and "#22c55e" in css           # the green halo
     assert "label[data-baseweb=\"checkbox\"]>div:first-child" in css
     # track always on, in the theme's accent (Light: the hub blue; Dark: blue)
     assert "background-color:var(--otdr-accent,#2c5b8a)" in css
-    # scoped to the two sidebar switches (Analysis Mode, and Theme, which
+    # scoped to the two switches (Analysis Mode, and Theme, which
     # wears the same halo), nothing else
     assert ".st-key-analysis_mode_box" in css and ".st-key-theme_box" in css
     assert css.count(".st-key-") == (css.count(".st-key-analysis_mode_box")
                                      + css.count(".st-key-theme_box"))
+    # the bar's own rules come after the shared ones, so they win
+    bar = _top_nav()
+    assert bar.index("_MODE_SWITCH_CSS") < bar.index("_NAV_SWITCH_CSS")
+    nav_css = SRC.split("_NAV_SWITCH_CSS = , 1)[1].split(", 1)[0]
+    assert ".st-key-top_nav .mode-on,.st-key-top_nav .mode-off{box-shadow:none !important" in nav_css
+    assert ".st-key-top_nav .mode-on{font-weight:700" in nav_css
+    assert "{background-color:#3b82f6 !important}" in nav_css
     assert 'class="mode-on">FR Mode<' in hub._mode_name("FR Mode", True)
     assert 'class="mode-off">Light<' in hub._mode_name("Light", False)
 

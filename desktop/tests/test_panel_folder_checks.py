@@ -1,6 +1,7 @@
 """The left panel's Trace Folders boxes, checked the same way on every page
 (click-through audit, main 5806a3f, a 24/240/1152-fiber bidirectional span,
-2026-10-02).
+2026-10-02).  The boxes, their fiber counts and notes are on the Traces tab
+now (sandbox/top-tabs-design); the Viewer page still shows the warnings.
 
 1. A folder whose traces are one folder down (unzipping SITE.zip
    leaves SITE/SITE/*.sor): the Viewer said "A: 0 fibers · B: 0
@@ -19,12 +20,13 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 
 import pytest
 
-from conftest import (run_streamlit, import_trace_server,
-                      FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
+from conftest import (run_streamlit, import_trace_server, go_tab, page_of,
+                      load_traces, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
 
 A, B = str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR)
 
@@ -38,24 +40,44 @@ N_A, N_B = len(_sor_names(A)), len(_sor_names(B))
 
 # ── helpers ───────────────────────────────────────────────────────────────
 
-def _box(at, label):
-    return next(t for t in at.sidebar.text_input if t.label == label)
-
-
 def _hub(a='', b=''):
     at = run_streamlit(default_timeout=180).run()
     if a:
-        _box(at, 'A Folder').input(a).run()
+        load_traces(at, a=a)
     if b:
-        _box(at, 'B Folder').input(b).run()
+        load_traces(at, b=b)
     assert not at.exception, at.exception
     return at
 
 
 def _open(at, page):
-    at.sidebar.radio[0].set_value(page).run()
+    go_tab(at, page)
     assert not at.exception, at.exception
     return at
+
+
+def _traces_tab(at):
+    if page_of(at) != 'Traces':
+        _open(at, 'Traces')
+    return at
+
+
+def _counts(at):
+    """The Traces tab's fiber counts, (A, B)."""
+    got = {}
+    for c in _traces_tab(at).caption:
+        m = re.fullmatch(r'([AB]): (\d+) fibers?', str(c.value))
+        if m:
+            got[m.group(1)] = int(m.group(2))
+    return got.get('A'), got.get('B')
+
+
+def _tab_captions(at):
+    return _texts(_traces_tab(at).caption)
+
+
+def _tab_warnings(at):
+    return _texts(_traces_tab(at).warning)
 
 
 def _texts(els):
@@ -92,9 +114,10 @@ def test_a_folder_whose_traces_are_one_folder_down_loads(tmp_path):
     outer_b = tmp_path / 'MILELM'
     _copy(A, outer_a / 'ELMMIL')
     _copy(B, outer_b / 'MILELM')
-    at = _open(_hub(str(outer_a), str(outer_b)), 'Viewer')
-    assert f'A: {N_A} fibers · B: {N_B} fibers' in _texts(at.sidebar.caption)
-    assert not at.sidebar.warning
+    at = _hub(str(outer_a), str(outer_b))
+    assert _counts(at) == (N_A, N_B)
+    assert not _tab_warnings(at)
+    _open(at, 'Viewer')
     dir_a, dir_b = _server()
     assert _sor_names(dir_a) == _sor_names(A) and _sor_names(dir_b) == _sor_names(B)
     # flattened once: the next pass reads the same folders, built nowhere new
@@ -118,12 +141,13 @@ def test_a_folder_with_traces_of_its_own_keeps_its_subfolders_unread(tmp_path):
     _copy(B, tmp_path / 'ELMMIL' / 'other way')
     empty_b = tmp_path / 'not yet'
     (empty_b / 'notes').mkdir(parents=True)
-    at = _open(_hub(own, str(empty_b)), 'Viewer')
-    assert f'A: {N_A} fibers · B: 0 fibers' in _texts(at.sidebar.caption)
-    assert _server()[0] == own
+    at = _hub(own, str(empty_b))
+    assert _counts(at) == (N_A, 0)
     # the B box named a folder with no trace files in it or below it
     assert ('B: no trace files (.sor, .trc, .json) in that folder'
-            in _texts(at.sidebar.warning))
+            in _tab_warnings(at))
+    _open(at, 'Viewer')
+    assert _server()[0] == own
 
 
 def test_a_span_folder_with_a_and_b_subfolders_is_split(tmp_path):
@@ -132,9 +156,10 @@ def test_a_span_folder_with_a_and_b_subfolders_is_split(tmp_path):
     span = tmp_path / 'span'
     _copy(A, span / 'A')
     _copy(B, span / 'B')
-    at = _open(_hub(str(span)), 'Viewer')
-    assert f'A: {N_A} fibers · B: {N_B} fibers' in _texts(at.sidebar.caption)
-    assert 'holds both directions' in _texts(at.sidebar.caption)
+    at = _hub(str(span))
+    assert _counts(at) == (N_A, N_B)
+    assert 'holds both directions' in _tab_captions(at)
+    _open(at, 'Viewer')
     dir_a, dir_b = _server()
     assert _sor_names(dir_a) == _sor_names(A) and _sor_names(dir_b) == _sor_names(B)
     _open(at, 'Splice Report')
@@ -147,9 +172,9 @@ def test_the_same_name_in_two_subfolders_is_said(tmp_path):
     outer = tmp_path / 'ELMMIL'
     _copy(A, outer / 'first copy')
     _copy(A, outer / 'second copy')
-    at = _open(_hub(str(outer)), 'Viewer')
-    assert f'A: {N_A} fibers · B: 0 fibers' in _texts(at.sidebar.caption)
-    warned = _texts(at.sidebar.warning)
+    at = _hub(str(outer))
+    assert _counts(at) == (N_A, 0)
+    warned = _tab_warnings(at)
     assert f'{N_A} file names are in more than one subfolder' in warned
     assert 'only one copy of each was loaded' in warned
 
@@ -162,8 +187,10 @@ def test_a_folder_with_no_trace_files_says_so_on_every_page(tmp_path):
     (nothing / 'photos' / 'pole.jpg').write_bytes(b'jpg')
     (nothing / '.sr_grid_cache.json').write_text('{}', encoding='utf-8')  # the hub's own file
     want = 'B: no trace files (.sor, .trc, .json) in that folder'
-    at = _open(_hub(A, str(nothing)), 'Viewer')
-    assert want in _texts(at.sidebar.warning)
+    at = _hub(A, str(nothing))
+    assert want in _tab_warnings(at)
+    _open(at, 'Viewer')
+    assert want in _texts(at.warning)
     # the Viewer is still pointed at it (0 fibers), so its frame reloads
     assert _server() == (A, str(nothing))
     _open(at, 'Splice Report')
@@ -187,9 +214,11 @@ def test_the_same_one_direction_folder_in_both_boxes_is_a_only(tmp_path, spell):
          'other case': os.path.join(str(tmp_path), 'elmmil')}[spell]
     if not os.path.isdir(b.strip('"')):
         pytest.skip('this file system tells the two cases apart')
-    at = _open(_hub(a, b), 'Viewer')
-    assert f'A: {N_A} fibers · B: 0 fibers' in _texts(at.sidebar.caption)
-    assert _texts(at.sidebar.warning).count(SAME) == 1
+    at = _hub(a, b)
+    assert _counts(at) == (N_A, 0)
+    assert _tab_warnings(at).count(SAME) == 1
+    _open(at, 'Viewer')
+    assert _texts(at.warning).count(SAME) == 1
     assert _server() == (a, None)
     # the Splice Report sees A only: it says why and makes no report
     _open(at, 'Splice Report')
@@ -216,10 +245,10 @@ def test_the_same_folder_holding_both_directions_is_still_split(tmp_path):
     """Kept as it was (a guard: this passed before the fix too)."""
     both = _copy(A, tmp_path / 'both directions')
     _copy(B, tmp_path / 'both directions')
-    at = _open(_hub(both, both + os.sep), 'Viewer')
-    assert f'A: {N_A} fibers · B: {N_B} fibers' in _texts(at.sidebar.caption)
-    assert 'holds both directions' in _texts(at.sidebar.caption)
-    assert SAME not in _texts(at.sidebar.warning)
+    at = _hub(both, both + os.sep)
+    assert _counts(at) == (N_A, N_B)
+    assert 'holds both directions' in _tab_captions(at)
+    assert SAME not in _tab_warnings(at)
     _open(at, 'Splice Report')
     assert _generate(at) is not None and not _generate(at).disabled
 
@@ -241,9 +270,11 @@ def test_two_copies_of_one_direction_are_said_on_the_splice_report(tmp_path):
 def test_a_folder_not_found_is_named_on_every_page(tmp_path):
     typo = str(tmp_path / 'MILELM typo')
     want = f'B folder not found: {typo}'
-    at = _open(_hub(A, typo), 'Viewer')
-    assert _texts(at.sidebar.warning).count(want) == 1
-    assert 'B folder not found' not in _texts(at.sidebar.warning).replace(want, '')
+    at = _hub(A, typo)
+    for _page in ('Traces', 'Viewer'):
+        _open(at, _page)
+        assert _texts(at.warning).count(want) == 1
+        assert 'B folder not found' not in _texts(at.warning).replace(want, '')
     assert _server() == (A, None)
     _open(at, 'Splice Report')
     assert want in _texts(at.main.warning)

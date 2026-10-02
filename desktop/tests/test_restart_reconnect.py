@@ -80,7 +80,7 @@ def _app_src():
 def _watchdog_ns():
     """Exec just the watchdog helpers, so nothing imports the Streamlit hub."""
     src = _app_src()
-    m = re.search(r"RESTART_RECONNECT_TIMEOUT_S = .*?(?=\ndef _render_update_nudge)",
+    m = re.search(r"RESTART_RECONNECT_TIMEOUT_S = .*?(?=\ndef _render_update_blocked)",
                   src, re.S)
     assert m, "watchdog helper block not found in app.py"
     ns = {'st': None, 'st_components_html': None}
@@ -100,11 +100,19 @@ def test_every_restart_call_site_renders_the_watchdog():
     # build for the person adding one.  The loop below is the real check — it
     # holds for EVERY site, however many there are.
     assert len(sites) >= 3, f"restart call sites went missing: {len(sites)}"
+    # The top bar's update menu (sandbox/top-tabs-design) arms it through a
+    # flag, so closing the menu cannot stop it: the page under the bar draws
+    # the watchdog on the run that pops the flag.
+    flag = "st.session_state['_upd_watchdog'] = True"
     for pos in sites:
         window = src[pos:pos + 400]
-        assert '_render_restart_watchdog(' in window, (
+        assert '_render_restart_watchdog(' in window or flag in window, (
             "a restart call site does not arm the reconnect watchdog:\n"
             + window.splitlines()[0])
+    if flag in src:
+        assert re.search(r"if st\.session_state\.pop\('_upd_watchdog', False\):\n"
+                         r"\s+_render_restart_watchdog\(\)", src), (
+            "the _upd_watchdog flag is set but nothing draws the watchdog for it")
 
 
 def test_the_old_promise_is_gone():

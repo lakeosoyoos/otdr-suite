@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import openpyxl
 
-from conftest import run_streamlit, finish_engine_run, FIXTURE_B_DIR
+from conftest import run_streamlit, finish_engine_run, go_tab, FIXTURE_B_DIR
 
 RUN = "Run Unidirectional Report"
 
@@ -15,7 +15,7 @@ def _page(dest):
     at = run_streamlit(default_timeout=180).run()
     at.session_state["uni_folder_input"] = str(FIXTURE_B_DIR)
     at.session_state["uni_report_dest"] = str(dest)
-    at.sidebar.radio[0].set_value("Unidirectional").run()
+    go_tab(at, "Unidirectional")
     assert not at.exception, list(at.exception)
     return at
 
@@ -33,9 +33,9 @@ def test_uni_site_boxes_default_type_over_and_print(tmp_path):
     _box(at, "A-End Site").input("WEST").run()
     _box(at, "B-End Site").input("EAST").run()
     # a trip to another tool and back keeps what was typed
-    at.sidebar.radio[0].set_value("Viewer").run()
+    go_tab(at, "Viewer")
     at.run()
-    at.sidebar.radio[0].set_value("Unidirectional").run()
+    go_tab(at, "Unidirectional")
     assert _box(at, "A-End Site").value == "WEST"
     assert _box(at, "B-End Site").value == "EAST"
     next(b for b in at.button if b.label == RUN).click().run()
