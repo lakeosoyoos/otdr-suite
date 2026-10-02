@@ -172,6 +172,8 @@ def test_bulk_loaded_file_is_drawn_as_its_stamp(tmp_path):
     prog = r"""
 var OVERVIEW_PTS = 2000, gLoadFailures = [], gTraces = [], gRemovedFiles = new Set();
 var gStoredDir = {'b-3': 'a'}, gDirOverride = {}, gAutoFit = false;
+var gLoadingKeys = new Set(), gLoadEpoch = 0;
+function loadProgress() {}
 function nextColor() { return '#000'; }
 function traceColor() { return '#000'; }
 function setReadout() {} function renderChips() {} function draw() {}

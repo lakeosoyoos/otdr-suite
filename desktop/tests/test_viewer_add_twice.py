@@ -46,6 +46,7 @@ def _const(name):
 _STUBS = r"""
 var gSelNext = null, gAddDir = 'both', gTraces = [], gLoadFailures = [], gStoredDir = {};
 var gRemovedFiles = new Set(), gAutoFit = true, gLoadingKeys = new Set(), gStateLoad = null;
+var gLoadEpoch = 0;
 var gInfo = { dir_a: '/a', dir_b: '/b', fibers_a: [353, 354], fibers_b: [353, 354] };
 var box = { value: '354' };
 var document = { getElementById: function () { return box; } };
