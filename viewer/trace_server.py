@@ -426,6 +426,19 @@ def set_viewer_state(data):
         return VIEWER_STATE['ver']
 
 
+def reset_viewer_state():
+    """Forget the shared state: the next Viewer opened starts empty, and one
+    open now follows (Clear Traces, a hub session opened afresh).  Made on
+    the folders loaded now, so an open window takes it and clears."""
+    with _VIEWER_STATE_LOCK:
+        VIEWER_STATE.update({
+            'ver': VIEWER_STATE['ver'] + 1, 'by': '',
+            'dir_a': CONFIG.get('dir_a') or '', 'dir_b': CONFIG.get('dir_b') or '',
+            'keys': [], 'removed': [], 'add_dir': 'both',
+        })
+        return VIEWER_STATE['ver']
+
+
 def gate_sig():
     """One string that changes whenever the gates the Viewer judges by do:
     a Customer Profile picked in the hub, a setting changed, a report run.
@@ -1824,8 +1837,18 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 self._send_json({'error': 'invalid fibers'}, status=400)
                 return
+            # The Viewer's Loss / Refl boxes, typed over the profile's FEC
+            # gates for this window only (never saved to the profile).
+            override = {}
+            for qk, gk in (('loss_gate', 'FEC_LOSS_GATE'), ('refl_gate', 'FEC_REFL_GATE')):
+                try:
+                    v = float((q.get(qk) or [''])[0])
+                except ValueError:
+                    continue
+                if v == v and abs(v) != float('inf'):
+                    override[gk] = v
             try:
-                res = fec_tables(fibers)
+                res = fec_tables(fibers, override or None)
             except Exception as exc:                   # noqa: BLE001
                 report_error('viewer /api/fec_table', exc, {'fibers': fibers[:20]})
                 self._send_json({'error': str(exc)}, status=500)
@@ -3715,13 +3738,17 @@ _FEC_TABLE_CACHE = {}
 _FEC_GATES_USED = {}         # gates key -> the gates the engine reported
 
 
-def fec_tables(fibers):
+def fec_tables(fibers, override=None):
     """FEC mode: {'grades': {'A': {'17': grade}, 'B': {...}}, 'gates': {...},
     'missing': [...], 'error': str | None}.  Every listed fiber in each
     folder that has it, graded ON ITS OWN by the engine runner's
     --fec-table (the Splice Report FEC tool's rule): FEC shots from the two
-    ends never see the same glass, so nothing is paired."""
-    gates = CONFIG.get('fec_gates') or {}
+    ends never see the same glass, so nothing is paired.  `override`
+    ({'FEC_LOSS_GATE': x, 'FEC_REFL_GATE': y}, either or both) is laid over
+    the profile's gates: the Viewer's boxes, typed over for one window."""
+    gates = dict(CONFIG.get('fec_gates') or {})
+    if override:
+        gates.update(override)
     gkey = json.dumps(gates, sort_keys=True)
     grades = {'A': {}, 'B': {}}
     missing, jobs = [], []

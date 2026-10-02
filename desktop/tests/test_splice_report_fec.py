@@ -373,7 +373,7 @@ def test_a_folder_of_mixed_types_reads_each_fiber_once(tmp_path):
 def test_viewer_fec_grades_every_trace_type():
     from conftest import VIEWER_DIR
     src = (VIEWER_DIR / 'trace_server.py').read_text(encoding='utf-8')
-    body = src.split('def fec_tables(fibers):', 1)[1].split('\ndef ', 1)[0]
+    body = src.split('def fec_tables(fibers', 1)[1].split('\ndef ', 1)[0]
     assert "endswith(('.sor', '.trc', '.json'))" in body
     assert "endswith('.sor')" not in body
 

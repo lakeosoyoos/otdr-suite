@@ -2476,6 +2476,15 @@ def _handle_nav():
         st.session_state['nav_radio'] = 'Viewer'   # set BEFORE the radio widget
         st.query_params.clear()
 
+# The software opened (or the page loaded afresh): the Viewer starts empty
+# (Robert 2026-10-02).  Its chart is kept on the trace server for a trip to
+# another tool (viewer_state), and the server outlives the page, so a new
+# session took the last one's traces.  A report link (?nav=) is a page load
+# too, and the chart stays for it: going to a report cell is a trip.
+if '_viewer_fresh' not in st.session_state:
+    st.session_state['_viewer_fresh'] = True
+    if not st.query_params.get('nav'):
+        trace_server.reset_viewer_state()
 _handle_nav()
 # Streamlit's own theme pick (the ⋮ menu's Settings) beats the hub's Theme
 # switch: once a browser has chosen Light or Dark there, Streamlit keeps it
@@ -3025,6 +3034,10 @@ def _clear_traces():
     # The trace server's folders are process-wide: left set, the next
     # session would seed the boxes from them and the span would be back.
     trace_server.set_dirs(None, None)
+    # ...and so does the Viewer's chart: kept on the server for a trip to
+    # another tool (viewer_state), it came back when the same folders were
+    # put back after a Clear Traces.
+    trace_server.reset_viewer_state()
 
 
 # The pop-ups' buttons act in click callbacks, which run whether or not the
@@ -3042,7 +3055,8 @@ def _confirm_clear_traces():
     _c1, _c2 = st.columns(2)
     if _c1.button('Cancel', key='clear_traces_cancel', use_container_width=True):
         st.rerun()
-    if _c2.button('Allow', key='clear_traces_allow', type='primary',
+    # Named for what it does (Robert 2026-10-02); it read 'Allow'.
+    if _c2.button('Clear Traces', key='clear_traces_allow', type='primary',
                   use_container_width=True, on_click=_allow_clear_traces):
         st.rerun()
 
@@ -3332,7 +3346,7 @@ with st.sidebar:
         st.session_state['sr_input_mode'] = 'Two folders (A + B)'
         st.session_state.pop('sr_input_mode_saved', None)     # _seed_box
 
-    # The tech pressed Allow, or Clear Report and Traces, in a pop-up (see
+    # The tech pressed Clear Traces, or Clear Report and Traces, in a pop-up (see
     # _clear_traces above the sidebar).  Done HERE, on the run that follows,
     # because the boxes must be emptied in the same run that draws them and
     # before they are drawn: a value written in an earlier run reaches the
@@ -3395,7 +3409,7 @@ with st.sidebar:
                    'Paste the folder paths instead.')
 
     # Asks first (the pop-up is drawn below the sidebar): a click here clears
-    # nothing until the tech presses Allow.
+    # nothing until the tech presses Clear Traces in the pop-up.
     _ask_clear_traces = st.button('Clear Traces', key='side_clear_traces',
                                   use_container_width=True)
     _follow_viewer_folders()          # the Viewer's own folder changes reach the boxes
