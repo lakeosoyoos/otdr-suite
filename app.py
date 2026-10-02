@@ -3144,10 +3144,19 @@ NAV_TABS = [('Traces', 'Traces'), ('Splice Report', 'Splice Report'),
 if os.environ.get('OTDR_SUITE_EDITION'):
     NAV_TABS += [('FQA Builder', 'FQA Builder'), ('Field Capture', 'Field Capture')]
 NAV_HEIGHT_PX = 48
+# The logo's width follows the product name (the App's is longer), so the
+# name never wraps: 15 px bold is about 9.5 px a letter, plus the icon.
+NAV_LOGO_PX = int(30 + 9.5 * len(PRODUCT_NAME))
 # Narrower than this, the whole bar does not fit on one line: the items hide
 # and a double arrow, centered, drops them down as a list (Robert
-# 2026-10-01).  The bar's items measure about 1,325 px with their gaps.
-NAV_MENU_BELOW_PX = 1340
+# 2026-10-01).  Worked out from what the bar holds, so the App's longer name
+# and two more tabs fold sooner instead of running off the edge: a tab is
+# about 6.35 px a letter at 13 px plus 12 px of padding; the two switches and
+# the update menu are 245 + 130 + 165 px; 12 px between items, 16 px at
+# each end, and 20 px to spare.  The Suite's bar comes to about 1,345 px.
+NAV_MENU_BELOW_PX = int(
+    NAV_LOGO_PX + sum(6.35 * len(_l) + 12 for _l, _t in NAV_TABS)
+    + 245 + 130 + 165 + 12 * (len(NAV_TABS) + 3) + 32 + 20)
 
 _TOP_NAV_CSS = '''<style>
 :root{--nav-bg:%(bg)s;--nav-fg:%(fg)s;--nav-hi:%(hi)s;--nav-line:%(line)s}
@@ -3175,6 +3184,7 @@ _TOP_NAV_CSS = '''<style>
 .st-key-top_nav p.nav-update-flag{color:#f97316 !important;font-size:12px;font-weight:700;
   line-height:14px;margin:0 4px 0 0;text-align:right}
 .st-key-nav_tick{display:none}
+.st-key-top_nav button p{white-space:nowrap}
 /* The narrow-window menu.  One set of tabs and switches: a narrow window
    only lays them out differently, so no switch is ever drawn twice.  The
    arrow is a checkbox's label; the tick is lost when the page changes (the
@@ -3317,7 +3327,7 @@ def _render_top_nav(page):
             'stroke="currentColor" stroke-width="2" stroke-linecap="round" '
             'stroke-linejoin="round"><path d="M7 6l5 5 5-5"/><path d="M7 13l5 5 5-5"/>'
             f'</svg></label></{_wrap}>', unsafe_allow_html=True)
-        with st.container(key='nav_logo', width=125):
+        with st.container(key='nav_logo', width=NAV_LOGO_PX):
             st.button(PRODUCT_NAME, key='nav_logo_btn', type='tertiary',
                       icon=':material/show_chart:', on_click=_nav_go,
                       args=('Viewer',))         # home = the page the app opens on
