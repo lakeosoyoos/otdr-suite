@@ -44,7 +44,13 @@ def _helpers(**namespace):
     found = {getattr(n, 'name', None) or n.targets[0].id for n in body}
     assert found == set(_HELPERS) | set(_CONSTANTS), sorted(found)
     mod = types.ModuleType('report_file_names')
-    mod.__dict__.update({'os': os, 're': re, **namespace})
+    # OTDR Suite App: _uni_named_report also calls the App's project hooks
+    # (a project report keeps its run's time and its record follows it; see
+    # test_project_screen).  Outside a project they leave the name alone and
+    # record nothing, as these stand-ins do.
+    app_hooks = {'_project_keep_stamp': lambda out, want: want,
+                 '_project_report_moved': lambda old, new: None}
+    mod.__dict__.update({'os': os, 're': re, **app_hooks, **namespace})
     exec(compile(ast.Module(body=body, type_ignores=[]), 'app.py', 'exec'),
          mod.__dict__)
     return mod
