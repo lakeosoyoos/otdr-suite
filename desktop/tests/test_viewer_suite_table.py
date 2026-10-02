@@ -473,11 +473,13 @@ def test_the_suite_table_is_the_report_s_columns_and_three_rows_per_fibre():
 def test_the_report_s_flag_is_the_verdict_and_the_ends_take_nothing_else():
     body = _fn('paintSuiteBidiGrid')
     assert "return !!x.flag || (!c.isEnd && clearsAt(x.loss, gateFor(!!x.reflective, false)));" in body
+    # ...until the tech types a loss gate: then it judges a plain loss alone
+    assert "if (typedGate(c, x)) return clearsAt(x.loss, gateFor(false, false));" in body
     assert "|| (!c.isEnd && legOk(leg) && clearsAt(leg.loss, gateFor(!!x.reflective, true)));" in body
     assert "isEnd: c.kind === 'end' || !!c.end," in body
-    # reflectance is the report's verdict alone
-    assert "const reflFlagged = (x, which) => which !== 'avg' && !!(x[which] && x[which].flag_refl);" in body
-    assert "reflFails(" not in body
+    # reflectance is the report's verdict, until the tech types a Refl Band
+    assert "if (gReflOverride == null || c.isEnd) return !!(leg && leg.flag_refl);" in body
+    assert "return reflFails(leg.refl, pos, spanKm);" in body
     # a measured (grey) leg is never judged by its number
     assert "const legOk = leg => !!leg && !leg.grey && leg.loss != null;" in body
     # a flagged cell carries the report's words
@@ -692,7 +694,7 @@ def test_the_suite_table_filters_and_collapses_like_the_other_two():
             "    : gFailCellsOnly && (x.reflective ? lossFails(c, x, which)\n"
             "                                      : !!(x[which] && x[which].flag && !gainerHidden(x[which].loss)));") in body
     assert ("const cellKept = (c, x, which) => lossKept(c, x, which)"
-            " || (gFailCellsOnly && reflFlagged(x, which));") in body
+            " || (gFailCellsOnly && reflFlagged(c, x, which));") in body
     assert "if (cellFilterOn() && !lossKept(c, x, which)) return `<td${attrs}></td>`;" in body
     assert "if (cellFilterOn() && !(gFailCellsOnly && bad)) return '<td></td>';" in body
     # either one collapses the table around what it keeps: a column nobody

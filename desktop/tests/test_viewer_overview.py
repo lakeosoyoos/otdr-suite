@@ -217,10 +217,12 @@ def test_viewer_flag_defaults_track_the_engine():
         return float(m.group(1))
 
     html = open(VIEWER_HTML, encoding='utf-8').read()
-    line = next(l for l in html.splitlines() if 'const gViewerSettings' in l)
-    assert f'lossDb: {const("UNI_BEND_THRESHOLD"):.3f}' in line, line
-    assert f'reflLo: {const("UNI_REFL_FLOOR_DB"):.1f}' in line, line
-    assert f'reflHi: {const("UNI_REFL_CEIL_DB"):.1f}' in line, line
+    assert f'uni_bend: {const("UNI_BEND_THRESHOLD"):.3f}' in html
+    # the Refl Band boxes start on the report's mid-span band
+    assert f'refl_floor: {const("MIDSPAN_REFL_WARN_DB"):.1f}' in html
+    assert f'refl_ceil: {const("MIDSPAN_REFL_CEIL_DB"):.1f}' in html
+    assert f'id="set-refl-lo" type="number" step="1" max="0" value="{const("MIDSPAN_REFL_WARN_DB"):.0f}"' in html
+    assert f'id="set-refl-hi" type="number" step="1" max="0" value="{const("MIDSPAN_REFL_CEIL_DB"):.0f}"' in html
 
 
 def test_flagging_scope_is_documented_not_reimplemented():

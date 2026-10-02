@@ -79,7 +79,8 @@ def test_every_row_is_judged_at_the_report_s_own_gates():
     # dead zone at both ends (the fibre end's -29 dB is never judged)
     assert "const dead = Math.min(T.dead_km, T.dead_frac * eofKm);" in src
     assert "if (posKm < dead || posKm > eofKm - dead || eofKm - posKm < 1.0) return false;" in src
-    assert "if (refl < T.refl_floor) return false;" in src
+    assert "return reflInBand(refl);" in src
+    assert "if (refl < lo) return false;" in src and "if (hi < 0 && refl > hi) return false;" in src
     body = _fn('paintFrBidiGrid')
     assert "if (which === 'avg') return clearsAt(x.row.loss, gateFor(isRefl(x), false));" in body
     assert "if (legReflFails(x, which)) return true;" in body

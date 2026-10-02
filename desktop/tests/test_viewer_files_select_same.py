@@ -130,6 +130,7 @@ var gThresholds = { reburn: 0.160, single_dir: 0.200, connector: 0.500,
                     connector_uni: 0.649, refl_floor: -45.0, refl_ceil: 0.0,
                     dead_km: 3.0, dead_frac: 0.25 };
 var OFF = false;
+var gReflOverride = null;
 function flagsOff() { return OFF; }
 function activeGateDb() { return gThresholds.reburn; }
 function E(km, loss, refl, kind) {
@@ -153,6 +154,15 @@ out.solo_clean  = fileFails([E(10, 0.15, 0, 's'), endAt], 'a', false);
 out.solo_conn   = fileFails([E(20, 0.30, -60, 'c'), endAt], 'a', false);    // connectors too
 out.solo_refl   = fileFails([E(20, 0.10, -40, 'c'), endAt], 'a', false);    // no reflectance rule there
 out.solo_ends   = fileFails([E(1.0, 9.0, -20, 'launch'), E(41.0, 9.0, -20, 'end')], 'a', false);
+// a Refl Band typed in the Viewer is the rule instead of the report's
+gReflOverride = { lo: -60, hi: -42 };      // -40 is stronger than the ceiling
+out.refl_typed_ceil  = fileFails([E(20, 0.10, -40, 'c'), endAt], 'a', true);
+gReflOverride = { lo: -50, hi: 0 };
+out.refl_typed_floor = fileFails([E(20, 0.10, -47, 'c'), endAt], 'a', true);   // under the report's -45
+gReflOverride = { lo: 0, hi: 0 };          // 0 = the reflectance rule off
+out.refl_typed_off   = fileFails([E(20, 0.10, -40, 'c'), endAt], 'a', true);
+gReflOverride = null;
+out.refl_report      = fileFails([E(20, 0.10, -47, 'c'), endAt], 'a', true);
 OFF = true;
 out.flags_off   = fileFails([E(10, 0.90, 0, 's'), endAt], 'a', true);
 out.flags_off_1 = fileFails([E(10, 0.90, 0, 's'), endAt], 'a', false);
@@ -185,7 +195,7 @@ print('OUT ' + JSON.stringify(out));
 @pytest.fixture(scope='module')
 def rules(tmp_path_factory):
     funcs = '\n'.join(_js_func(n) for n in
-                      ('clearsAt', 'clearsGate', 'gateFor', 'reflFails', 'fileFails', 'fileSameKeys', 'fileDay'))
+                      ('clearsAt', 'clearsGate', 'gateFor', 'reflFails', 'reflBand', 'reflInBand', 'fileFails', 'fileSameKeys', 'fileDay'))
     path = tmp_path_factory.mktemp('select_same') / 'rules.js'
     path.write_text(funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
@@ -202,6 +212,11 @@ def test_a_paired_files_verdict_is_its_direction_row_at_the_single_direction_gat
     assert rules['conn_ok'] is False
     assert rules['refl'] is True                    # a mid-span reflection over the floor
     assert rules['refl_dead'] is False              # the same one inside the dead zone
+    # the Refl Band boxes, typed: their band is the rule, both ends
+    assert rules['refl_typed_ceil'] is False
+    assert rules['refl_typed_floor'] is True
+    assert rules['refl_typed_off'] is False
+    assert rules['refl_report'] is False            # -47 is under the report's -45 floor
     assert rules['launch_only'] is False            # the launch level is never judged
     assert rules['end_only'] is False               # nor the far end
     assert rules['flags_off'] is False              # no Settings box, nothing graded
