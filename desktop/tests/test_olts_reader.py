@@ -314,7 +314,7 @@ function fetch(url, opt) {
   urls.push([url, opt && opt.body && opt.body.names ? opt.body.names : (opt && opt.body && opt.body.name) || '']);
   var body = { ok: true };
   if (url.indexOf('/api/drop_begin') === 0) body.token = 't1';
-  if (url.indexOf('/api/drop_end') === 0) body = { ok: true, dir_a: '/t/A', added: 'A', a_count: 1 };
+  if (url.indexOf('/api/drop_end') === 0) body = { ok: true, dir_a: '/t/A', added: 'A', a_count: 1, new_keys: ['a-1'] };
   if (url.indexOf('/api/olts_load') === 0) body = { ok: true, token: 'o1', file: 'J.olts', fibers: 864 };
   return Promise.resolve({ ok: true, json: function () { return Promise.resolve(body); } });
 }
