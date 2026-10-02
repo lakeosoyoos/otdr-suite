@@ -6199,7 +6199,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   //
   // The gainer/loser line used to be inferred from sign(splice_loss).  That
   // agrees with FastReporter almost always, but FR carries its own Type field
-  // and on 4 of 4,727 events across the Zayo 432 span FR's Type disagrees with
+  // and on 4 of 4,727 events across a 432-fiber span FR's Type disagrees with
   // the sign of FR's OWN stored loss.  Reproducing FR means following FR's
   // Type where it exists, and only falling back to the inference where it does
   // not (a file with no proprietary block).
