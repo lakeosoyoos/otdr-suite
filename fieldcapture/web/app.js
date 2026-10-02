@@ -1314,7 +1314,7 @@
       navigator.share({ files: [file], title: subject, text: body })
         .then(() => setMsg(el.sendMsg, `Handed ${file.name} to the share sheet.${to ? ` ${to} is on the clipboard for the To line.` : ''}`, 'ok'))
         .catch((e) => {
-          if (e && e.name === 'AbortError') { setMsg(el.sendMsg, 'Share cancelled. Tap Email the FQA to try again.'); return; }
+          if (e && e.name === 'AbortError') { setMsg(el.sendMsg, 'Share canceled. Tap Email the FQA to try again.'); return; }
           download(file);
           setMsg(el.sendMsg, `The share sheet failed (${e && e.message ? e.message : e}). ${file.name} was saved to Downloads instead.`, 'err');
         });
@@ -1475,7 +1475,7 @@
         navigator.share({ files: [file], title: file.name })
           .then(() => setMsg(el.exportMsg, `Shared ${file.name}.`, 'ok'))
           .catch((e) => {
-            if (e && e.name === 'AbortError') { setMsg(el.exportMsg, 'Share cancelled.'); return; }
+            if (e && e.name === 'AbortError') { setMsg(el.exportMsg, 'Share canceled.'); return; }
             download(file); setMsg(el.exportMsg, `Saved ${file.name} to Downloads.`, 'ok');
           });
       } else {

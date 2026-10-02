@@ -748,7 +748,7 @@ def run_engine_live(prefix, *, running_title, timeout_s=None):
         _engine_cancel(job)
         _engine_cleanup(job)
         st.session_state.pop(job_key, None)
-        st.info('Run cancelled.')
+        st.info('Run canceled.')
         return None
 
     state = _engine_poll(job, timeout_s)
@@ -5830,7 +5830,7 @@ _DUP_COLOR = {'CONFIRMED duplicate': '#c0392b', 'Likely duplicate': '#e67e22',
 # result for the tech (a port-log check): the notice leads with it and is a
 # warning, not an error.  A red box on a tie panel read as "the tool failed"
 # while the ranking sat unseen on the workbook's last sheet.
-_MATING_LEAD = ('**The fibre fingerprint cannot be measured here; the mating '
+_MATING_LEAD = ('**The fiber fingerprint cannot be measured here; the mating '
                 'ranking below is the result to check against the port log.** ')
 
 
@@ -5890,11 +5890,11 @@ def _near_splice_lookup(ns, token):
         stem = ((ns or {}).get('fibres') or {}).get(str(int(token)))
         if stem and stem in loss:
             return stem, loss[stem]
-        return None, f'Fibre {int(token)} has no splice reading in this folder.'
+        return None, f'Fiber {int(token)} has no splice reading in this folder.'
     hits = [n for n in loss if token.lower() in n.lower()]
     if len(hits) == 1:
         return hits[0], loss[hits[0]]
-    return None, f'"{token}" matches {len(hits)} files; type the fibre number or the full name.'
+    return None, f'"{token}" matches {len(hits)} files; type the fiber number or the full name.'
 
 
 def _pct_text(pct):
@@ -5908,7 +5908,7 @@ def _near_splice_check(ns, a, b):
     fa, la = _near_splice_lookup(ns, a)
     fb, lb = _near_splice_lookup(ns, b)
     if fa is None or fb is None:
-        why = (la if fa is None else lb) or 'Enter two fibres.'
+        why = (la if fa is None else lb) or 'Enter two fibers.'
         return {'ok': False, 'cleared': False, 'sd': None, 'text': why}
     if fa == fb:
         return {'ok': False, 'cleared': False, 'sd': None,
@@ -5921,15 +5921,15 @@ def _near_splice_check(ns, a, b):
             f'{d:.3f} dB, {sd:.1f}x the wobble')
     if sd > clear:
         return {'ok': True, 'cleared': True, 'sd': sd,
-                'text': (f'**Different fibres.** {head}. Two shots of one fibre differ '
+                'text': (f'**Different fibers.** {head}. Two shots of one fiber differ '
                          f'this much {_pct_text(pct)} of the time.')}
     # Always give the rate.  At 3.9x "the splices match" is not what the number
     # says: shots of one fibre differ that much about 1 time in 400 on Goodland.
     return {'ok': True, 'cleared': False, 'sd': sd,
-            'text': (f'**Not cleared.** {head}. Two shots of one fibre differ this much '
+            'text': (f'**Not cleared.** {head}. Two shots of one fiber differ this much '
                      f'{_pct_text(pct)} of the time; the line for calling them different '
-                     f'fibres is {clear:g}x. A close reading would not make them '
-                     f'duplicates either: many different fibres have similar splices.')}
+                     f'fibers is {clear:g}x. A close reading would not make them '
+                     f'duplicates either: many different fibers have similar splices.')}
 
 
 def _render_near_splice(res):
@@ -5941,9 +5941,9 @@ def _render_near_splice(res):
         clear = ns.get('clear_sd') or _NEAR_SPLICE_CLEAR_SD_DEFAULT
         st.info(f"This span has a splice {ns['offset_m']:.0f} m behind the panel. It is "
                 f"glass, so unplugging and re-plugging cannot change it: two shots of one "
-                f"fibre read it within {ns['sd_pair_db']:.3f} dB. Two files that read it "
-                f"more than {clear:g}x that far apart are different fibres.")
-        st.markdown('**Check Two Fibres**')
+                f"fiber read it within {ns['sd_pair_db']:.3f} dB. Two files that read it "
+                f"more than {clear:g}x that far apart are different fibers.")
+        st.markdown('**Check Two Fibers**')
         key = f"ns_check_{ns.get('group', 'report')}"
         c1, c2 = st.columns(2)
         a = c1.text_input('Fiber', key=key + '_a', placeholder='e.g. 350')
@@ -5969,8 +5969,8 @@ def _render_fill_ins(res):
 
     def _t(x):
         return datetime.fromtimestamp(float(x), timezone.utc).strftime('%m-%d %H:%M')
-    with st.expander(f'Shot Out of Order: {n} Fibre(s) Skipped and Shot Later'):
-        st.caption('Each was shot long after both neighbouring fibres, which were shot '
+    with st.expander(f'Shot Out of Order: {n} Fiber(s) Skipped and Shot Later'):
+        st.caption('Each was shot long after both neighboring fibers, which were shot '
                    'back to back, so its port had to be found again. Worth checking '
                    'against the port log. Not a duplicate finding.')
         for r in runs:
@@ -5987,7 +5987,7 @@ def _splice_cell(p, clear_sd):
         return f"<td style='{style}'></td>"
     if sd > clear_sd:
         return (f"<td style='{style};color:#1e7b34;font-weight:600'>"
-                f"different fibres ({sd:.1f}x)</td>")
+                f"different fibers ({sd:.1f}x)</td>")
     return f"<td style='{style};color:var(--otdr-text)'>{sd:.1f}x</td>"
 
 
@@ -6801,7 +6801,7 @@ _CONN_ROWS = [
               'a bare loss reading, because a launch event’s stored loss '
               'includes the backscatter step between two different fibers and '
               'reads high on healthy launches. Set a value only if you want '
-              'the old HIGH_LAUNCH_LOSS behaviour back.')},
+              'the old HIGH_LAUNCH_LOSS behavior back.')},
 ]
 
 _CONN_DEFAULTS = {g: row['defaults'][slot]
@@ -7440,7 +7440,7 @@ def _render_settings_box(where, blocks_report=False):
                          'turned off until it does. (Details sent to support.)')
             else:
                 st.warning('OTDR settings table could not load. Until it '
-                           'does, the Viewer flags only breaks (a fibre that '
+                           'does, the Viewer flags only breaks (a fiber that '
                            'stops short of the span); every other event and '
                            'value still shows, unflagged. (Details sent to '
                            'support.)')
@@ -7460,7 +7460,7 @@ def _render_settings_box(where, blocks_report=False):
             else:
                 st.warning('Connector & Launch settings could not load. '
                            'Until they do, the Viewer flags only breaks (a '
-                           'fibre that stops short of the span); every other '
+                           'fiber that stops short of the span); every other '
                            'event and value still shows, unflagged. (Details '
                            'sent to support.)')
             _policy_block_caption(_exc)
@@ -8266,7 +8266,7 @@ def tc_write_comparison(ours: TcGrid, tech: TcGrid, diffs, colmap, frame, out_pa
         wsum.cell(r, 2, v)
         r += 1
     r += 1
-    wsum.cell(r, 1, 'Colour key').font = Font(bold=True)
+    wsum.cell(r, 1, 'Color key').font = Font(bold=True)
     r += 1
     for k in TC_KIND_ORDER:
         c = wsum.cell(r, 1, k)
@@ -8278,7 +8278,7 @@ def tc_write_comparison(ours: TcGrid, tech: TcGrid, diffs, colmap, frame, out_pa
             TC_KIND_TYPE: 'both flagged it; a loss on one side and a word (broke, bend, DZ …) on the other',
         }[k])
         r += 1
-    c = wsum.cell(r, 1, 'Grey column header')
+    c = wsum.cell(r, 1, 'Gray column header')
     c.fill = PatternFill(start_color=_TC_UNMATCHED_HDR, end_color=_TC_UNMATCHED_HDR, fill_type='solid')
     wsum.cell(r, 2, f'a column only one report has (no column within {TC_COLUMN_MATCH_KM * 1000:.0f} m in the other)')
     r += 2
@@ -8390,7 +8390,7 @@ def _render_tech_comparison(page, our_xlsx, upload, dest_dir, site_a, site_b):
                      f"columns lined up ({cached['frame']} frame)")
     if cached['columns_matched'] < min(cached['columns_ours'], cached['columns_tech']):
         st.caption("Columns that didn't line up (no column within 250 m in the "
-                   "other report) are shown with grey headers; everything in "
+                   "other report) are shown with gray headers; everything in "
                    "them counts as a difference.")
     st.caption(f"Saved to `{cached['xlsx']}`")
     try:
@@ -9856,7 +9856,7 @@ def page_unidirectional():
             f"This folder mixes {len(counts) - len(merged)} directions: the "
             f"report covers ONLY '{u.get('direction', '?')}'. "
             + ' '.join(
-                f"{n} file(s) shot as '{sig}' were NOT analysed."
+                f"{n} file(s) shot as '{sig}' were NOT analyzed."
                 for sig, n in sorted(counts.items(), key=lambda kv: -kv[1])
                 if sig != u.get('direction')
                 and sig not in {m.get('signature') for m in merged})
