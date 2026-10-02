@@ -135,13 +135,13 @@ def test_garbage_marker_never_raises_and_reports(monkeypatch, tmp_path):
 
 
 def test_the_app_edition_names_itself(monkeypatch, tmp_path):
-    """OTDR Suite App's build numbers come from the same CI counter as OTDR
+    """OTDR App's build numbers come from the same CI counter as OTDR
     Suite's; unnamed, its first boot read as the regular app on build 782."""
-    monkeypatch.setenv("OTDR_SUITE_EDITION", "OTDR Suite App")
+    monkeypatch.setenv("OTDR_SUITE_EDITION", "OTDR App")
     _arm(monkeypatch)
     posted, text = _capture(monkeypatch, tmp_path / "ping.json")
     assert posted is True
-    assert "*OTDR Suite App update applied*" in text
+    assert "*OTDR App update applied*" in text
     assert not BRIDGE_HDR_RE.search(text)
 
 

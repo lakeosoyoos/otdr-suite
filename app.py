@@ -56,7 +56,12 @@ FROZEN = bool(getattr(sys, 'frozen', False))
 # FastReporter rules land behind it one column at a time, each gated on the
 # .bdr answer keys.  Robert, 2026-09-21.
 ANALYSIS_MODES = ('suite', 'fr')
-ANALYSIS_MODE_LABELS = {'suite': 'OTDR Suite', 'fr': 'FastReporter'}
+# The product's name where a person reads it.  The App's launcher sets
+# OTDR_SUITE_EDITION to "OTDR App" (Robert, 2026-10-01: no "Suite" anyone
+# sees in the App); the regular exe leaves it unset.  Stored values, file
+# formats and identifiers keep the old spelling.
+PRODUCT_NAME = os.environ.get('OTDR_SUITE_EDITION') or 'OTDR Suite'
+ANALYSIS_MODE_LABELS = {'suite': PRODUCT_NAME, 'fr': 'FastReporter'}
 ANALYSIS_MODE_DEFAULT = 'suite'
 
 
@@ -1031,13 +1036,13 @@ def _deadline_note(running):
     if due:
         return ''
     return (f' Reports keep working until {_fmt_clock(deadline)}, then pause '
-            'until OTDR Suite is updated.')
+            'until ' + PRODUCT_NAME + ' is updated.')
 
 
 # Shown on a report page while this copy is behind but the hour has not come.
 UPDATE_HEADS_UP_MSG = (
     'Update {latest} is available (running {running}). Reports keep working '
-    'until {when}. After that, OTDR Suite needs to update before it runs '
+    'until {when}. After that, ' + PRODUCT_NAME + ' needs to update before it runs '
     'another report.'
 )
 
@@ -1045,7 +1050,7 @@ UPDATE_HEADS_UP_MSG = (
 # tech's first question — "why won't it let me?" — or the next move is a phone
 # call, not a restart.
 STALE_BLOCK_MSG = (
-    '🔒 **Report generation is paused: OTDR Suite needs a restart.**\n\n'
+    '🔒 **Report generation is paused: ' + PRODUCT_NAME + ' needs a restart.**\n\n'
     'This session is running **engine {running}**, but **engine {latest}** '
     'has been published. Different engines can print different numbers for '
     'the same traces, so reports are held until this copy is up to date.\n\n'
@@ -1057,13 +1062,13 @@ STALE_BLOCK_MSG = (
 # files this exe cannot download (see _needs_install).  Telling the tech to
 # restart here is an instruction that can never work.
 INSTALL_BLOCK_MSG = (
-    '🔒 **Report generation is paused: OTDR Suite needs a fresh install.**\n\n'
+    '🔒 **Report generation is paused: ' + PRODUCT_NAME + ' needs a fresh install.**\n\n'
     'This session is running **engine {running}**, but **engine {latest}** '
-    'has been published, and it adds files this copy of OTDR Suite cannot '
+    'has been published, and it adds files this copy of ' + PRODUCT_NAME + ' cannot '
     'download on its own, so Update & restart will not apply it. Different '
     'engines can print different numbers for the same traces, so reports are '
     'held until this copy is up to date.\n\n'
-    '**Nothing is lost.** Finish what you are doing, close OTDR Suite '
+    '**Nothing is lost.** Finish what you are doing, close ' + PRODUCT_NAME + ' '
     'completely, then download and run the installer: {url}'
 )
 
@@ -1113,7 +1118,7 @@ def _report_gate(key):
             if _relaunch_and_exit():
                 _render_restart_watchdog()
             else:
-                st.error('Couldn\'t start the restart. Close OTDR Suite '
+                st.error(f'Couldn\'t start the restart. Close {PRODUCT_NAME} '
                          'completely and open it again to pick up the update.')
     else:
         st.caption('Restart the app to apply. Updates install at launch.')
@@ -1361,6 +1366,7 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
 })();
 </script>
 """.replace('__HEALTH__', RESTART_HEALTH_PATH) \
+   .replace('OTDR Suite', PRODUCT_NAME) \
    .replace('__TIMEOUT_MS__', str(int(timeout_s) * 1000))
 
 
@@ -1401,7 +1407,7 @@ def _render_cache_pinned_notice(sidebar=False):
     target = st.sidebar if sidebar else st
     target.warning(
         'Updates cannot be kept on this computer. Files this app downloads '
-        'keep disappearing, so OTDR Suite is running the copy that came with '
+        f'keep disappearing, so {PRODUCT_NAME} is running the copy that came with '
         'its installer. To get the newest version, download and run the '
         f'installer again: {INSTALLER_URL}')
 
@@ -1448,8 +1454,8 @@ def _render_install_notice(latest, running, sidebar=False):
     target = st.sidebar if sidebar else st
     target.warning(
         f'Update {latest} needs a fresh install (running {running}). It adds '
-        'files this copy of OTDR Suite cannot download on its own, so Update '
-        '& restart will not apply it. Close OTDR Suite completely, then '
+        f'files this copy of {PRODUCT_NAME} cannot download on its own, so Update '
+        f'& restart will not apply it. Close {PRODUCT_NAME} completely, then '
         f'download and run the installer: {INSTALLER_URL}')
 
 
@@ -1472,9 +1478,9 @@ def _render_update_nudge():
                 pass
         st.session_state['upd_restart_blocked'] = blocked
     if st.session_state['upd_restart_blocked']:
-        st.error('The update didn\'t start: the previous OTDR Suite is still '
-                 'running. Close it completely (or reboot), then start OTDR '
-                 'Suite again.')
+        st.error(f'The update didn\'t start: the previous {PRODUCT_NAME} is still '
+                 'running. Close it completely (or reboot), then start '
+                 f'{PRODUCT_NAME} again.')
 
     if _cache_pinned():
         _render_cache_pinned_notice()
@@ -1500,7 +1506,7 @@ def _render_update_nudge():
             if _relaunch_and_exit():
                 _render_restart_watchdog()
             else:
-                st.error('Couldn\'t start the restart. Close OTDR Suite and '
+                st.error(f'Couldn\'t start the restart. Close {PRODUCT_NAME} and '
                          'open it again to pick up the update.')
     else:
         st.caption('Restart the app to apply. Updates install at launch.')
@@ -1558,11 +1564,11 @@ def _blocked_by_policy(text):
 
 _POLICY_HEADLINE = 'Windows blocked a file that came with this app.'
 _POLICY_BODY = (
-    'A security policy on this computer stopped OTDR Suite from loading one '
+    f'A security policy on this computer stopped {PRODUCT_NAME} from loading one '
     'of its own files. This is set by the computer, not by the app, so '
     'repairing or re-downloading will not clear it.')
 _POLICY_STEPS = (
-    'Install the newest version of OTDR Suite first: it is digitally signed, '
+    f'Install the newest version of {PRODUCT_NAME} first: it is digitally signed, '
     'and older versions were not, which is the usual reason a policy stops '
     'one. If it still happens after that, this has to be allowed by whoever '
     'manages security settings on your computers.')
@@ -1572,7 +1578,7 @@ _POLICY_FOR_IT = (
     '  Applications and Services Logs\n'
     '    Microsoft > Windows > CodeIntegrity > Operational\n\n'
     'That entry names the exact file and the policy that stopped it. Please '
-    'allow OTDR Suite, published by Robert Colbert, to run.')
+    f'allow {PRODUCT_NAME}, published by Robert Colbert, to run.')
 
 
 def _policy_block_caption(exc):
@@ -1589,7 +1595,7 @@ def _policy_block_caption(exc):
 def _engine_policy_block_page(exc):
     """The boot-time version: Windows blocked a file, so say that, and do NOT
     offer the repair — it rewrites engine files, and the blocked one is not."""
-    st.set_page_config(page_title='OTDR Suite', layout='centered')
+    st.set_page_config(page_title=PRODUCT_NAME, layout='centered')
     st.title('Windows Blocked Part of This App')
     st.error(_POLICY_HEADLINE)
     st.write(_POLICY_BODY)
@@ -1612,8 +1618,8 @@ def _engine_file_missing_page(exc):
     button.  The button schedules the repair and restarts; the launcher does
     the work at boot, where nothing is holding the files open.
     """
-    st.set_page_config(page_title='OTDR Suite', layout='centered')
-    st.title('OTDR Suite Needs to Repair Itself')
+    st.set_page_config(page_title=PRODUCT_NAME, layout='centered')
+    st.title(f'{PRODUCT_NAME} Needs to Repair Itself')
     st.error('A file this app needs is missing from this computer.')
     st.write(
         'The app checks its own files at every start, and one of them is no '
@@ -1636,7 +1642,7 @@ def _engine_file_missing_page(exc):
         if _relaunch_and_exit():
             _render_restart_watchdog()
         else:
-            st.error('Close OTDR Suite and open it again to finish the repair.')
+            st.error(f'Close {PRODUCT_NAME} and open it again to finish the repair.')
     with st.expander('Details'):
         st.code(f'{type(exc).__name__}: {exc}\n\nengine: {HERE}')
     st.stop()
@@ -1675,7 +1681,7 @@ def _engine_damaged_notice(stderr, key):
         if _relaunch_and_exit():
             _render_restart_watchdog()
         else:
-            st.error('Close OTDR Suite and open it again to finish the repair.')
+            st.error(f'Close {PRODUCT_NAME} and open it again to finish the repair.')
     with st.expander('Details'):
         st.code(text[-4000:] or '(no output)')
     return True
@@ -1692,7 +1698,7 @@ except ImportError as _engine_exc:
 
 TRACE_PORT_BASE = 8771
 
-st.set_page_config(page_title='OTDR Suite', layout='wide',
+st.set_page_config(page_title=PRODUCT_NAME, layout='wide',
                    initial_sidebar_state='expanded')
 # Light / Dark: every new session starts Dark, and the session's choice is
 # applied before anything draws.  Streamlit sends the theme at the START of a
@@ -2721,9 +2727,9 @@ def project_from_file_data(data, project_path):
     """(snapshot, span-1 markers) from a project file's JSON.  Raises
     ValueError on something that is not an OTDR Suite project."""
     if not isinstance(data, dict) or data.get('format') != PROJECT_FORMAT:
-        raise ValueError('not an OTDR Suite project file')
+        raise ValueError(f'not an {PRODUCT_NAME} project file')
     if int(data.get('version') or 0) > PROJECT_VERSION:
-        raise ValueError('this project was saved by a newer OTDR Suite -- '
+        raise ValueError(f'this project was saved by a newer {PRODUCT_NAME} -- '
                          'update the app to open it')
     pdir = os.path.dirname(os.path.abspath(project_path))
     spans, markers = [], None
@@ -3757,7 +3763,7 @@ def _render_home(msg):
     st.markdown('<style>[data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"]'
                 '{display:none}</style>', unsafe_allow_html=True)
     _render_update_nudge()
-    st.markdown("<h2 style='text-align:center'>🔬 OTDR Suite</h2>", unsafe_allow_html=True)
+    st.markdown(f"<h2 style='text-align:center'>🔬 {PRODUCT_NAME}</h2>", unsafe_allow_html=True)
     # One column, three choices stacked, all the same blue (Robert, 2026-09-24).
     _l, mid, _r = st.columns([1, 2, 1])
     with mid:
@@ -3804,7 +3810,7 @@ def _render_sample_photos_box():
     a closed box takes the .zip of them that was sent privately.  The App's
     installer is on a public link, so the photos never ride in it (Robert,
     2026-09-29).  Gone once they are in."""
-    if os.environ.get('OTDR_SUITE_EDITION') != 'OTDR Suite App':
+    if os.environ.get('OTDR_SUITE_EDITION') != 'OTDR App':
         return
     try:
         if sample_photos_real():
@@ -4765,7 +4771,7 @@ st.session_state.setdefault('nav_radio', (st.session_state.get('_project_page') 
 with st.sidebar:
     # Home at the very top of the sidebar, in a project and in Run Traces.
     st.button('🏠 Home', key='go_home', use_container_width=True)
-    st.markdown('## 🔬 OTDR Suite')
+    st.markdown(f'## 🔬 {PRODUCT_NAME}')
     # Where we are, filled in once the page is known (see _render_crumbs).
     _crumb_slot = st.empty()
 
@@ -7418,7 +7424,7 @@ def _settings_block_notice(exc, button):
     if _blocked_by_policy(exc):
         _policy_block_caption(exc)
     else:
-        st.caption('Close OTDR Suite completely and open it again.')
+        st.caption(f'Close {PRODUCT_NAME} completely and open it again.')
 
 
 def _share_settings_with_viewer(failed=False):
@@ -10732,7 +10738,7 @@ def job_qr_png(link):
         import qrcode
         from qrcode.exceptions import DataOverflowError
     except Exception:
-        return None, ('this OTDR Suite build has no QR library yet (it comes with the '
+        return None, (f'this {PRODUCT_NAME} build has no QR library yet (it comes with the '
                       'next installer); send the link below to the phone instead')
     try:
         q = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=2, box_size=6)
@@ -11551,9 +11557,9 @@ def owner_email_message(work, ev, owner, sender):
         f"Something happened in the project {name}.\n\n"
         f"What happened: {ev.get('text')}\n"
         f"When: {_when_text(ev.get('when'))}\n"
-        f"Done by: {who} ({ev.get('how') or 'OTDR Suite'})\n"
+        f"Done by: {who} ({_how_shown(ev.get('how'))})\n"
         f"Project folder: {os.path.abspath(work)}\n\n"
-        'You get these because you are the project owner in OTDR Suite.\n')
+        f'You get these because you are the project owner in {PRODUCT_NAME}.\n')
     return msg
 
 
@@ -11711,6 +11717,13 @@ def file_users(work, data=None):
             for r in e.get('files') or ():
                 out[r] = e['user']
     return out
+
+
+def _how_shown(how, blank='OTDR Suite'):
+    """An event's How as a person reads it.  The log stores 'OTDR Suite' for
+    what the app did (older logs too); it is shown as the product's name."""
+    how = how or blank
+    return PRODUCT_NAME if how == 'OTDR Suite' else how
 
 
 def project_log(work, kind, text, paths=(), when=None, how='OTDR Suite'):
@@ -12144,7 +12157,7 @@ def page_project_status():
     with tabs['Export Project']:
         st.markdown('**Export Project**')
         st.caption('Pack the project folder into one .zdb file to share or email. It opens '
-                   'in OTDR Suite: Home, Open Recent Project, Open this file.')
+                   f'in {PRODUCT_NAME}: Home, Open Recent Project, Open this file.')
         _render_export(work)
         with st.container(border=True):
             st.markdown('**☁️ Save to SharePoint**')
@@ -12383,7 +12396,7 @@ def _project_overview(work, items):
     if st.session_state.pop('_start_tour', False) and os.path.basename(work) == DEMO_NAME:
         st_components_html('<script>const d=window.parent.document;'
                            'const s=d.createElement("script");'
-                           f's.textContent={json.dumps(DEMO_TOUR_JS)};'
+                           f"s.textContent={json.dumps(DEMO_TOUR_JS.replace('OTDR Suite', PRODUCT_NAME))};"
                            'd.head.appendChild(s);</script>', height=0)
     c1, c2, c3, c4 = st.columns(4)
     with c1.container(border=True):
@@ -12588,13 +12601,13 @@ def _project_tab_events(work):
         if len(users) > 1 else []
     rows = [{'When': _when_text(e.get('when')), 'User': e.get('user') or '',
              'Type': e.get('kind') or '', 'What Happened': e.get('text') or '',
-             'How': e.get('how') or ''}
+             'How': _how_shown(e.get('how'), '')}
             for e in ev if (not pick or e.get('kind') in pick)
             and (not who or e.get('user') in who)]
     st.dataframe(rows, hide_index=True, use_container_width=True,
                  column_config={'What Happened': st.column_config.TextColumn(width='large')})
     st.caption(f'{len(rows)} of {len(ev)} events. "Found in folder" is a file saved into '
-               'the project folder outside OTDR Suite, such as a .zfc saved from an email. '
+               f'the project folder outside {PRODUCT_NAME}, such as a .zfc saved from an email. '
                'User is the Windows login that did it; for a file found in the folder, '
                'the login that owns the file, blank when that can\'t be told (a synced '
                'OneDrive or SharePoint folder, or events from before users were kept).')
@@ -13506,7 +13519,7 @@ def import_project(package, projects_root):
     with zipfile.ZipFile(package) as z:
         meta = json.loads(z.read('otdrproject.json').decode('utf-8'))
         if meta.get('format') != LEGACY_PACKAGE_FORMAT:
-            raise ValueError('not an OTDR Suite project package')
+            raise ValueError(f'not an {PRODUCT_NAME} project package')
         root = _unique_project_dest(projects_root, meta.get('name'))
         return _unpack_project(z, [i for i in z.infolist()
                                    if i.filename != 'otdrproject.json' and not i.is_dir()], root)
@@ -13673,8 +13686,8 @@ def _render_export(work):
             if st.button('✉️ Email it', key='ps_export_email'):
                 try:
                     from fieldcapture.email_draft import write_draft, open_with_default_app
-                    eml = write_draft(out, '', f'OTDR Suite project: {os.path.basename(work)}',
-                                      'The project is attached. In OTDR Suite: Home, '
+                    eml = write_draft(out, '', f'{PRODUCT_NAME} project: {os.path.basename(work)}',
+                                      f'The project is attached. In {PRODUCT_NAME}: Home, '
                                       'Open Recent Project, Open this package.\n')
                     opened, err = open_with_default_app(eml)
                     st.success('An email with the project attached is open in your mail '
@@ -13716,7 +13729,7 @@ def _render_open_project():
                    'Capture (.zfc) for the open project.')
         c1, c2 = st.columns([1, 2])
         if c1.button('📦 Choose the file', key='open_pkg_pick', use_container_width=True):
-            p = pick_file('Choose the file', [('OTDR Suite file',
+            p = pick_file('Choose the file', [(f'{PRODUCT_NAME} file',
                                                ' '.join('*' + e for e in OPEN_FILE_EXTS))])
             if p:
                 ss['open_pkg_path'] = p
@@ -14528,9 +14541,9 @@ _sidebar_footer = st.sidebar.container(key='sidebar_footer')
 _render_theme_control(_sidebar_footer)
 _appv, _engv = _app_version(), _engine_version()
 if _appv == 'dev' and _engv == 'dev':
-    _sidebar_footer.caption('OTDR Suite · dev')
+    _sidebar_footer.caption(f'{PRODUCT_NAME} · dev')
 else:
-    _sidebar_footer.caption(f'OTDR Suite · app {_appv} · engine: {_engv}')
+    _sidebar_footer.caption(f'{PRODUCT_NAME} · app {_appv} · engine: {_engv}')
 
 
 if os.environ.get('OTDR_SUITE_NO_UPDATE'):

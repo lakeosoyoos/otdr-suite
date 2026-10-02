@@ -30,7 +30,7 @@ def test_css_vars_cover_the_whole_palette():
 
 
 def test_the_theme_switch_sits_in_the_apps_pinned_sidebar_footer():
-    """OTDR Suite App: the Light / Dark switch is drawn in the sidebar footer
+    """OTDR App: the Light / Dark switch is drawn in the sidebar footer
     the App pins to the bottom of the panel (main draws it in st.sidebar)."""
     assert "_sidebar_footer = st.sidebar.container(key='sidebar_footer')" in SRC
     assert '_render_theme_control(_sidebar_footer)' in SRC

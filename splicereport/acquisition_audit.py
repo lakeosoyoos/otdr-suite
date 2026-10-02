@@ -1071,14 +1071,18 @@ def engine_stamp_text() -> str:
 
     Never raises: a missing/broken error_report degrades to 'unknown' rather
     than taking the whole acquisition sheet down (its caller only warns)."""
+    import os
+    # The product's name: "OTDR App" in the App (its launcher sets the
+    # edition), as the sidebar footer prints it.
+    name = os.environ.get("OTDR_SUITE_EDITION") or "OTDR Suite"
     try:
         from error_report import version_labels
         appv, engv = version_labels()
     except Exception:
-        return "OTDR Suite · unknown"
+        return f"{name} · unknown"
     if appv == "dev" and engv == "dev":
-        return "OTDR Suite · dev"
-    return f"OTDR Suite · app {appv} · engine: {engv}"
+        return f"{name} · dev"
+    return f"{name} · app {appv} · engine: {engv}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

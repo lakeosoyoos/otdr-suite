@@ -45,7 +45,7 @@ def test_every_page_draws_once_without_a_duplicate_box(page):
     assert [t.label for t in at.sidebar.text_input].count('A folder') == 1
 
 
-# OTDR Suite App (this branch): FQA Builder and Field Capture belong to the
+# OTDR App (this branch): FQA Builder and Field Capture belong to the
 # App (Robert 2026-09-28) and, inside it, to a project (Robert 2026-09-24).  A
 # project has no tool list and no Trace Folders in the left panel (Robert
 # 2026-09-27): its screen opens the tools, and a shoot's Run In... chooses the
@@ -55,7 +55,7 @@ def test_every_page_draws_once_without_a_duplicate_box(page):
 @pytest.mark.parametrize('page', APP_TOOLS)
 def test_the_app_pages_open_in_a_project_without_trace_folders(page, monkeypatch, tmp_path):
     from conftest import goto, open_in_project
-    monkeypatch.setenv('OTDR_SUITE_EDITION', 'OTDR Suite App')
+    monkeypatch.setenv('OTDR_SUITE_EDITION', 'OTDR App')
     at = goto(open_in_project(tmp_path / 'Span', monkeypatch), page)
     assert not at.exception, at.exception
     assert not [t for t in at.sidebar.text_input if t.label in ('A folder', 'B folder')]
@@ -68,14 +68,14 @@ def test_quick_analysis_lists_the_four_trace_tools_only(monkeypatch):
     at = run_streamlit().run()
     assert not at.exception
     assert list(at.sidebar.radio[0].options) == TRACE_TOOLS
-    monkeypatch.setenv('OTDR_SUITE_EDITION', 'OTDR Suite App')
+    monkeypatch.setenv('OTDR_SUITE_EDITION', 'OTDR App')
     at = run_streamlit().run()
     assert list(at.sidebar.radio[0].options) == TRACE_TOOLS
 
 
 def test_a_project_has_no_tool_list_and_no_trace_folders(monkeypatch, tmp_path):
     from conftest import open_in_project
-    monkeypatch.setenv('OTDR_SUITE_EDITION', 'OTDR Suite App')
+    monkeypatch.setenv('OTDR_SUITE_EDITION', 'OTDR App')
     at = open_in_project(tmp_path / 'Span', monkeypatch)
     assert not at.exception
     assert not [r for r in at.sidebar.radio if r.label == 'Tool']

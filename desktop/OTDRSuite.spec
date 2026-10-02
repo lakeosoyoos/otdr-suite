@@ -34,7 +34,9 @@
 import os
 from PyInstaller.utils.hooks import collect_all
 
-APP_NAME  = "OTDRSuite"
+# OTDR App (this branch): the exe and its dist folder are OTDRApp, so the
+# name a person sees in Task Manager and Explorer is the product's.
+APP_NAME  = "OTDRApp"
 SPEC_DIR  = os.path.dirname(os.path.abspath(SPEC))
 REPO_ROOT = os.path.dirname(SPEC_DIR)
 

@@ -49,6 +49,6 @@ def test_packaging_and_tzdata_are_still_collected():
 
 def test_ci_runs_the_frozen_self_test_after_the_boot_test():
     text = CI.read_text(encoding="utf-8")
-    assert "python frozen_selftest.py dist\\OTDRSuite\\OTDRSuite.exe" in text
+    assert "python frozen_selftest.py dist\\OTDRApp\\OTDRApp.exe" in text
     assert text.index("frozen_selftest.py") > text.index("BOOT SELF-TEST PASSED")
     assert (DESKTOP / "frozen_selftest.py").is_file()

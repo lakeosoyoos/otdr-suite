@@ -1,4 +1,4 @@
-"""OTDR Suite App: a file dropped on the home screen is refused, not saved to
+"""OTDR App: a file dropped on the home screen is refused, not saved to
 Downloads (Robert, 2026-10-01).
 
 main #466 put the hub's drop catcher (_install_hub_drop_catch) on every page.

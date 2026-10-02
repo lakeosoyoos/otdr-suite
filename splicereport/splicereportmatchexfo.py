@@ -126,6 +126,10 @@ from json_reader import (
     load_all_json,
 )
 
+# The author on the report's cell notes: the product's name, "OTDR App" in
+# the App (its launcher sets the edition and the engine runs under it).
+_NOTE_AUTHOR = os.environ.get('OTDR_SUITE_EDITION') or 'OTDR Suite'
+
 
 # ═══════════════════════════════════════════════════════════════════════
 #  DEFAULTS
@@ -13356,7 +13360,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             cell.fill = hdr_fill
             if sp.get('is_event_column') and sp.get('event_kind_tip'):
                 from openpyxl.comments import Comment
-                cell.comment = Comment(sp['event_kind_tip'], 'OTDR Suite')
+                cell.comment = Comment(sp['event_kind_tip'], _NOTE_AUTHOR)
         cell.font = header_font
         cell.alignment = Alignment(horizontal='center', vertical='center',
                                    wrap_text=bool(sp.get('is_event_column')))
@@ -13375,7 +13379,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             _c.alignment = Alignment(horizontal='center', vertical='center',
                                      wrap_text=True)
             if _tip:
-                _c.comment = Comment(_tip, 'OTDR Suite')
+                _c.comment = Comment(_tip, _NOTE_AUTHOR)
 
     # ── Data rows ──
     def _launch_fill(sev):
@@ -16693,7 +16697,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         c.alignment = Alignment(horizontal='center', wrap_text=bool(_ev_kind))
         if _ev_kind and col.get('event_kind_tip'):
             from openpyxl.comments import Comment
-            c.comment = Comment(col['event_kind_tip'], 'OTDR Suite')
+            c.comment = Comment(col['event_kind_tip'], _NOTE_AUTHOR)
     if any(c.get('event_kind') for c in columns):
         ws.row_dimensions[TYPE_ROW].height = 30
 

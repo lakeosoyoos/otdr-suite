@@ -1,4 +1,4 @@
-"""SharePoint for the OTDR Suite App: ONE folder, through the person's own sign-in.
+"""SharePoint for OTDR App: ONE folder, through the person's own sign-in.
 
 Robert, 2026-09-29: the App opens one SharePoint folder, and the folders
 inside it, for people we know and trust, with no app registration and no
@@ -594,7 +594,7 @@ def signin_main(argv=None) -> int:
     # on_top: the hub (not the window the person clicked in) starts this
     # process, so Windows would let the window open BEHIND the App.  Only for
     # a moment (watch): a sign-in popup must be able to come above it.
-    window = webview.create_window('Sign In to SharePoint - OTDR Suite App', link,
+    window = webview.create_window('Sign In to SharePoint - OTDR App', link,
                                    width=1100, height=820, text_select=True, on_top=True)
     window.events.closed += closed.set
 
