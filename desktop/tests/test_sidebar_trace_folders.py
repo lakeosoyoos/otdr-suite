@@ -27,7 +27,7 @@ def test_the_span_box_is_gone_and_a_b_loaders_take_its_place():
     labels = [b.label for b in at.sidebar.button]
     assert not any('Load into all tools' in l for l in labels)
     assert not any('Load Span' in e.label for e in at.sidebar.expander)
-    assert '📁 A-direction folder' in labels and '📁 B-direction folder' in labels
+    assert '📁 A-Direction Folder' in labels and '📁 B-Direction Folder' in labels
     # the loader sits ABOVE the tool list
     md = [m.value for m in at.sidebar.markdown]
     assert md.index('##### Trace Folders') < md.index('##### Select Tool')
@@ -42,7 +42,7 @@ def test_every_page_draws_once_without_a_duplicate_box(page):
     at = run_streamlit().run()
     at.sidebar.radio[0].set_value(page).run()
     assert not at.exception, at.exception
-    assert [t.label for t in at.sidebar.text_input].count('A folder') == 1
+    assert [t.label for t in at.sidebar.text_input].count('A Folder') == 1
 
 
 # OTDR App (this branch): FQA Builder and Field Capture belong to the
@@ -58,7 +58,7 @@ def test_the_app_pages_open_in_a_project_without_trace_folders(page, monkeypatch
     monkeypatch.setenv('OTDR_SUITE_EDITION', 'OTDR App')
     at = goto(open_in_project(tmp_path / 'Span', monkeypatch), page)
     assert not at.exception, at.exception
-    assert not [t for t in at.sidebar.text_input if t.label in ('A folder', 'B folder')]
+    assert not [t for t in at.sidebar.text_input if t.label in ('A Folder', 'B Folder')]
 
 
 def test_quick_analysis_lists_the_four_trace_tools_only(monkeypatch):
@@ -95,8 +95,8 @@ def test_the_two_pages_still_ship():
 
 def test_a_pick_reaches_every_tool_and_survives_a_trip():
     at = run_streamlit().run()
-    _box(at, 'A folder').input(A).run()
-    _box(at, 'B folder').input(B).run()
+    _box(at, 'A Folder').input(A).run()
+    _box(at, 'B Folder').input(B).run()
     assert at.session_state['view_dir_a_input'] == A
     assert at.session_state['view_dir_b_input'] == B
     # Secret Sauce gets one folder holding both directions
@@ -107,14 +107,14 @@ def test_a_pick_reaches_every_tool_and_survives_a_trip():
     # own (test_tools_use_left_panel.py covers the tools' side of this)
     at.sidebar.radio[0].set_value('Splice Report').run()
     assert not at.exception
-    assert not [t for t in at.main.text_input if t.label in ('A folder', 'B folder')]
+    assert not [t for t in at.main.text_input if t.label in ('A Folder', 'B Folder')]
     sites = {t.label: t.value for t in at.main.text_input if 'ILA' in t.label}
-    assert sites == {'A-direction ILA / site': 'ELMDALE',
-                     'B-direction ILA / site': 'MILLER'}
+    assert sites == {'A-Direction ILA / Site': 'ELMDALE',
+                     'B-Direction ILA / Site': 'MILLER'}
     # ...and nothing is lost on the way to another tool and back
     at.sidebar.radio[0].set_value('Secret Sauce').run()
     at.sidebar.radio[0].set_value('Viewer').run()
-    assert _box(at, 'A folder').value == A and _box(at, 'B folder').value == B
+    assert _box(at, 'A Folder').value == A and _box(at, 'B Folder').value == B
 
 
 def _clear(at):
@@ -138,8 +138,8 @@ def _clear_and_allow(at):
 
 def _loaded():
     at = run_streamlit().run()
-    _box(at, 'A folder').input(A).run()
-    _box(at, 'B folder').input(B).run()
+    _box(at, 'A Folder').input(A).run()
+    _box(at, 'B Folder').input(B).run()
     at.session_state['sr_result'] = {'ok': True}
     at.session_state['viewer_target'] = {'fiber': '3'}
     return at.run()
@@ -158,7 +158,7 @@ def test_clear_traces_asks_before_it_clears():
     assert 'traces' in said and 'reports' in said
     assert [b.label for b in dialog[0].button] == ['Cancel', 'Allow']
     # nothing has gone yet
-    assert _box(at, 'A folder').value == A and _box(at, 'B folder').value == B
+    assert _box(at, 'A Folder').value == A and _box(at, 'B Folder').value == B
     assert 'sr_result' in at.session_state and 'viewer_target' in at.session_state
 
 
@@ -170,7 +170,7 @@ def test_cancel_leaves_everything_as_it_was():
     _popup(at, 'Cancel').click().run()
     assert not at.exception, at.exception
     assert not _popup_open(at)
-    assert _box(at, 'A folder').value == A and _box(at, 'B folder').value == B
+    assert _box(at, 'A Folder').value == A and _box(at, 'B Folder').value == B
     assert 'sr_result' in at.session_state and 'viewer_target' in at.session_state
     assert at.session_state['ss_folder_input']
     assert tv.CONFIG['dir_a'] == A and tv.CONFIG['dir_b'] == B
@@ -181,26 +181,26 @@ def test_allow_clears_once_and_the_popup_closes():
     assert not at.exception, at.exception
     assert not _popup_open(at)
     assert '_clear_traces_go' not in at.session_state
-    assert _box(at, 'A folder').value == ''
+    assert _box(at, 'A Folder').value == ''
     # a folder picked next is not cleared by a flag left behind
-    _box(at, 'A folder').input(A).run()
+    _box(at, 'A Folder').input(A).run()
     at.run()
-    assert _box(at, 'A folder').value == A
+    assert _box(at, 'A Folder').value == A
 
 
 def test_clear_traces_sits_under_the_folder_boxes_above_the_tool_list():
     at = run_streamlit().run()
     assert not at.exception
     labels = [b.label for b in at.sidebar.button]
-    assert labels.index('📁 B-direction folder') < labels.index('Clear Traces')
+    assert labels.index('📁 B-Direction Folder') < labels.index('Clear Traces')
     assert labels.count('Clear Traces') == 1
 
 
 def test_clear_traces_empties_every_tool(tmp_path):
     tv = import_trace_server()
     at = run_streamlit().run()
-    _box(at, 'A folder').input(A).run()
-    _box(at, 'B folder').input(B).run()
+    _box(at, 'A Folder').input(A).run()
+    _box(at, 'B Folder').input(B).run()
     at.sidebar.radio[0].set_value('Viewer').run()          # pushes A/B to the server
     assert tv.CONFIG['dir_a'] == A and tv.CONFIG['dir_b'] == B
     assert at.session_state['ss_folder_input']
@@ -218,7 +218,7 @@ def test_clear_traces_empties_every_tool(tmp_path):
 
     _clear_and_allow(at)
     assert not at.exception, at.exception
-    assert _box(at, 'A folder').value == '' and _box(at, 'B folder').value == ''
+    assert _box(at, 'A Folder').value == '' and _box(at, 'B Folder').value == ''
     for k in ('ss_folder_input', 'uni_folder_input'):
         assert at.session_state[k] == '', k
     for k in ('sr_result', 'sr_dirs', 'sr_result2', 'sr_dirs2', 'uni_result',
@@ -231,7 +231,7 @@ def test_clear_traces_empties_every_tool(tmp_path):
     for page in TRACE_TOOLS:
         at.sidebar.radio[0].set_value(page).run()
         assert not at.exception, (page, at.exception)
-        assert _box(at, 'A folder').value == ''
+        assert _box(at, 'A Folder').value == ''
 
 
 def test_clear_traces_leaves_the_files_on_disk(tmp_path, monkeypatch):
@@ -244,8 +244,8 @@ def test_clear_traces_leaves_the_files_on_disk(tmp_path, monkeypatch):
     monkeypatch.setenv('OTDR_CACHE_DIR', str(cache))
     before_a, before_b = sorted(os.listdir(A)), sorted(os.listdir(B))
     at = run_streamlit().run()
-    _box(at, 'A folder').input(A).run()
-    _box(at, 'B folder').input(B).run()
+    _box(at, 'A Folder').input(A).run()
+    _box(at, 'B Folder').input(B).run()
     _clear_and_allow(at)
     assert not at.exception
     assert sorted(os.listdir(A)) == before_a and sorted(os.listdir(B)) == before_b
@@ -254,11 +254,11 @@ def test_clear_traces_leaves_the_files_on_disk(tmp_path, monkeypatch):
 
 def test_the_same_span_loads_again_after_a_clear():
     at = run_streamlit().run()
-    _box(at, 'A folder').input(A).run()
-    _box(at, 'B folder').input(B).run()
+    _box(at, 'A Folder').input(A).run()
+    _box(at, 'B Folder').input(B).run()
     _clear_and_allow(at)
-    _box(at, 'A folder').input(A).run()
-    _box(at, 'B folder').input(B).run()
+    _box(at, 'A Folder').input(A).run()
+    _box(at, 'B Folder').input(B).run()
     assert not at.exception
     ss = at.session_state['ss_folder_input']
     assert os.path.isdir(ss) and len(os.listdir(ss)) == (
@@ -270,7 +270,7 @@ def test_a_new_folder_drops_the_previous_report(tmp_path):
     at.session_state['sr_result'] = {'ok': True}
     at.session_state['viewer_target'] = {'fiber': '3'}
     at.run()
-    _box(at, 'A folder').input(str(tmp_path)).run()   # a folder not loaded before
+    _box(at, 'A Folder').input(str(tmp_path)).run()   # a folder not loaded before
     assert 'sr_result' not in at.session_state
     assert 'viewer_target' not in at.session_state
 
@@ -292,31 +292,31 @@ def test_the_same_two_folders_always_give_the_same_secret_sauce_folder():
     Viewer tab starts a new session: a folder built fresh each time would cost
     the report on the way back, and a copy of the whole span."""
     first = run_streamlit().run()
-    _box(first, 'A folder').input(A).run()
-    _box(first, 'B folder').input(B).run()
+    _box(first, 'A Folder').input(A).run()
+    _box(first, 'B Folder').input(B).run()
     again = run_streamlit().run()
-    _box(again, 'A folder').input(A).run()
-    _box(again, 'B folder').input(B).run()
+    _box(again, 'A Folder').input(A).run()
+    _box(again, 'B Folder').input(B).run()
     assert first.session_state['ss_folder_input'] == again.session_state['ss_folder_input']
     # ...and B then A is another span
     swapped = run_streamlit().run()
-    _box(swapped, 'A folder').input(B).run()
-    _box(swapped, 'B folder').input(A).run()
+    _box(swapped, 'A Folder').input(B).run()
+    _box(swapped, 'B Folder').input(A).run()
     assert swapped.session_state['ss_folder_input'] != first.session_state['ss_folder_input']
 
 
 def test_a_pair_click_keeps_secret_sauce_on_the_folder_its_report_ran_on():
     tv = import_trace_server()
     at = run_streamlit().run()
-    _box(at, 'A folder').input(A).run()
-    _box(at, 'B folder').input(B).run()
+    _box(at, 'A Folder').input(A).run()
+    _box(at, 'B Folder').input(B).run()
     at.sidebar.radio[0].set_value('Viewer').run()
     assert tv.CONFIG['dir_b'] == B          # what seeds the B box of a new session
     ran_on = at.session_state['ss_folder_input']
 
     clicked = _pair_click(ran_on)
     assert not clicked.exception, clicked.exception
-    assert _box(clicked, 'A folder').value == ran_on and _box(clicked, 'B folder').value == B
+    assert _box(clicked, 'A Folder').value == ran_on and _box(clicked, 'B Folder').value == B
     assert clicked.session_state['ss_folder_input'] == ran_on
     back = next(b for b in clicked.button if 'Back to Secret Sauce' in b.label)
     back.click().run()
@@ -326,11 +326,11 @@ def test_a_pair_click_keeps_secret_sauce_on_the_folder_its_report_ran_on():
 
 def test_a_new_a_folder_after_a_pair_click_builds_its_own_folder(tmp_path):
     at = run_streamlit().run()
-    _box(at, 'A folder').input(A).run()
-    _box(at, 'B folder').input(B).run()
+    _box(at, 'A Folder').input(A).run()
+    _box(at, 'B Folder').input(B).run()
     at.sidebar.radio[0].set_value('Viewer').run()
     ran_on = at.session_state['ss_folder_input']
     clicked = _pair_click(ran_on)
-    _box(clicked, 'A folder').input(B).run()
-    _box(clicked, 'B folder').input(A).run()
+    _box(clicked, 'A Folder').input(B).run()
+    _box(clicked, 'B Folder').input(A).run()
     assert clicked.session_state['ss_folder_input'] != ran_on

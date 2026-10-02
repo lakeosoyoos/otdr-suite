@@ -18,7 +18,7 @@ def _toggle(at, label):
 
 
 @pytest.mark.parametrize('page, label', [
-    ('Splice Report', 'Splice loss'),
+    ('Splice Report', 'Splice Loss'),
     ('Splice Report', 'Connectors'),
     ('Unidirectional', 'Bend/Damage'),
 ])

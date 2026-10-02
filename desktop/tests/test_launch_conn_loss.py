@@ -349,7 +349,7 @@ def test_panel_rows_live_in_the_connector_knobs_panel():
     rows = {r["key"]: r for r in hub._CONN_ROWS}
     assert rows["conn_bidi"]["globals"] == {"value": "LAUNCH_CONN_LOSS_MIN_DB"}
     assert rows["conn_bidi"]["defaults"]["value"] == 0.650
-    assert rows["conn_bidi"]["label"] == "Connector loss (bidirectional)"
+    assert rows["conn_bidi"]["label"] == "Connector Loss (Bidirectional)"
 
     # …and they are NOT still in the EXFO table, or two controls would write
     # one global and whichever rendered last would win.

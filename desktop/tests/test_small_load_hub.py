@@ -21,9 +21,9 @@ def _copy(src, dest, fibers):
 
 def _hub(a, b=''):
     at = run_streamlit(default_timeout=180).run()
-    next(t for t in at.sidebar.text_input if t.label == 'A folder').input(a).run()
+    next(t for t in at.sidebar.text_input if t.label == 'A Folder').input(a).run()
     if b:
-        next(t for t in at.sidebar.text_input if t.label == 'B folder').input(b).run()
+        next(t for t in at.sidebar.text_input if t.label == 'B Folder').input(b).run()
     assert not at.exception, at.exception
     return at
 
@@ -33,7 +33,7 @@ def test_uni_one_fiber_says_one_fiber(tmp_path):
     at = _hub(a)
     at.session_state['uni_report_dest'] = str(tmp_path)
     at.sidebar.radio[0].set_value('Unidirectional').run()
-    next(b for b in at.main.button if b.label == 'Run unidirectional report').click().run()
+    next(b for b in at.main.button if b.label == 'Run Unidirectional Report').click().run()
     finish_engine_run(at, 'uni')
     assert not at.exception, at.exception
     done = [s.value for s in at.success if s.value.startswith('Done:')]

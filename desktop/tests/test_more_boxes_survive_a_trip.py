@@ -4,7 +4,7 @@ across a trip to another tool.
 Streamlit drops a widget's state on any run that does not draw it, so every
 box that lives on one page was emptied by Select Tool -> another tool ->
 back.  test_page_boxes_survive_a_trip.py covers the Splice Report's site
-names and every 'Save reports to' box.  This covers the rest:
+names and every 'Save Reports To' box.  This covers the rest:
 
     Splice Report   Select Traces, and the one-folder box (left panel empty)
                     every added span's Select Traces and folder boxes
@@ -42,9 +42,9 @@ def _open(at, page):
 def _hub(a='', b=''):
     at = run_streamlit(default_timeout=180).run()
     if a:
-        _box(at, 'A folder', 'sidebar').input(a).run()
+        _box(at, 'A Folder', 'sidebar').input(a).run()
     if b:
-        _box(at, 'B folder', 'sidebar').input(b).run()
+        _box(at, 'B Folder', 'sidebar').input(b).run()
     assert not at.exception, at.exception
     return at
 
@@ -98,10 +98,10 @@ def test_clear_traces_on_another_tool_still_empties_the_splice_reports_loader():
 def test_a_pair_loaded_on_another_tool_still_puts_select_traces_back_to_two():
     at = _one_folder(_open(_hub(), 'Splice Report'))
     _open(at, 'Viewer')
-    _box(at, 'A folder', 'sidebar').input(A).run()
-    _box(at, 'B folder', 'sidebar').input(B).run()
-    _box(at, 'A folder', 'sidebar').input('').run()
-    _box(at, 'B folder', 'sidebar').input('').run()
+    _box(at, 'A Folder', 'sidebar').input(A).run()
+    _box(at, 'B Folder', 'sidebar').input(B).run()
+    _box(at, 'A Folder', 'sidebar').input('').run()
+    _box(at, 'B Folder', 'sidebar').input('').run()
     at.run()
     _open(at, 'Splice Report')
     assert at.radio(key='sr_input_mode').value == TWO
@@ -110,7 +110,7 @@ def test_a_pair_loaded_on_another_tool_still_puts_select_traces_back_to_two():
 # ── Splice Report, an added span ──────────────────────────────────────────
 
 def _span_2(at):
-    return _click(at, '➕ Add span…')
+    return _click(at, '➕ Add Span…')
 
 
 def test_an_added_spans_folders_and_site_names_survive_a_trip():
@@ -138,7 +138,7 @@ def test_an_added_spans_one_folder_choice_and_box_survive_a_trip():
 def test_a_span_removed_and_added_again_starts_empty():
     at = _span_2(_open(_hub(A, B), 'Splice Report'))
     at.text_input(key='sr2_dir_a').input(B).run()
-    _click(at, '✖ Remove span 2')
+    _click(at, '✖ Remove Span 2')
     at.run()
     _span_2(at)
     assert at.text_input(key='sr2_dir_a').value == ''
@@ -150,8 +150,8 @@ def test_clear_traces_on_another_tool_leaves_no_added_span_behind():
     at.text_input(key='sr2_dir_a').input(B).run()
     _clear_traces_on(at, 'Viewer')
     _open(at, 'Splice Report')
-    _box(at, 'A folder', 'sidebar').input(A).run()
-    _box(at, 'B folder', 'sidebar').input(B).run()
+    _box(at, 'A Folder', 'sidebar').input(A).run()
+    _box(at, 'B Folder', 'sidebar').input(B).run()
     _span_2(at)
     assert at.text_input(key='sr2_dir_a').value == ''
 
@@ -210,7 +210,7 @@ def mixed(tmp_path, monkeypatch):
 def _uni_run(at, dest):
     at.session_state['uni_report_dest'] = dest
     at.run()
-    _click(at, 'Run unidirectional report')
+    _click(at, 'Run Unidirectional Report')
     finish_engine_run(at, 'uni')
     # The Direction pick sits above the spot where the page takes the
     # result in, so it is drawn from the run after that.
