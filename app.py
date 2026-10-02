@@ -2584,7 +2584,7 @@ def _drop_box_label(path):
 # for the boxes to show instead (_upload_label).
 @st.cache_resource(show_spinner=False)
 def _upload_label_store():
-    return {'labels': {}, 'sides': {}}
+    return {'labels': {}, 'sides': {}, 'typed': {}}
 
 
 def _staged_key(path):
@@ -2602,10 +2602,11 @@ def _upload_label(path):
         return None
 
 
-def _remember_upload(folder, name, side):
+def _remember_upload(folder, name, side, what=None):
     """Name the staged upload `folder` for the boxes (_upload_label): the
     .zip it came from (`name`) or 'Uploaded files', the direction its files
-    are (`side`, 'a' | 'b' | None) and how many there are."""
+    are (`side`, 'a' | 'b' | None) and how many there are.  `what` names it
+    instead, for one side of a typed folder holding both directions."""
     key = _staged_key(folder)
     labels = _upload_label_store()['labels']
     if key in labels:
@@ -2615,11 +2616,34 @@ def _remember_upload(folder, name, side):
                  if f.lower().endswith(trace_server.DROP_EXTS) and not f.startswith('.')])
     except OSError:
         return None
-    what = f'{name} (uploaded)' if name else 'Uploaded files'
+    what = what or (f'{name} (uploaded)' if name else 'Uploaded files')
     label = (f"{what}: {side.upper()} direction ({_count(n, 'file')})" if side
              else f"{what} ({_count(n, 'file')})")
     _remember(labels, key, label)
     return label
+
+
+def _remember_typed_split(side_folder, typed, picked_from, side):
+    """A folder typed into the Unidirectional page's box that holds both
+    directions runs on one side's split folder, and a cell click and the way
+    back carry that folder.  Kept here, process-wide: the box shows the
+    typed folder again and Run On the side (_typed_split_origin), and the
+    left panel's box names it (_upload_label) instead of its temporary path."""
+    _remember(_upload_label_store()['typed'], _staged_key(side_folder),
+              (typed, picked_from, side))
+    name = os.path.basename(str(typed).rstrip('/\\')) or str(typed)
+    _remember_upload(side_folder, '', side, what=name)
+
+
+def _typed_split_origin(path):
+    """(typed, picked_from, side) for one side's split folder of a typed
+    folder holding both directions, or None (see _remember_typed_split)."""
+    if not path:
+        return None
+    try:
+        return _upload_label_store()['typed'].get(_staged_key(path))
+    except Exception:
+        return None
 
 
 def _stamped_side(folder):
@@ -7651,18 +7675,25 @@ def _shot_sites(folder):
     return (loc_b, loc_a) if stamp == 'b' else (loc_a, loc_b)
 
 
-def _uni_pick_direction(folder):
+def _uni_pick_direction(folder, stamped_only=False):
     """(folder, side): the folder this report runs on, for the page's own
-    upload, and the side picked ('a' | 'b'), None when nothing was split.  An
-    upload that holds both directions (the A and B shots together, loose or
-    in one zip) is split the way the left panel splits such a folder
-    (_split_panel_folder: the files' own direction stamps say which side is
-    A), and the tech picks the direction: A by default.  Only the picked
-    direction is analysed, so the other side is not reported as missing.  A
-    one-direction upload comes back as it is.  A folder typed into the box
-    is not split here: it keeps the Direction pick it always had."""
+    folder or upload, and the side picked ('a' | 'b'), None when nothing was
+    split.  A folder or upload that holds both directions (the A and B shots
+    together, loose or in one zip) is split the way the left panel splits
+    such a folder (_split_panel_folder: the files' own direction stamps say
+    which side is A), and the tech picks the direction: A by default.  Only
+    the picked direction is analysed, so the other side is not reported as
+    missing.  A one-direction folder or upload comes back as it is, with the
+    Direction pick it always had.
+
+    `stamped_only` (a typed folder): split only when the two sides' own
+    direction stamps say A and B.  A folder of one direction whose files
+    carry two GenParams site names splits by name into two sides stamped
+    alike; it keeps the Direction pick it always had."""
     split = _split_panel_folder(folder)
     if not split:
+        return folder, None
+    if stamped_only and (_stamped_side(split['a']), _stamped_side(split['b'])) != ('a', 'b'):
         return folder, None
     labels = {}
     for side in ('a', 'b'):
@@ -7759,8 +7790,14 @@ def page_unidirectional():
         # (2026-10-01).  The page still runs on the staged files
         # (_uni_box_folder).
         _boxed = (st.session_state.get('uni_folder_input') or '').strip().strip('"')
-        _boxed_label = _upload_label(_boxed) if _boxed else None
-        if _boxed_label:
+        _boxed_origin = _typed_split_origin(_boxed)
+        _boxed_label = _upload_label(_boxed) if _boxed and not _boxed_origin else None
+        if _boxed_origin:
+            # One side of a typed folder that holds both directions: the
+            # typed folder again, with Run On on that side.
+            st.session_state['uni_folder_input'] = _boxed_origin[0]
+            st.session_state['uni_both_side'] = (_boxed_origin[1], _boxed_origin[2])
+        elif _boxed_label:
             st.session_state['_uni_box_upload'] = (_boxed_label, _boxed)
             st.session_state['uni_folder_input'] = _boxed_label
         elif (st.session_state.get('uni_folder_input')
@@ -7853,15 +7890,21 @@ def page_unidirectional():
     _remove_legacy_caches(folder)
     src_folder = folder
     folder, _foreign = _exclude_foreign_files(folder)
-    _uni_up_side = None        # the side picked from an upload of both directions
-    if _from_upload:
-        # Both directions in one upload, loose or zipped: the tech picks one.
-        # After the foreign-file audit, so a stray from another job is not
-        # taken for a second direction.
-        folder, _uni_up_side = _uni_pick_direction(folder)
-        # What the boxes show for the staged files (_upload_label).
-        _remember_upload(folder, _dropped.get('name'),
-                         _uni_up_side or _stamped_side(folder))
+    _uni_up_side = None        # the side picked from a folder or upload of both
+    if not _uni_pside:
+        # Both directions in the page's own folder or upload, loose or
+        # zipped: the tech picks one (Robert 2026-10-01: "yes give typed
+        # folders the Run On choice").  After the foreign-file audit, so a
+        # stray from another job is not taken for a second direction.
+        _picked_from = folder
+        folder, _uni_up_side = _uni_pick_direction(folder, stamped_only=not _from_upload)
+        if _from_upload:
+            # What the boxes show for the staged files (_upload_label).
+            _remember_upload(folder, _dropped.get('name'),
+                             _uni_up_side or _stamped_side(folder))
+        elif _uni_up_side:
+            _remember_typed_split(folder, _uni_box_folder(), _picked_from,
+                                  _uni_up_side)
 
     # If a prior run reported multiple GenParams directions in this folder,
     # offer the pick list (default stays "most populous").
