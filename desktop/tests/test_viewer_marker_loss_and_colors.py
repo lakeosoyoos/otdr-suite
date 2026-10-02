@@ -74,7 +74,8 @@ needs_jsc = pytest.mark.skipif(not JSC.exists(), reason="no JavaScriptCore shell
 
 def _run(tmp_path, body):
     prelude = r"""
-var gStacked = true, gHaveA = false, gMarkerMode = false, gDistUnit = 'km', gPickKey = null;
+var gStacked = true, gHaveA = false, gMarkerMode = false, gDistUnit = 'km', gPickKey = null,
+    gFecMode = false;
 var gMarkers = {a: null, b: null}, gTraces = [], gFiberColors = false, gAutoFit = false;
 var gDirOverride = {}, gStoredDir = {};
 var PALETTE = ['#0072ce'], COLORS_USED = new Map();
