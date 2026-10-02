@@ -20,7 +20,8 @@ import zipfile
 
 import pytest
 
-from conftest import (run_streamlit, finish_engine_run, FIXTURE_SPLICE_A_DIR,
+from conftest import (run_streamlit, finish_engine_run, go_tab, load_traces,
+                      clear_traces, FIXTURE_SPLICE_A_DIR,
                       FIXTURE_SPLICE_B_DIR)
 from test_report_folder_changed import _helpers
 
@@ -109,15 +110,13 @@ def test_the_words_for_a_zip():
 # ── the pages, end to end ─────────────────────────────────────────────────
 def _hub(a, b):
     at = run_streamlit(default_timeout=180).run()
-    next(t for t in at.sidebar.text_input if t.label == 'A Folder').input(a).run()
-    if b:
-        next(t for t in at.sidebar.text_input if t.label == 'B Folder').input(b).run()
+    load_traces(at, a, b or None)          # the top bar's Traces tab
     assert not at.exception, at.exception
     return at
 
 
 def _open(at, page):
-    at.sidebar.radio[0].set_value(page).run()
+    go_tab(at, page)
     assert not at.exception, at.exception
     return at
 
@@ -257,8 +256,7 @@ def test_clear_traces_takes_the_fec_copy_filed_under_the_zip(tmp_path, _own_cach
     _zip(za, FIXTURE_SPLICE_A_DIR, set(range(1, 7)))   # read from a new folder now
     at.run()
     assert [s.value for s in at.success if s.value.startswith('Done:')]
-    next(b for b in at.sidebar.button if b.label == 'Clear Traces').click().run()
-    next(b for b in at.button if b.key == 'clear_traces_allow').click().run()
+    clear_traces(at)                     # on the Traces tab
     assert not at.exception, at.exception
     fresh = run_streamlit(default_timeout=180).run()
     fresh.session_state['fec_dir_a'] = za
