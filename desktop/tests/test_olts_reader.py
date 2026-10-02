@@ -13,7 +13,8 @@ prints, so the reader computes them.  These tests pin:
   4. trace_server writes the report: an Excel workbook whose Results sheet
      is the table alone with a filter row (so it sorts), and a PDF.
   5. The page sends a dropped .olts to /api/olts_load and never into the
-     A / B drop, and still loads the traces dropped with it.
+     A / B drop, still loads the traces dropped with it, and lists the
+     fibers in the Measurements tab, where a heading click sorts them.
 """
 import importlib.util
 import json
@@ -105,6 +106,9 @@ def test_reference_is_exfos_loopback(parsed):
     row, = ref['rows']
     assert row['ref_ab'] == pytest.approx(EXFO['reference']['ref_ab'], abs=1e-15)
     assert row['ref_ba'] == pytest.approx(EXFO['reference']['ref_ba'], abs=1e-15)
+    # each unit's reference power, FastReporter's Ref. A->B / Ref. B->A
+    assert row['power_ab'] == EXFO['reference']['power_ab']
+    assert row['power_ba'] == EXFO['reference']['power_ba']
     assert ref['when'].isoformat().startswith('2026-09-28T16:22:54')
 
 
@@ -160,6 +164,24 @@ def test_load_answers_what_the_dialog_shows(loaded):
     assert loaded['orl_min'] == {'1550': 30.0}
 
 
+def test_load_answers_the_measurements_rows(loaded):
+    """A row per fiber for the Measurements tab, rounded as it prints, so a
+    sort orders what the tech reads."""
+    rows = {r['id']: r for r in loaded['rows']}
+    assert sorted(rows) == sorted(EXFO['fibers'])
+    r, want = rows['OLTSFX001'], EXFO['fibers']['OLTSFX001']
+    assert (r['type'], r['dir'], r['pf']) == ('OLTS', 'Bidir', 'pass')
+    w = r['wl']['1550']
+    assert (w['loss_ab'], w['loss_ba'], w['loss_avg'], w['orl_a'], w['orl_b']) == (
+        round(want['loss_ab'], 2), round(want['loss_ba'], 2), round(want['loss_avg'], 2),
+        round(want['orl_a'], 2), round(want['orl_b'], 2))
+    assert w['orl_a_fail'] is False and w['orl_b_fail'] is False
+    # FR's FasTesT table prints 0.00 (never -0.00) and 1.62
+    assert (w['ref_ab'], w['ref_ba']) == (0.0, 1.62) and str(w['ref_ab']) == '0.0'
+    assert r['length_km'] == round(want['length_m'] / 1000, 3)
+    assert r['when'].startswith('9/28/2026 ') and r['when_ts'] > 0
+
+
 def test_the_workbook_sorts(TS, loaded, tmp_path):
     from openpyxl import load_workbook
     out = TS.write_olts_report({'token': loaded['token'], 'format': 'xlsx',
@@ -171,17 +193,17 @@ def test_the_workbook_sorts(TS, loaded, tmp_path):
     head = [c.value for c in ws[1]]
     assert head == ['Identifier', 'Wavelength (nm)', 'Loss Average (dB)', 'Loss Margin (dB)',
                     'Loss A->B (dB)', 'Loss B->A (dB)', 'ORL A (dB)', 'ORL B (dB)',
-                    'Length (km)', 'Date/Time']
-    assert ws.auto_filter.ref == 'A1:J6'
+                    'Ref. A->B (dBm)', 'Ref. B->A (dBm)', 'Length (km)', 'Date/Time']
+    assert ws.auto_filter.ref == 'A1:L6'
     assert ws.freeze_panes == 'B2'
     rows = {r[0]: r for r in ws.iter_rows(min_row=2, values_only=True)}
     want = EXFO['fibers']['OLTSFX001']
     r = rows['OLTSFX001']
     # Numbers, rounded as EXFO prints them, so a sort is numeric.
-    assert r[1:9] == (1550, round(want['loss_avg'], 2), '---', round(want['loss_ab'], 2),
-                      round(want['loss_ba'], 2), round(want['orl_a'], 2),
-                      round(want['orl_b'], 2), round(want['length_m'] / 1000, 3))
-    assert r[9].year == 2026
+    assert r[1:11] == (1550, round(want['loss_avg'], 2), '---', round(want['loss_ab'], 2),
+                       round(want['loss_ba'], 2), round(want['orl_a'], 2),
+                       round(want['orl_b'], 2), 0.0, 1.62, round(want['length_m'] / 1000, 3))
+    assert r[11].year == 2026
     assert ws['G2'].font.color.rgb.endswith('008000')        # ORL passes: green, as EXFO
     job = wb['Job']
     vals = [c for row in job.iter_rows(values_only=True) for c in row if c is not None]
@@ -250,6 +272,19 @@ def test_the_page_takes_olts_in_a_drop():
     exts = re.search(r'const DROP_EXTS = (\[[^\]]*\]);', SRC).group(1)
     assert "'.olts'" in exts
     assert 'drop .sor / .json / .trc / .olts files, a folder, or a .zip here' in SRC
+    # FastReporter's Measurements tab, at the foot of the panel on the right
+    assert '<button data-view="meas" hidden' in SRC
+
+
+def test_a_right_click_on_a_heading_offers_both_sorts():
+    """The boss, 2026-10-02: right-click any heading for sort high to low or
+    low to high (words: A to Z, Z to A)."""
+    menu = _js_func('showOltsSortMenu')
+    for words in ("'Sort High to Low'", "'Sort Low to High'", "'Sort A to Z'", "'Sort Z to A'"):
+        assert words in menu, words
+    assert "gOltsSort = { col, desc: b.dataset.desc === '1' };" in menu
+    hook = SRC.split("filesList.addEventListener('contextmenu', (ev) => {\n  if (gFilesView !== 'meas'", 1)[1]
+    assert "showOltsSortMenu(ev.clientX, ev.clientY, th.dataset.col, th.dataset.kind," in hook.split('\n});', 1)[0]
 
 
 _STUBS = r"""
@@ -257,7 +292,10 @@ const DROP_EXTS = ['.sor', '.json', '.trc', '.zip', '.olts'];
 const DROP_BATCH_FILES = 32, DROP_BATCH_BYTES = 4 * 1024 * 1024;
 var gDropFolder = new WeakMap(), gDropInFlight = false, gAutoFit = true;
 var gRemovedFiles = new Set(), gTraces = [], gInfo = null, gLoadFailures = [];
-var urls = [], dialogs = [], readout = null, signs = [], picked = null;
+var urls = [], dialogs = [], readout = null, signs = [], picked = null, rendered = 0;
+var gOlts = null, gOltsSort = null, gOltsSel = null, gFilesView = 'files';
+var window = globalThis;
+function renderFilesPanel() { rendered++; }
 var el = { textContent: '' };
 var document = { getElementById: function () { return el; } };
 function _packDropBatch(files) { return { names: files.map(function (f) { return f.name; }) }; }
@@ -286,10 +324,23 @@ _CASES = r"""
 (async function () {
   var out = {};
   await handleFilesDrop([{ name: 'J.olts', size: 9 }]);
-  out.only = { urls: urls.slice(), dialogs: dialogs.length, signs: signs.slice() };
-  urls = []; dialogs = []; signs = [];
+  out.only = { urls: urls.slice(), dialogs: dialogs.length, signs: signs.slice(),
+               view: gFilesView, listed: gOlts && gOlts.file, rendered: rendered };
+  urls = []; dialogs = []; signs = []; gFilesView = 'files'; gOlts = null;
   await handleFilesDrop([{ name: 'J.olts', size: 9 }, { name: 'A1.sor', size: 1 }]);
-  out.mixed = { urls: urls.slice(), dialogs: dialogs.length, picked: picked };
+  out.mixed = { urls: urls.slice(), dialogs: dialogs.length, picked: picked, listed: gOlts && gOlts.file };
+  // The Measurements tab's sort: a heading click, then the same again.
+  var info = { wavelengths: [1550], rows: [
+    { id: 'F2', pf: 'pass', wl: { 1550: { loss_ab: 18.1 } }, when_ts: 2 },
+    { id: 'F10', pf: 'fail', wl: { 1550: { loss_ab: 20.5 } }, when_ts: 3 },
+    { id: 'F1', pf: 'pass', wl: { 1550: { loss_ab: null } }, when_ts: 1 },
+    { id: 'F3', pf: 'pass', wl: { 1550: { loss_ab: 17.6 } }, when_ts: 4 }] };
+  var cols = oltsCols(info);
+  var ids = function (s) { return oltsSortRows(info.rows, cols, s).map(function (r) { return r.id; }); };
+  out.sort = {
+    high: ids({ col: 'loss_ab@1550', desc: true }), low: ids({ col: 'loss_ab@1550', desc: false }),
+    az: ids({ col: 'id', desc: false }), pf: ids({ col: 'pf', desc: true }),
+    none: ids(null), heads: cols.map(function (c) { return c.t; }) };
   print('OUT ' + JSON.stringify(out));
 })().catch(function (e) { print('ERR ' + e + '\n' + e.stack); });
 """
@@ -298,7 +349,9 @@ _CASES = r"""
 @pytest.fixture(scope='module')
 def page(tmp_path_factory):
     funcs = '\n'.join(_js_func(n) for n in ('_parentName', '_dropOk', '_dropBatches',
-                                            'handleFilesDrop', 'isOltsFile', 'handleOltsDrop'))
+                                            'handleFilesDrop', 'isOltsFile', 'handleOltsDrop',
+                                            'showOltsMeasurements', 'oltsCols', 'oltsValue',
+                                            'oltsSortRows'))
     path = tmp_path_factory.mktemp('olts_drop') / 'drop.js'
     path.write_text(_STUBS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
@@ -311,8 +364,29 @@ def page(tmp_path_factory):
 def test_an_olts_alone_never_touches_the_a_b_drop(page):
     urls = [u for u, _ in page['only']['urls']]
     assert urls == ['/api/olts_load?name=J.olts']
-    assert page['only']['dialogs'] == 1
     assert page['only']['signs'][-1] == 'hide'
+
+
+@needs_jsc
+def test_a_dropped_olts_opens_the_measurements_tab(page):
+    """The boss, 2026-10-02: the values on screen, in the panel on the right.
+    The report dialog waits for Save Report…."""
+    assert page['only']['view'] == 'meas' and page['only']['listed'] == 'J.olts'
+    assert page['only']['rendered'] >= 1
+    assert page['only']['dialogs'] == 0
+
+
+@needs_jsc
+def test_a_heading_sorts_highest_first_then_lowest(page):
+    s = page['sort']
+    assert s['heads'] == ['P/F', 'Identifiers', 'Type', 'Direction', '1550 A->B Loss',
+                          '1550 B->A Loss', '1550 Average Loss', '1550 ORL A', '1550 ORL B',
+                          '1550 Ref. A->B', '1550 Ref. B->A', 'Length', 'Test Date/Time']
+    assert s['high'] == ['F10', 'F2', 'F3', 'F1']           # a blank stays last
+    assert s['low'] == ['F3', 'F2', 'F10', 'F1']
+    assert s['az'] == ['F1', 'F2', 'F3', 'F10']             # F10 after F3, not after F1
+    assert s['pf'] == ['F10', 'F2', 'F1', 'F3']             # the failures first, ties in file order
+    assert s['none'] == ['F2', 'F10', 'F1', 'F3']           # unsorted: as the file has them
 
 
 @needs_jsc
@@ -321,7 +395,7 @@ def test_traces_dropped_with_an_olts_still_load(page):
     assert urls[0][0] == '/api/olts_load?name=J.olts'
     sent = [n for u, names in urls if u.startswith('/api/drop_file') for n in names]
     assert 'J.olts' not in sent and 'A1.sor' in sent
-    assert page['mixed']['dialogs'] == 1
+    assert page['mixed']['listed'] == 'J.olts'
     assert page['mixed']['picked'] == ['a-1']
 
 
