@@ -8,24 +8,35 @@ loaded in the left panel).
 2. The Output choice had no key: PDF or Stay in App went back to Excel after
    a trip to another tool, or a pair click and "← Back", and the next run
    made an Excel workbook.
+3. With A and B loaded no pair could be clicked: every fiber number is in
+   both directions, so in the one flat folder the run reads none is unique,
+   and the rows did not say which direction a file was.  A pair now opens
+   the Viewer on the panel's own two folders, in its own direction (both
+   for one A file and one B file), and its row names the direction.
 """
 from __future__ import annotations
 
+import html
 import os
+import re
 import shutil
+from urllib.parse import parse_qs
 
 from conftest import (run_streamlit, finish_engine_run, FIXTURE_A_DIR,
                       FIXTURE_B_DIR)
 
 
-def _span(tmp_path):
-    """An A and a B folder, four traces each, every fiber number in both."""
+def _span(tmp_path, same_names=False):
+    """An A and a B folder, four traces each, every fiber number in both.
+    With `same_names` both folders use F0001_1550.sor ... (the B copies go
+    into the run as B_<name>)."""
     a, b = tmp_path / 'A', tmp_path / 'B'
     a.mkdir()
     b.mkdir()
     for src, dst, own in ((FIXTURE_A_DIR, a, 'AAABBB'), (FIXTURE_B_DIR, b, 'BBBAAA')):
         for i, f in enumerate(sorted(os.listdir(src))[:4], 1):
-            shutil.copy2(src / f, dst / f'{own}{i:04d}_1550.sor')
+            name = f'F{i:04d}_1550.sor' if same_names else f'{own}{i:04d}_1550.sor'
+            shutil.copy2(src / f, dst / name)
     return str(a), str(b)
 
 
@@ -187,3 +198,116 @@ def test_output_defaults_to_excel(tmp_path, monkeypatch):
     a, b = _span(tmp_path)
     at = _hub(tmp_path, monkeypatch, a, b)
     assert _output(at).value == 'Excel (xlsx)'
+
+
+# ── 3. pairs of an A+B run can be clicked ────────────────────────────────
+
+def _links(at):
+    """[(label, {query})] for every pair link on the page."""
+    out = []
+    for m in at.main.markdown:
+        for href, label in re.findall(r"<a href='\?([^']*)'[^>]*>([^<]*)</a>", m.value):
+            q = {k: v[0] for k, v in parse_qs(html.unescape(href)).items()}
+            out.append((html.unescape(label), q))
+    return out
+
+
+def _rows(at):
+    """Every pair label on the page, linked or not."""
+    out = []
+    for m in at.main.markdown:
+        out += [html.unescape(x) for x in
+                re.findall(r"<(?:a|span) [^>]*title='[^']*'[^>]*>(F[^<]*)</(?:a|span)>", m.value)]
+    return out
+
+
+def _follow(at, q):
+    """Open a pair link the way the browser does: a new session."""
+    view = run_streamlit(default_timeout=180)
+    for k, v in q.items():
+        view.query_params[k] = v
+    view.run()
+    assert not view.exception, view.exception
+    view.run()
+    return view
+
+
+def _check_pairs_link(at, a, b):
+    links = _links(at)
+    rows = _rows(at)
+    assert rows, 'no pair rows on the page'
+    assert len(links) == len(rows), f'{len(rows) - len(links)} of {len(rows)} rows not linked'
+    for label, q in links:
+        assert q['nav'] == 'viewer' and q['ssab'] == '1', q
+        assert q['pa'] == a and q['pb'] == b, q
+        assert q['dir'] in ('a', 'b', 'both'), q
+        if q['dir'] == 'both':
+            assert re.fullmatch(r'F\d+ A ↔ F\d+ B', label), label
+        else:
+            assert label.endswith(f" ({q['dir'].upper()})"), label
+    return links
+
+
+def test_every_pair_of_an_a_and_b_run_can_be_clicked(tmp_path, monkeypatch):
+    a, b = _span(tmp_path)
+    at = _run(_hub(tmp_path, monkeypatch, a, b))
+    links = _check_pairs_link(at, a, b)
+    assert {q['dir'] for _l, q in links} == {'a', 'b', 'both'}
+
+
+def test_b_files_named_like_a_files_link_too(tmp_path, monkeypatch):
+    """The B copies go in as B_<name>; the link still finds them in B."""
+    a, b = _span(tmp_path, same_names=True)
+    at = _run(_hub(tmp_path, monkeypatch, a, b))
+    links = _check_pairs_link(at, a, b)
+    assert any(q['dir'] == 'b' for _l, q in links)
+
+
+def test_the_mating_table_of_an_excel_run_links_too(tmp_path, monkeypatch):
+    a, b = _span(tmp_path)
+    at = _run(_hub(tmp_path, monkeypatch, a, b), output='Excel (xlsx)')
+    res = dict(at.session_state['ss_result'])
+    sides = res['_sides']
+    assert len(sides) == 8, sides
+    if not res.get('mating_top'):
+        # Four traces a side carry no ranking: give the table one, in the
+        # engine's shape (fiber numbers from the flat folder, all shared).
+        stems = sorted(sides)
+        res['mating_top'] = [
+            {'group': 'report', 'fileA': x, 'fileB': y,
+             'fiberA': sides[x][1], 'fiberB': sides[y][1],
+             'mating_lr': 10.0, 'mating_p': 0.5, 'viewable': False,
+             'reason': 'fiber number not unique in folder'}
+            for x, y in zip(stems, stems[1:] + stems[:1])]
+        at.session_state['ss_result'] = res
+        at.run()
+    assert any('Mating Likelihood' in m.value for m in at.main.markdown)
+    _check_pairs_link(at, a, b)
+
+
+def test_a_pair_opens_on_the_panels_own_folders_and_comes_back(tmp_path, monkeypatch):
+    a, b = _span(tmp_path)
+    at = _run(_hub(tmp_path, monkeypatch, a, b))
+    label, q = next((l, q) for l, q in _links(at) if q['dir'] == 'b')
+    view = _follow(at, q)
+    ss = view.session_state
+    assert ss['nav_radio'] == 'Viewer'
+    assert ss['view_dir_a_input'] == a and ss['view_dir_b_input'] == b
+    assert ss['viewer_target'] == {'fibers': q['fibers'], 'dir': 'b'}
+    next(x for x in view.main.button if 'Back to Secret Sauce' in x.label).click().run()
+    assert not view.exception, view.exception
+    assert view.session_state['nav_radio'] == 'Secret Sauce'
+    assert (_summary(view) or '').startswith('8 files'), _summary(view)
+    assert len(_links(view)) == len(_rows(view))
+
+
+def test_an_a_only_run_keeps_its_links_and_the_tech_s_empty_b(tmp_path, monkeypatch):
+    a, b = _span(tmp_path)
+    at = _run(_hub(tmp_path, monkeypatch, a))
+    links = _links(at)
+    assert links and len(links) == len(_rows(at))
+    label, q = links[0]
+    assert q['dir'] == 'a' and 'ssab' not in q, q
+    assert not label.endswith(')'), label
+    view = _follow(at, q)
+    assert view.session_state['view_dir_b_input'] == ''
