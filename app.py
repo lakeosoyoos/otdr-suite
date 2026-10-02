@@ -1998,13 +1998,25 @@ def pick_folder(title='Choose a folder'):
 def _seed_box(key, options=None):
     """Before the box is drawn: give it back what it showed, if Streamlit
     forgot it.  `options` is a pick list's choices today; a kept choice that
-    is no longer one of them is left out."""
+    is no longer one of them is left out.
+
+    Written on EVERY run, before the box is drawn, even when the box still
+    holds its value (as _report_dest_row does).  The box only shows a value
+    written in the run that draws it: one written on an earlier run (the
+    state a report-cell click carries into a new session lands on the
+    Viewer's run) stays on the server while the box on screen comes up
+    empty, and the next click sends the empty box back (2026-10-02)."""
     saved = key + '_saved'
-    if key in st.session_state or saved not in st.session_state:
+    ss = st.session_state
+    if key in ss:
+        val = ss[key]
+    elif saved in ss:
+        val = ss[saved]
+    else:
         return
-    if options is not None and st.session_state[saved] not in options:
+    if options is not None and val not in options:
         return
-    st.session_state[key] = st.session_state[saved]
+    ss[key] = val
 
 
 def _keep_box(key):
@@ -2285,7 +2297,26 @@ _CARRIED_SETTINGS = ('otdr_profile', 'otdr_settings', 'conn_settings',
                      # box on a page the tech is not on has no value of its
                      # own by then, and came back empty (2026-10-01).
                      'sr_report_dest_saved', 'uni_report_dest_saved',
-                     'ss_report_dest_saved')
+                     'ss_report_dest_saved',
+                     # ...and what the two report pages' own boxes keep
+                     # (_seed_box, _render_show_hide_box, the site boxes):
+                     # after a cell click and "← Back" the Show/Hide switches
+                     # were all on again, typed site names were back to the
+                     # stored ones, and the one-folder box and the added
+                     # spans were gone (2026-10-02).  The site boxes' `_src`
+                     # goes with them, or the names are read again from the
+                     # traces over the ones put back.  Clear Traces and
+                     # Remove Span drop these slots, and each run files the
+                     # slots as they are then, so nothing cleared rides a
+                     # later click.
+                     'sr_show_saved', 'uni_show_saved',
+                     'sr_site_saved', 'sr_site_src',
+                     'uni_site_saved', 'uni_site_src',
+                     'sr_input_mode_saved', 'sr_one_folder_saved', 'sr_n_spans',
+                     'uni_folder_input_saved', 'uni_landmarks_text_saved',
+                     'uni_dir_pick_saved')
+# Every added span's own kept slots (sr2_dir_a_saved, sr2_site_src, ...).
+_CARRIED_SPAN_RE = re.compile(r'sr\d+_\w+_(saved|src)')
 _CARRY_ID_RE = re.compile(r'[0-9a-f]{12}')
 _CARRY_KEPT = 50
 
@@ -2294,6 +2325,11 @@ _CARRY_KEPT = 50
 def _carry_store():
     import threading
     return {'lock': threading.Lock(), 'by_id': {}}
+
+
+def _carried(key):
+    """True for a session_state key that rides a click into the Viewer."""
+    return key in _CARRIED_SETTINGS or bool(_CARRIED_SPAN_RE.fullmatch(str(key)))
 
 
 def _carry_settings_in(qp):
@@ -2313,7 +2349,7 @@ def _carry_settings_in(qp):
             snap = copy.deepcopy(_store['by_id'].get(cid))
     if snap:
         for _k, _v in snap.items():
-            if _k in _CARRIED_SETTINGS:
+            if _carried(_k):
                 ss.setdefault(_k, _v)
         ss['_carry_id'] = cid
     else:
@@ -2329,7 +2365,7 @@ def _carry_settings_out():
         cid = ss.get('_carry_id')
         if not cid:
             return
-        snap = {k: copy.deepcopy(ss[k]) for k in _CARRIED_SETTINGS if k in ss}
+        snap = {k: copy.deepcopy(ss[k]) for k in list(ss.keys()) if _carried(k)}
         _store = _carry_store()
         with _store['lock']:
             _by = _store['by_id']
@@ -2995,7 +3031,7 @@ def _clear_traces():
     for _k in ('sr_input_mode', 'sr_one_folder', 'uni_folder_input',
                'uni_landmarks_text', 'uni_dir_pick'):
         st.session_state.pop(_k + '_saved', None)
-    for _k in [k for k in st.session_state if re.fullmatch(r'sr\d+_\w+_saved', k)]:
+    for _k in [k for k in st.session_state if _CARRIED_SPAN_RE.fullmatch(k)]:
         st.session_state.pop(_k, None)
     # The trace server's folders are process-wide: left set, the next
     # session would seed the boxes from them and the span would be back.
@@ -6898,6 +6934,10 @@ def _sr_site_inputs(span, dir_a, dir_b):
             st.session_state[k_src] = _sig
     st.session_state.setdefault(k_a, 'A')
     st.session_state.setdefault(k_b, 'B')
+    # Written again on every run, before the boxes are drawn: a box only
+    # shows a value written in the run that draws it (see _seed_box).
+    for _k in (k_a, k_b):
+        st.session_state[_k] = st.session_state[_k]
 
     s1, s2 = st.columns(2)
     site_a = s1.text_input('A-Direction ILA / Site', key=k_a)
@@ -7074,9 +7114,13 @@ def _render_show_hide_box(prefix, rows=_SHOW_ROWS):
             wkey = f'{prefix}_show_{k}'
             # Seed a toggle Streamlit forgot from the saved slot.  Never
             # value= as well: key + value on one widget is the trap in
-            # feedback_streamlit_widget_state.
-            if wkey not in st.session_state:
-                st.session_state[wkey] = saved.get(k, True)
+            # feedback_streamlit_widget_state.  Written on every run, even
+            # when the toggle still holds its value: a switch only shows a
+            # value written in the run that draws it, and the switches a
+            # cell click carries into a new session are put back on the
+            # Viewer's run, so they showed ON over an OFF on the server
+            # (2026-10-02, see _seed_box).
+            st.session_state[wkey] = st.session_state.get(wkey, saved.get(k, True))
             show[k] = saved[k] = st.toggle(label, key=wkey)
     return None if all(show.values()) else show
 
@@ -7125,9 +7169,11 @@ def page_splice_report():
             # Drop its finished result too — a report block for a span the
             # tech removed would be a stale page.  What its boxes kept goes
             # with it (_seed_box, _sr_site_inputs): a span added again
-            # starts empty, its site names at "A" and "B".
+            # starts empty, its site names at "A" and "B".  Its `_src`
+            # too: it rides a cell click with the rest (_CARRIED_SPAN_RE).
             for _k in (f'{_p}_result{_n}', f'{_p}_dirs{_n}', f'{_p}{_n}_techcmp',
-                       f'{_p}{_n}_site_saved', f'{_p}{_n}_input_mode_saved',
+                       f'{_p}{_n}_site_saved', f'{_p}{_n}_site_src',
+                       f'{_p}{_n}_input_mode_saved',
                        f'{_p}{_n}_dir_a_saved', f'{_p}{_n}_dir_b_saved',
                        f'{_p}{_n}_one_folder_saved'):
                 st.session_state.pop(_k, None)
@@ -7706,6 +7752,10 @@ def _uni_site_inputs(folder):
         st.session_state[k_src] = folder
     st.session_state.setdefault(k_a, '')
     st.session_state.setdefault(k_b, '')
+    # Written again on every run, before the boxes are drawn: a box only
+    # shows a value written in the run that draws it (see _seed_box).
+    for _k in (k_a, k_b):
+        st.session_state[_k] = st.session_state[_k]
     s1, s2 = st.columns(2)
     site_a = s1.text_input('A-End Site', key=k_a,
                            help='The site at the A end of the cable. Prints in '
