@@ -86,7 +86,10 @@ def test_every_row_is_judged_at_the_report_s_own_gates():
     body = _fn('paintFrBidiGrid')
     assert "if (which === 'avg') return clearsAt(x.row.loss, gateFor(isRefl(x), false));" in body
     assert "if (legReflFails(x, which)) return true;" in body
-    assert "return clearsAt(leg.loss, gateFor(isRefl(x), true));" in body
+    # a splice direction is not judged on loss, a connector's is (Robert
+    # 2026-10-02, the bidirectional box flags the Average only)
+    assert "return clearsAt(leg.loss, legGateFor(isRefl(x)));" in body
+    assert "function legGateFor(reflective) { return reflective ? gateFor(true, true) : null; }" in src
     assert "const fail = legFails(fi, which);" in body
     assert "['a', 'b', 'avg'].some(w => legFails(fi, w))" in body
     # a launch level (status 0x08) or synthesised leg is not a reading

@@ -478,7 +478,7 @@ def test_the_suite_table_is_the_report_s_columns_and_three_rows_per_fibre():
 def test_the_report_s_flag_is_the_verdict_and_the_ends_take_nothing_else():
     body = _fn('paintSuiteBidiGrid')
     assert "return !!x.flag || (!c.isEnd && clearsAt(x.loss, gateFor(!!x.reflective, false)));" in body
-    assert "|| (!c.isEnd && legOk(leg) && clearsAt(leg.loss, gateFor(!!x.reflective, true)));" in body
+    assert "|| (!c.isEnd && legOk(leg) && clearsAt(leg.loss, legGateFor(!!x.reflective)));" in body
     assert "isEnd: c.kind === 'end' || !!c.end," in body
     # reflectance is the report's verdict alone
     assert "const reflFlagged = (x, which) => which !== 'avg' && !!(x[which] && x[which].flag_refl);" in body

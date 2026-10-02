@@ -50,8 +50,8 @@ def test_only_the_average_keeps_a_loss():
     # a splice direction's loss prints blank under the filters: no gate, no warning
     assert "const judged = !cellFilterOn();" in FN
     assert "const gated = judged || isRefl(x);" in FN
-    assert "gated ? gateFor(isRefl(x), true) : null," in FN
-    assert "judged ? warnFor(isRefl(x), true) : null)" in FN
+    assert "gated ? legGateFor(isRefl(x)) : null," in FN
+    assert "judged ? legWarnFor(isRefl(x)) : null)" in FN
     # the rows' own verdicts are untouched
     assert "const fail = legFails(fi, which);" in FN
     assert "const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));" in FN
@@ -70,13 +70,14 @@ def test_a_connector_keeps_each_failing_direction():
     body = FN[FN.index("const cellKept = "):FN.index("const legKept = ")]
     assert "isRefl(x) ? cellFails(x, which)" in body
     assert "gWarnCellsOnly && cellWarns(x, which)" in body and body.count("gWarnCellsOnly") == 1
-    # a direction's own loss judged at the one-direction connector gate
+    # a direction's own loss judged at the one-direction connector gate (a
+    # splice direction has none, Robert 2026-10-02: see legGateFor)
     assert ("const cellFails = (x, which) => {\n"
             "    if (which === 'avg') return clearsAt(x.row.loss, gateFor(isRefl(x), false));\n"
             "    if (legReflFails(x, which)) return true;\n"
             "    const leg = x.row[which];\n"
             "    if (!legOk(leg) || gainerHidden(leg.loss)) return false;\n"   # Show gainers
-            "    return clearsAt(leg.loss, gateFor(isRefl(x), true));\n"
+            "    return clearsAt(leg.loss, legGateFor(isRefl(x)));\n"
             "  };") in FN
     assert "const legOk = leg => !!leg && !leg.synthetic && !(Number(leg.status || 0) & 0x08);" in FN
 
