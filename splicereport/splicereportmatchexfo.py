@@ -16158,19 +16158,63 @@ def uni_build_ribbon_grid(fibers, columns, ribbon_size):
     return grid
 
 
-def uni_format_cell_label(entries):
-    if not entries:
-        return ''
-    fibers = ','.join(f"F{f}" for f, _ in sorted(entries, key=lambda fl: fl[0]))
-    losses = [loss for _, loss in entries if loss is not None]
-    if not losses:
-        return f"{fibers} broke"
-    worst = max(losses)
-    sign = '-' if worst < 0 else ''
-    s = f"{abs(worst):.3f}"
+def _uni_cell_number(v):
+    """'.175' / '-.214': the uni grid's 3-decimal style, sign kept."""
+    s = f"{abs(v):.3f}"
     if s.startswith('0.'):
         s = s[1:]
-    return f"{fibers} {sign}{s}"
+    return f"{'-' if v < 0 else ''}{s}"
+
+
+def uni_format_cell_label(entries, kind=None):
+    """Cell text for one ribbon x column cell.
+
+    Several fibers in one cell share one number, the tech's group convention
+    ('139,144 .277' = every listed fiber is out, the value is the worst).
+    Worst means the reading furthest from zero, the same rule
+    uni_build_ribbon_grid uses to pick each fiber's own event (largest
+    |loss|) and the abs() gate that put the fiber in the cell.  It used to be
+    max() of the signed values, which on an all-gainer cell picked the
+    reading CLOSEST to zero: 'F316,F322 -.161' with F322 at -0.278.
+
+    A cell holding both losses and gainers prints each group with its own
+    number, losses first: 'F354 .175 F355 -.214'.  One number cannot speak
+    for both: '.175' hid F355's -0.214, the bigger reading of the two, and
+    '-.214' would call F354's loss a gain.  The Splice Report grid does the
+    same: fibers share an entry only when they share the reading, and a
+    gainer never merges with a loss.
+
+    A fiber that broke at this closure (None) prints 'broke' after the
+    readings instead of being listed under a number that is not its own;
+    the break-at-closure rule promises "broke" in exactly those cells.
+
+    Reflective columns carry a reflectance, where the worst is the one
+    closest to zero, so `kind='reflective'` keeps max() exactly as before.
+    """
+    if not entries:
+        return ''
+    ordered = sorted(entries, key=lambda fl: fl[0])
+    broke = [f for f, v in ordered if v is None]
+    read = [(f, v) for f, v in ordered if v is not None]
+
+    def _group(members):
+        fibers = ','.join(f"F{f}" for f, _ in members)
+        vals = [v for _, v in members]
+        if kind == 'reflective' or max(vals) > 0:
+            worst = max(vals)
+        else:
+            worst = min(vals)           # every reading a gainer: the biggest
+        return f"{fibers} {_uni_cell_number(worst)}"
+
+    if kind == 'reflective':
+        groups = [read]
+    else:
+        groups = [[(f, v) for f, v in read if v >= 0],
+                  [(f, v) for f, v in read if v < 0]]
+    parts = [_group(g) for g in groups if g]
+    if broke:
+        parts.append(','.join(f"F{f}" for f in broke) + " broke")
+    return ' '.join(parts)
 
 
 def uni_ribbon_label(ri, ribbon_size, n_fibers):
@@ -16726,7 +16770,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                     cell.value = uni_format_end_cell(
                         entries, range(_first, min(_first + ribbon_size, n_fibers + 1)))
                 else:
-                    cell.value = uni_format_cell_label(entries)
+                    cell.value = uni_format_cell_label(entries, col['kind'])
                 cell.alignment = Alignment(horizontal='center', vertical='center',
                                            wrap_text=True)
 
