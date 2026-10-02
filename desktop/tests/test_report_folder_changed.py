@@ -80,7 +80,7 @@ def test_the_signature_moves_when_files_are_added_removed_or_replaced(tmp_path):
     first = sig(a)
     assert first[1] == 12
     assert sig(a) == first                       # nothing changed, same answer
-    (tmp_path / 'A' / 'notes.txt').write_text('not a trace')
+    (tmp_path / 'A' / 'notes.txt').write_text('not a trace', encoding='utf-8')
     assert sig(a) == first                       # only trace files count
     _add(a, range(13, 17), like=1)
     grown = sig(a)
