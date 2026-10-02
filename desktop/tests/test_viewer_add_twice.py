@@ -66,6 +66,8 @@ function nextColor() { return 0; }
 function traceColor() { return 0; }
 function syncFileMarks() {} function renderChips() {} function fit() {} function draw() {}
 function renderEventTable() {} function setReadout() {}
+function beginLoad() { return {}; } function loadProgress() {} function endLoad() {}
+async function buildTable() { renderEventTable(); }
 async function loadOverview() { throw new Error('not in this test'); }
 """
 

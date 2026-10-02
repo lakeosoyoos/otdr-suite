@@ -297,6 +297,8 @@ _DRIVER = r"""
       gAddDir = __hScenario.dir;
       await addFibers();
     }
+    // the table's server step answers, and "Building the table…" goes
+    await __hSleep(60);
     print('READOUT ' + JSON.stringify(String(document.getElementById('readout').textContent)));
     print('TRACES ' + gTraces.length);
   } catch (e) {

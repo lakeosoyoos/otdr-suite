@@ -234,7 +234,7 @@ def test_the_status_line_keeps_clear_of_the_marker_readout(tmp_path):
     js = r"""
     var M = { l: 56, r: 16, t: 12, b: 36 };
     var ro = { style: { left: '', transform: '', maxWidth: '' } };
-    var mk = { style: { display: 'none' }, offsetLeft: 455 };
+    var mk = { style: { display: 'none' }, offsetLeft: 455, dataset: {} };
     var document = { getElementById: function (id) { return id === 'readout' ? ro : mk; } };
     var out = {};
     placeReadout(); out.off = [ro.style.left, ro.style.transform, ro.style.maxWidth];
