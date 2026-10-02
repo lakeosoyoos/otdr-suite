@@ -503,7 +503,8 @@ def test_quick_analysis_opens_on_the_suite_screen_with_nothing_loaded(settings_d
     assert not at.exception, list(at.exception)
     assert "qa_stage" not in at.session_state
     tool = next(r for r in at.sidebar.radio if r.label == "Tool")
-    assert tool.options == ["Viewer", "Splice Report", "Unidirectional", "Secret Sauce"]
+    assert tool.options == ["Viewer", "Splice Report", "Splice Report FEC", "Viewer FEC",
+                            "Unidirectional", "Secret Sauce"]
     assert "##### Trace Folders" in [m.value for m in at.sidebar.markdown]
     assert any(e.label == "☁️ From SharePoint" for e in at.sidebar.expander)
     assert not any(b.key in ("qa_load", "qa_reload", "qa_continue") for b in at.button)
