@@ -151,10 +151,16 @@ def test_saved_to_names_the_folder_the_workbook_is_in(tmp_path, monkeypatch):
 # ── 2. the Output choice is kept ─────────────────────────────────────────
 
 def _on_screen(el):
-    """What the browser shows after this run: the value the run sent, else
-    the element's default (see test_page_state_after_cell_click)."""
+    """The option the browser shows after this run: the value the run sent,
+    else the element's default (see test_page_state_after_cell_click).
+    Streamlit 1.64 (the Windows build) sends a radio's value as the option's
+    text (`raw_value`), 1.50 as its index (`value`)."""
     p = el.proto
-    return el.options[p.value] if p.set_value else el.options[p.default]
+    if not p.set_value:
+        return el.options[p.default]
+    if 'raw_value' in {f.name for f in p.DESCRIPTOR.fields}:
+        return p.raw_value
+    return el.options[p.value]
 
 
 def _pair_click_and_back(at, a, b, fibers='1,2', side='a'):
