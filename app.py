@@ -2228,7 +2228,8 @@ def _project_report_moved(old, new):
 
 # In a project, where each tool's output goes: a folder of the job, not a choice.
 PROJECT_DEST_SUBS = {'sr_report_dest': 'reports', 'uni_report_dest': 'reports',
-                     'ss_report_dest': 'reports', 'fqa_dest': 'fqa',
+                     'ss_report_dest': 'reports', 'fec_report_dest': 'reports',
+                     'fqa_dest': 'fqa',
                      'fc_report_dest': 'field'}
 
 
@@ -3427,7 +3428,7 @@ def _project_seed_tools():
     ss.setdefault('uni_folder_input', pa)
     _fs = final_shoot(work)
     ss.setdefault('ss_folder_input', _fs['dir'] if _fs else work_sub('traces', work))
-    for key in ('sr_report_dest', 'uni_report_dest', 'ss_report_dest'):
+    for key in ('sr_report_dest', 'uni_report_dest', 'ss_report_dest', 'fec_report_dest'):
         if not ss.get(key):
             ss[key] = work_sub('reports', work)
     if not ss.get('fqa_dest'):
@@ -3469,7 +3470,8 @@ def _project_seed_tools():
 def _project_widget_keys():
     """Every widget key a project fills in (see _project_seed_tools)."""
     keys = ['uni_folder_input', 'ss_folder_input', 'sr_report_dest',
-            'uni_report_dest', 'ss_report_dest', 'fc_report_dest', 'fqa_dest', 'fqa_prod']
+            'uni_report_dest', 'ss_report_dest', 'fec_report_dest', 'fc_report_dest',
+            'fqa_dest', 'fqa_prod']
     for i in range(1, SR_MAX_SPANS_CAP + 1):
         k = _sr_span_keys(i)
         keys += [k['mode'], k['a'], k['b'], k['one'], k['site_a'], k['site_b']]
@@ -11549,7 +11551,9 @@ def page_splice_report_fec():
         # A name of its own: a second span run into the same folder wrote
         # over the first one's workbook, and the first span's page then
         # offered the second span's file (2026-10-02 audit).
-        out_xlsx = _unused_report_path(os.path.join(_dest, 'FEC_OOS.xlsx'))
+        # In a project: the job's Reports folder, with the run time in the
+        # name, as every other tool (Robert, 2026-10-02).
+        out_xlsx = _project_run_path(_dest, 'FEC_OOS.xlsx', traces=(dir_a, dir_b))
         st.session_state['fec_pending_cmd'] = fec_cmd(dir_a, dir_b, out_xlsx, gates)
         # What the two folders hold, for the line over the report when they
         # change after it ran (_folders_changed_note).
@@ -13316,7 +13320,8 @@ EVENT_KINDS = ('Project', 'Traces', 'Report', 'Field Capture', 'Photo', 'GPS',
 _REPORT_KINDS = (('splicereport', 'Splice Report'), ('unidirectional', 'Unidirectional'),
                  # <from>_to_<to>_Uni_<OTDR|FR>_<gate>.xlsx since main #567
                  ('_uni_otdr_', 'Unidirectional'), ('_uni_fr_', 'Unidirectional'),
-                 ('secretsauce', 'Secret Sauce'), ('secret sauce', 'Secret Sauce'))
+                 ('secretsauce', 'Secret Sauce'), ('secret sauce', 'Secret Sauce'),
+                 ('fec_oos', 'FEC Report'))
 PICTURE_ENDS = {'A': 'A end', 'Z': 'Z end', 'other': 'Other'}
 _PICTURE_EXTS = ('.jpg', '.jpeg', '.png', '.heic', '.webp')
 
