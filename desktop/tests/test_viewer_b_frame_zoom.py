@@ -61,7 +61,9 @@ def _const(name):
 # ─── the source ──────────────────────────────────────────────────────────
 
 def test_report_link_goes_through_link_disp_km():
-    assert "zoomToKm(linkDispKm(km, t.src, t.dir || 'both', fiber), 2.5)" in _fn("applyTarget")
+    # ±2.5 km, except Viewer FEC's ±0.3 km on a 5 km facility-entrance shot
+    assert ("zoomToKm(linkDispKm(km, t.src, t.dir || 'both', fiber), gFecMode ? 0.3 : 2.5)"
+            in _fn("applyTarget"))
 
 
 def test_one_direction_table_km_reach_the_chart_through_the_trace():
@@ -81,7 +83,7 @@ needs_jsc = pytest.mark.skipif(not JSC.exists(), reason="no JavaScriptCore shell
 def _run(tmp_path, body):
     prelude = r"""
 var gTraces = [], gSpanDecl = {a: null, b: null}, gInfo = null, gLaunchA = 0;
-var gStacked = true, gHaveA = false, gMirrorDelta = 0;
+var gStacked = true, gHaveA = false, gMirrorDelta = 0, gFecMode = false;
 function T(dir, src, fiber, ev, far) {
   return {key: src + '-' + fiber, dir: dir, src: src, fiber: fiber, visible: true,
           data: {events: ev.map(function (k) { return {dist_km: k, is_end: false}; }),

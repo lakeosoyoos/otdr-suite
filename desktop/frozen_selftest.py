@@ -252,7 +252,8 @@ def _colour(c):
 # names the code that ran, so it is meant to differ: the exe says "engine:
 # bundled", a source run says "dev" or "engine: dev".  It is compared on its
 # own (see compare_workbooks), not as a number.
-STAMP_RE = re.compile(r"^OTDR Suite \u00b7 ")
+# The App's engines say "OTDR App" (the edition its launcher hands down).
+STAMP_RE = re.compile(r"^OTDR (Suite|App) \u00b7 ")
 STAMP = "<BUILD STAMP>"
 
 

@@ -441,7 +441,7 @@ def test_the_table_follows_the_analysis_mode():
     # its place (Robert 2026-09-30: "Error, no FR stand-in")
     assert "renderFrBidiGrid" not in ask and "renderFastReporterGrid" not in ask
     assert "noTable(res.error || 'The report has no table for these fibers');" in ask
-    assert "OTDR Suite table could not be built." in ask
+    assert "table could not be built." in ask      # the App: "OTDR App table ..."
     assert "switch to FastReporter mode for FastReporter's table." in ask
     assert 'gSuiteNote' not in VIEWER
 
