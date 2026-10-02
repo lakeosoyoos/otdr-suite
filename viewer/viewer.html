@@ -912,6 +912,9 @@ let gUniSide = null;
 // 'suite' (OTDR Suite) | 'fr' (FastReporter): the hub's analysis mode, from
 // /api/list.  The table follows the reports' rules; nothing branches on it yet.
 let gAnalysisMode = 'suite';
+// The product's name where a person reads it: trace_server marks <html> with
+// it ("OTDR App" in the App, whose launcher sets the edition).
+const PRODUCT_NAME = document.documentElement.dataset.product || 'OTDR Suite';
 let gDropInFlight = false;          // a drop is going up (see pollAnalysisMode)
 let gGateOverride = null;          // set when the tech types their own
 let gTraces = [];                  // [{key, fiber, dir, color, visible, data}]
@@ -7055,18 +7058,18 @@ function renderSuiteBidiGrid(traces, host, hint) {
   }
   const seq = ++gSuiteTableSeq;
   hint.textContent = oneDir
-    ? `OTDR Suite table: reading ${pairs.length} fiber${pairs.length === 1 ? '' : 's'} from one direction…`
-    : `OTDR Suite table: reading ${pairs.length} fiber pair${pairs.length === 1 ? '' : 's'}…`;
+    ? `${PRODUCT_NAME} table: reading ${pairs.length} fiber${pairs.length === 1 ? '' : 's'} from one direction…`
+    : `${PRODUCT_NAME} table: reading ${pairs.length} fiber pair${pairs.length === 1 ? '' : 's'}…`;
   // No report table: say so and why.  FastReporter's table never stands in
   // for it (Robert 2026-09-30: "Error, no FR stand-in"), so a tech can never
   // read FR's pairing as OTDR Suite's; FastReporter mode shows that table.
   // The drawer keeps the files' own event numbers (no marks were set).
   const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const noTable = (why) => {
-    host.innerHTML = `<div class="suite-err" role="alert"><b>OTDR Suite table could not be built.</b> `
+    host.innerHTML = `<div class="suite-err" role="alert"><b>${PRODUCT_NAME} table could not be built.</b> `
       + `${esc(why)}. The traces and their own events still show above; `
       + `switch to FastReporter mode for FastReporter's table.</div>`;
-    hint.textContent = 'OTDR Suite table unavailable';
+    hint.textContent = `${PRODUCT_NAME} table unavailable`;
   };
   const ask = () => fetch(`/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`)
     .then(r => r.json())
@@ -7075,7 +7078,7 @@ function renderSuiteBidiGrid(traces, host, hint) {
       gSuitePoll = null;
       res = res || {};
       if (res.pending) {
-        hint.textContent = 'OTDR Suite table: running the Splice Report on this span for its columns…';
+        hint.textContent = `${PRODUCT_NAME} table: running the Splice Report on this span for its columns…`;
         gSuitePoll = setTimeout(ask, 3000);
         return;
       }
@@ -8637,7 +8640,7 @@ async function reportPayload(opt, token, progress) {
   try {
     const sorted = [...vis].sort((a, b) => a.fiber - b.fiber || a.dir.localeCompare(b.dir));
     const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';
-    const meta = [['Mode', gAnalysisMode === 'fr' ? 'FastReporter' : 'OTDR Suite']];
+    const meta = [['Mode', gAnalysisMode === 'fr' ? 'FastReporter' : PRODUCT_NAME]];
     if (vis.some(t => t.src === 'a') && folderLabel('a')) meta.push(['A folder', folderLabel('a')]);
     if (vis.some(t => t.src === 'b') && folderLabel('b')) meta.push(['B folder', folderLabel('b')]);
     const nf = new Set(vis.map(t => t.fiber)).size;
@@ -8724,7 +8727,7 @@ async function reportPayload(opt, token, progress) {
       format: opt.fmt, dest: opt.dest, name: opt.name, fibres, token,
       title: 'Summary Report' + (job ? `: ${job}` : ''),
       subtitle: `Generated ${new Date().toLocaleString()}`,
-      footer: `OTDR Suite Summary Report${job ? ' · ' + job : ''}`,
+      footer: `${PRODUCT_NAME} Summary Report${job ? ' · ' + job : ''}`,
       meta, styles: probe.styles, tables,
     };
   } finally {

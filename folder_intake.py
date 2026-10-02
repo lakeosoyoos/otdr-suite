@@ -909,7 +909,13 @@ MAX_SHARE_UNPACKED_BYTES = 4 * 1024 ** 3
 
 
 class ShareFileError(Exception):
-    """A file that cannot be opened.  The message is written for the tech."""
+    """A file that cannot be opened.  The message is written for the tech,
+    so it names the product as the tech knows it ("OTDR App" in the App,
+    whose launcher sets the edition)."""
+
+    def __init__(self, msg=''):
+        name = os.environ.get('OTDR_SUITE_EDITION') or 'OTDR Suite'
+        super().__init__(str(msg).replace('OTDR Suite', name))
 
 
 def share_extensions(kind: str | None = None) -> tuple[str, ...]:

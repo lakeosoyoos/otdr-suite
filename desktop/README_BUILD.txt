@@ -4,8 +4,8 @@ OTDR Suite — Windows desktop build
 WHAT THIS PRODUCES
   A self-contained Windows app a tech can run on a clean machine with NO
   Python installed:
-      dist\OTDRSuite\OTDRSuite.exe        (double-click to launch)
-      dist\OTDRSuite-Windows.zip          (what you hand to the tech)
+      dist\OTDRApp\OTDRApp.exe        (double-click to launch)
+      dist\OTDRApp-Windows.zip          (what you hand to the tech)
   Double-clicking the exe starts a local server and opens the default
   browser to http://127.0.0.1:8510 — the OTDR Suite hub (Viewer +
   Duplicate Check).  Nothing leaves the machine; no internet needed.
