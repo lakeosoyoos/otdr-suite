@@ -1,5 +1,5 @@
 """analyze_all searches for a fiber's A event at THAT FIBER'S closure, not at
-the raw 1 km-bin mean (ZAYO BETA 432, ORPVL <-> ZYO-OR-DES-0048, 2026-09-18).
+the raw 1 km-bin mean (the 432-fiber BETA span, ORPVL <-> ZYO-OR-DES-0048, 2026-09-18).
 
 `sp_km = sp['position_km']` is discover_splices' PRE-REFINEMENT cluster mean,
 `round(float(np.mean(kms)), 2)`.  On splice 2 of that span the clusterer swept
@@ -37,7 +37,7 @@ def _run(body, engine_dir=SPLICEREPORT_DIR):
     assert p.stdout.strip().splitlines()[-1] == "OK", p.stdout
 
 
-# ZAYO geometry, reduced to the one closure that shows it.  Fiber 212 sits in
+# The 432-fiber BETA span's geometry, reduced to the one closure that shows it.  Fiber 212 sits in
 # ribbon 18 ((212-1)//12 + 1).  Filler fibers give the column a population.
 _SETUP = """
     SPAN = 55.0322
@@ -83,7 +83,7 @@ def test_the_ribbons_own_rung_picks_the_real_event():
 
 
 def test_the_false_flag_is_gone_at_the_gate_the_span_is_graded_at():
-    """ZAYO runs the 0.100 Zayo profile.  With the raw mean the cell printed
+    """The 432-fiber BETA span runs the 0.100 customer Z profile.  With the raw mean the cell printed
     .134 and flagged; with the fiber's own closure it is 0.0788 and correctly
     never reaches the grid."""
     _run(_SETUP + """\x00

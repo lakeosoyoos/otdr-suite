@@ -250,7 +250,7 @@ def _sor_with_fr_records():
     from test_sor_writer import _genparams, _fxdparams, _rec, _u16, _prop_from_stream
     st = bytearray(b'\x00' * 16)
     _rec(st, b'UserNameA', 4, _u16('G. Kolok'))
-    _rec(st, b'CustomerName', 4, _u16('Lumen'))
+    _rec(st, b'CustomerName', 4, _u16('Customer L'))
     _rec(st, b'CompanyName', 4, _u16('ZerodB'))
     _rec(st, b'Comment', 4, _u16('West 144f'))
     _rec(st, b'Name', 4, _u16('Cable ID'))
@@ -268,7 +268,7 @@ def _sor_with_fr_records():
 
 def test_fr_only_identifiers_are_read_from_the_proprietary_stream():
     got = TS.read_fr_identifiers(_sor_with_fr_records())
-    assert got['customer'] == 'Lumen' and got['company'] == 'ZerodB'
+    assert got['customer'] == 'Customer L' and got['company'] == 'ZerodB'
     assert got['operator'] == 'G. Kolok' and got['comment'] == 'West 144f'
     assert got['cable_id'] == 'FRCABLE'          # the Identifiers list's Value
 
@@ -291,7 +291,7 @@ def test_the_dialog_prefill_merges_fr_fields_under_genparams(tmp_path):
     d.mkdir()
     (d / 'X0001.sor').write_bytes(_sor_with_fr_records())
     ids = TS.trace_settings('a', 1, dir_a=str(d))['identifiers']
-    assert ids['customer'] == 'Lumen' and ids['company'] == 'ZerodB'
+    assert ids['customer'] == 'Customer L' and ids['company'] == 'ZerodB'
     assert ids['cable_id'] == 'CABLE1'           # GenParams wins over FRCABLE
 
 

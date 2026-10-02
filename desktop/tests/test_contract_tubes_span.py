@@ -1,7 +1,7 @@
-"""Two more lines from the AWS / IIG MT.1085 spec sheet, section 1.
+"""Two more lines from the contract profile spec sheet, section 1.
 
   * The cable is 18 buffer tubes of 24 fibers.  The grid groups fibers by
-    RIBBON_SIZE, which defaults to 12, so an IIG report showed 36 half-tubes
+    RIBBON_SIZE, which defaults to 12, so a contract profile report showed 36 half-tubes
     with tube letters that do not match the cable.  The profile now sets 24
     through the whitelisted engine extras, and the runner's override guard
     (RIBBON_SIZE is a positive-int global) must let 24 through.
@@ -25,19 +25,19 @@ import acquisition_audit as AUD  # noqa: E402
 
 import app as hub  # noqa: E402
 
-IIG = "AWS / IIG MT.1085"
+CONTRACT_PROFILE = "AWS / IIG MT.1085"
 
 
 # ── Tubes of 24 ──────────────────────────────────────────────────────────
-def test_iig_groups_the_grid_by_24():
-    ex = hub._engine_extras_from_profile(IIG)
+def test_contract_groups_the_grid_by_24():
+    ex = hub._engine_extras_from_profile(CONTRACT_PROFILE)
     assert ex["RIBBON_SIZE"] == 24
     assert "RIBBON_SIZE" in hub._PROFILE_ENGINE_KEYS
 
 
 def test_other_profiles_keep_the_engine_ribbon_size():
     for prof in hub.CUSTOMER_PROFILES:
-        if prof != IIG:
+        if prof != CONTRACT_PROFILE:
             assert "RIBBON_SIZE" not in hub._engine_extras_from_profile(prof), prof
 
 
@@ -94,7 +94,7 @@ def test_a_span_outside_the_range_is_a_finding_with_the_count():
 
 def test_the_range_carries_half_a_kilometre_of_tolerance():
     """The contract quotes 64.8 to 72.6; Span 29 measures 72.60-72.66 km on
-    over half its traces and NCT's own median is 72.604.  Those conform.  A
+    over half its traces and the prime contractor's own median is 72.604.  Those conform.  A
     trace a full kilometre beyond the range does not."""
     row, _ = _span_row([_rec(72655.0), _rec(72604.0), _rec(64350.0)], [])
     assert row["conforms"] is True

@@ -89,7 +89,7 @@ def test_site_names_survive_the_viewer_shadowing_json_reader(tmp_path, monkeypat
     """In the hub process the Viewer's json_reader.py (no span_site_names)
     sits in sys.modules first.  A by-name import then fails and the site
     boxes silently fall back to "A"/"B" -- which is what the hub showed for
-    every IIG span until the click-through of 2026-09-15.  The engine's
+    every contract span until the click-through of 2026-09-15.  The engine's
     reader must be loaded by path so the shadow cannot reach it."""
     import importlib, json, sys
     sys.path.insert(0, str(SPLICEREPORT_DIR))

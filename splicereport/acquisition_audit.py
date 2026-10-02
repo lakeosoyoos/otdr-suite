@@ -671,7 +671,7 @@ def compute_contract_conformance(records_a: list, records_b: list,
     """Compare the acquisition against the customer contract's own figures.
 
     `contract` is the active customer profile's block, e.g.
-        {"name": "AWS / IIG MT.1085", "ior": 1.467,
+        {"name": "<profile name>", "ior": 1.467,
          "backscatter_db": -81.4, "wavelengths_nm": [1550, 1625]}
     Every key is optional; a missing one simply produces no row.  Returns
     None when there is no contract to check against, so a run with no

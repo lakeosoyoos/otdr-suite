@@ -1,6 +1,6 @@
 """An entry splice stored from both ends gets an Entry column (Suite mode).
 
-Tooele<->Knolls Span 2 (Lumen, 2026-09-25): the splice 84 m past the Tooele
+Tooele<->Knolls Span 2 (customer L, 2026-09-25): the splice 84 m past the Tooele
 launch reel is stored on only 39/432 Tooele fibers and 26/432 Knolls fibers,
 under the 25% discovery gate, so Suite mode dropped the column in both load
 orders and F85's .232 (EXFO .23) never printed.  FastReporter, on all 431

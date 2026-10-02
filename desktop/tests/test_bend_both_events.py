@@ -1,6 +1,6 @@
 """Both-events escape from the bend fold — regression tests.
 
-Lumen Border (2026-07-23): real bends @7.77 km sit ~170 m from the real
+the Border job (2026-07-23): real bends @7.77 km sit ~170 m from the real
 7.94 km splice — inside the 200 m fold — so the bidirectional report
 folded them into the splice column while the uni tool (tighter radii)
 correctly gave them their own Bend/Damage column.  The escape: a cluster

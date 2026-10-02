@@ -104,7 +104,7 @@ def _lateral_ranges(total: int, sizes: list[int]) -> list[tuple[int, int]]:
 
     With no lateral sizes to walk (a site that terminates the backbone
     straight onto the frame) the lateral number is the backbone number,
-    which is what the single-cable sites in Lumen's own examples show.
+    which is what the single-cable sites in the customer's own examples show.
     """
     blocks = -(-total // FIBERS_PER_BLOCK)
     if not sizes:

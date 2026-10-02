@@ -333,3 +333,57 @@ print('OUT ' + JSON.stringify({ midLoad: midLoad, noTable: noTable, inPlace: inP
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
     out = json.loads([ln for ln in r.stdout.splitlines() if ln.startswith('OUT ')][-1][4:])
     assert out == {'midLoad': 0, 'noTable': 1, 'inPlace': [1, 1], 'filtered': 2}
+
+
+# ── The shared Viewer state (every Viewer window, the removed files) ───────
+# The server runs the span again without the files removed in the Viewer, so
+# the Splice Report answer kept for the traces follows the removed files the
+# server has: those this window sent, or took from another window.  A post
+# that moves nothing removed (a load, a Dir change) leaves the table on
+# screen; one that moves them asks for the table again, once.
+
+def test_the_kept_report_table_follows_the_removed_files():
+    suite = SRC.split('function renderSuiteBidiGrid(', 1)[1].split('\nfunction ', 1)[0]
+    assert "`${oneDir || ''}|${listSig}|${gServerRemovedSig}`" in suite
+    taken = _js_func('applyViewerState')
+    assert "gServerRemovedSig = [...gRemovedFiles].sort().join(',');" in taken
+
+
+@needs_jsc
+def test_only_a_moved_removed_set_lays_the_table_out_again(tmp_path):
+    prog = r"""
+var gInfo = { dir_a: 'A', dir_b: 'B' };
+var gTraces = [{ key: 'a-1' }, { key: 'b-1' }], gRemovedFiles = new Set(), gAddDir = 'both';
+var gClientId = 'me', gStateVer = 0, gStateSig = '', gStateReady = true, gStatePushT = null;
+var gStateApplying = 0, gServerRemovedSig = '', timers = [], renders = 0, posts = 0;
+function setTimeout(fn) { timers.push(fn); return timers.length; }
+function clearTimeout() {}
+async function flush() { var t = timers; timers = []; for (var i = 0; i < t.length; i++) await t[i](); }
+function fetch() { posts++; return Promise.resolve({ json: function () { return Promise.resolve({ ok: true, ver: posts }); } }); }
+function renderEventTable() { renders++; }
+""" + _js_func('stateSig') + '\n' + _js_func('pushViewerState') + r"""
+(async function () {
+  var out = {};
+  pushViewerState(); await flush();               // the first send after a load
+  out.first = [posts, renders, gServerRemovedSig];
+  gAddDir = 'a'; pushViewerState(); await flush(); // a Dir change
+  out.dir = [posts, renders];
+  gRemovedFiles.add('b-1'); gTraces = [{ key: 'a-1' }];   // a Remove
+  pushViewerState(); await flush();
+  out.removed = [posts, renders, gServerRemovedSig];
+  gRemovedFiles.clear(); gTraces = [{ key: 'a-1' }, { key: 'b-1' }];   // Put Back
+  pushViewerState(); await flush();
+  out.back = [posts, renders, gServerRemovedSig];
+  print('OUT ' + JSON.stringify(out));
+})().catch(function (e) { print('ERR ' + e + '\n' + e.stack); });
+"""
+    path = tmp_path / 'removed.js'
+    path.write_text(prog, encoding='utf-8')
+    r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
+    lines = [ln for ln in r.stdout.splitlines() if ln.startswith('OUT ')]
+    assert lines, r.stdout[-2000:] + r.stderr[-2000:]
+    out = json.loads(lines[-1][4:])
+    assert out['first'] == [1, 0, ''], 'the first send threw the table on screen away'
+    assert out['dir'] == [2, 0]
+    assert out['removed'] == [3, 1, 'b-1']
+    assert out['back'] == [4, 2, '']
