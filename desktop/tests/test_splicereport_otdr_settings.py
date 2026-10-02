@@ -223,8 +223,8 @@ def test_overrides_from_settings_maps_panel_rows_to_engine_globals():
     unticked mapped row DISABLES that detection (sentinel threshold)."""
     settings = hub._otdr_settings_from_profile("Lumen")
     ov = hub._overrides_from_settings(settings)
-    # Lumen ticks bidir/unidir splice, bidir connector, reflectance, at the
-    # values of Lumen's FastReporter3 template (Sep 2026), except bidir
+    # customer L ticks bidir/unidir splice, bidir connector, reflectance, at the
+    # values of customer L's FastReporter3 template (Sep 2026), except bidir
     # splice: 0.160, set by hand over the template's 0.150 (2026-09-26).
     assert ov["REBURN_THRESHOLD"] == 0.160
     assert ov["SINGLE_DIR_THRESHOLD"] == 0.250

@@ -62,7 +62,7 @@ def test_engine_files_cover_all_tracked_engine_files():
     fetched or promoted by the launcher.
 
     .xlsm is in the list because the FQA Builder ships one: the blank
-    Lumen form its writer patches.  A shipped data asset goes stale
+    the customer form its writer patches.  A shipped data asset goes stale
     exactly like a shipped module.  .js and .css are in it because the
     Field Capture page is a web app: an update that replaced index.html
     but not app.js would pair new markup with old code."""

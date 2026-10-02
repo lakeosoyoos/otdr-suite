@@ -140,7 +140,7 @@ _add_dir("splicereport")  # run_splicereport.py, splicereportmatchexfo.py, sor_r
 
 # fqa/ — the FQA Builder.  Unlike the three engine tools it ships no
 # sor_reader and parses no traces, so it runs in-process as a hub page and
-# needs no isolation.  It DOES ship a binary: the blank Lumen form its
+# needs no isolation.  It DOES ship a binary: the blank customer form its
 # writer patches, which _add_dir's .py/.html/.png filter would drop.
 def _add_tree(subdir, exts):
     root = os.path.join(REPO_ROOT, subdir)

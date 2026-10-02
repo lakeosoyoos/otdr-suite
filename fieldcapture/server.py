@@ -11,7 +11,7 @@ Routes (loopback only):
 
   GET  /                  web/index.html
   GET  /<file>            a file of the web app
-  GET  /api/blank-form    the blank Lumen FQA form the FQA Builder ships
+  GET  /api/blank-form    the blank FQA form the FQA Builder ships
   POST /api/save?name=    write the request body into the "Save to" folder
   POST /api/email         JSON {path, to, subject, body}: write an email draft
                           with the saved file attached, and open it

@@ -93,7 +93,7 @@ def test_nothing_outside_the_web_app_is_served(fc, path):
 
 
 def test_the_blank_form_is_the_fqa_builders_own_template(fc):
-    """One copy of Lumen's form in the repo: the FQA Builder's.  A fix to it
+    """One copy of the customer's form in the repo: the FQA Builder's.  A fix to it
     (like the namespace-prefix repair) reaches this page too."""
     code, _, body = fc.get('/api/blank-form')
     assert code == 200

@@ -1524,7 +1524,7 @@
     }
   });
   el.fqaBlankBtn.addEventListener('click', async () => {
-    if (!window.confirm('Go back to the blank form? The span FQA you opened is removed from this phone (the original file is not touched).')) return;
+    if (!window.confirm('Go back to the blank customer form? The span FQA you opened is removed from this phone (the original file is not touched).')) return;
     await kv.del('fqa');
     await loadFqaState();
     setMsg(el.fqaMsg, 'Using the blank form.', 'ok');

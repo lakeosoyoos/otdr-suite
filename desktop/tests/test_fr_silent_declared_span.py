@@ -6,7 +6,7 @@ start at the OTDR port, a reel length earlier.  measure_fr_section_loss has
 always added that origin (_fr_origin_idx); the silent-side transplant did not,
 so it fitted its windows a reel upstream of where they belong.
 
-Lumen Span 7 fiber 229 is the case that found it.  A's Monument panel reads
+Span 7 fiber 229 is the case that found it.  A's Monument panel reads
 4.787 dB.  At Splice 1 (2.03 km) only B sees an event, so A's loss is
 measured from the trace, and the unshifted window straddled the panel:
 5.408 dB, averaged with B's 0.048 to 2.728, a flagged cell on a clean

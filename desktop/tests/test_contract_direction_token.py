@@ -1,8 +1,8 @@
 """Direction grouping for iOLM exports that name both directions alike.
 
 The hub sorts a span's files into its two directions by the filename's
-leading alpha run: SEANOR001 and NORSEA001 are two groups.  NCT's iOLM
-exports (AWS / IIG MT.1085) name BOTH directions with the same cable id and
+leading alpha run: SEANOR001 and NORSEA001 are two groups.  The prime contractor's iOLM
+exports (the contract profile) name BOTH directions with the same cable id and
 tell them apart only by a -AB / -BA token:
 
     MSO401-MSO402-OSP-0432F-01-0001-AB_1550.sor

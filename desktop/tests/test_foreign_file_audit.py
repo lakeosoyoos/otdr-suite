@@ -1,7 +1,7 @@
 """Foreign-file audit: acquisitions from ANOTHER job mixed into a span folder
 are flagged and excluded, and the tech is told.
 
-Origin: Lumen Span 2 Tooele<->Knolls (2026-09-12) shipped with five HH3WES
+Origin: Span 2 Tooele<->Knolls (2026-09-12) shipped with five HH3WES
 short shots (HH3->West, 10 ns, range 156,250) among 864 KNOLLS<->TOOELE
 traces (275 ns, range 1,250,000).  The rule is header-only: a file is foreign
 when its GenParams location pair disagrees with the folder majority AND its
