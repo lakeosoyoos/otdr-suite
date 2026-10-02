@@ -58,7 +58,7 @@ def _run(tmp_path, js):
 
 # ── Hub: the Viewer page's header ───────────────────────────────────────────
 def _page_viewer():
-    return _between(APP, 'def page_viewer():', '\ndef ')
+    return _between(APP, 'def page_viewer(', '\ndef ')
 
 
 def test_the_viewer_page_has_no_heading_and_no_blue_box():
@@ -79,6 +79,9 @@ def test_profile_and_pop_out_share_one_row_above_settings():
     assert row < pick < pop < box
     # the line beside the button is its tooltip now
     assert 'title="Keeps this page free for the report.' in page
+    # Viewer FEC keeps a heading, half the old size, and opens the pop-out in FEC mode
+    assert '<p style="font-size:0.75rem;font-weight:600;margin:0">' in page
+    assert ".replace('__POPQ__', '?fec=1' if fec else '')" in page
     assert 'keeps this page free for the report &middot;' not in page
 
 

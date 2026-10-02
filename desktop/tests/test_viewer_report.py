@@ -440,8 +440,9 @@ def _fn(name):
 def test_the_toolbar_has_a_summary_report_button():
     """Robert, 2026-09-28: "we will call them Summary Report", made from the
     Viewer only."""
-    group = SRC.split('<button id="btn-report"', 1)[0].rsplit('<div class="group">', 1)[1]
-    assert '</div>' not in group                          # inside its own toolbar group
+    # Its own toolbar group at the bar's right end, beside the gear (Robert 2026-10-01).
+    group = SRC.split('<button id="btn-report"', 1)[0].rsplit('<div class="group" id="tb-right">', 1)[1]
+    assert '</div>' not in group
     assert '>Summary Report…</button>' in SRC
     assert "document.getElementById('btn-report').onclick = showReportDialog;" in SRC
     assert '`<h3>Summary Report</h3>`' in SRC and '`<h3>Summary Report Saved</h3>`' in SRC

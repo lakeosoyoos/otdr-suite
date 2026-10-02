@@ -62,7 +62,7 @@ needs_jsc = pytest.mark.skipif(not JSC.exists(), reason="no JavaScriptCore shell
 def _zeros(tmp_path, cases):
     prelude = r"""
 var gTraces = [], gSpanDecl = {a: null, b: null}, gInfo = {launch_a_km: 1.0383, launch_b_km: 1.0001};
-var gLaunchA = 1.0383, gStacked = true, gHaveA = false, gMirrorDelta = 0;
+var gLaunchA = 1.0383, gStacked = true, gHaveA = false, gMirrorDelta = 0, gFecMode = false;
 function T(dir, fiber, ev, far) {
   return {key: dir + '-' + fiber, dir: dir, src: dir, fiber: fiber, visible: true,
           data: {events: ev.map(function (k) { return {dist_km: k}; }),
