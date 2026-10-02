@@ -327,7 +327,7 @@ def test_run_button_passes_the_active_profiles_contract():
     # (each folder without the files removed in the Viewer: _run_folder)
     site = src.split("'cmd': splicereport_cmd(_run_folder(_da), _run_folder(_db),", 1)
     assert len(site) == 2
-    before = site[0][-1500:]
+    before = site[0][-2500:]
     # The overrides (threshold table, connector knobs, profile engine
     # extras) are built by _report_overrides, which the Viewer's own run
     # shares; the extras still come from the ACTIVE profile.
