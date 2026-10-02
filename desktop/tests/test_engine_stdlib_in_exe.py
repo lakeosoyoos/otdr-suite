@@ -30,6 +30,13 @@ KNOWN_IN_EXE = {
     'shutil', 'socket', 'ssl', 'struct', 'subprocess', 'sys', 'tempfile',
     'threading', 'time', 'tkinter', 'traceback', 'typing', 'urllib', 'uuid',
     'webbrowser', 'xml', 'zipfile', 'zlib', 'zoneinfo',
+    # OTDR Suite App's own engine code (2026-10-02), each with its reason:
+    'ctypes',     # desktop/launcher.py imports it: PyInstaller bundles it
+    'inspect',    # Streamlit (collect_all) imports it
+    'posixpath',  # pathlib imports it
+    'pwd',        # POSIX only, behind os.name != 'nt' (never on Windows)
+    'fcntl',      # POSIX only, behind os.name != 'nt' (never on Windows)
+    'smtplib',    # owner e-mail: in the App spec's hiddenimports
 }
 
 
