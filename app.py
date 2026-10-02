@@ -2966,7 +2966,7 @@ def _removed_fibers(dirs):
 _TRACE_SIG_EXTS = ('.sor', '.json', '.trc', '.bdr')
 
 
-def _trace_files_sig(folder):
+def _trace_files_sig(folder, exts=_TRACE_SIG_EXTS):
     """(signature, fibers) for the trace files in `folder` now, or None.
 
     The signature covers every trace file's path, size and time, as
@@ -2995,7 +2995,7 @@ def _trace_files_sig(folder):
                             todo.append(e.path)
                     elif e.name.startswith('.'):
                         continue
-                    elif e.name.lower().endswith(_TRACE_SIG_EXTS):
+                    elif e.name.lower().endswith(exts):
                         if os.name == 'nt':
                             s = e.stat()
                             names.append((e.path, s.st_size, s.st_mtime_ns))
@@ -3003,7 +3003,7 @@ def _trace_files_sig(folder):
                             names.append((e.path,))
         quick = (tuple(sorted(stamps)), tuple(sorted(names)))
         cache = _rerun_caches().setdefault('trace_sig', {})
-        hit = cache.get(folder)
+        hit = cache.get((folder, exts))
         if hit and hit[0] == quick:
             return hit[1]
         rows = []
@@ -3012,22 +3012,88 @@ def _trace_files_sig(folder):
             rows.append((os.path.relpath(p, folder), s.st_size, s.st_mtime_ns))
         sig = hashlib.sha1(repr(rows).encode('utf-8')).hexdigest()[:16]
         got = (sig, len(trace_server.list_fibers(folder)))
-        _remember(cache, folder, (quick, got))
+        _remember(cache, (folder, exts), (quick, got))
         return got
     except Exception:
         return None
 
 
+def _box_zip_sig(raw):
+    """[box, kind, signature] for a box that holds a .zip (kind 'zip') or a
+    folder read from the zips in it ('zips'), else None.
+
+    Such a box is read from an extracted copy (_resolve_viewer_dir), and a
+    new zip gives a NEW copy: the copy a report ran on never changes, so its
+    record (_trace_files_record) could not see a zip replaced or downloaded
+    again under the same name (Robert 2026-10-02).  The zip itself is signed
+    instead, by size, time and file id as _resolve_viewer_dir signs it: one
+    file stat per rerun.  A folder of zips is signed like a folder of traces,
+    zips included, at the same cost."""
+    p = (raw or '').strip().strip('"') if isinstance(raw, str) else ''
+    if not p:
+        return None
+    try:
+        if os.path.isfile(p) and p.lower().endswith('.zip'):
+            s = os.stat(p)
+            return [p, 'zip', f'{s.st_size}:{s.st_mtime_ns}:{s.st_ino}']
+        # A folder that lists traces is read as it is, its zips unread.
+        if (os.path.isdir(p) and not trace_server.list_fibers(p)
+                and any(n.lower().endswith('.zip') for n in os.listdir(p))):
+            got = _trace_files_sig(p, _TRACE_SIG_EXTS + ('.zip',))
+            return [p, 'zips', got[0]] if got else None
+    except Exception:
+        return None
+    return None
+
+
 def _trace_files_record(*sides):
     """What a run's folders hold when it starts, for its result: one
-    [folder, label, signature, fibers] per (folder, label) given."""
+    [folder, label, signature, fibers] per (folder, label) given.  A side
+    given as (folder, label, box) whose box holds a .zip, or a folder read
+    from its zips, adds the zip's [box, kind, signature] (_box_zip_sig)."""
     out = []
-    for folder, label in sides:
+    for folder, label, *box in sides:
         if folder and os.path.isdir(folder):
             got = _trace_files_sig(folder)
             if got:
-                out.append([folder, label, got[0], got[1]])
+                ent = [folder, label, got[0], got[1]]
+                zsig = _box_zip_sig(box[0]) if box else None
+                if zsig:
+                    ent.append(zsig)
+                out.append(ent)
     return out
+
+
+def _zip_boxes(*raws):
+    """The boxes a report ran from, as typed, when any of them holds a .zip
+    or a folder read from its zips; else None.  Such a report also keeps a
+    saved copy filed under the box (_box_copy_path): the copy filed under
+    the extracted folder is not found again once the zip changes, since the
+    new zip is read from a new folder, and the report went with nothing said."""
+    out = [(r or '').strip().strip('"') if isinstance(r, str) else '' for r in raws]
+    return out if any(_box_zip_sig(r) for r in out) else None
+
+
+def _box_copy_path(name, boxes):
+    """Where the copy of a report filed under its boxes (_zip_boxes) goes:
+    the first box, which Clear Report's list of folders holds too
+    (_report_folders)."""
+    return _hub_cache_path(name, next(b for b in boxes if b))
+
+
+def _box_copy_read(name, boxes, *, fec=False):
+    """The report filed under `boxes` (_zip_boxes), or None: only one run
+    from exactly these boxes."""
+    if not boxes:
+        return None
+    try:
+        path = (_hub_cache_path(name, *boxes) if fec
+                else _box_copy_path(name, boxes))
+        with open(path, encoding='utf-8') as fh:
+            got = json.load(fh)
+        return got if got.get('ok') and got.get('_boxes') == boxes else None
+    except Exception:
+        return None
 
 
 def _folders_changed_text(rec, again='Run the report again'):
@@ -3038,18 +3104,28 @@ def _folders_changed_text(rec, again='Run the report again'):
     that cannot be read now says nothing either."""
     if not isinstance(rec, list):
         return None
-    changed = []
+    changed, zipped = [], []
     for ent in rec:
         try:
-            folder, label, sig, then = ent
+            folder, label, sig, then, *box = ent
         except (TypeError, ValueError):
+            continue
+        if box and isinstance(box[0], list) and len(box[0]) == 3:
+            # Read from a zip: the zip is what changes, not its copy.
+            znow = _box_zip_sig(box[0][0])
+            if znow and znow[1] == box[0][1] and znow[2] != box[0][2]:
+                zipped.append((label, box[0][1]))
             continue
         now = _trace_files_sig(folder) if folder and os.path.isdir(folder) else None
         if now is None or now[0] == sig:
             continue
         changed.append((label, then, now[1]))
-    if not changed:
+    if not changed and not zipped:
         return None
+    ztext = _zips_changed_text(zipped) if zipped else ''
+    if not changed:
+        one = len(zipped) == 1 and zipped[0][1] == 'zip'
+        return f"{ztext} {again} to read {'it' if one else 'them'}."
 
     def fibers(n):
         return f"{n} fiber{'s' if n != 1 else ''}"
@@ -3070,9 +3146,28 @@ def _folders_changed_text(rec, again='Run the report again'):
         counts = ' (' + '; '.join(f'{lb}: {fibers(t)} then, {n} now'
                                   for lb, t, n in moved) + ')'
     grew = len(counted) == len(changed) and all(n > t for _lb, t, n in counted)
+    if ztext:
+        return (f'{which} changed since this report was made{counts}. '
+                f'{ztext} {again} to read them.')
     return (f'{which} changed since this report was made{counts}. '
             + (f'{again} to include them.' if grew
                else f'{again} to read the files there now.'))
+
+
+def _zips_changed_text(zipped):
+    """'The A .zip changed since this report was made.' and the like, for
+    [(label, kind)] of the boxes whose zips changed (_box_zip_sig)."""
+    labels = [lb for lb, _k in zipped if lb]
+    who = (' and '.join(labels) + ' ') if len(labels) == len(zipped) else ''
+    kinds = {k for _lb, k in zipped}
+    if kinds == {'zip'}:
+        what = f'The {who}.zip' + (' files' if len(zipped) > 1 else '')
+    elif kinds == {'zips'}:
+        what = (f'The zips in the {who}folder' + ('s' if len(zipped) > 1 else '')
+                if who else 'The zips in the folder' + ('s' if len(zipped) > 1 else ''))
+    else:
+        what = f'The {who}zips'
+    return f'{what} changed since this report was made.'
 
 
 def _folders_changed_note(res, again='Run the report again'):
@@ -3295,12 +3390,15 @@ def _forget_fec_report():
     only known once the page resolves it).  Never raises."""
     ss = st.session_state
     pairs = [(ss.get('fec_result') or {}).get('_dirs'), ss.get('fec_ran_dirs')]
-    boxes = []
+    boxes, typed = [], []
     for _k in ('fec_dir_a', 'fec_dir_b'):
         _raw = ss.get(_k) or ss.get(_k + '_saved') or ''
         _raw = _raw.strip().strip('"') if isinstance(_raw, str) else ''
         boxes.append(os.path.abspath(_raw) if _raw and os.path.isdir(_raw) else '')
+        # ...and as typed, for a report filed under a box holding a .zip.
+        typed.append(os.path.abspath(_raw) if _raw and os.path.exists(_raw) else '')
     pairs.append(boxes)
+    pairs.append(typed)
     for _p in pairs:
         if not (isinstance(_p, (list, tuple)) and len(_p) == 2 and _p[0]):
             continue
@@ -4402,6 +4500,11 @@ def page_duplicate_check():
     _outputs = ['Excel (xlsx)', 'PDF', 'Stay in App']
     _seed_box('ss_out_format', _outputs)
     out_format = st.radio('Output', _outputs, horizontal=True, key='ss_out_format')
+    # A .zip in a left-panel box (or a folder read from its zips): a new zip
+    # is read from a new folder, and the A+B folder built from it is new
+    # too, so the report is filed under the boxes as well (_box_copy_path).
+    _ss_raws = _panel_boxes() if (_pa or _pb) else ('', '')
+    _ss_boxes = _zip_boxes(*_ss_raws)
     _keep_box('ss_out_format')
     fmt = {'Excel (xlsx)': 'xlsx', 'PDF': 'pdf'}.get(out_format, 'pairs')
 
@@ -4425,8 +4528,9 @@ def page_duplicate_check():
         st.session_state['ss_run_removed'] = _removed_now(_pa, _pb)
         # ...and what the folders the tech gave hold (_folders_changed_note).
         st.session_state['ss_run_files'] = (
-            _trace_files_record((_pa, 'A'), (_pb, 'B')) if (_pa or _pb)
-            else _trace_files_record((src_folder, None)))
+            _trace_files_record((_pa, 'A', _ss_raws[0]), (_pb, 'B', _ss_raws[1]))
+            if (_pa or _pb) else _trace_files_record((src_folder, None)))
+        st.session_state['ss_run_boxes'] = _ss_boxes
         st.session_state['ss_run_src'] = _src
         # Each file's direction, for the pair links (_ss_pair_link).
         st.session_state['ss_run_sides'] = _ss_panel_sides(_pa, _pb) if _ab else {}
@@ -4500,8 +4604,15 @@ def page_duplicate_check():
         # Filed under the folder it RAN on, which _ss_cache_read checks: filed
         # under the folder on screen, a run that ended after the folders
         # changed was never read back.
+        _ran_boxes = st.session_state.pop('ss_run_boxes', None)
+        if _ran_boxes:
+            manifest['_boxes'] = _ran_boxes
         _ss_cache_write('pairs_cache.json' if manifest.get('mode') == 'pairs'
                         else 'ss_result_cache.json', manifest['_folder'], manifest)
+        if _ran_boxes:
+            _ss_cache_write('pairs_cache.json' if manifest.get('mode') == 'pairs'
+                            else 'ss_result_cache.json',
+                            next(b for b in _ran_boxes if b), manifest)
         if _ran_on != _src:
             # The folders changed while it ran: its report is not for these.
             st.info('The analysis finished on the folders loaded when it '
@@ -4519,6 +4630,10 @@ def page_duplicate_check():
     pres = st.session_state.get('ss_pairs_result')
     if not (pres and pres.get('mode') == 'pairs'):
         cached = _ss_cache_read('pairs_cache.json', folder, mode='pairs')
+        if not cached and _ss_boxes:
+            # The zip changed: the report from the old one, under the boxes.
+            cached = _box_copy_read('pairs_cache.json', _ss_boxes)
+            cached = cached if cached and cached.get('mode') == 'pairs' else None
         if cached:
             pres = cached
             st.session_state['ss_pairs_result'] = cached
@@ -4534,6 +4649,8 @@ def page_duplicate_check():
     res = st.session_state.get('ss_result')
     if not (res and res.get('ok')):
         cached = _ss_cache_read('ss_result_cache.json', folder)
+        if not cached and _ss_boxes:
+            cached = _box_copy_read('ss_result_cache.json', _ss_boxes)
         if cached:
             res = cached
             st.session_state['ss_result'] = cached
@@ -7689,6 +7806,10 @@ def page_splice_report():
             used_names.add(_name)
             out_xlsx = _unused_report_path(os.path.join(_sr_dest, _name),
                                            [q['out'] for q in queue])
+            # Span 1 on the left panel's boxes: what they hold as typed, so
+            # a .zip in one is signed too (_box_zip_sig).
+            _raws = (_panel_boxes() if _n == 1 and (_da, _db) == tuple(_panel_traces())
+                     else ('', ''))
             queue.append({'span': _n, 'dirs': (_da, _db), 'out': out_xlsx,
                           'cmd': splicereport_cmd(_run_folder(_da), _run_folder(_db),
                                                   out_xlsx, _sa, _sb,
@@ -7698,7 +7819,9 @@ def page_splice_report():
                                                   viewer_table=_viewer_table_path(_da, _db)),
                           # What its folders hold, for the line over its
                           # report when they change (_folders_changed_note).
-                          'files': _trace_files_record((_da, 'A'), (_db, 'B')),
+                          'files': _trace_files_record((_da, 'A', _raws[0]),
+                                                       (_db, 'B', _raws[1])),
+                          'boxes': _zip_boxes(*_raws),
                           # The files removed in the Viewer this run leaves
                           # out, for the note over its report.
                           'removed': _removed_now(_da, _db)})
@@ -7761,9 +7884,16 @@ def page_splice_report():
                 try:
                     _sd = st.session_state.get(_dk) or (None, None)
                     if _run['span'] == 1 and _sd[0] and os.path.isdir(_sd[0]):
-                        with open(_hub_cache_path(_cache_name, _sd[0]),
-                                  'w', encoding='utf-8') as fh:
-                            json.dump({'manifest': manifest, '_dirs': list(_sd)}, fh)
+                        _rec = {'manifest': manifest, '_dirs': list(_sd)}
+                        _paths = [_hub_cache_path(_cache_name, _sd[0])]
+                        if _run.get('boxes'):
+                            # A .zip in a box: filed under the box too, which
+                            # is still the box after the zip changes.
+                            _rec['_boxes'] = _run['boxes']
+                            _paths.append(_box_copy_path(_cache_name, _run['boxes']))
+                        for _path in dict.fromkeys(_paths):
+                            with open(_path, 'w', encoding='utf-8') as fh:
+                                json.dump(_rec, fh)
                 except Exception:
                     pass
             # This span done (or failed): the next queued one starts now.
@@ -7775,8 +7905,10 @@ def page_splice_report():
         # Back from the Viewer (or any session reset): restore the last grid
         # from the disk cache.  Candidate dirs: this page's own sr_dirs if it
         # survived, else the viewer slots the deep link seeded (sra/srb).
+        # A box holding a .zip is a file: its report is filed under it
+        # (_box_copy_path) and comes back for the same boxes.
         for _cand in (st.session_state.get(f'{_p}_dirs'), _panel_boxes()):
-            if not (_cand and _cand[0] and os.path.isdir(_cand[0])):
+            if not (_cand and _cand[0] and os.path.exists(_cand[0])):
                 continue
             try:
                 with open(_hub_cache_path(_cache_name, _cand[0]),
@@ -7786,7 +7918,8 @@ def page_splice_report():
                 # carries manifest.fr = True; never show its grid here.
                 if (_cached.get('manifest', {}).get('ok')
                         and not _cached.get('manifest', {}).get('fr')
-                        and _cached.get('_dirs', [None])[0] == _cand[0]):
+                        and (_cached.get('_dirs', [None])[0] == _cand[0]
+                             or _cached.get('_boxes') == list(_cand))):
                     res = _cached['manifest']
                     st.session_state[f'{_p}_result'] = res
                     st.session_state[f'{_p}_dirs'] = tuple(_cached['_dirs'])
@@ -8356,6 +8489,7 @@ def page_unidirectional():
     st.session_state.setdefault('uni_folder_input', '')
     _dropped = None
     _uni_pside = ''            # the left panel's side this page runs on, if any
+    _uni_raw = ''              # the box it came from, as typed (_box_zip_sig)
     if _pa or _pb:
         # Traces loaded in the left panel: the page draws no loader of its
         # own and runs on one of those folders (Robert 2026-09-28).  One
@@ -8374,6 +8508,9 @@ def page_unidirectional():
         else:
             folder = _pa or _pb
         _uni_pside = 'a' if folder == _pa else 'b'
+        _raws = _panel_boxes()
+        # A box holding both directions is split: both sides came from it.
+        _uni_raw = _raws[0 if _uni_pside == 'a' else 1] or _raws[0] or _raws[1]
         st.caption(f"Traces: the {'A' if folder == _pa else 'B'} folder loaded "
                    'in the left panel.')
         _viewer_removed_note(folder, page='uni')
@@ -8415,6 +8552,7 @@ def page_unidirectional():
             _keep_box('uni_folder_input')
 
         folder = _uni_box_folder()
+        _uni_raw = folder
         # The same inputs the Viewer takes: a .zip, or a folder of zips, is
         # read from its extracted copy.  A pasted .zip used to leave the page
         # asking for a folder, with nothing said (2026-09-29).
@@ -8550,6 +8688,14 @@ def page_unidirectional():
             and not _no_settings
         st.caption('⏳ Large folders can take a few minutes. Leave this '
                    'window open and don’t refresh.')
+    # A .zip in the box (or a folder read from its zips), and the side run
+    # on: a new zip is read from a new folder, so the report is filed under
+    # the box too, and found there once the zip changes (_box_copy_path).
+    if _from_upload:
+        _uni_raw = ''
+    _uni_boxes = _zip_boxes(_uni_raw)
+    if _uni_boxes:
+        _uni_boxes.append(_uni_pside or _uni_up_side or '')
     if _run_uni:
         out_xlsx = _unused_report_path(
             os.path.join(_uni_dest, 'unidirectional_events.xlsx'))
@@ -8565,7 +8711,8 @@ def page_unidirectional():
         st.session_state['uni_run_removed'] = _removed_now(folder)
         # ...and what the folder the tech gave holds (_folders_changed_note).
         st.session_state['uni_run_files'] = _trace_files_record(
-            (src_folder, _uni_pside.upper() or None))
+            (src_folder, _uni_pside.upper() or None, _uni_raw))
+        st.session_state['uni_run_boxes'] = _uni_boxes
         st.session_state.pop('uni_result', None)
         st.rerun()
 
@@ -8602,14 +8749,20 @@ def page_unidirectional():
         manifest['_folder'] = folder
         manifest['_viewer_removed'] = st.session_state.pop('uni_run_removed', None)
         manifest['_trace_files'] = st.session_state.pop('uni_run_files', None)
+        _ran_boxes = st.session_state.pop('uni_run_boxes', None)
+        if _ran_boxes:
+            manifest['_boxes'] = _ran_boxes
         st.session_state['uni_result'] = manifest
         # Disk cache: a grid-cell click into the Viewer is a URL nav that
         # wipes session_state — this is how "← Back" re-shows the report
         # without a re-run (same pattern as Secret Sauce / Splice Report).
         try:
-            with open(_hub_cache_path('uni_result_cache.json', folder),
-                      'w', encoding='utf-8') as fh:
-                json.dump(manifest, fh)
+            _paths = [_hub_cache_path('uni_result_cache.json', folder)]
+            if _ran_boxes:
+                _paths.append(_box_copy_path('uni_result_cache.json', _ran_boxes))
+            for _path in dict.fromkeys(_paths):
+                with open(_path, 'w', encoding='utf-8') as fh:
+                    json.dump(manifest, fh)
         except Exception:
             pass
 
@@ -8625,6 +8778,15 @@ def page_unidirectional():
                 st.session_state['uni_result'] = res
         except Exception:
             pass
+    if not (res and res.get('ok') and res.get('_folder') == folder) and _uni_boxes:
+        # The .zip in the box changed, and is read from a new folder: the
+        # report from the old one is found under the box, shown on the
+        # folder it ran on, and says the zip changed (_folders_changed_note).
+        if not (res and res.get('ok') and res.get('_boxes') == _uni_boxes):
+            res = _box_copy_read('uni_result_cache.json', _uni_boxes)
+        if res:
+            st.session_state['uni_result'] = res
+            folder = res.get('_folder') or folder
     if not (res and res.get('ok') and res.get('_folder') == folder):
         return
     _viewer_removed_report_note('uni', res, folder)
@@ -9065,6 +9227,14 @@ def page_splice_report_fec():
                 'it). Each folder holds one end’s short `.sor` shots.')
         return
 
+    # A .zip in a box (or a folder read from its zips), as typed: a new zip
+    # is read from a new folder, so the report is filed under the boxes too
+    # and found there once the zip changes (_box_copy_path).
+    _fec_raws = [(st.session_state.get(_k) or '').strip().strip('"')
+                 for _k in ('fec_dir_a', 'fec_dir_b')]
+    _fec_raws = [os.path.abspath(_r) if _r else '' for _r in _fec_raws]
+    _fec_boxes = _zip_boxes(*_fec_raws)
+
     import folder_intake as _fi_dest
     _fec_resync('fec_report_dest')
     _dest = _report_dest_row('fec_report_dest', _fi_dest.default_report_dir())
@@ -9078,7 +9248,8 @@ def page_splice_report_fec():
         # What the two folders hold, for the line over the report when they
         # change after it ran (_folders_changed_note).
         st.session_state['fec_run_files'] = _trace_files_record(
-            (dir_a, 'A end'), (dir_b, 'B end'))
+            (dir_a, 'A end', _fec_raws[0]), (dir_b, 'B end', _fec_raws[1]))
+        st.session_state['fec_run_boxes'] = _fec_boxes
         st.session_state.pop('fec_result', None)
         st.rerun()
 
@@ -9107,13 +9278,19 @@ def page_splice_report_fec():
             return
         manifest['_dirs'] = [dir_a, dir_b]
         manifest['_trace_files'] = st.session_state.pop('fec_run_files', None)
+        _ran_boxes = st.session_state.pop('fec_run_boxes', None)
+        if _ran_boxes:
+            manifest['_boxes'] = _ran_boxes
         st.session_state['fec_result'] = manifest
         # A row click into Viewer FEC is a URL nav that wipes session_state:
         # this is how the page shows the report again on the way back.
         try:
-            with open(_hub_cache_path('fec_result_cache.json', dir_a, dir_b),
-                      'w', encoding='utf-8') as fh:
-                json.dump(manifest, fh)
+            _paths = [_hub_cache_path('fec_result_cache.json', dir_a, dir_b)]
+            if _ran_boxes:
+                _paths.append(_hub_cache_path('fec_result_cache.json', *_ran_boxes))
+            for _path in dict.fromkeys(_paths):
+                with open(_path, 'w', encoding='utf-8') as fh:
+                    json.dump(manifest, fh)
         except Exception:
             pass
 
@@ -9127,6 +9304,15 @@ def page_splice_report_fec():
                 res = st.session_state['fec_result'] = _cached
         except Exception:
             pass
+    if not (res and res.get('ok') and res.get('_dirs') == [dir_a, dir_b]) and _fec_boxes:
+        # The .zip in a box changed, and is read from a new folder: the
+        # report from the old one is found under the boxes, its rows open
+        # the folders it ran on, and it says the zip changed.
+        if not (res and res.get('ok') and res.get('_boxes') == _fec_boxes):
+            res = _box_copy_read('fec_result_cache.json', _fec_boxes, fec=True)
+        if res and isinstance(res.get('_dirs'), list) and len(res['_dirs']) == 2:
+            st.session_state['fec_result'] = res
+            dir_a, dir_b = res['_dirs']
     if not (res and res.get('ok') and res.get('_dirs') == [dir_a, dir_b]):
         return
     _folders_changed_note(res)

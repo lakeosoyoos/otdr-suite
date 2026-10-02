@@ -165,7 +165,7 @@ def test_nothing_is_said_when_nothing_changed_or_nothing_was_recorded():
 
 
 def test_every_report_records_its_folders_when_its_run_starts():
-    assert "'files': _trace_files_record((_da, 'A'), (_db, 'B'))," in APP
+    assert "'files': _trace_files_record((_da, 'A', _raws[0])," in APP
     assert "manifest['_trace_files'] = _run.get('files')" in APP
     for page in ('uni', 'ss', 'fec'):
         assert f"st.session_state['{page}_run_files'] = " in APP
