@@ -8,11 +8,17 @@
    loaded and failed only on Generate ("Loaded A=0 B=0 fibers").  The .zip
    itself in the box worked.  A folder with no trace files at all said
    nothing either.
+2. The same folder in both boxes: only the Viewer warned, and the Splice
+   Report made a 24-fiber "bidirectional" report of one direction averaged
+   with itself ("A direction: SITE → SITE").  Two copies of one direction in
+   the two boxes said nothing either.
 """
 from __future__ import annotations
 
 import os
 import shutil
+
+import pytest
 
 from conftest import (run_streamlit, import_trace_server,
                       FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
@@ -164,3 +170,64 @@ def test_a_folder_with_no_trace_files_says_so_on_every_page(tmp_path):
     assert want in _texts(at.main.warning)
     _open(at, 'Secret Sauce')
     assert want in _texts(at.main.warning)
+
+
+# ── 2. the same folder, or the same direction, in both boxes ──────────────
+
+SAME = 'The A and B boxes name the same folder.'
+
+
+@pytest.mark.parametrize('spell', ['as is', 'trailing slash', 'quoted', 'other case'])
+def test_the_same_one_direction_folder_in_both_boxes_is_a_only(tmp_path, spell):
+    a = _copy(A, tmp_path / 'ELMMIL')
+    b = {'as is': a, 'trailing slash': a + os.sep, 'quoted': f'"{a}"',
+         'other case': os.path.join(str(tmp_path), 'elmmil')}[spell]
+    if not os.path.isdir(b.strip('"')):
+        pytest.skip('this file system tells the two cases apart')
+    at = _open(_hub(a, b), 'Viewer')
+    assert f'A: {N_A} fibers · B: 0 fibers' in _texts(at.sidebar.caption)
+    assert _texts(at.sidebar.warning).count(SAME) == 1
+    assert _server() == (a, None)
+    # the Splice Report sees A only: it says why and makes no report
+    _open(at, 'Splice Report')
+    assert SAME in _texts(at.main.warning)
+    assert 'Pick **both**' in _texts(at.main.info)
+    assert _generate(at) is None
+    _open(at, 'Unidirectional')
+    assert SAME in _texts(at.main.warning)
+
+
+def test_the_same_traces_one_folder_down_in_both_boxes_is_a_only(tmp_path):
+    """The same outer folder twice: one flattened folder, A only, and no
+    caption about a B that is not loaded."""
+    outer = tmp_path / 'ELMMIL'
+    _copy(A, outer / 'ELMMIL')
+    at = _open(_hub(str(outer), str(outer)), 'Splice Report')
+    assert SAME in _texts(at.main.warning)
+    assert 'A: traces read from its subfolders' in _texts(at.main.caption)
+    assert 'B: traces read from its subfolders' not in _texts(at.main.caption)
+    assert _generate(at) is None
+
+
+def test_the_same_folder_holding_both_directions_is_still_split(tmp_path):
+    """Kept as it was (a guard: this passed before the fix too)."""
+    both = _copy(A, tmp_path / 'both directions')
+    _copy(B, tmp_path / 'both directions')
+    at = _open(_hub(both, both + os.sep), 'Viewer')
+    assert f'A: {N_A} fibers · B: {N_B} fibers' in _texts(at.sidebar.caption)
+    assert 'holds both directions' in _texts(at.sidebar.caption)
+    assert SAME not in _texts(at.sidebar.warning)
+    _open(at, 'Splice Report')
+    assert _generate(at) is not None and not _generate(at).disabled
+
+
+def test_two_copies_of_one_direction_are_said_on_the_splice_report(tmp_path):
+    """Two different folders, both of the A direction: a warning, not a
+    block.  The span's real A and B say nothing."""
+    at = _open(_hub(A, _copy(A, tmp_path / 'ELMMIL copy')), 'Splice Report')
+    warned = _texts(at.main.warning)
+    assert 'Both the A and B boxes hold' in warned and '→' in warned
+    assert SAME not in warned
+    assert _generate(at) is not None
+    at = _open(_hub(A, B), 'Splice Report')
+    assert 'Both the A and B boxes hold' not in _texts(at.main.warning)

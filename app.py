@@ -3859,8 +3859,10 @@ def _panel_dirs():
             if note.startswith('could not'):
                 d = ''
         out[side] = d
-    same = bool(raw_a and raw_b) and (os.path.normcase(os.path.abspath(raw_a))
-                                      == os.path.normcase(os.path.abspath(raw_b)))
+    # The same folder in both boxes, however it was typed: a trailing slash,
+    # quotes or another case named it twice unseen.  Compared as resolved, so
+    # the same .zip twice is the same folder too.
+    same = _same_folder(out['A'], out['B'])
     # A pair click points the A box at Secret Sauce's own folder, which holds
     # both directions on purpose (see _handle_nav): the pair is read from it.
     ss_nav = st.session_state.get('_ss_nav_folder')
@@ -3884,7 +3886,32 @@ def _panel_dirs():
                                  f'({what}), and the {other} box has a folder of '
                                  f'its own. Empty the {other} box to split it '
                                  f'into A and B, or give {side} one direction.'))
+    # The same one-direction folder in both boxes was loaded as both A and B:
+    # the Viewer listed every file both ways, and the Splice Report made a
+    # "bidirectional" report of one direction averaged with itself (audit
+    # 2026-10-02).  It is A only; a folder holding both directions was split
+    # above and is two folders by now.
+    if same and _same_folder(out['A'], out['B']):
+        out['B'] = ''
+        # B's own caption ('B: viewing from .zip') is about a B not loaded.
+        notes = [n for n in notes
+                 if not (n[0] == 'caption' and n[1].startswith('B: '))]
+        notes.append(('warning', 'The A and B boxes name the same folder. It is '
+                                 "loaded as A only; put the other direction's "
+                                 'folder in the B box.'))
     return out['A'], out['B'], notes
+
+
+def _same_folder(p, q):
+    """True when `p` and `q` are one existing folder (os.path.samefile:
+    a trailing slash, another case or a link name it too)."""
+    if not (p and q and os.path.isdir(p) and os.path.isdir(q)):
+        return False
+    try:
+        return os.path.samefile(p, q)
+    except OSError:
+        return (os.path.normcase(os.path.realpath(p))
+                == os.path.normcase(os.path.realpath(q)))
 
 
 def page_viewer(fec=False):
@@ -3918,8 +3945,8 @@ def page_viewer(fec=False):
                     os.listdir(_d)
                 except OSError:
                     warn.append(f'{_lbl} folder is not readable (check permissions)')
-        if dir_a and dir_b and os.path.abspath(dir_a) == os.path.abspath(dir_b):
-            warn.append('A and B are the same folder')
+        # The same folder in both boxes: _panel_dirs loads it as A only and
+        # its note says so, on every page (audit 2026-10-02).
         trace_server.set_dirs(dir_a or None, dir_b or None)
         for w in warn:
             st.warning(w)
@@ -6967,6 +6994,13 @@ def _sr_span_inputs(span):
         mode = None
         if dir_a and dir_b:
             st.caption('Traces: the A and B folders loaded in the left panel.')
+            # Two copies of one direction: the report would average a
+            # direction with itself.  Said, not blocked (audit 2026-10-02).
+            _one_way = _same_direction_sites(dir_a, dir_b)
+            if _one_way:
+                st.warning(f'Both the A and B boxes hold {_one_way[0]} → '
+                           f'{_one_way[1]} traces. Check that the B box has the '
+                           "other direction's folder.")
             _viewer_removed_note(dir_a, dir_b, page='sr')
         else:
             st.caption(f"Traces: only the {'A' if dir_a else 'B'} folder is "
@@ -7054,6 +7088,27 @@ def _sr_span_inputs(span):
              'a second workbook highlighting every difference is saved next '
              'to it.')
     return dir_a, dir_b, tech_xlsx
+
+
+def _same_direction_sites(dir_a, dir_b):
+    """(origin, far end) when two different folders hold traces shot the
+    same way, else None.  Read as the site boxes read a folder (_derive_ila),
+    so only when both folders name both ends; folders whose files stamp
+    different directions (LocationsDirection, _stamped_side) are not called
+    the same.  Two copies of the A folder in the boxes made a SITE → SITE
+    report with nothing said (audit 2026-10-02)."""
+    try:
+        if _same_folder(dir_a, dir_b):
+            return None
+        ka, kb = _derive_ila(dir_a), _derive_ila(dir_b)
+        if not (all(ka) and all(kb)) or ka != kb:
+            return None
+        sa, sb = _stamped_side(dir_a), _stamped_side(dir_b)
+        if sa and sb and sa != sb:
+            return None
+        return ka
+    except Exception:
+        return None             # a check only: never block the page on it
 
 
 def _typed_trace_dir(raw, label):
