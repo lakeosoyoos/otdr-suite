@@ -129,11 +129,12 @@ JSC = ('/System/Library/Frameworks/JavaScriptCore.framework/Versions/'
        'Current/Helpers/jsc')
 
 
-def _paint_fec(switches, with_marks=False, with_nums=False):
+def _paint_fec(switches, with_marks=False, with_nums=False, after='', res_extra=None):
     """Run the real paintFecGrid under JavaScriptCore on three made-up
     grades and return the table markup it builds.  F1 fails on loss (the
     connector plus one event behind it), F2 on reflectance, F3 passes with a
-    negative connector loss (a gainer)."""
+    negative connector loss (a gainer).  `after` is JS run once the table is
+    painted; whatever it puts in AFTER comes back (with_marks=after)."""
     if not os.path.exists(JSC):
         pytest.skip('JavaScriptCore shell not available')
     import json, tempfile
@@ -145,6 +146,10 @@ def _paint_fec(switches, with_marks=False, with_nums=False):
     def line(pat):
         return re.search(pat, HTML).group(0) + '\n'
 
+    def block(start, end):
+        i = HTML.index(start)
+        return HTML[i:HTML.index(end, i) + len(end)] + '\n'
+
     grades = {'A': {
         '1': {'found': True, 'conn_km': 1.0121, 'conn_loss': 0.306, 'loss': 0.549,
               'combined': [{'loss': 0.243, 'km': 1.06}], 'refl': -53.0,
@@ -154,37 +159,49 @@ def _paint_fec(switches, with_marks=False, with_nums=False):
         '3': {'found': True, 'conn_km': 1.0050, 'conn_loss': -0.032, 'loss': -0.032,
               'combined': [], 'refl': -58.0, 'fail_loss': False, 'fail_refl': False},
     }}
+    res = {'grades': grades, 'gates': {'FEC_LOSS_GATE': 0.5, 'FEC_LOSS_STRICT': 1.0,
+                                       'FEC_REFL_GATE': -50.0, 'FEC_COMBINE_M': 150.0}}
+    res.update(res_extra or {})
     # each file's own events: the panel, one 48 m behind it, the first FEC
     # splice and the end; F1's panel is read 0.4 m off the engine's km
     evs = lambda conn: [{'dist_km': conn}, {'dist_km': 1.0600}, {'dist_km': 2.16},
                         {'dist_km': 4.993}]
-    traces = [{'fiber': f, 'src': 'a', 'key': f'a-{f}', 'color': '#000',
+    traces = [{'fiber': f, 'src': 'a', 'dir': 'a', 'key': f'a-{f}', 'color': '#000',
                'data': {'wavelength_nm': 1550, 'events': evs(conn)}}
               for f, conn in ((1, 1.0125), (2, 1.0117), (3, 1.0050))]
     js = ("var gInfo=null, gGridGoTo=null, gTableExport=null, gPickKey=null, gDrawerMarks=[];"
           " const FR_ROW_H=22; var window={getSelection:()=>''};\n"
           "function draw(){} function zoomToKm(){} function pinnedFootH(){return 0}"
-          " function setReadout(){} function pickRow(){}\n"
-          "var OUT='';\n"
-          "function el(){return {className:'',style:{},_ih:'',"
+          " function setReadout(){} function pickRow(){} function syncGateUI(){}\n"
+          "var MENUS=[]; function showSpanMenu(x,y,dir,km,fiber,src){MENUS.push([dir,km,fiber,src]);}"
+          " function showDirChooser(x,y,picks){MENUS.push(picks);}\n"
+          "var OUT='', LIS={}, AFTER=null, QS=() => null;\n"
+          "function el(){const o={className:'',style:{},_ih:'',"
           "set innerHTML(v){this._ih=v; if(this.className==='fr-table') OUT=v;},"
           " get innerHTML(){return this._ih}, appendChild(){}, querySelectorAll(){return []},"
-          " addEventListener(){}, tFoot:null, tHead:null, get tBodies(){return [el()]}};}\n"
+          " querySelector(q){return QS(q)},"
+          " addEventListener(t,f){LIS[t]=f;}, tFoot:null, tHead:null}; o._tb=null;"
+          " Object.defineProperty(o,'tBodies',{get(){return [o._tb||(o._tb=el())];}}); return o;}\n"
           "var document={createElement:el};\n"
           + line(r"function flagsOff\(\).*")
           + line(r"const pfClass = .*") + line(r"const pfMark = .*")
+          + line(r"let gFlaggedOnly = false;.*")
           + line(r"let gFailCellsOnly = false;") + line(r"let gWarnCellsOnly = false;")
           + line(r"const cellFilterOn = .*") + "let gShowGainers = true;\n"
           + line(r"const gainerHidden = .*")
+          + block('const DIST_UNITS = {', '\n};') + "let gDistUnit = 'km';\n" + fn('distU')
+          + line(r"let gFecGates = null;.*") + line(r"let gFecBase = null;.*")
+          + line(r"const gFecOverride = .*") + fn('fecOverridden')
           + "let gTableKm = null;\n" + fn('tableKmKey') + fn('tableMarkReset')
           + fn('tableMark') + fn('inTable')
           + fn('isPicked') + fn('fecGateText') + fn('paintFecGrid')
           + ''.join(f"{k} = {json.dumps(v)};\n" for k, v in switches.items())
           + f"var with_nums = {json.dumps(with_nums)};\n"
-          + f"var TRS = {json.dumps(traces)}, hint=el(); paintFecGrid(TRS, {json.dumps({'grades': grades})}, el(), hint);\n"
+          + f"var TRS = {json.dumps(traces)}, hint=el(); paintFecGrid(TRS, {json.dumps(res)}, el(), hint);\n"
+          + after + "\n"
           + "var NUMS = {}; TRS.forEach(t => { NUMS[t.key] = t.data.events"
             ".filter(e => inTable(t, e)).map(e => e.dist_km); });\n"
-          + "print(hint.textContent); print(JSON.stringify(with_nums ? NUMS : gDrawerMarks)); print(OUT);\n")
+          + "print(hint.textContent); print(JSON.stringify(AFTER != null ? AFTER : with_nums ? NUMS : gDrawerMarks)); print(OUT);\n")
     with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as fh:
         fh.write(js)
     try:
@@ -195,7 +212,7 @@ def _paint_fec(switches, with_marks=False, with_nums=False):
     hint, marks, out = p.stdout.split('\n', 2)
     body = re.search(r'<tbody>(.*)</tbody>', out, re.S).group(1)
     foot = re.search(r'<tfoot>(.*)</tfoot>', out, re.S)
-    if with_marks or with_nums:
+    if with_marks or with_nums or after:
         return json.loads(marks)
     return hint, body, foot.group(1) if foot else ''
 
@@ -253,7 +270,7 @@ def test_fec_rows_pick_their_trace_and_the_chart_finds_the_row():
     body = HTML[HTML.index('function paintFecGrid('):]
     body = body[:body.index('\n}\n')]
     assert 'pickRow([tr.dataset.key])' in body
-    assert 'gGridGoTo = (t) =>' in body
+    assert 'gGridGoTo = (t, e) =>' in body
     assert "tr.classList.toggle('fr-pick', isPicked(tr.dataset.key))" in body
     hint, html, _ = _paint_fec({'gPickKey': 'a-2'})
     assert re.search(r'data-key="a-2" class="fr-pick"', html)
@@ -292,6 +309,133 @@ def test_fec_chart_numbers_only_the_events_the_table_prints():
     assert nums['a-2'] == [1.0117]             # nothing combined
     assert nums['a-3'] == [1.005]
     assert "tableMarkReset(graded0.map(r => r.t));" in HTML
+
+
+# ── Audit fixes (Robert 2026-10-02: "fix all of them, show FEC gates in the
+# boxes"): what the Viewer has that Viewer FEC lacked ──────────────────────
+
+def test_fec_table_follows_the_distance_unit():
+    out = _paint_fec({'gDistUnit': 'ft'}, after='AFTER = OUT;')
+    assert 'Panel Connector<br>(ft)' in out
+    # F1's connector 1.0121 km = 3,321 ft; its combined event 1.06 km = 3,478 ft
+    assert re.search(r'data-col="km"[^>]*>3,321</td>', out)
+    assert '0.243 @ 3,478 ft' in out
+    hint, body, foot = _paint_fec({})
+    assert re.search(r'data-col="km"[^>]*>1.0121</td>', body) and '0.243 @ 1.060 km' in body
+
+
+def test_fec_show_only_flagged_rows_keeps_the_failing_traces():
+    hint, body, foot = _paint_fec({'gFlaggedOnly': True})
+    assert 'flagged rows only' in hint
+    assert _cell(body, 1, 'loss') == '0.549' and _cell(body, 2, 'refl') == '-45.2'
+    assert _cell(body, 3, 'loss') is None
+    assert _cell(body, 1, 'refl') == '-53.0'          # a whole row, not cells only
+
+
+def test_fec_rows_open_the_span_and_settings_menu():
+    """Right-click a row: the Viewer's span menu at that trace's own event --
+    the combined one on Combined With, the panel connector elsewhere."""
+    menus = _paint_fec({}, after="""
+        const ev = (ti, col) => ({ clientX: 5, clientY: 6, preventDefault() {},
+          target: { closest: q => q.startsWith('tr') ? { dataset: { ti: String(ti) } }
+                                : q.startsWith('td') ? (col ? { dataset: { col } } : null) : null } });
+        LIS.contextmenu(ev(0, 'loss')); LIS.contextmenu(ev(0, 'comb')); LIS.contextmenu(ev(1, null));
+        AFTER = MENUS;""")
+    assert menus == [['a', 1.0125, 1, 'a'], ['a', 1.06, 1, 'a'], ['a', 1.0117, 2, 'a']]
+    body = HTML[HTML.index('function paintFecGrid('):]
+    body = body[:body.index('\n}\n')]
+    # the ⋯ on the Panel Connector header, as on the other tables' headers
+    assert '<button class="fr-evmenu" title="span and settings">⋯</button>' in body
+    assert 'showDirChooser(b.left, b.bottom + 2, picks)' in body
+
+
+def test_an_event_number_on_the_chart_flashes_its_fec_cell():
+    sels = _paint_fec({}, after="""
+        const SEL = [];
+        const cell = { classList: { add() {}, remove() {} } };
+        const tr = { offsetTop: 0, offsetHeight: 22, cells: [cell],
+                     querySelector: q => { SEL.push(q); return cell; } };
+        QS = q => { SEL.push(q); return tr; };
+        gGridGoTo(TRS[0], { dist_km: 1.06 });     // F1's combined event
+        gGridGoTo(TRS[0], { dist_km: 1.0125 });   // F1's panel connector
+        AFTER = SEL;""")
+    assert 'td[data-col="comb"]' in sels and 'td[data-col="conn"]' in sels
+
+
+def test_fec_gates_show_in_the_viewer_boxes_and_override_per_window():
+    """Robert 2026-10-02 "show FEC gates in the boxes": Loss shows the FEC
+    loss gate (> when strict), Refl Band's low end the FEC reflectance gate,
+    its high end fixed at 0.  Typing overrides for this window only."""
+    import json, tempfile
+    if not os.path.exists(JSC):
+        pytest.skip('JavaScriptCore shell not available')
+
+    def fn(name):
+        i = HTML.index(f'function {name}(')
+        return HTML[i:HTML.index('\n}\n', i) + 3]
+    js = ("var gInfo={fec_gates:{FEC_LOSS_GATE:0.5,FEC_LOSS_STRICT:1,FEC_REFL_GATE:-50,FEC_COMBINE_M:150}};\n"
+          "var E={}; var document={getElementById:id=>E[id]||(E[id]={value:'',classList:{toggle(){}}})};\n"
+          "var RENDERS=0; function renderEventTable(){RENDERS++;}\n"
+          + re.search(r"let gFecGates = null;.*", HTML).group(0) + "\n"
+          + re.search(r"let gFecBase = null;.*", HTML).group(0) + "\n"
+          + re.search(r"const gFecOverride = .*", HTML).group(0) + "\n"
+          + fn('fecOverridden') + fn('fecGateText') + fn('fecGatesShown') + fn('fecGateLabel')
+          + fn('syncFecGateUI') + fn('setFecGateOverride')
+          + "syncFecGateUI(); var A=[E['set-loss'].value,E['set-refl-lo'].value,E['set-refl-hi'].value,"
+            "E['set-refl-hi'].disabled,E['loss-op'].textContent,E['gate-src'].textContent];\n"
+          + "gFecBase=gInfo.fec_gates; setFecGateOverride('loss',0.3); var B=[gFecOverride.loss,RENDERS,fecGateLabel()];\n"
+          + "gFecGates=Object.assign({},gFecBase,{FEC_LOSS_GATE:0.3}); syncFecGateUI(); B.push(E['set-loss'].value,E['gate-src'].textContent);\n"
+          + "setFecGateOverride('loss',0.5); B.push(gFecOverride.loss);\n"
+          + "print(JSON.stringify([A,B]));\n")
+    with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as fh:
+        fh.write(js)
+    try:
+        p = subprocess.run([JSC, fh.name], capture_output=True, text=True)
+    finally:
+        os.unlink(fh.name)
+    assert p.returncode == 0 and 'Exception' not in p.stdout, p.stdout + p.stderr
+    A, B = json.loads(p.stdout.strip().splitlines()[-1])
+    assert A == ['0.500', '-50.0', '0', True, 'Loss >', '']
+    assert B[0] == 0.3 and B[1] == 1 and 'overridden in this window' in B[2]
+    assert B[3] == '0.300' and B[4] == '(FEC gates overridden)'
+    assert B[5] is None                              # the profile's value lets go
+    # the Viewer's boxes hand over to FEC's in FEC mode
+    assert 'if (gFecMode) { syncFecGateUI(); return; }' in HTML
+    assert "if (gFecMode) { setFecGateOverride('loss', v); return; }" in HTML
+    assert '<span id="loss-op">Loss &ge;</span> <input id="set-loss"' in HTML
+    assert '&loss_gate=${gFecOverride.loss}' in HTML and '&refl_gate=${gFecOverride.refl}' in HTML
+
+
+def test_a_box_override_reaches_the_engine_and_not_the_profile(tmp_path):
+    _run("""
+        base = T.fec_tables([17])
+        assert base['gates']['FEC_LOSS_GATE'] == 0.5
+        res = T.fec_tables([17], {'FEC_LOSS_GATE': 0.0, 'FEC_REFL_GATE': -90.0})
+        assert res['gates']['FEC_LOSS_GATE'] == 0.0 and res['gates']['FEC_REFL_GATE'] == -90.0
+        g = res['grades']['A']['17']
+        assert g['fail_loss'] == (g['loss'] > 0.0) and g['fail_refl']
+        assert T.CONFIG['fec_gates'] is None            # the profile's are untouched
+        # the route reads the boxes' query parameters
+        cap = []
+        h = object.__new__(T.Handler)
+        h.path = '/api/fec_table?fibers=17&loss_gate=0&refl_gate=-90'
+        h._send_json = lambda payload, status=200: cap.append(payload)
+        h.do_GET()
+        assert cap[0]['gates']['FEC_LOSS_GATE'] == 0.0 and cap[0]['gates']['FEC_REFL_GATE'] == -90.0
+        print('OK')
+    """, tmp_path)
+
+
+def test_the_summary_report_states_fec_mode_and_its_gates():
+    rp = HTML[HTML.index('async function reportPayload('):]
+    rp = rp[:rp.index('\n}\n')]
+    assert "['Mode', gFecMode ? 'FEC' :" in rp
+    assert "meta.push(['FEC loss gate'," in rp and "meta.push(['FEC reflectance gate'," in rp
+    # each gate names its own source: one box typed over leaves the other's
+    assert "gFecOverride[w] != null ? 'overridden in this window' : 'customer profile'" in rp
+    assert "(${src('loss')})" in rp and "(${src('refl')})" in rp
+    # the Viewer boxes' Loss gate / Reflectance band only outside FEC mode
+    assert rp.index("if (gFecMode) {") < rp.index("meta.push(['Loss gate', gateLabel()]);")
 
 
 def test_viewer_script_still_parses():
