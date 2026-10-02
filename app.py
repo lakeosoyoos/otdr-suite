@@ -742,7 +742,7 @@ def run_engine_live(prefix, *, running_title, timeout_s=None):
         _engine_cancel(job)
         _engine_cleanup(job)
         st.session_state.pop(job_key, None)
-        st.info('Run cancelled.')
+        st.info('Run canceled.')
         return None
 
     state = _engine_poll(job, timeout_s)
@@ -1741,10 +1741,12 @@ def _install_sidebar_drag_fix():
 # Viewer and the B folder "goes straight to downloads and isn't populating".
 # The Viewer frame is a box in the middle of the hub page; a second folder let
 # go of a little off it (the sidebar's B box, the settings box above, the
-# header) was a download.  So the hub page catches every file drop: on the
-# Viewer page the files go on to the Viewer, which loads them as a drop on its
-# FILES panel; on any other page the drop is refused (no download either).
-# A file box of a page (st.file_uploader) still takes its own drops.
+# header) was a download.  So the hub page catches every file drop and refuses
+# it: the cursor says no and nothing loads or downloads.  Only the Viewer's
+# FILES panel takes a drop, where it lights up (Robert 2026-10-01); on the
+# Viewer page a drag over the hub tells the Viewer, which shows the panel as
+# the place to drop.  A file box of a page (st.file_uploader) still takes its
+# own drops.
 #
 # The page's frames are covered too: the settings box and the other boxes
 # drawn by the hub are frames of the hub's own address, and a drop on one of
@@ -1762,7 +1764,6 @@ HUB_DROP_CATCH_JS = r"""
   w.__otdrDropCatch = true;
   var s = w.document.createElement('script');
   s.textContent = '(' + function(){
-    var EXTS = ['.sor', '.json', '.trc', '.zip'];
     function isFiles(ev) {
       var t = ev.dataTransfer && ev.dataTransfer.types;
       return !!t && Array.prototype.indexOf.call(t, 'Files') >= 0;
@@ -1775,69 +1776,21 @@ HUB_DROP_CATCH_JS = r"""
       }
       return null;
     }
-    function walk(entry, out) {
-      return new Promise(function(resolve){
-        if (entry.isFile) {
-          // with the folder it came from, so the Viewer names the side after it
-          var parts = String(entry.fullPath || '').split('/').filter(Boolean);
-          entry.file(function(f){ out.push({ f: f, dir: parts.length > 1 ? parts[parts.length - 2] : '' });
-                                  resolve(); }, function(){ resolve(); });
-        } else if (entry.isDirectory) {
-          var rd = entry.createReader();
-          var page = function(){
-            rd.readEntries(function(ents){
-              if (!ents.length) { resolve(); return; }
-              ents.reduce(function(p, e){ return p.then(function(){ return walk(e, out); }); },
-                          Promise.resolve()).then(page);
-            }, function(){ resolve(); });
-          };
-          page();
-        } else resolve();
-      });
-    }
-    function collect(dt) {
-      var items = dt.items ? Array.prototype.slice.call(dt.items) : [];
-      var ents = items.map(function(i){ return i.webkitGetAsEntry && i.webkitGetAsEntry(); })
-                      .filter(Boolean);
-      var out = [];
-      var done = ents.length
-        ? ents.reduce(function(p, e){ return p.then(function(){ return walk(e, out); }); },
-                      Promise.resolve())
-        : Promise.resolve(Array.prototype.forEach.call(dt.files || [], function(f){
-            out.push({ f: f, dir: '' }); }));
-      return done.then(function(){
-        return out.filter(function(o){
-          var n = (o.f.name || '').toLowerCase();
-          return n.charAt(0) !== '.' && EXTS.some(function(x){ return n.slice(-x.length) === x; });
-        });
-      });
-    }
-    var lastLit = 0;
+    var lastHint = 0;
     function onOver(ev) {
       if (ev.defaultPrevented || !isFiles(ev)) return;   // a file box's own
       ev.preventDefault();
-      var fr = viewerFrame();
-      ev.dataTransfer.dropEffect = fr ? 'copy' : 'none';
-      // Light the Viewer's FILES panel ("Drop to load"), as a drag over the
-      // Viewer itself does: the tech sees the drop will be taken.
-      var now = Date.now();
-      if (fr && fr.contentWindow && now - lastLit > 200) {
-        lastLit = now;
+      ev.dataTransfer.dropEffect = 'none';
+      // Show the Viewer's FILES panel as the place to drop.
+      var fr = viewerFrame(), now = Date.now();
+      if (fr && fr.contentWindow && now - lastHint > 200) {
+        lastHint = now;
         fr.contentWindow.postMessage({ type: 'otdr-drag' }, new URL(fr.getAttribute('src')).origin);
       }
     }
     function onDrop(ev) {
       if (ev.defaultPrevented || !isFiles(ev)) return;
       ev.preventDefault();
-      var fr = viewerFrame();
-      if (!fr) return;
-      var origin = new URL(fr.getAttribute('src')).origin;
-      collect(ev.dataTransfer).then(function(got){
-        if (got.length && fr.contentWindow)
-          fr.contentWindow.postMessage({ type: 'otdr-drop',
-            files: got.map(function(o){ return o.f; }),
-            folders: got.map(function(o){ return o.dir; }) }, origin);
-      });
     }
     function hook(win) {
       try {
@@ -3083,8 +3036,14 @@ def _note_tool_change(page):
     ss['_last_tool'] = page
     if _prev is None or _prev == page:
         return
-    if page in SETTINGS_TOOLS:
-        ss['_carry_popup'] = {'to': page, 'from': ss.get('_last_settings_tool')}
+    # Only when the settings actually come over from ANOTHER Settings tool
+    # (Robert 2026-10-01: "thresholds carried over on every tool switch if we
+    # are actually carrying them over").  Back on the tool they were last set
+    # on (Viewer -> Secret Sauce -> Viewer), or with no Settings tool before
+    # it, nothing is carried and the pop-up stays away.
+    _from = ss.get('_last_settings_tool')
+    if page in SETTINGS_TOOLS and _from and _from != page:
+        ss['_carry_popup'] = {'to': page, 'from': _from}
     else:
         ss.pop('_carry_popup', None)
 
@@ -4005,7 +3964,7 @@ _DUP_COLOR = {'CONFIRMED duplicate': '#c0392b', 'Likely duplicate': '#e67e22',
 # result for the tech (a port-log check): the notice leads with it and is a
 # warning, not an error.  A red box on a tie panel read as "the tool failed"
 # while the ranking sat unseen on the workbook's last sheet.
-_MATING_LEAD = ('**The fibre fingerprint cannot be measured here; the mating '
+_MATING_LEAD = ('**The fiber fingerprint cannot be measured here; the mating '
                 'ranking below is the result to check against the port log.** ')
 
 
@@ -4065,11 +4024,11 @@ def _near_splice_lookup(ns, token):
         stem = ((ns or {}).get('fibres') or {}).get(str(int(token)))
         if stem and stem in loss:
             return stem, loss[stem]
-        return None, f'Fibre {int(token)} has no splice reading in this folder.'
+        return None, f'Fiber {int(token)} has no splice reading in this folder.'
     hits = [n for n in loss if token.lower() in n.lower()]
     if len(hits) == 1:
         return hits[0], loss[hits[0]]
-    return None, f'"{token}" matches {len(hits)} files; type the fibre number or the full name.'
+    return None, f'"{token}" matches {len(hits)} files; type the fiber number or the full name.'
 
 
 def _pct_text(pct):
@@ -4083,7 +4042,7 @@ def _near_splice_check(ns, a, b):
     fa, la = _near_splice_lookup(ns, a)
     fb, lb = _near_splice_lookup(ns, b)
     if fa is None or fb is None:
-        why = (la if fa is None else lb) or 'Enter two fibres.'
+        why = (la if fa is None else lb) or 'Enter two fibers.'
         return {'ok': False, 'cleared': False, 'sd': None, 'text': why}
     if fa == fb:
         return {'ok': False, 'cleared': False, 'sd': None,
@@ -4096,15 +4055,15 @@ def _near_splice_check(ns, a, b):
             f'{d:.3f} dB, {sd:.1f}x the wobble')
     if sd > clear:
         return {'ok': True, 'cleared': True, 'sd': sd,
-                'text': (f'**Different fibres.** {head}. Two shots of one fibre differ '
+                'text': (f'**Different fibers.** {head}. Two shots of one fiber differ '
                          f'this much {_pct_text(pct)} of the time.')}
     # Always give the rate.  At 3.9x "the splices match" is not what the number
     # says: shots of one fibre differ that much about 1 time in 400 on Goodland.
     return {'ok': True, 'cleared': False, 'sd': sd,
-            'text': (f'**Not cleared.** {head}. Two shots of one fibre differ this much '
+            'text': (f'**Not cleared.** {head}. Two shots of one fiber differ this much '
                      f'{_pct_text(pct)} of the time; the line for calling them different '
-                     f'fibres is {clear:g}x. A close reading would not make them '
-                     f'duplicates either: many different fibres have similar splices.')}
+                     f'fibers is {clear:g}x. A close reading would not make them '
+                     f'duplicates either: many different fibers have similar splices.')}
 
 
 def _render_near_splice(res):
@@ -4116,9 +4075,9 @@ def _render_near_splice(res):
         clear = ns.get('clear_sd') or _NEAR_SPLICE_CLEAR_SD_DEFAULT
         st.info(f"This span has a splice {ns['offset_m']:.0f} m behind the panel. It is "
                 f"glass, so unplugging and re-plugging cannot change it: two shots of one "
-                f"fibre read it within {ns['sd_pair_db']:.3f} dB. Two files that read it "
-                f"more than {clear:g}x that far apart are different fibres.")
-        st.markdown('**Check Two Fibres**')
+                f"fiber read it within {ns['sd_pair_db']:.3f} dB. Two files that read it "
+                f"more than {clear:g}x that far apart are different fibers.")
+        st.markdown('**Check Two Fibers**')
         key = f"ns_check_{ns.get('group', 'report')}"
         c1, c2 = st.columns(2)
         a = c1.text_input('Fiber', key=key + '_a', placeholder='e.g. 350')
@@ -4144,8 +4103,8 @@ def _render_fill_ins(res):
 
     def _t(x):
         return datetime.fromtimestamp(float(x), timezone.utc).strftime('%m-%d %H:%M')
-    with st.expander(f'Shot Out of Order: {n} Fibre(s) Skipped and Shot Later'):
-        st.caption('Each was shot long after both neighbouring fibres, which were shot '
+    with st.expander(f'Shot Out of Order: {n} Fiber(s) Skipped and Shot Later'):
+        st.caption('Each was shot long after both neighboring fibers, which were shot '
                    'back to back, so its port had to be found again. Worth checking '
                    'against the port log. Not a duplicate finding.')
         for r in runs:
@@ -4162,7 +4121,7 @@ def _splice_cell(p, clear_sd):
         return f"<td style='{style}'></td>"
     if sd > clear_sd:
         return (f"<td style='{style};color:#1e7b34;font-weight:600'>"
-                f"different fibres ({sd:.1f}x)</td>")
+                f"different fibers ({sd:.1f}x)</td>")
     return f"<td style='{style};color:var(--otdr-text)'>{sd:.1f}x</td>"
 
 
@@ -4976,7 +4935,7 @@ _CONN_ROWS = [
               'a bare loss reading, because a launch event’s stored loss '
               'includes the backscatter step between two different fibers and '
               'reads high on healthy launches. Set a value only if you want '
-              'the old HIGH_LAUNCH_LOSS behaviour back.')},
+              'the old HIGH_LAUNCH_LOSS behavior back.')},
 ]
 
 _CONN_DEFAULTS = {g: row['defaults'][slot]
@@ -5562,7 +5521,7 @@ def _render_settings_box(where, blocks_report=False):
                          'turned off until it does. (Details sent to support.)')
             else:
                 st.warning('OTDR settings table could not load. Until it '
-                           'does, the Viewer flags only breaks (a fibre that '
+                           'does, the Viewer flags only breaks (a fiber that '
                            'stops short of the span); every other event and '
                            'value still shows, unflagged. (Details sent to '
                            'support.)')
@@ -5582,7 +5541,7 @@ def _render_settings_box(where, blocks_report=False):
             else:
                 st.warning('Connector & Launch settings could not load. '
                            'Until they do, the Viewer flags only breaks (a '
-                           'fibre that stops short of the span); every other '
+                           'fiber that stops short of the span); every other '
                            'event and value still shows, unflagged. (Details '
                            'sent to support.)')
             _policy_block_caption(_exc)
@@ -6388,7 +6347,7 @@ def tc_write_comparison(ours: TcGrid, tech: TcGrid, diffs, colmap, frame, out_pa
         wsum.cell(r, 2, v)
         r += 1
     r += 1
-    wsum.cell(r, 1, 'Colour key').font = Font(bold=True)
+    wsum.cell(r, 1, 'Color key').font = Font(bold=True)
     r += 1
     for k in TC_KIND_ORDER:
         c = wsum.cell(r, 1, k)
@@ -6400,7 +6359,7 @@ def tc_write_comparison(ours: TcGrid, tech: TcGrid, diffs, colmap, frame, out_pa
             TC_KIND_TYPE: 'both flagged it; a loss on one side and a word (broke, bend, DZ …) on the other',
         }[k])
         r += 1
-    c = wsum.cell(r, 1, 'Grey column header')
+    c = wsum.cell(r, 1, 'Gray column header')
     c.fill = PatternFill(start_color=_TC_UNMATCHED_HDR, end_color=_TC_UNMATCHED_HDR, fill_type='solid')
     wsum.cell(r, 2, f'a column only one report has (no column within {TC_COLUMN_MATCH_KM * 1000:.0f} m in the other)')
     r += 2
@@ -6512,7 +6471,7 @@ def _render_tech_comparison(page, our_xlsx, upload, dest_dir, site_a, site_b):
                      f"columns lined up ({cached['frame']} frame)")
     if cached['columns_matched'] < min(cached['columns_ours'], cached['columns_tech']):
         st.caption("Columns that didn't line up (no column within 250 m in the "
-                   "other report) are shown with grey headers; everything in "
+                   "other report) are shown with gray headers; everything in "
                    "them counts as a difference.")
     st.caption(f"Saved to `{cached['xlsx']}`")
     try:
@@ -7942,7 +7901,7 @@ def page_unidirectional():
             f"This folder mixes {len(counts) - len(merged)} directions: the "
             f"report covers ONLY '{u.get('direction', '?')}'. "
             + ' '.join(
-                f"{n} file(s) shot as '{sig}' were NOT analysed."
+                f"{n} file(s) shot as '{sig}' were NOT analyzed."
                 for sig, n in sorted(counts.items(), key=lambda kv: -kv[1])
                 if sig != u.get('direction')
                 and sig not in {m.get('signature') for m in merged})

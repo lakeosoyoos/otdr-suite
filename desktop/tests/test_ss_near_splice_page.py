@@ -100,7 +100,7 @@ def _check():
 def test_two_fibre_check_is_binary_and_plain():
     r = _check()
     assert r["far"]["ok"] and r["far"]["cleared"] is True
-    assert r["far"]["text"].startswith("**Different fibres.**")
+    assert r["far"]["text"].startswith("**Different fibers.**")
     for k in ("clear", "close"):
         assert r[k]["ok"] and r[k]["cleared"] is False, k
         assert r[k]["text"].startswith("**Not cleared.**")
@@ -122,7 +122,7 @@ def test_tail_and_column_read_the_engine_numbers():
     r = _check()
     assert abs(r["pct_mid"] - 96.25) < 1e-6
     assert r["pct_hi"] >= 0.0
-    assert "different fibres (7.4x)" in r["cell_far"]
+    assert "different fibers (7.4x)" in r["cell_far"]
     assert ">1.2x<" in r["cell_close"] and "different" not in r["cell_close"]
     assert r["cell_none"].endswith("></td>")
 

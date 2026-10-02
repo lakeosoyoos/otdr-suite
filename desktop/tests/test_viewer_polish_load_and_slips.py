@@ -293,7 +293,7 @@ out.far = [scroller.scrollLeft, gTableGoKm];
 print('OUT ' + JSON.stringify(out));
 """)
     out = _jsc(prog, tmp_path)
-    # centred between the sticky labels (right edge 200) and the window's 600
+    # centered between the sticky labels (right edge 200) and the window's 600
     assert out['scroll'] == 900 + 50 - 400
     assert out['hit'] == ['44.0988'] and out['spent'] is None
     assert out['after'] == 0
@@ -331,9 +331,9 @@ print('OUT ' + JSON.stringify(rows));
             assert top >= 3 - 1e-9 and bot <= H - 3 + 1e-9, (H, top, bot)
         if H >= 158 + 6:
             assert font == 11, H                 # full size whenever it fits
-        if H - 48 >= 158 + 6:                    # the plot itself holds it: centred on it
+        if H - 48 >= 158 + 6:                    # the plot itself holds it: centered on it
             assert cy == mid, H
-    # the PDF's fibre charts are 360 px tall: full size, centred on the plot
+    # the PDF's fiber charts are 360 px tall: full size, centered on the plot
     assert all(r[1] == 11 and r[5] == r[4] for r in rows if r[0] >= 220)
 
 
