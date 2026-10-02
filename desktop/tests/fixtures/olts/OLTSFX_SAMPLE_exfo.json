@@ -3,7 +3,10 @@
  "reference": {
   "wl_nm": 1550,
   "ref_ab": 0.5573408291176437,
-  "ref_ba": 0.038325413167015224
+  "ref_ba": 0.038325413167015224,
+  "power_ab": -0.0002659611067792064,
+  "power_ba": 1.6224713856566242,
+  "power_source": "EXFO's LoopbackResultsA / LoopbackResultsB .InitialPowerReference at 1550 nm (FastReporter's FasTesT table: Ref. A->B / Ref. B->A, dBm)"
  },
  "fibers": {
   "OLTSFX001": {
