@@ -278,7 +278,10 @@ def test_event_headers_carry_a_visible_menu_button():
     fn = SRC[SRC.index("table.querySelectorAll('th.fr-evhdr')"):][:1600]
     assert "closest('.fr-evmenu')" in fn
     assert 'zoomToKm(' in fn, 'the header outside the button must still zoom'
-    assert 'showSpanMenu(' in fn and 'showDirChooser(' in fn
+    assert 'showColumnMenu(' in fn
     # Each direction snaps to its own event's RAW km, like a body cell does.
-    assert 'col.ev[ti].dist_km' in fn
+    pk = SRC[SRC.index('const colPicks = i => {'):][:600]
+    assert 'col.ev[ti].dist_km' in pk
+    menu = SRC[SRC.index('function showColumnMenu('):][:400]
+    assert 'showSpanMenu(' in menu and 'showDirChooser(' in menu
     assert 'function showDirChooser(' in SRC
