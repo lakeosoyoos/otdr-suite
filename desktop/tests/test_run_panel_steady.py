@@ -168,7 +168,7 @@ def test_cancel_stops_the_engine():
         assert not at.exception, list(at.exception)
         assert "sr_job" not in at.session_state
         assert proc.poll() is not None, "Cancel left the engine running"
-        assert any("Run cancelled." in i.value for i in at.info)
+        assert any("Run canceled." in i.value for i in at.info)
     finally:
         _kill(at)
 

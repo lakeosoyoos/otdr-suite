@@ -285,7 +285,7 @@ def render(default_out_dir: str | None = None,
 
     st.markdown('##### Measured Distances')
     st.caption('One distance from Site A per splice location, in span order: '
-               f'{len(prod.splices)} of them. Metres, or km if you paste km. '
+               f'{len(prod.splices)} of them. Meters, or km if you paste km. '
                'Leave it empty to fall back on the production sheet’s own '
                'footage marks.')
     c1, c2 = st.columns([3, 1])
