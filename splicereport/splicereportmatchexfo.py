@@ -7834,6 +7834,109 @@ def _viewer_column_title(sp, si):
     return f"Splice {sp.get('splice_display_num', si + 1)}"
 
 
+def _viewer_leg_section(rec, km_from, km_to):
+    """One direction's Section between two of its readings, for the Viewer:
+    {'length_m', 'loss', 'att_db_km'}, or None when it cannot be measured.
+
+    `km_from` < `km_to` in that file's own raw table frame (a leg's `km`).
+    The attenuation is the report's own section fit (_section_stats_from_
+    trace, the tie-panel Section columns' method: least squares on the
+    trace with each event's spike guarded off); the loss is that slope over
+    the whole event-to-event length, as FastReporter's Section Loss is."""
+    if rec is None or km_from is None or km_to is None:
+        return None
+    if rec.get('trace') is None:
+        return None
+    uo = float(rec.get('user_offset_km') or 0.0)
+    km_from, km_to = float(km_from), float(km_to)
+    if km_to <= km_from:
+        return None
+    _loss, att = _section_stats_from_trace(rec, km_from + uo, km_to + uo)
+    if att is None:
+        return None
+    length_km = km_to - km_from
+    return {'length_m': round(length_km * 1000.0, 2),
+            'loss': round(att * length_km, 4),
+            'att_db_km': round(att, 4)}
+
+
+def viewer_table_sections(fibers_out, recs, columns=None, km_of=None):
+    """Each fibre's Sections in the Viewer's OTDR Suite table, in place: a
+    cell gets `section`, the glass from its column to the NEXT column, when
+    the fibre has a reading in both (Robert 2026-10-02: "in Suite mode, we
+    want Sections back").
+
+        {'length_m', 'loss', 'att_db_km', 'a': leg | None, 'b': leg | None}
+
+    A leg is _viewer_leg_section in that direction's own frame, from the
+    nearer of the two readings to the farther (on an A+B table B's run the
+    other way: the next column is the SMALLER B-frame position; a B folder
+    shot alone reads from B's end).  The merged figures are
+    the two legs' means, as FastReporter's Average row stores them (and
+    None when only one direction measured it); a one-direction table's are
+    that direction's own.  `km_of(side, fnum, cell)` places a leg the
+    report gave no km of its own (grey); without it, or for a break, that
+    leg has none.  `recs` is {'a': {fnum: rec}, 'b': {fnum: rec}}.
+    Next to a report's own Section column (a panel-to-panel tie) nothing is
+    added: that column already describes the same glass.
+
+    Display only: the report and its verdicts never read these."""
+    kinds = [c.get('kind') for c in (columns or [])]
+    for fkey, cells in (fibers_out or {}).items():
+        try:
+            fnum = int(fkey)
+        except (TypeError, ValueError):
+            continue
+        by_col = {c.get('col'): c for c in cells}
+        for cell in cells:
+            ci = cell.get('col')
+            nxt = by_col.get(ci + 1) if ci is not None else None
+            if nxt is None:
+                continue
+            if 'section' in (kinds[ci] if ci < len(kinds) else None,
+                             kinds[ci + 1] if ci + 1 < len(kinds) else None):
+                continue
+            legs = {}
+            for side in ('a', 'b'):
+                l0, l1 = cell.get(side), nxt.get(side)
+                rec = (recs.get(side) or {}).get(fnum)
+                if not l0 or not l1 or rec is None:
+                    legs[side] = None
+                    continue
+                k0, k1 = l0.get('km'), l1.get('km')
+                if km_of is not None:
+                    if k0 is None:
+                        k0 = km_of(side, fnum, cell)
+                    if k1 is None:
+                        k1 = km_of(side, fnum, nxt)
+                if k0 is None or k1 is None:
+                    legs[side] = None
+                    continue
+                try:
+                    legs[side] = _viewer_leg_section(rec, min(k0, k1), max(k0, k1))
+                except Exception:          # a section never costs the table
+                    legs[side] = None
+            sa, sb = legs['a'], legs['b']
+            have = [s for s in (sa, sb) if s is not None]
+            if not have:
+                continue
+            one = len(recs.get('b') or {}) == 0 or len(recs.get('a') or {}) == 0
+            if len(have) == 2:
+                mlen = (sa['length_m'] + sb['length_m']) / 2.0
+                mloss = (sa['loss'] + sb['loss']) / 2.0
+            elif one:
+                mlen, mloss = have[0]['length_m'], have[0]['loss']
+            else:
+                mlen = mloss = None
+            cell['section'] = {
+                'length_m': None if mlen is None else round(mlen, 2),
+                'loss': None if mloss is None else round(mloss, 4),
+                'att_db_km': (round(mloss / mlen * 1000.0, 4)
+                              if mloss is not None and mlen else None),
+                'a': sa, 'b': sb}
+    return fibers_out
+
+
 def suite_viewer_table(fibers_a, fibers_b, splices, all_results,
                        population=None, pre_split=None, hidden=None,
                        launch_issues=None, readings=None, span_km=None,
@@ -8083,6 +8186,21 @@ def suite_viewer_table(fibers_a, fibers_b, splices, all_results,
             ci = end_col[end]
             cells[ci] = _end(fnum, end, cells.get(ci))
         fibers[str(fnum)] = [cells[k] for k in sorted(cells)]
+    # A grey leg (or an end the report read no event at) sits at its cell,
+    # in that direction's own frame: where the Viewer draws it.
+    def _sec_km(side, fnum, cell):
+        if cell.get('km') is None:
+            return None
+        if side == 'a':
+            ra = fibers_a.get(fnum)
+            return None if ra is None else round(
+                float(cell['km']) + _viewer_shift_km(ra), 4)
+        rb = (fibers_b or {}).get(fnum)
+        mirror = _b_mirror(rb) if rb is not None else None
+        return None if not mirror else round(
+            mirror - float(cell['km']) + _viewer_shift_km(rb), 4)
+    viewer_table_sections(fibers, {'a': fibers_a, 'b': fibers_b or {}}, columns,
+                          km_of=_sec_km)
     return {'columns': columns, 'fibers': fibers}
 
 
@@ -17094,6 +17212,7 @@ def uni_viewer_table(fibers, columns, grid_columns, grid, leg='a'):
         keep = [cell for cell in cells
                 if _key(cell) is None or best[_key(cell)][1] is cell]
         table[str(int(fnum))] = keep
+    viewer_table_sections(table, {leg: {int(f): r for f, r in fibers.items()}}, out_cols)
     return {'columns': out_cols, 'fibers': table, 'direction': leg,
             'gate_db': float(UNI_BEND_THRESHOLD)}
 
