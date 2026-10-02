@@ -127,7 +127,7 @@ def test_a_single_drop_with_both_sides_full_adds_to_them():
     assert more['dir_a'] == a['dir_a'] and more['dir_b'] == b['dir_b']
     assert more['a_count'] == 4 and more['b_count'] == 2
     assert sorted(more['new_keys']) == ['a-3', 'a-4']
-    other = _drop('SEANOR001_1550.sor', 'SEANOR002_1550.sor')
+    other = _drop('SPANA001_1550.sor', 'SPANA002_1550.sor')
     assert other['added'] in ('A', 'B')
     assert other['a_count'] + other['b_count'] == 8
     assert TS.CONFIG['dir_b'] == b['dir_b']

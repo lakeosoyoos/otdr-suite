@@ -3329,8 +3329,8 @@ def _side_score(files, side, held, placed):
     side named otherwise is the wrong one -- more fibres of the A folder land
     on A, not on whichever side is empty (dropping fibres 11-29 of A after
     1-10 put them on B).  Then the files' own direction stamp, when both say
-    one; the stamp gives way to the names, as TOOKNO and KNOTOO both stamp A
-    (see _declared_direction).  With neither, fibres the side already has
+    one; the stamp gives way to the names, as a real span whose two
+    directions both stamp A shows (see _declared_direction).  With neither, fibres the side already has
     say the other direction, fibres that fill its gaps say the same."""
     have = _side_files(held[side]) + placed[side]
     if not have:
