@@ -62,7 +62,10 @@ def _dir_has_bdr(d):
         return False
 
 
-def _category(res):
+def _category(res, threshold=None):
+    """The grid's color key for one flagged cell.  `threshold` is the run's
+    bidirectional gate (the `threshold` local main() hands the engine);
+    None reads the engine's REBURN_THRESHOLD."""
     # A reflective event recategorized as a dirty/bad connector by the engine
     # (reflective + real loss step) — surface the refined category in the
     # manifest so the report distinguishes it from a clean reflective event.
@@ -83,12 +86,18 @@ def _category(res):
     if res.get('is_a_only'):      return 'a_only'
     if res.get('is_b_only'):      return 'b_only'
     loss = res.get('bidir_loss')
-    # Round to the report's own 3-decimal display before comparing, exactly
-    # like the engine's flag gate (_clears_threshold): a 0.1595 bidir PRINTS
-    # ".160", flags, and must be categorised as a reburn — not dropped into
-    # the generic 'event' bucket the hub grid treats as unremarkable.
-    if loss is not None and round(float(loss), 3) >= 0.160:
-        return 'reburn'
+    # The engine's own bidir flag gate at the run's own threshold, so a cell
+    # is a reburn here exactly when the report flags it as one.  It compares
+    # the 3-decimal value the report PRINTS (a 0.1595 prints ".160" and flags
+    # at 0.160) and honors SPLICE_STRICT_BOUNDARY.  A fixed 0.160 here left
+    # every flag between a lower profile gate and 0.160 (0.108 to 0.159 at a
+    # 0.10 dB gate) black on the grid, like an unremarkable event, while the
+    # Excel filled it pink.
+    if loss is not None:
+        import splicereportmatchexfo as E   # already loaded by main()
+        thr = E.REBURN_THRESHOLD if threshold is None else float(threshold)
+        if E._clears_splice_threshold(loss, thr):
+            return 'reburn'
     return 'event'
 
 
@@ -1600,7 +1609,7 @@ def main():
                 'km': sp_km(si),
                 'loss': (None if res.get('bidir_loss') is None
                          else round(float(res['bidir_loss']), 3)),
-                'category': _category(res),
+                'category': _category(res, threshold),
                 # Additive borderline / review marker (display-only — does not
                 # affect category or whether the cell is flagged / counted).
                 'borderline': bool(res.get('is_borderline', False)),
