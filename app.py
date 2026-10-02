@@ -2965,6 +2965,42 @@ _CARRY_PROFILE_BOX = (
     '{name}</span></div>')
 
 
+# The Viewer's own boxes changed (Robert 2026-10-01: "if we leave viewer to
+# go to splice report or uni we need a window that reminds the tech they had
+# changed the setting").  Amber, the colour the Viewer marks a typed box in.
+_CARRY_VIEWER_BOX = (
+    '<div style="background:#fff4e5;border:1px solid #f0b46a;'
+    'border-radius:6px;padding:8px 12px;font-size:1rem;color:#7a3e00;margin-top:8px;'
+    'margin-bottom:8px">'
+    '<div style="font-weight:600">You changed these in the Viewer:</div>'
+    '<ul style="margin:4px 0 6px 0;padding-left:20px">{lines}</ul>'
+    '<div>They changed only what the Viewer flagged. <b>{to}</b> flags at its '
+    'OTDR Settings, so it will not flag the same way. To match, click '
+    '<b>Edit Settings</b> and change them there.</div></div>')
+
+
+def _viewer_change_lines(c):
+    """The Viewer's typed boxes (trace_server.viewer_changed()) as lines:
+    "Bidirectional Loss: 0.150 dB (the report uses 0.160 dB)"."""
+    if not isinstance(c, dict):
+        return []
+
+    def band(b):
+        lo, hi = (b or [None, None])[:2]
+        if lo is None or hi is None:
+            return '?'
+        return 'off' if not lo < 0 else f'{lo:g} to {hi:g} dB'
+    out = []
+    if c.get('loss') is not None:
+        line = f"{c.get('loss_name') or 'Loss'}: {c['loss']:.3f} dB"
+        if c.get('loss_report') is not None:
+            line += f" (the report uses {c['loss_report']:.3f} dB)"
+        out.append(line)
+    if c.get('refl'):
+        out.append(f"Refl Band: {band(c['refl'])} (the report uses {band(c.get('refl_report'))})")
+    return out
+
+
 def _carry_ok():
     st.session_state.pop('_carry_popup', None)
 
@@ -2990,6 +3026,11 @@ def _thresholds_carried_dialog(info):
     _prof = st.session_state.get('otdr_profile') or next(iter(CUSTOMER_PROFILES))
     st.markdown(_CARRY_PROFILE_BOX.format(name=html.escape(_prof)),
                 unsafe_allow_html=True)
+    _lines = _viewer_change_lines(info.get('viewer_changed'))
+    if _lines:
+        st.markdown(_CARRY_VIEWER_BOX.format(
+            lines=''.join(f'<li>{html.escape(l)}</li>' for l in _lines),
+            to=html.escape(str(info.get('to')))), unsafe_allow_html=True)
     st.markdown(_CARRY_OK_CSS, unsafe_allow_html=True)
     _c1, _c2 = st.columns(2)
     if _c1.button('Edit Settings', key='carry_edit', use_container_width=True,
@@ -3011,6 +3052,13 @@ def _note_tool_change(page):
         return
     if page in SETTINGS_TOOLS:
         ss['_carry_popup'] = {'to': page, 'from': ss.get('_last_settings_tool')}
+        # Leaving the Viewer for a report with one of its boxes changed: the
+        # pop-up says so (the report never sees the Viewer's boxes).
+        if _prev == 'Viewer' and page != 'Viewer':
+            try:
+                ss['_carry_popup']['viewer_changed'] = trace_server.viewer_changed()
+            except Exception:
+                pass
     else:
         ss.pop('_carry_popup', None)
 

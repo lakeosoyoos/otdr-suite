@@ -1394,6 +1394,42 @@ REFUSED_BODY_MAX = 1024 * 1024
 REFUSED_BODY_WAIT_S = 5.0
 
 
+
+def _num_or_none(v):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return v if abs(v) < 1e6 else None
+
+
+def set_viewer_changed(changed):
+    """File the Viewer's typed loss / Refl Band ({'loss_name', 'loss',
+    'loss_report', 'refl': [lo, hi], 'refl_report': [lo, hi]}), or clear it
+    with None / {}.  Kept only when something differs from the report."""
+    out = None
+    if isinstance(changed, dict):
+        loss = _num_or_none(changed.get('loss'))
+        refl = changed.get('refl')
+        refl = ([_num_or_none(refl[0]), _num_or_none(refl[1])]
+                if isinstance(refl, (list, tuple)) and len(refl) == 2 else None)
+        if refl is not None and None in refl:
+            refl = None
+        rrep = changed.get('refl_report')
+        rrep = ([_num_or_none(rrep[0]), _num_or_none(rrep[1])]
+                if isinstance(rrep, (list, tuple)) and len(rrep) == 2 else [None, None])
+        if loss is not None or refl is not None:
+            name = str(changed.get('loss_name') or 'Loss')[:40]
+            out = {'loss_name': name, 'loss': loss,
+                   'loss_report': _num_or_none(changed.get('loss_report')),
+                   'refl': refl, 'refl_report': rrep}
+    CONFIG['viewer_changed'] = out
+
+
+def viewer_changed():
+    """What set_viewer_changed filed last, or None."""
+    return CONFIG.get('viewer_changed')
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -1782,6 +1818,21 @@ class Handler(BaseHTTPRequestHandler):
                 raise RuntimeError(msg)               # give report_error an exc + a frame
             except Exception as exc:
                 report_error("viewer (browser JS)", exc, {"js_stack": stack, "url": page})
+            self._send_json({'ok': True})
+            return
+        if u.path == '/api/viewer_changed':
+            # The Viewer's own loss / Refl Band boxes, when the tech typed
+            # something other than the report's (or None).  The hub reads it
+            # to remind the tech on the way to a report.
+            if not self._origin_is_local():
+                self._refuse_foreign()
+                return
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
+            except Exception:
+                data = {}
+            set_viewer_changed(data.get('changed'))
             self._send_json({'ok': True})
             return
         if u.path == '/api/span':

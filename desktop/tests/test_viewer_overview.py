@@ -318,7 +318,7 @@ def test_popout_viewer_links_back_to_its_report():
     the Uni or Splice Report page.  The toolbar now carries a Back button."""
     html = open(VIEWER_HTML, encoding='utf-8').read()
     assert 'id="btn-back"' in html and 'function renderBackButton(' in html
-    fn = html[html.index("getElementById('btn-back').addEventListener('click'"):][:1400]
+    fn = html[html.index("function goBackToReport()"):][:1400]
     assert "window.open('', 'otdr_hub')" in fn, 'must reuse the hub tab, not open a second hub'
     for nav in ("'uni'", "'sr'"):
         assert nav in fn
