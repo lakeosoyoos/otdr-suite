@@ -213,8 +213,8 @@ def test_the_fec_page_draws_and_asks_for_a_folder():
     assert any('Splice Report FEC' in m.value for m in at.markdown)
     assert any('A end FEC folder' in i.value for i in at.info)
     labels = [t.label for t in at.text_input]
-    assert 'A end FEC (folder or .zip)' in labels
-    assert 'B end FEC (optional) (folder or .zip)' in labels
+    assert 'A End FEC (Folder or .zip)' in labels
+    assert 'B End FEC (Optional) (Folder or .zip)' in labels
 
 
 # ── Viewer FEC tool (Robert 2026-10-01) ─────────────────────────────────

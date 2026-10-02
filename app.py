@@ -8154,6 +8154,8 @@ def page_unidirectional():
 # Engine: run_splicereport.py --fec (same subprocess, no new engine file).
 # Tech C's style (0.500 passes) is the default, Robert 2026-10-01, until the
 # boss says which one the customer wants; profile A keeps tech A's.
+# The FEC Settings box's two loss rules (Title Case, the hub's label rule).
+_FEC_AT_OR_OVER, _FEC_OVER = 'At or Over the Gate', 'Over the Gate'
 FEC_DEFAULTS = {"FEC_LOSS_GATE": 0.500, "FEC_LOSS_STRICT": 1,
                 "FEC_REFL_GATE": -50.0, "FEC_COMBINE_M": 150.0}
 
@@ -8183,8 +8185,8 @@ def _fec_active_gates():
         if isinstance(v, (int, float)):
             gates[k] = float(v)
     strict = st.session_state.get(f'fec_FEC_LOSS_STRICT{sfx}')
-    if strict in ('Over the gate', 'At or over the gate'):
-        gates['FEC_LOSS_STRICT'] = 1.0 if strict == 'Over the gate' else 0.0
+    if strict in (_FEC_OVER, _FEC_AT_OR_OVER):
+        gates['FEC_LOSS_STRICT'] = 1.0 if strict == _FEC_OVER else 0.0
     return gates
 
 
@@ -8222,7 +8224,7 @@ def _fec_folder_row(slot, label, placeholder):
             if p:
                 st.session_state[slot] = p
     with c2:
-        st.text_input(f'{label} (folder or .zip)', key=slot, placeholder=placeholder)
+        st.text_input(f'{label} (Folder or .zip)', key=slot, placeholder=placeholder)
     _keep_box(slot)
     raw = (st.session_state.get(slot) or '').strip().strip('"')
     if not raw:
@@ -8247,9 +8249,9 @@ def _fec_rows_html(rows, dir_a, dir_b):
     raw_b = (st.session_state.get('fec_dir_b') or '').strip().strip('"')
     common = (f"&fa={_q(dir_a, safe='')}&fb={_q(dir_b or '', safe='')}"
               f"&ra={_q(raw_a, safe='')}&rb={_q(raw_b, safe='')}{_panel_qs()}")
-    head = ['Fiber Number', 'FAILING @', 'Distance', 'Side', 'Failed on',
-            'Connector loss', 'Combined with']
-    # The theme's own colours (--otdr-*): a fixed light header was white
+    head = ['Fiber Number', 'FAILING @', 'Distance', 'Side', 'Failed On',
+            'Connector Loss', 'Combined With']
+    # The theme's own colors (--otdr-*): a fixed light header was white
     # lettering on a pale band under the Dark theme.
     td = "padding:0;border:1px solid var(--otdr-line-soft,#eef2f6);white-space:nowrap"
     th = ("padding:3px 8px;border:1px solid var(--otdr-line,#dbe4ee);white-space:nowrap;"
@@ -8292,24 +8294,24 @@ def page_splice_report_fec():
     for k in ('FEC_LOSS_GATE', 'FEC_REFL_GATE', 'FEC_COMBINE_M'):
         st.session_state.setdefault(f'fec_{k}{sfx}', float(gates[k]))
     st.session_state.setdefault(f'fec_FEC_LOSS_STRICT{sfx}',
-                                'Over the gate' if gates['FEC_LOSS_STRICT']
-                                else 'At or over the gate')
+                                _FEC_OVER if gates['FEC_LOSS_STRICT']
+                                else _FEC_AT_OR_OVER)
     with st.expander('FEC Settings', expanded=False):
         st.caption(f'From the customer profile **{prof}**. Edits last until '
                    'the profile changes.')
         g1, g2, g3, g4 = st.columns(4)
-        g1.number_input('Loss gate (dB)', key=f'fec_FEC_LOSS_GATE{sfx}',
+        g1.number_input('Loss Gate (dB)', key=f'fec_FEC_LOSS_GATE{sfx}',
                         min_value=0.0, max_value=5.0, step=0.01, format='%.3f')
-        g2.selectbox('Loss fails when', ['At or over the gate', 'Over the gate'],
+        g2.selectbox('Loss Fails When', [_FEC_AT_OR_OVER, _FEC_OVER],
                      key=f'fec_FEC_LOSS_STRICT{sfx}')
-        g3.number_input('Reflectance gate (dB)', key=f'fec_FEC_REFL_GATE{sfx}',
+        g3.number_input('Reflectance Gate (dB)', key=f'fec_FEC_REFL_GATE{sfx}',
                         min_value=-90.0, max_value=0.0, step=0.5, format='%.1f')
-        g4.number_input('Combine reach (m)', key=f'fec_FEC_COMBINE_M{sfx}',
+        g4.number_input('Combine Reach (m)', key=f'fec_FEC_COMBINE_M{sfx}',
                         min_value=0.0, max_value=2000.0, step=10.0, format='%.0f')
     gates = {
         'FEC_LOSS_GATE': float(st.session_state[f'fec_FEC_LOSS_GATE{sfx}']),
         'FEC_LOSS_STRICT': 1.0 if st.session_state[f'fec_FEC_LOSS_STRICT{sfx}']
-                           == 'Over the gate' else 0.0,
+                           == _FEC_OVER else 0.0,
         'FEC_REFL_GATE': float(st.session_state[f'fec_FEC_REFL_GATE{sfx}']),
         'FEC_COMBINE_M': float(st.session_state[f'fec_FEC_COMBINE_M{sfx}']),
     }
@@ -8318,9 +8320,9 @@ def page_splice_report_fec():
                f"{gates['FEC_COMBINE_M']:.0f} m behind it), or reflectance > "
                f"{gates['FEC_REFL_GATE']:.1f} dB.")
 
-    dir_a = _fec_folder_row('fec_dir_a', 'A end FEC',
+    dir_a = _fec_folder_row('fec_dir_a', 'A End FEC',
                             r'C:\...\FEC shots, A end')
-    dir_b = _fec_folder_row('fec_dir_b', 'B end FEC (optional)',
+    dir_b = _fec_folder_row('fec_dir_b', 'B End FEC (Optional)',
                             r'C:\...\FEC shots, B end')
     if not dir_a:
         st.info('👆 Choose the A end FEC folder (and the B end, if you have '
@@ -8331,7 +8333,7 @@ def page_splice_report_fec():
     _fec_resync('fec_report_dest')
     _dest = _report_dest_row('fec_report_dest', _fi_dest.default_report_dir())
     _stale = _report_gate('fec')
-    if st.button('Run FEC report', type='primary', disabled=bool(_stale)):
+    if st.button('Run FEC Report', type='primary', disabled=bool(_stale)):
         out_xlsx = os.path.join(_dest, 'FEC_OOS.xlsx')
         st.session_state['fec_pending_cmd'] = fec_cmd(dir_a, dir_b, out_xlsx, gates)
         st.session_state.pop('fec_result', None)
@@ -8411,7 +8413,7 @@ def page_splice_report_fec():
     if xlsx and os.path.isfile(xlsx):
         st.caption(f'Saved: {xlsx}')
         with open(xlsx, 'rb') as fh:
-            st.download_button('⬇ Download FEC report (.xlsx)', fh.read(),
+            st.download_button('⬇ Download FEC Report (.xlsx)', fh.read(),
                                file_name=os.path.basename(xlsx),
                                key='fec_download')
 

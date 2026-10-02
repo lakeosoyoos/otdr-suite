@@ -189,7 +189,7 @@ def _provenance_warnings(E, fa, fb):
 #
 # FEC shots are short (~5 km) traces from EACH END of a span: launch reel,
 # then the building panel connector at ~1 km, often a pigtail splice a few
-# tens of metres behind it, then the entrance cable.  The two ends never see
+# tens of meters behind it, then the entrance cable.  The two ends never see
 # the same glass, so nothing here pairs A with B: each folder is graded on
 # its own, one trace at a time.
 #
@@ -223,7 +223,7 @@ def _fec_round(x, nd):
 
 
 def _fec_origin_m(rec):
-    """Metres to add to a record's event positions to measure them from the
+    """Meters to add to a record's event positions to measure them from the
     OTDR port, the frame the panel-connector rule is written in.
 
     A file with a declared span start counts from that start: a .sor or .trc
@@ -422,8 +422,8 @@ def _fec_write_xlsx(out, sides, gates):
                f"(connector + events within {gates['FEC_COMBINE_M']:.0f} m behind it), "
                f"or connector reflectance > {gates['FEC_REFL_GATE']:.1f} dB"])
     ws.append([])
-    head = ['Fiber Number', 'FAILING @', 'Distance', 'Side (A or B)', 'Failed on',
-            'Connector km', 'Connector loss', 'Connector refl', 'Combined with',
+    head = ['Fiber Number', 'FAILING @', 'Distance', 'Side (A or B)', 'Failed On',
+            'Connector (km)', 'Connector Loss', 'Connector Refl.', 'Combined With',
             'Pulse (ns)']
     ws.append(head)
     for c in ws[ws.max_row]:

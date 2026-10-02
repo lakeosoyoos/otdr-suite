@@ -5324,8 +5324,8 @@ function paintFecGrid(traces, res, host, hint) {
   scroller.className = 'fr-scroll';
   const table = document.createElement('table');
   table.className = 'fr-table';
-  const H = ['Identifiers', 'P/F', 'λ (nm)', 'Side', 'Panel connector<br>(km)',
-             'Connector<br>loss (dB)', 'Combined with', 'FEC loss<br>(dB)',
+  const H = ['Identifiers', 'P/F', 'λ (nm)', 'Side', 'Panel Connector<br>(km)',
+             'Connector<br>Loss (dB)', 'Combined With', 'FEC Loss<br>(dB)',
              'Refl.<br>(dB)', 'Distance'];
   const head = H.map((h, i) => `<th class="${i === 0 ? 'fr-rowlab ' : ''}${i === 4 ? 'fr-evhdr' : ''}">${h}</th>`).join('');
   const f3 = v => (v == null || isNaN(v)) ? '---' : Number(v).toFixed(3);

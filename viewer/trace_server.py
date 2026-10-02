@@ -3495,7 +3495,7 @@ _FEC_GATES_USED = {}         # gates key -> the gates the engine reported
 
 def fec_tables(fibers):
     """FEC mode: {'grades': {'A': {'17': grade}, 'B': {...}}, 'gates': {...},
-    'missing': [...], 'error': str | None}.  Every listed fibre in each
+    'missing': [...], 'error': str | None}.  Every listed fiber in each
     folder that has it, graded ON ITS OWN by the engine runner's
     --fec-table (the Splice Report FEC tool's rule): FEC shots from the two
     ends never see the same glass, so nothing is paired."""
