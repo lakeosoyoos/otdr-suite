@@ -158,7 +158,7 @@ def test_viewer_prints_the_word_before_the_distance():
     assert "eventTip: c.event_kind_tip ? String(c.event_kind_tip) : ''," in body
     assert ("? `<span class=\"fr-evkind\"${c.eventTip ? ` title=\"${esc(c.eventTip)}\"` : ''}>"
             "${esc(c.eventKind)}</span><br>`") in body
-    assert ('h2 += `<th colspan="2" class="fr-evsub">${kindTxt}'
+    assert ('h2 += `<th colspan="2" class="fr-evsub" data-col="${i}">${kindTxt}'
             '<span class="fr-km">${kmFt(c.km)}</span></th>`;') in body
 
 
