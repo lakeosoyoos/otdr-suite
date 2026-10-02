@@ -78,7 +78,7 @@ def find_otdr_files(folder, exts=OTDR_EXTS):
 
         SEANOR 6.15.2026   found 434 (of 432)
             groups: SEANOR 432, .SR_GRID_CACHE.JSON 1, .SRFR_GRID_CACHE.JSON 1
-        Lumen 432 Boarder Project UNI   found 434 (of 432)
+        Border 432 Project UNI   found 434 (of 432)
             groups: LAMBEY 432, .UNI_RESULT_CACHE.JSON 1, PAIRS 1
 
     That is a folder-poisoning bug: SEANOR is a SINGLE-direction folder, so it

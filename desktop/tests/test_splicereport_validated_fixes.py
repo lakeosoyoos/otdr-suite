@@ -269,7 +269,7 @@ def test_hard_threshold_flagging_preserved_static():
     the same threshold, no band; see test_endzone_bidir.py.  It moved again on
     2026-09-12 to _clears_splice_threshold, which is _clears_threshold unless
     a profile sets SPLICE_STRICT_BOUNDARY; still one hard cutoff either way,
-    still no band — see test_iig_strict_boundary.py.)"""
+    still no band — see test_contract_strict_boundary.py.)"""
     src = (SPLICEREPORT_DIR / "splicereportmatchexfo.py").read_text(encoding="utf-8")
     # The hard-threshold flagging rule is the load-bearing invariant.
     assert "is_flagged = (_clears_splice_threshold(bidir_loss, threshold)" in src

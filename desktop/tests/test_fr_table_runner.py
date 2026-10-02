@@ -18,7 +18,7 @@ from conftest import REPO_ROOT
 
 SPLICEREPORT_DIR = REPO_ROOT / "splicereport"
 RUNNER = SPLICEREPORT_DIR / "run_splicereport.py"
-FIX = REPO_ROOT / "desktop" / "tests" / "fixtures" / "zayo_sor"
+FIX = REPO_ROOT / "desktop" / "tests" / "fixtures" / "span432_sor"
 PA = str(FIX / "ORPVL.ZYO-OR-DES-0048.1550.0017.sor")
 PB = str(FIX / "ZYO-OR-DES-0048.ORPVL.1550.0017.sor")
 

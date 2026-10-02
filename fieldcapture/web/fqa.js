@@ -1,6 +1,6 @@
 /* FQA workbook reader and writer for OTDR Field Capture.
 
-   The FQA Site Survey is Lumen's macro-enabled form. Besides the macros it carries a
+   The FQA Site Survey is the customer's macro-enabled form. Besides the macros it carries a
    sensitivity label, customXml parts, comments and printer settings, and no spreadsheet
    library round-trips all of that. So this file never opens it as a workbook: it treats
    the .xlsm as a zip of XML parts, rewrites the few parts it has to, and copies every
@@ -14,7 +14,7 @@
        below anything already on the tab.
      * xl/workbook.xml gets fullCalcOnLoad="1" so the FAT and Event Log formulas that read
        section 1.2 recalculate when the file is opened.
-   The DOM parser keeps namespace prefixes as written, so the sheet XML stays Lumen's. */
+   The DOM parser keeps namespace prefixes as written, so the sheet XML stays the customer's. */
 'use strict';
 (function () {
   const MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
@@ -96,7 +96,7 @@
 
   // ---------- the package ----------
   // Write one part. JSZip would otherwise add folder entries ("xl/media/") that are not
-  // parts of an Excel package and are not in Lumen's file.
+  // parts of an Excel package and are not in the customer's file.
   const put = (pkg, name, data) => pkg.zip.file(name, data, { createFolders: false });
 
   async function openPackage(bytes) {
@@ -160,7 +160,7 @@
   // section 1.2 already holds (so the tech starts from the office's values).
   async function describe(bytes) {
     const pkg = await openPackage(bytes);
-    if (!pkg.sheets[SHEET_SURVEY]) throw new Error(`This workbook has no '${SHEET_SURVEY}' tab, so it is not the Lumen FQA form.`);
+    if (!pkg.sheets[SHEET_SURVEY]) throw new Error(`This workbook has no '${SHEET_SURVEY}' tab, so it is not the FQA form.`);
     const refs = Object.values(CONTEXT_CELLS).concat(Object.values(SECTION_12.A), Object.values(SECTION_12.Z));
     const v = await readCells(pkg, SHEET_SURVEY, refs);
     const clean = (x) => (x == null || isPrompt(x) ? '' : String(x).trim());

@@ -5,7 +5,7 @@ both directions.  The tech set the span start on the near panel (0.0000 km)
 and the end marker on the far panel (0.0311 km); nothing lies between them.
 
 LSC6LSC10128 reads the LSC1 panel at -49.78 dB on its end marker.  FastReporter
-(Lumen template, Reflectance Fail -50.0) shows -49.8 and fails it: Event 2,
+(customer L template, Reflectance Fail -50.0) shows -49.8 and fails it: Event 2,
 with "Include span end values" on.  The report looked for the last 1F before
 the end marker for the far reading, found the NEAR panel at 0.0000 km
 (-52.0 dB) and passed the fiber.  Red Rock East F74 is the same finding read

@@ -23,7 +23,7 @@ from conftest import SPLICEREPORT_DIR
 sys.path.insert(0, str(SPLICEREPORT_DIR))
 import splicereportmatchexfo as E  # noqa: E402
 
-IIG = "AWS / IIG MT.1085"
+CONTRACT_PROFILE = "AWS / IIG MT.1085"
 
 
 def _fiber(events, eof_km=69.0):
@@ -85,9 +85,9 @@ def test_a_fiber_that_has_a_b_record_is_untouched(monkeypatch):
 def test_profile_carries_the_switch_and_the_whitelist_allows_it():
     app = importlib.import_module('app')  # engine imported first, on purpose
     assert "ONE_SIDED_TRUST_STORED" in app._PROFILE_ENGINE_KEYS
-    assert app.CUSTOMER_PROFILES[IIG]["engine"]["ONE_SIDED_TRUST_STORED"] == 1
-    assert app._engine_extras_from_profile(IIG)["ONE_SIDED_TRUST_STORED"] == 1.0
+    assert app.CUSTOMER_PROFILES[CONTRACT_PROFILE]["engine"]["ONE_SIDED_TRUST_STORED"] == 1
+    assert app._engine_extras_from_profile(CONTRACT_PROFILE)["ONE_SIDED_TRUST_STORED"] == 1.0
     for name, prof in app.CUSTOMER_PROFILES.items():
-        if name == IIG:
+        if name == CONTRACT_PROFILE:
             continue
         assert "ONE_SIDED_TRUST_STORED" not in (prof.get("engine") or {}), name

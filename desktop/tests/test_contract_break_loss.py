@@ -1,8 +1,8 @@
 """BREAK_LOSS_DB — a loss big enough to be a break on its own terms.
 
 The engine's own rule is that a BREAK is a reflective event with dead glass
-past it: the trace has to stop.  AWS / IIG MT.1085 grades differently
-(NCT, 2026-09-12):
+past it: the trace has to stop.  The contract profile grades differently
+(the prime contractor, 2026-09-12):
 
     we treat any event over 5 dB as a break.  It may technically be a
     high-loss event rather than a clean separation, but the fiber is
@@ -29,7 +29,7 @@ from conftest import SPLICEREPORT_DIR
 sys.path.insert(0, str(SPLICEREPORT_DIR))
 import splicereportmatchexfo as E  # noqa: E402
 
-IIG = "AWS / IIG MT.1085"
+CONTRACT_PROFILE = "AWS / IIG MT.1085"
 GATE = 5.0
 
 # Span 27 fiber 202, the two directions as the engine reads them.
@@ -123,9 +123,9 @@ def test_missing_directions_do_not_crash_or_trip():
 def test_profile_carries_the_switch_and_the_whitelist_allows_it():
     app = importlib.import_module('app')  # engine imported first, on purpose
     assert "BREAK_LOSS_DB" in app._PROFILE_ENGINE_KEYS
-    assert app.CUSTOMER_PROFILES[IIG]["engine"]["BREAK_LOSS_DB"] == 5.0
-    assert app._engine_extras_from_profile(IIG)["BREAK_LOSS_DB"] == 5.0
+    assert app.CUSTOMER_PROFILES[CONTRACT_PROFILE]["engine"]["BREAK_LOSS_DB"] == 5.0
+    assert app._engine_extras_from_profile(CONTRACT_PROFILE)["BREAK_LOSS_DB"] == 5.0
     for name, prof in app.CUSTOMER_PROFILES.items():
-        if name == IIG:
+        if name == CONTRACT_PROFILE:
             continue
         assert "BREAK_LOSS_DB" not in (prof.get("engine") or {}), name

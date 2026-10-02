@@ -1,5 +1,5 @@
 /* OTDR Field Capture
-   The tech's phone app for the Lumen FQA Site Survey. For the A-Location and the
+   The tech's phone app for the FQA Site Survey. For the A-Location and the
    Z-Location it collects tester initials, the rack location and panel details of section
    1.2, a GPS fix and photos. It reads the rack, RMU and panel labels in the photos,
    checks them against what was entered, writes section 1.2 and the photos into the FQA
@@ -20,7 +20,7 @@
   const INITIALS_KEY = 'otdr-field-capture.initials';
   const EMAIL_KEY = 'otdr-field-capture.email';
   const BLANK_FORM = 'fqa/FQA_Site_Survey_blank.xlsm';
-  const BLANK_NAME = 'Blank Lumen FQA form (built in)';
+  const BLANK_NAME = 'Blank FQA form (built in)';
   const SITE_NAMES = { A: 'A-Location', Z: 'Z-Location', other: 'Other location' };
   const PANEL_FIELDS = ['rmu', 'block', 'existing', 'rackSize', 'portCount', 'rmus', 'portRange', 'backbone', 'termination', 'ospFacing', 'riser', 'panelType', 'diverse'];
   const RACK_FIELDS = ['floor', 'room', 'aisle', 'bay', 'suite'];
@@ -1194,7 +1194,7 @@
     }
   });
   el.fqaBlankBtn.addEventListener('click', async () => {
-    if (!window.confirm('Go back to the blank Lumen form? The span FQA you opened is removed from this phone (the original file is not touched).')) return;
+    if (!window.confirm('Go back to the blank customer form? The span FQA you opened is removed from this phone (the original file is not touched).')) return;
     await kv.del('fqa');
     await loadFqaState();
     setMsg(el.fqaMsg, 'Using the blank form.', 'ok');

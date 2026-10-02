@@ -289,10 +289,10 @@ def engine_thresholds():
 
     Source-parsed baseline, then whatever the CURRENT report ran at on top.
     The source parse alone was a half-truth: app.py's CUSTOMER_PROFILES
-    rewrite these constants per customer (Lumen 0.120, Zayo 0.200, AWS / IIG
+    rewrite these constants per customer (customer L 0.120, customer Z 0.200, the contract profile
     0.200) by pushing --overrides into the engine subprocess, and none of
     that reached here.  The Viewer therefore judged every run at the 0.160
-    baseline, so under IIG a 0.17 dB cell was unflagged in the report and
+    baseline, so under the contract profile a 0.17 dB cell was unflagged in the report and
     over-threshold in the Viewer — a 40 mdB band where the two screens
     contradicted each other, which is exactly what reading the engine's
     numbers instead of retyping them was supposed to prevent.
@@ -582,7 +582,7 @@ def list_fibers(directory):
 # Presence is decided as a POPULATION fact, never per fiber.  One fiber's
 # "reflective event 1 km in" could be a real mid-span connector; 400 fibers
 # agreeing to within 50 m is a reel.  This is the same discipline that stopped
-# the connector pass reporting 399 of Lumen 432's fibers dark.
+# the connector pass reporting 399 of the 432-fiber Border job's fibers dark.
 # The ITU/telecom windows an OTDR actually fires in.  Used only to label the
 # lambda column the way FastReporter does; nothing measures against these.
 NOMINAL_WAVELENGTHS_NM = (850, 1300, 1310, 1383, 1490, 1550, 1577, 1625, 1650)

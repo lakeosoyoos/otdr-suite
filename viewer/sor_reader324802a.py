@@ -985,7 +985,7 @@ def parse_sor_full(filepath, trim=True):
                 # cannot say "no reading" -- its loss is an int16, so absence
                 # arrives as a 0 -- and printing 0.000 where FR prints nothing
                 # is a reading the instrument never made.  1,728 of 6,455
-                # events on the Zayo 432 span, nearly all reflective.
+                # events on the 432-fiber BETA span, nearly all reflective.
                 #
                 # Recorded as a FLAG rather than by nulling splice_loss.  The
                 # Splice Report engine reads the same field from its own copy
