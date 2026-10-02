@@ -137,6 +137,7 @@ function clearAll() { clears++; gTraces = []; pushViewerState(); }
 function setAddDir(d) { gAddDir = d; }
 function renderFilesPanel() {}
 var tables = 0; function renderEventTable() { tables++; }
+var gServerRemovedSig = '';              // the removed files the server has (viewer/fr-table-once)
 """
 
 _CASES = r"""
