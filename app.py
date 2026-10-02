@@ -1457,16 +1457,9 @@ def _render_install_notice(latest, running, sidebar=False):
         f'download and run the installer: {INSTALLER_URL}')
 
 
-def _render_update_nudge():
-    """Sidebar banner, above the page radio, when the published engine is newer
-    than the one this session runs — plus the same one-click restart the footer
-    offers, so an always-on machine can't sit on an old build unnoticed.
-
-    The staleness answer comes from _update_state — the same TTL-cached check
-    the report block uses, so the banner and the block can never disagree and
-    only ONE manifest fetch happens per recheck window (3 s cap).  Every
-    failure is swallowed by _nudge_check: equal, older or unreachable renders
-    nothing at all."""
+def _render_update_blocked():
+    """The red note after an Update & Restart that could not start because
+    the previous copy was still running (shown once per failed attempt)."""
     _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
     if 'upd_restart_blocked' not in st.session_state:
         blocked = os.path.exists(_restart_marker_path())
@@ -1480,6 +1473,20 @@ def _render_update_nudge():
         st.error(f'The update didn\'t start: the previous {_pn} is still '
                  'running. Close it completely (or reboot), then start '
                  f'{_pn} again.')
+
+
+def _render_update_nudge():
+    """Sidebar banner, above the page radio, when the published engine is newer
+    than the one this session runs — plus the same one-click restart the footer
+    offers, so an always-on machine can't sit on an old build unnoticed.
+
+    The staleness answer comes from _update_state — the same TTL-cached check
+    the report block uses, so the banner and the block can never disagree and
+    only ONE manifest fetch happens per recheck window (3 s cap).  Every
+    failure is swallowed by _nudge_check: equal, older or unreachable renders
+    nothing at all."""
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
+    _render_update_blocked()
 
     if _cache_pinned():
         _render_cache_pinned_notice()
@@ -3257,7 +3264,11 @@ def _render_update_menu():
             else:
                 st.caption(f'{PRODUCT_NAME} · app {_appv} · engine: {_engv}')
             if _nudge:
-                st.warning(f'Update {_nudge[0]} is available (running {_nudge[1]}).')
+                try:
+                    _note = _deadline_note(_nudge[1])
+                except Exception:
+                    _note = ''
+                st.warning(f'Update {_nudge[0]} is available (running {_nudge[1]}).{_note}')
                 _update_actions(_nudge[0], _nudge[1], 'upd_menu_restart')
             if st.button('🔄 Check for Updates', key='upd_check',
                          use_container_width=True):
@@ -3336,9 +3347,10 @@ st.session_state.setdefault('nav_radio', 'Viewer')
 page = st.session_state['nav_radio']
 _render_top_nav(page)
 
-# Update nudge FIRST, right under the bar, so a stale always-on machine sees
-# it before it starts working (the update menu's manual check is still there).
-_render_update_nudge()
+# No update banner under the bar (Robert 2026-10-01): the orange Update
+# under the build label says an update is waiting, and its menu holds the
+# rest.  Only a failed Update & Restart still shows here.
+_render_update_blocked()
 
 # ── Trace folders: the A and B directions, for every tool ───────────────
 # Robert 2026-09-26: an A-direction and a B-direction folder loader.  These
