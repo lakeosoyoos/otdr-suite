@@ -2240,12 +2240,28 @@ def _olts_reference(m):
             out += _olts_pairs((t or {}).get('results'))
         return out
 
+    # Each unit's reference power (dBm) per wavelength, FastReporter's
+    # "Ref. A->B" / "Ref. B->A": the loopback field's per-wavelength items,
+    # [1, wavelength nm (u16), then 1 + 8 doubles per unit, A then B], the
+    # first double of each unit's being it.
+    power = {}
+    sx = bytes(ref.get('fsSxLpbk') or b'')
+    if len(sx) >= 4:
+        for i in range(min(struct.unpack_from('<H', sx, 2)[0], 16)):
+            o = 4 + 133 * i
+            if o + 133 > len(sx) or sx[o] != 1:
+                break
+            a = _olts_d(sx, o + 4) if sx[o + 3] == 1 else float('nan')
+            b = _olts_d(sx, o + 69) if sx[o + 68] == 1 else float('nan')
+            power[struct.unpack_from('<H', sx, o + 1)[0]] = (
+                a if a == a else None, b if b == b else None)
+
     fs = bytes(ref.get('fs') or b'')
     when = None
     if len(fs) > 2 and len(fs) >= fs[1] + 11:
         when = _olts_ticks(struct.unpack_from('<q', fs, fs[1] + 3)[0] & 0x3FFFFFFFFFFFFFFF)
     return {'loss_a': unit_loss('unitA'), 'loss_b': unit_loss('unitB'),
-            'len_a': unit_len('unitA'), 'len_b': unit_len('unitB'),
+            'len_a': unit_len('unitA'), 'len_b': unit_len('unitB'), 'power': power,
             'key': fs[2:2 + fs[1]].decode('ascii', 'replace') if len(fs) > 2 else '',
             'when': when, 'method': 'Loopback'}
 
@@ -2264,8 +2280,9 @@ def parse_olts(filepath):
     """Read an EXFO .olts.  Returns
       {'file', 'job', 'customer', 'company', 'units': {'A': {...}, 'B': {...}},
        'fibers': [{id, when, rows: [{wl_nm, loss_ab, loss_ba, loss_avg,
-                   orl_a, orl_b}], length_m}],
-       'references': [{key, when, method, rows: [{wl_nm, ref_ab, ref_ba}]}],
+                   orl_a, orl_b}], length_m, ref}],
+       'references': [{key, when, method, rows: [{wl_nm, ref_ab, ref_ba,
+                       power_ab, power_ba}]}],
        'thresholds': [{kind, wl_nm, fail, ...}], 'wavelengths': [nm]}
     Times are UTC datetimes; dB and metres as floats (None where the file has
     no reading).  ValueError on anything that is not a readable .olts."""
@@ -2293,7 +2310,7 @@ def parse_olts(filepath):
         key = ref['key'] or str(len(refs))
         if key not in refs:
             refs[key] = ref
-        fibers.append(_olts_measurement(m, refs[key]))
+        fibers.append(dict(_olts_measurement(m, refs[key]), ref=key))
         if first is None:
             first = m
             ths = _olts_thresholds(m.get('testConfiguration'))
@@ -2316,7 +2333,9 @@ def parse_olts(filepath):
     wls = sorted({r['wl_nm'] for f in fibers for r in f['rows']})
     references = [{'key': k, 'when': r['when'], 'method': r['method'],
                    'rows': [{'wl_nm': wl, 'ref_ab': r['loss_a'].get(wl),
-                             'ref_ba': r['loss_b'].get(wl)} for wl in wls]}
+                             'ref_ba': r['loss_b'].get(wl),
+                             'power_ab': r['power'].get(wl, (None, None))[0],
+                             'power_ba': r['power'].get(wl, (None, None))[1]} for wl in wls]}
                   for k, r in refs.items()]
     return {'file': os.path.basename(filepath),
             'job': job.get('id') or ids.get('Job ID') or '',
