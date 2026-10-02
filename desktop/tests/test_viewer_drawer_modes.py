@@ -129,7 +129,7 @@ def test_clicks_on_drawer_marks():
     menu = SRC[SRC.index("canvas.addEventListener('contextmenu'"):]
     menu = menu[:menu.index("\n});")]
     # every drawer mark and tag names its own picks (test_viewer_drawer_right_click_menu)
-    assert "const picks = lh.menu || (lh.t && lh.e" in menu
+    assert "let picks = lh ? lh.menu || (lh.t && lh.e" in menu
     # the lines and numbers are always drawn, so their menu always works
     assert "gShowEvents" not in menu
 

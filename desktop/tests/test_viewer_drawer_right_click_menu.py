@@ -36,7 +36,7 @@ def test_every_drawer_mark_and_tag_names_its_picks():
 
 
 def test_right_click_opens_the_menu_or_asks_the_direction():
-    assert "const picks = lh.menu || (lh.t && lh.e" in CTX
+    assert "let picks = lh ? lh.menu || (lh.t && lh.e" in CTX
     assert "if (!picks.length) return;" in CTX
     assert "ev.preventDefault();" in CTX
     assert "if (picks.length === 1) showSpanMenu(ev.clientX, ev.clientY, p.dir, p.km, p.fiber, p.src);" in CTX
@@ -47,3 +47,16 @@ def test_right_click_opens_the_menu_or_asks_the_direction():
 
 def test_a_right_press_on_a_label_is_not_a_click():
     assert "if (ev.button === 0) gLabelClick = { hit: lh, x: ev.offsetX, y: ev.offsetY };" in DOWN
+
+
+def test_a_right_click_on_the_line_between_events_opens_the_nearest_events_menu():
+    # Robert 2026-10-02: the menu "whether I click on the body of a trace
+    # between events or if I click on the event itself"; the boss "had to be
+    # only on the event hash to get it".
+    assert "const th = traceHits(ev.offsetX, ev.offsetY, r);" in CTX
+    assert "const e = t && nearestEvent(t, pxToX(ev.offsetX, r));" in CTX
+    assert "if (e) picks = [{ dir: t.dir, km: e.dist_km, fiber: t.fiber, src: t.src || t.dir }];" in CTX
+    # a label under the mouse still wins over the line beneath it
+    assert CTX.index("const lh = labelHit(") < CTX.index("if (!lh) {")
+    fn = SRC.split("function nearestEvent(t, km) {", 1)[1].split("\n}", 1)[0]
+    assert "Math.abs(dispKm(t, e.dist_km) - km)" in fn

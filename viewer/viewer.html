@@ -5730,6 +5730,16 @@ function wireAggJump(g, have) {
     setReadout(`F${p.fiber}${dir} holds it. Click the cell again to let go`);
   });
 }
+// A trace's event nearest a display km: the one a click between events on
+// its line stands for.
+function nearestEvent(t, km) {
+  let best = null, bd = Infinity;
+  for (const e of (t.data.events || [])) {
+    const d = Math.abs(dispKm(t, e.dist_km) - km);
+    if (d < bd) { bd = d; best = e; }
+  }
+  return best;
+}
 function labelHit(px, py) {
   // Last drawn is on top, so search from the end.
   for (let i = gLabelHits.length - 1; i >= 0; i--) {
@@ -10857,12 +10867,21 @@ canvas.addEventListener('dblclick', () => { if (!gMarkerMode) fit(); });
 // the same menu a right-click on the grid cell opens, fed the same way (the
 // trace names the direction, the event its own raw km).  A drawer mark or
 // tag names its own picks (`menu`); a tag or filled-in leg over both
-// directions asks which one first, as a header's ⋯ does.
+// directions asks which one first, as a header's ⋯ does.  On the line of a
+// trace between its events the menu is that trace's nearest event's (Robert
+// 2026-10-02: "whether I click on the body of a trace between events or on
+// the event itself"); the menu's heading names the event it picked.
 canvas.addEventListener('contextmenu', (ev) => {
   const lh = labelHit(ev.offsetX, ev.offsetY);
-  if (!lh) return;
-  const picks = lh.menu || (lh.t && lh.e
-    ? [{ dir: lh.t.dir, km: lh.e.dist_km, fiber: lh.t.fiber, src: lh.t.src || lh.t.dir }] : []);
+  let picks = lh ? lh.menu || (lh.t && lh.e
+    ? [{ dir: lh.t.dir, km: lh.e.dist_km, fiber: lh.t.fiber, src: lh.t.src || lh.t.dir }] : []) : [];
+  if (!lh) {
+    const r = plotRect();
+    const th = traceHits(ev.offsetX, ev.offsetY, r);
+    const t = th.length ? th[0].t : null;
+    const e = t && nearestEvent(t, pxToX(ev.offsetX, r));
+    if (e) picks = [{ dir: t.dir, km: e.dist_km, fiber: t.fiber, src: t.src || t.dir }];
+  }
   if (!picks.length) return;
   ev.preventDefault();
   gLabelClick = null;
