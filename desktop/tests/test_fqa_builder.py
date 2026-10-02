@@ -853,7 +853,7 @@ def test_a_sheet_with_no_termination_table_says_the_fat_is_empty(production_shee
     m = build(str(out), str(tmp_path / 'x.xlsm'))
     assert m['fiber_count'] is None
     assert m['fat_rows'] == 0
-    assert any('no fibre count' in w for w in m['warnings'])
+    assert any('no fiber count' in w for w in m['warnings'])
     assert 'number of fibers tested' in m['missing_facts']
 
 

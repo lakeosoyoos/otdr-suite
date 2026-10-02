@@ -201,7 +201,7 @@ def test_acq_sheet_count_row_states_coverage_when_incomplete(tmp_path):
     counts = [ws.cell(row=r, column=2).value for r in range(1, 12)
               if ws.cell(row=r, column=1).value == 'Acquisition Parameters']
     assert counts and '480 of 864 trace(s)' in counts[0]
-    assert 'NOT analysed' in counts[0]
+    assert 'NOT analyzed' in counts[0]
     # Freeze pane followed the header down instead of cutting the block.
     assert ws.freeze_panes != 'A4'
 
