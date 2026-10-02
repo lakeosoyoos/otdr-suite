@@ -117,7 +117,7 @@ _CASES = r"""
 
 @pytest.fixture(scope='module')
 def res(tmp_path_factory):
-    funcs = '\n'.join(_js_func(n) for n in ('loadInfo', 'pollAnalysisMode', 'frameWarnText'))
+    funcs = '\n'.join(_js_func(n) for n in ('gateSig', 'loadInfo', 'pollAnalysisMode', 'frameWarnText'))
     path = tmp_path_factory.mktemp('mode_switch') / 'mode.js'
     path.write_text(_STUBS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)

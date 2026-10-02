@@ -1569,7 +1569,16 @@ class Handler(BaseHTTPRequestHandler):
                                                else 'suite'),
                              'dir_a': CONFIG.get('dir_a') or '',
                              'dir_b': CONFIG.get('dir_b') or '',
-                             'theme': 'dark' if CONFIG.get('theme') == 'dark' else 'light'})
+                             'theme': 'dark' if CONFIG.get('theme') == 'dark' else 'light',
+                             # And the gates, the same keys and values as
+                             # /api/list, so a Settings box or customer
+                             # profile change reaches a Viewer that already
+                             # has traces on screen (it went on grading at
+                             # the old gate until reopened).  All cached
+                             # lookups: still no folder listing.
+                             'thresholds': engine_thresholds(),
+                             'gate_source': gate_source(),
+                             'flags_off': flags_off()})
             return
 
         if u.path == '/api/report_defaults':

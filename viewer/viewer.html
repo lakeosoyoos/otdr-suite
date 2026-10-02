@@ -2219,6 +2219,7 @@ async function loadInfo() {
     // the comparison after them can tell whether this poll actually moved it
     // (a second direction arriving moves it too: see oneDirOnly).
     const wasGate = activeGateDb();
+    const wasSig = gateSig(gInfo);
     const wasMode = gAnalysisMode;
     gInfo = await r.json();
     // The hub's Analysis Mode switch moves CONFIG under a Viewer that already
@@ -2241,7 +2242,10 @@ async function loadInfo() {
     // label, so without this the verdict column keeps the previous run's
     // answers until something else happens to re-render — which is the same
     // report/Viewer disagreement, just one click wide.
-    if (gTraces.length && (modeMoved || activeGateDb() !== wasGate)) {
+    // Any gate, not only the loss box's: a warning level or a connector gate
+    // changed in the Settings box re-grades the table too.
+    if (gTraces.length && (modeMoved || activeGateDb() !== wasGate
+                           || (wasSig && gateSig(gInfo) !== wasSig))) {
       renderEventTable();
       if (modeMoved) draw();     // the chart marks only the events the table prints
     }
@@ -2439,6 +2443,11 @@ function applyHubTheme(t) {
   else el.removeAttribute('data-theme');
   draw();
 }
+// The gates the Viewer judges by, as one string /api/mode and /api/list
+// can be compared on (both serve the same three keys).
+function gateSig(g) {
+  return g ? JSON.stringify([g.thresholds || null, g.gate_source || null, !!g.flags_off]) : '';
+}
 async function pollAnalysisMode() {
   if (gModePollBusy || gDropInFlight || !gInfo) return;
   gModePollBusy = true;
@@ -2460,6 +2469,13 @@ async function pollAnalysisMode() {
       draw();
       renderEventTable();
     } else if (m !== gAnalysisMode) await loadInfo();
+    // The hub's Settings box and customer profile move the gates the same
+    // way (audit 2026-10-01: a profile at 0.100 picked and served, and a loaded
+    // Viewer went on grading at 0.160 until it was reopened).  Not while
+    // traces are on their way: the load's own end renders the table, and
+    // the next tick re-grades it if the gates moved meanwhile.
+    else if (j && 'thresholds' in j && !gLoadingKeys.size
+             && gateSig(j) !== gateSig(gInfo)) await loadInfo();
   } catch (e) { /* server busy or restarting: the next tick asks again */ }
   finally { gModePollBusy = false; }
 }
@@ -2485,6 +2501,11 @@ async function addFibers() {
     if (gTraces.some(t => t.key === key) || gRemovedFiles.has(key) || gLoadingKeys.has(key)) continue;
     tasks.push({ key, f, d });
   }
+  // Enter again, or Add, while the same fibers are still coming: that load
+  // finishes and draws the table itself.  Going on here drew the table of
+  // the part that had landed and said "288 traces loaded" mid-load.
+  if (!tasks.length && plan.pairs.some(({ f, d }) => gLoadingKeys.has(`${d}-${f}`))) return;
+  const epoch = gLoadEpoch;
   // Two regimes.
   //
   // DETAIL (<= MAX_DETAIL_TRACES): full resolution, one fetch per trace, the
@@ -2535,6 +2556,7 @@ async function addFibers() {
   if (overview) {
     gLoadFailures = plan.gaps.slice();
     const ok = await loadOverview(tasks);
+    if (epoch !== gLoadEpoch) return;  // cleared or replaced meanwhile
     syncFileMarks();                 // what the box loaded is selected in FILES
     renderChips();
     if (gAutoFit) fit();
@@ -2553,6 +2575,7 @@ async function addFibers() {
   const BATCH = 6;
   for (let i = 0; i < tasks.length; i += BATCH) {
     await Promise.all(tasks.slice(i, i + BATCH).map(t => loadOne(t.key, t.f, t.d)));
+    if (epoch !== gLoadEpoch) return;  // cleared or replaced meanwhile
   }
   syncFileMarks();
   renderChips();
@@ -2670,6 +2693,14 @@ const OVERVIEW_PTS = 2000;
 async function loadOverview(tasks) {
   const CHUNK = 144;                       // one ribbon-group per request
   let done = 0;
+  // Every key is on its way from now on, so a second Enter or Add during
+  // the load plans none of them again (gLoadingKeys).  Before, the overview
+  // never said so: a second Enter fetched all 864 traces a second time
+  // through the single-threaded server, 36 s for a 13 s load.
+  const epoch = gLoadEpoch;
+  for (const t of tasks) gLoadingKeys.add(t.key);
+  loadProgress(0, tasks.length);
+  try {
   // /api/traces serves ONE direction per request, and in A+B mode the task
   // list interleaves them — so group first and walk each direction's chunks.
   // Grouped rather than interleaved on purpose: the server is single-threaded,
@@ -2686,8 +2717,11 @@ async function loadOverview(tasks) {
     const spec = slice.map(t => t.f).join(',');
     try {
       const r = await fetch(`/api/traces?dir=${dir}&fibers=${spec}&maxpts=${OVERVIEW_PTS}`);
+      if (epoch !== gLoadEpoch) return false;   // cleared or replaced: push nothing
       if (!r.ok) { gLoadFailures.push(`bulk HTTP ${r.status}`); return false; }
       const payload = await r.json();
+      if (epoch !== gLoadEpoch) return false;
+      for (const t of slice) gLoadingKeys.delete(t.key);
       for (const data of (payload.traces || [])) {
         const key = `${dir}-${data.fiber}`;
         if (gTraces.some(t => t.key === key) || gRemovedFiles.has(key)) continue;
@@ -2720,6 +2754,7 @@ async function loadOverview(tasks) {
     }
     done += slice.length;
     setReadout(`loading ${done}/${tasks.length} traces…`);
+    loadProgress(done, tasks.length);
     // draw() early-returns on `!gView`, and gView is null on a cold page and
     // again after Clear All.  fit() -- the only thing that fills it -- runs in
     // addFibers() AFTER this loop returns, so every draw() below was a no-op:
@@ -2738,9 +2773,22 @@ async function loadOverview(tasks) {
     // Yield so the progress text paints and the tab stays responsive.
     draw();
     await new Promise(res => setTimeout(res, 0));
+    if (epoch !== gLoadEpoch) return false;
   }
   }
   return true;
+  } finally {
+    if (epoch === gLoadEpoch) for (const t of tasks) gLoadingKeys.delete(t.key);
+  }
+}
+
+// The readout shows no plain notes (Robert 2026-09-30), so the load's
+// "loading 288/864 traces" never showed and the event panel said "add a
+// trace to see events" for the whole 12-35 s of a cable load.  The panel's
+// hint counts instead, until the table replaces it.
+function loadProgress(done, total) {
+  const hint = document.getElementById('event-hint');
+  if (hint) hint.textContent = `loading ${done} of ${total} traces…`;
 }
 
 let gLoadFailures = [];            // per-addFibers() failure notes for the readout
@@ -2751,6 +2799,19 @@ let gLoadFailures = [];            // per-addFibers() failure notes for the read
 // demo list #33).  A key in here is never planned again, and neither loadOne
 // nor loadOverview pushes a key that is already loaded, however loads overlap.
 const gLoadingKeys = new Set();
+// Which load the chart belongs to.  Clear All and a new FILES selection
+// each start a new one; a fetch that comes back for an older one pushes
+// nothing and stops its load.  Before (audit 2026-10-01)
+// Clear All in the middle of a 432-fiber load emptied the chart for a moment
+// and then the rest of the load kept landing: 720 of the 864 traces came
+// back, with the Fibers box reading "1-432".  The keys still on their way
+// belong to the old load, so they are let go at once and a load asked for
+// straight after the clear plans them again.
+let gLoadEpoch = 0;
+function newLoadEpoch() {
+  gLoadEpoch++;
+  gLoadingKeys.clear();
+}
 // fetch() that retries a THROWN fetch (connection refused/reset: "Failed to
 // fetch") a few times with a short backoff.  An HTTP error is an answer from
 // the server, so it comes straight back and is never retried.
@@ -2768,14 +2829,17 @@ async function fetchRetry(url, tries = 3) {
 async function loadOne(key, fiber, dir) {
   if (gLoadingKeys.has(key) || gTraces.some(t => t.key === key)) return;
   gLoadingKeys.add(key);
+  const epoch = gLoadEpoch;
   try {
     const r = await fetchRetry(`/api/trace?dir=${dir}&fiber=${fiber}`);
+    if (epoch !== gLoadEpoch) return;     // cleared or replaced: push nothing
     if (!r.ok) {
       console.warn('fail', key, r.status);
       gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: HTTP ${r.status}`);
       return;
     }
     const data = await r.json();
+    if (epoch !== gLoadEpoch) return;
     if (data.error) {
       console.warn('err', key, data.error);
       gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: ${data.error}`);
@@ -2792,7 +2856,7 @@ async function loadOne(key, fiber, dir) {
     console.warn(e);
     gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: ${e && e.message || 'fetch failed'}`);
   } finally {
-    gLoadingKeys.delete(key);
+    if (epoch === gLoadEpoch) gLoadingKeys.delete(key);
   }
 }
 
@@ -2855,6 +2919,7 @@ async function selectAfterRemove(next, msg) {
 
 function clearAll() {
   gSelNext = null;                   // a FILES selection still queued is dropped too
+  newLoadEpoch();                    // and a load still landing stops (gLoadEpoch)
   gTraces = [];
   COLORS_USED.clear();
   clearFileSelection();
@@ -2890,6 +2955,11 @@ function renderChips() {
 function syncFiberBox() {
   const box = document.getElementById('fiber-input');
   if (document.activeElement === box) return;
+  // Nor while a load is landing: the first chunk is A's alone, and the box
+  // read "1-144" with the Dir on "A →", so a Clear All there left the next
+  // load to fetch A only (audit 2026-10-01).  The load syncs both when it
+  // settles.
+  if (gLoadingKeys.size) return;
   box.value = fiberRangeText(gTraces.map(t => t.fiber));
   if (!gTraces.length) return;
   const dirs = new Set(gTraces.map(t => t.src || t.dir));
@@ -3948,6 +4018,8 @@ function markFiles(keys) {
 }
 
 async function applyFileSelection(want) {
+  newLoadEpoch();                     // the selection is the chart now: an older load stops
+  const epoch = gLoadEpoch;
   const drop = gTraces.filter(x => !want.has(x.key)).map(x => x.key);
   gTraces = gTraces.filter(x => want.has(x.key));
   prunePick();                        // before the load draws a chunk behind it
@@ -3971,8 +4043,10 @@ async function applyFileSelection(want) {
   } else {
     for (let i = 0; i < tasks.length; i += 6) {
       await Promise.all(tasks.slice(i, i + 6).map(x => loadOne(x.key, x.f, x.d)));
+      if (epoch !== gLoadEpoch) break;
     }
   }
+  if (epoch !== gLoadEpoch) return;   // cleared or replaced meanwhile
   syncFileMarks();                    // what the cap cut off is not selected
   renderChips();
   if (gAutoFit || drop.length) fit();
@@ -5570,7 +5644,7 @@ function renderEventTable() {
   syncGateUI();   // the gate follows what is on screen (see oneDirOnly)
   const visible = gTraces.filter(t => t.visible);
   if (visible.length === 0) {
-    hint.textContent = 'add a trace to see events';
+    hint.textContent = gLoadingKeys.size ? 'loading traces…' : 'add a trace to see events';
     return;
   }
 
@@ -7986,17 +8060,24 @@ function closeEditDialog() {
     if (e) e.remove();
   }
 }
+// Same shape as the Summary Report's: built after an await, so only the
+// latest ask builds a dialog (gReportDlgSeq).
+let gEditDlgSeq = 0;
 async function showEditDialog(dir, fiber) {
+  const seq = ++gEditDlgSeq;
   closeEditDialog();
   const arrow = dir === 'a' ? 'A→B' : 'B→A';
   let s;
   try {
     const r = await fetch(`/api/trace_settings?dir=${dir}&fiber=${fiber}`);
     s = await r.json();
+    if (seq !== gEditDlgSeq) return;
     if (!r.ok || s.error) { setReadout(`could not read F${fiber}: ${s.error || r.status}`); return; }
   } catch (e) {
+    if (seq !== gEditDlgSeq) return;
     setReadout(`could not read F${fiber}: ${(e && e.message) || e}`); return;
   }
+  closeEditDialog();
   const bg = document.createElement('div'); bg.id = 'edit-dlg-bg';
   const d = document.createElement('div'); d.id = 'edit-dlg';
   const ids = s.identifiers || {};
@@ -9151,12 +9232,27 @@ function closeReportDialog() {
     if (e) e.remove();
   }
 }
+// Which click on Summary Report is the latest.  The dialog is built after
+// an await (the Save To default), so a double-click got past the close
+// above twice and stacked two dialogs; Cancel shut only the top one (audit
+// 2026-10-01).  Only the latest click builds one.
+let gReportDlgSeq = 0;
 async function showReportDialog() {
+  const seq = ++gReportDlgSeq;
   closeReportDialog();
   const vis = gTraces.filter(t => t.visible);
-  if (!vis.length) { setReadout('load a trace first: the Summary Report is the event table on screen'); return; }
+  // A warning, not a plain note: the readout shows no plain notes, so this
+  // click used to do nothing at all that the tech could see.
+  if (!vis.length) {
+    setReadout('', { warn: gLoadingKeys.size
+      ? 'the traces are still loading: Summary Report opens once they are on the chart'
+      : 'load a trace first: the Summary Report is the event table on screen' });
+    return;
+  }
   let dest = '';
   try { dest = (await (await fetch('/api/report_defaults')).json()).dest || ''; } catch (e) {}
+  if (seq !== gReportDlgSeq) return;    // a later click builds the dialog
+  closeReportDialog();
   const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   const nFib = new Set(vis.map(t => t.fiber)).size;
   const bg = document.createElement('div'); bg.id = 'report-dlg-bg';
@@ -9537,8 +9633,13 @@ window.addEventListener('keydown', (ev) => {
   if (ev.target.tagName === 'INPUT') return;
   // A dialog is modal: the chart's keys, and Ctrl+A marking the FILES list
   // behind it, are not what the tech is aiming at while one is open.
+  // The Summary Report's too: M turned the A/B markers on behind it (audit
+  // 2026-10-01).
   if (document.getElementById('rn-dlg') || document.getElementById('edit-dlg')
-      || document.getElementById('sel-dlg')) return;
+      || document.getElementById('sel-dlg') || document.getElementById('report-dlg')) return;
+  // Escape shuts a right-click menu the way it shuts the two gear menus,
+  // and only the menu: the markers stay.
+  if (ev.key === 'Escape' && document.getElementById('span-menu')) { closeSpanMenu(); return; }
   if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'a' || ev.key === 'A')) {
     ev.preventDefault();
     selectAllFiles();
