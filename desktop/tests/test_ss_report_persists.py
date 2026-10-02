@@ -115,8 +115,9 @@ def test_corrupt_cache_reads_as_absent(tmp_path, monkeypatch):
 def test_the_page_actually_wires_both_modes():
     """Pin the wiring: the Excel/PDF branch caches, and the renderer restores."""
     page = SRC.split('def page_duplicate_check', 1)[1]
-    assert "_ss_cache_write('pairs_cache.json', folder, manifest)" in page
-    assert "_ss_cache_write('ss_result_cache.json', folder, manifest)" in page
+    # Filed under the folder the run RAN on (the one _ss_cache_read checks).
+    assert "_ss_cache_write('pairs_cache.json' if manifest.get('mode') == 'pairs'" in page
+    assert "else 'ss_result_cache.json', manifest['_folder'], manifest)" in page
     assert "_ss_cache_read('ss_result_cache.json', folder)" in page
     assert "_ss_cache_read('pairs_cache.json', folder, mode='pairs')" in page
 
