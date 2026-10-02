@@ -229,7 +229,9 @@ def test_the_fec_viewer_is_the_viewer_locked_in_fec_mode():
     at = run_streamlit().run()
     at.sidebar.radio[0].set_value('Viewer FEC').run()
     assert not at.exception, at.exception
-    assert any(m.value == '#### Viewer FEC' for m in at.markdown)
+    # the heading at half the old #### size (Robert 2026-10-01)
+    assert any('font-size:0.75rem' in m.value and 'Viewer FEC</p>' in m.value
+               for m in at.markdown)
     assert 'fec=1' in _viewer_src(at)
     pop = [e.proto.srcdoc for e in at.get('iframe') if 'vpop2' in (e.proto.srcdoc or '')]
     assert pop and '/?fec=1"' in pop[0]       # the pop-out window stays in FEC mode
