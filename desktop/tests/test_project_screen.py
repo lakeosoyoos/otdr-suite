@@ -441,6 +441,37 @@ def test_a_project_report_remembers_its_traces(hub, tmp_path, monkeypatch, span_
     assert hub._traces_text(str(work), [], None).startswith("Traces not recorded")
 
 
+def test_a_project_uni_report_renamed_after_its_run_keeps_its_time_and_record(hub, tmp_path,
+                                                                             monkeypatch):
+    """Main #567 renames a Unidirectional workbook once the run says which way
+    the shot went.  In a project the name has the run's time
+    (_project_run_path), and the run is recorded under that name (who ran
+    it, on which traces): the new name keeps the time, and the record moves
+    with the file.  Outside a project the rename is main's, unchanged."""
+    work = tmp_path / "Job"
+    old = _touch(work / "Reports" / "Y_to_X_Uni_OTDR_0.250 2026-10-02 1000.xlsx")
+    monkeypatch.setattr(hub.st, "session_state",
+                        {"app_mode": "project", "project_path": str(work / "Job.otdrproj")})
+    data = hub.events_read(str(work))
+    data["made_by"]["Reports/" + old.name] = "tech1"
+    data["report_traces"]["Reports/" + old.name] = [str(work / "Traces" / "B")]
+    hub._events_write(str(work), data)
+    manifest = {"out": str(old), "analysis_mode": "suite",
+                "thresholds": {"UNI_BEND_THRESHOLD": 0.25},
+                "uni": {"shot_side": "B", "site_a": "X", "site_b": "Y"}}
+    new = hub._uni_named_report(manifest)
+    assert os.path.basename(new) == "X_to_Y_Uni_OTDR_0.250 2026-10-02 1000.xlsx"
+    assert os.path.isfile(new) and not old.exists()
+    data = hub.events_read(str(work))
+    assert data["made_by"] == {"Reports/" + os.path.basename(new): "tech1"}
+    assert list(data["report_traces"]) == ["Reports/" + os.path.basename(new)]
+    # Outside a project: main's name, no time added.
+    plain = _touch(tmp_path / "Downloads" / "Y_to_X_Uni_OTDR_0.250.xlsx")
+    monkeypatch.setattr(hub.st, "session_state", {})
+    out = hub._uni_named_report(dict(manifest, out=str(plain)))
+    assert os.path.basename(out) == "X_to_Y_Uni_OTDR_0.250.xlsx"
+
+
 def test_in_a_project_reports_are_saved_to_the_job_with_no_choice(settings_dir, span_dir,
                                                                    tmp_path):
     from conftest import goto
@@ -809,8 +840,8 @@ def _uni_run_on_shoot(at, side):
     return at
 
 
-def test_a_first_unidirectional_run_in_a_new_project_writes_to_reports(settings_dir, span_dir,
-                                                                      tmp_path):
+def test_a_first_unidirectional_run_in_a_new_project_writes_to_reports(hub, settings_dir,
+                                                                      span_dir, tmp_path):
     """A new project has no Reports folder until a report goes there, and the
     first Unidirectional run in it failed ("No such file or directory" for
     Reports/unidirectional_events <time>.xlsx): the engine did not make the
@@ -819,11 +850,19 @@ def test_a_first_unidirectional_run_in_a_new_project_writes_to_reports(settings_
     at, work = _open_a_new_project(span_dir, tmp_path)
     assert not (work / "Reports").exists()
     _uni_run_on_shoot(at, "A folder")
-    made = list((work / "Reports").glob("unidirectional_events *.xlsx"))
-    assert len(made) == 1, sorted(os.listdir(work))
+    import re
+    made = os.listdir(work / "Reports")
+    # Named by the span, the mode and the gate (main #567), with the
+    # run's time a project report gets.
+    # In the shot's direction, as its files store the sites.
+    site_from, site_to = hub._shot_sites(str(work / "Traces" / "2026-05-06" / "A"))
+    assert len(made) == 1 and re.fullmatch(
+        rf"{site_from}_to_{site_to}_Uni_OTDR_\d\.\d{{3}} \d{{4}}-\d{{2}}-\d{{2}} \d{{4}}\.xlsx",
+        made[0]), made
+    assert hub._report_kind(made[0]) == "Unidirectional"
 
 
-def test_a_shoots_b_run_on_unidirectional_opens_the_viewer_on_b(settings_dir, span_dir,
+def test_a_shoots_b_run_on_unidirectional_opens_the_viewer_on_b(hub, settings_dir, span_dir,
                                                                   tmp_path):
     """A shoot's Run In… Unidirectional run on its B folder opens the Viewer
     with B's files in the B slot, as a run on the page's own folder does
@@ -843,3 +882,14 @@ def test_a_shoots_b_run_on_unidirectional_opens_the_viewer_on_b(settings_dir, sp
     shoot_b = str(work / "Traces" / "2026-05-06" / "B")
     for q in (dict(parse_qsl(h, keep_blank_values=True)) for h in hrefs):
         assert q["dir"] == "b" and q["srb"] == shoot_b and "sra" not in q
+    # Renamed after the run to read B to A (main #567), keeping the run's
+    # time; the project's record of who ran it, on which traces, follows.
+    (made,) = os.listdir(work / "Reports")
+    site_from, site_to = hub._shot_sites(shoot_b)  # B's shot: B's site first
+    assert site_from and site_to and re.fullmatch(
+        rf"{site_from}_to_{site_to}_Uni_OTDR_\d\.\d{{3}} \d{{4}}-\d{{2}}-\d{{2}} \d{{4}}\.xlsx",
+        made), made
+    data = json.loads((work / "Project Events.json").read_text(encoding="utf-8"))
+    assert list(data["made_by"]) == ["Reports/" + made]
+    assert list(data["report_traces"]) == ["Reports/" + made]
+    assert data["report_traces"]["Reports/" + made] == [shoot_b]

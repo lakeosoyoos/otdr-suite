@@ -132,8 +132,10 @@ def mixed(tmp_path):
 
 @pytest.fixture
 def dest(tmp_path, monkeypatch):
-    """Where the runs below save: never the tech's Downloads folder."""
+    """Where the runs below save: never the tech's Downloads folder.  Its
+    own settings folder, so the runs are in OTDR Suite mode."""
     monkeypatch.setenv('OTDR_CACHE_DIR', str(tmp_path / 'cache'))
+    monkeypatch.setenv('OTDR_SETTINGS_DIR', str(tmp_path / 'settings'))
     out = tmp_path / 'saved reports'
     out.mkdir()
     return str(out)
@@ -352,7 +354,7 @@ def test_a_second_splice_report_does_not_overwrite_the_first(dest):
     at = _open(_hub(A, B), 'Splice Report')
     site_a, site_b = (_sites(at)[k] for k in ('A-Direction ILA / Site',
                                               'B-Direction ILA / Site'))
-    name = f'{site_a}_to_{site_b}_SpliceReport'
+    name = f'{site_a}_to_{site_b}_SpliceReport_OTDR_0.160'
     first = os.path.join(dest, name + '.xlsx')
     with open(first, 'wb') as fh:
         fh.write(b'the report before')
@@ -369,10 +371,13 @@ def test_a_second_splice_report_does_not_overwrite_the_first(dest):
 
 
 def test_a_second_unidirectional_report_does_not_overwrite_the_first(dest):
-    first = os.path.join(dest, 'unidirectional_events.xlsx')
+    at = _open(_hub(A), 'Unidirectional')
+    name = '{}_to_{}_Uni_OTDR_0.250'.format(*(
+        next(t for t in at.main.text_input if t.label == l).value
+        for l in ('A-End Site', 'B-End Site')))
+    first = os.path.join(dest, name + '.xlsx')
     with open(first, 'wb') as fh:
         fh.write(b'the report before')
-    at = _open(_hub(A), 'Unidirectional')
     at.session_state['uni_report_dest'] = dest
     at.run()
     next(b for b in at.main.button if b.label == 'Run Unidirectional Report').click().run()
@@ -380,4 +385,6 @@ def test_a_second_unidirectional_report_does_not_overwrite_the_first(dest):
     assert not at.exception, at.exception
     with open(first, 'rb') as fh:
         assert fh.read() == b'the report before'
-    assert os.path.isfile(os.path.join(dest, 'unidirectional_events (2).xlsx'))
+    second = os.path.join(dest, name + ' (2).xlsx')
+    assert os.path.isfile(second)
+    assert at.session_state['uni_result']['out'] == second

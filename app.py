@@ -2124,6 +2124,57 @@ def _project_run_path(dest, name, traces=(), taken=()):
     return out
 
 
+# The run's time _project_run_path puts in a project report's name
+# ('<name> 2026-10-02 1430.xlsx', or '... 1430 (2).xlsx' for a second run
+# in the same minute).
+_PROJECT_RUN_STAMP_RE = re.compile(r' (\d{4}-\d{2}-\d{2} \d{4})(?: \(\d+\))?(\.\w+)$')
+
+
+def _project_reports_dir():
+    """The open project's Reports folder, or '' outside a project."""
+    if st.session_state.get('app_mode') != 'project':
+        return ''
+    work = work_dir()
+    return work_sub('reports', work) if work else ''
+
+
+def _project_keep_stamp(out, want):
+    """OTDR Suite App: `want`, a report's name picked once its run is done
+    (main's _uni_named_report), with the run's time that `out` got from
+    _project_run_path, when `out` is in the open project's Reports folder.
+    Anywhere else `want` as it is."""
+    reports = _project_reports_dir()
+    if not reports or os.path.normcase(os.path.abspath(os.path.dirname(out))) \
+            != os.path.normcase(os.path.abspath(reports)):
+        return want
+    found = _PROJECT_RUN_STAMP_RE.search(os.path.basename(out))
+    if not found:
+        return want
+    base, ext = os.path.splitext(want)
+    return f'{base} {found.group(1)}{ext}'
+
+
+def _project_report_moved(old, new):
+    """OTDR Suite App: a project report renamed after its run keeps its
+    record (who ran it, on which traces), which _project_run_path filed
+    under the name the run started with.  Never raises."""
+    if not _project_reports_dir():
+        return
+    try:
+        work = work_dir()
+        data = events_read(work)
+        o, n = _rel(work, old), _rel(work, new)
+        moved = False
+        for key in ('made_by', 'report_traces'):
+            if o in data[key]:
+                data[key][n] = data[key].pop(o)
+                moved = True
+        if moved:
+            _events_write(work, data)
+    except Exception as exc:
+        report_error('project: move a renamed report record', exc, {})
+
+
 # In a project, where each tool's output goes: a folder of the job, not a choice.
 PROJECT_DEST_SUBS = {'sr_report_dest': 'reports', 'uni_report_dest': 'reports',
                      'ss_report_dest': 'reports', 'fqa_dest': 'fqa',
@@ -2242,6 +2293,82 @@ def _unused_report_path(path, taken=()):
         n += 1
         cand = f'{stem} ({n}){ext}'
     return cand
+
+
+# A report's file name says what made it (Robert 2026-10-01): the span in the
+# direction the report reads, the tool, the analysis mode and the gate it ran
+# at, e.g. SITEA_to_SITEB_SpliceReport_OTDR_0.160.xlsx.  The mode word follows
+# the hub's switch: OTDR Suite -> OTDR, FastReporter -> FR.
+REPORT_NAME_MODES = {'suite': 'OTDR', 'fr': 'FR'}
+_FILE_NAME_BAD_CHARS = frozenset('\\/:*?"<>|')
+
+
+def _file_name_site(name, fallback):
+    """`name` as Windows takes it in a file name: \\ / : * ? " < > | and
+    control characters taken out, no trailing dot or space.  `fallback` when
+    nothing is left."""
+    s = ''.join(c for c in str(name or '')
+                if c not in _FILE_NAME_BAD_CHARS and ord(c) >= 32)
+    return s.strip().rstrip('. ') or fallback
+
+
+def _report_file_name(site_from, site_to, tool, mode, gate,
+                      fallback=('A', 'B')):
+    """'<from>_to_<to>_<tool>_<MODE>_<gate>.xlsx'.  `mode` is the analysis
+    mode ('suite' / 'fr'), `gate` the splice gate in dB, three decimals; a
+    gate switched off in the OTDR Settings (the off-sentinel) reads 'off'."""
+    try:
+        g = float(gate)
+        gate_s = f'{g:.3f}' if 0 < g < _OTDR_DISABLE_SENTINEL else 'off'
+    except (TypeError, ValueError):
+        gate_s = 'off'
+    return (f'{_file_name_site(site_from, fallback[0])}_to_'
+            f'{_file_name_site(site_to, fallback[1])}_{tool}_'
+            f'{REPORT_NAME_MODES.get(mode, "OTDR")}_{gate_s}.xlsx')
+
+
+def _sr_file_sites(site_a, site_b, dir_a, dir_b):
+    """The two names a Splice Report's file is named by: the site boxes, and
+    for a box left blank the names the span's files store."""
+    a, b = (site_a or '').strip(), (site_b or '').strip()
+    if not (a and b):
+        try:
+            sa, sb = _site_names_for(dir_a, dir_b)
+        except Exception:
+            sa = sb = ''
+        a, b = a or sa or 'A', b or sb or 'B'
+    return a, b
+
+
+def _uni_named_report(manifest):
+    """Give a finished Unidirectional workbook its name, from what the run
+    reports: the sites in the direction of the shot (a B-folder run reads
+    SITEB_to_SITEA), its analysis mode and the splice gate it ran at.  Which
+    way the shot went is only known once the engine has read the files, so
+    the workbook is moved after the run, never over another file.  Returns
+    the path the workbook is at (where it was, if the move fails)."""
+    out = manifest.get('out') or ''
+    if not out or not os.path.isfile(out):
+        return out
+    u = manifest.get('uni') or {}
+    ends = ('B', 'A') if u.get('shot_side') == 'B' else ('A', 'B')
+    want = os.path.join(os.path.dirname(out), _report_file_name(
+        u.get('site_a'), u.get('site_b'), 'Uni', manifest.get('analysis_mode'),
+        (manifest.get('thresholds') or {}).get('UNI_BEND_THRESHOLD'),
+        fallback=ends))
+    # OTDR Suite App: a run into a project's Reports folder keeps its time.
+    want = _project_keep_stamp(out, want)
+    # Already that name, or that name's " (2)" for a rerun: it stays.
+    _bare = re.sub(r' \(\d+\)(\.xlsx)$', r'\1', os.path.abspath(out))
+    if os.path.normcase(os.path.abspath(want)) == os.path.normcase(_bare):
+        return out
+    want = _unused_report_path(want)
+    try:
+        os.rename(out, want)
+    except OSError:
+        return out
+    _project_report_moved(out, want)     # OTDR Suite App: its record follows
+    return want
 
 
 # ─── ILA / site-name auto-detection from SOR GenParams ───────────────────────
@@ -8246,7 +8373,7 @@ def _render_clickable_grid(table_html, port, height=560, src=''):
 # * Parses each cell into per-fiber entries ("49,50,60 .369" -> three fibers
 #   at 0.369 dB; "1-8 brok" -> eight broken fibers; "all" -> the whole
 #   ribbon) and compares fiber by fiber.
-# * Writes <site_a>_to_<site_b>_SpliceReport_vs_Tech.xlsx with three sheets:
+# * Writes <report name>_vs_Tech.xlsx with three sheets:
 #   the grid with only the differing cells filled (colour = kind of
 #   difference), a flat list of every fiber-level difference, and a summary
 #   with the column line-up.
@@ -8877,11 +9004,11 @@ def tc_compare_reports(ours_xlsx: str, tech_xlsx: str, out_path: str,
 def _render_tech_comparison(page, our_xlsx, upload, dest_dir, site_a, site_b):
     """Compare our finished report against the tech's uploaded workbook and
     offer the difference workbook.  Written to `dest_dir` — the same folder
-    the splice report went to — as <A>_to_<B>_SpliceReport_vs_Tech.xlsx.
+    the splice report went to — as <report name>_vs_Tech.xlsx, so it carries
+    the report's span, mode and gate (_report_file_name).
     Cached per (report file, upload) in session_state so a rerun (any widget
     click) doesn't redo the compare or rewrite the file.  Never lets a bad
     tech workbook take the page down: the report above is already saved."""
-    _safe = lambda s: ''.join(c if (c.isalnum() or c in ' -_') else '_' for c in str(s)).strip() or 'site'
     try:
         _mtime = os.path.getmtime(our_xlsx)
     except OSError:
@@ -8891,8 +9018,8 @@ def _render_tech_comparison(page, our_xlsx, upload, dest_dir, site_a, site_b):
     slot = f'{page}_techcmp'
     cached = st.session_state.get(slot)
     if not (cached and cached.get('sig') == sig and os.path.exists(cached.get('xlsx', ''))):
-        out_path = os.path.join(dest_dir,
-                                f'{_safe(site_a)}_to_{_safe(site_b)}_SpliceReport_vs_Tech.xlsx')
+        out_path = os.path.join(dest_dir, os.path.splitext(
+            os.path.basename(our_xlsx))[0] + '_vs_Tech.xlsx')
         tmp_tech = None
         try:
             os.makedirs(dest_dir, exist_ok=True)
@@ -9051,7 +9178,7 @@ def _sr_span_inputs(span):
             _typed_trace_dir(st.session_state.get(k_one), 'That'), zf)
 
     # The tech's own splice report (optional).  When one is here, the run
-    # also writes a <A>_to_<B>_SpliceReport_vs_Tech.xlsx beside the report
+    # also writes a <report name>_vs_Tech.xlsx beside the report
     # that highlights every cell where the two disagree — the tech_compare block.
     # Sits under the A/B inputs on both input modes (the boss's placement).
     tech_xlsx = st.file_uploader(
@@ -9486,8 +9613,6 @@ def page_splice_report():
     if st.button(_gen_label, type='primary',
                  disabled=bool(_stale) or bool(_not_ready) or _no_settings) \
             and not _no_settings:
-        _safe = lambda s: ''.join(c if (c.isalnum() or c in ' -_') else '_' for c in str(s)).strip() or 'site'
-        _suffix = '_SpliceReport.xlsx'
         # Read the panel values straight out of session_state (which the
         # component's auto-commit keeps current) and translate to engine
         # globals: the threshold table, the connector/launch knobs and the
@@ -9508,10 +9633,16 @@ def page_splice_report():
             spans.append((_n, _da, _db, _sa, _sb))
         queue, used_names = [], set()
         _prune_viewer_tables(VIEWER_TABLES_KEPT - len(spans))
+        # Named by the span, the analysis mode and the bidirectional gate
+        # (_report_file_name); the gate is the Bidir splice loss row's.
+        _mode = analysis_mode()
+        _gate = overrides.get('REBURN_THRESHOLD', next(
+            r[2] for r in OTDR_ROWS if r[0] == 'bidir_splice_loss'))
         for _n, _da, _db, _sa, _sb in spans:
-            _name = f'{_safe(_sa)}_to_{_safe(_sb)}{_suffix}'
+            _fa, _fb = _sr_file_sites(_sa, _sb, _da, _db)
+            _name = _report_file_name(_fa, _fb, 'SpliceReport', _mode, _gate)
             if _name in used_names:                   # same sites twice → keep both files
-                _name = f'{_safe(_sa)}_to_{_safe(_sb)}_span{_n}{_suffix}'
+                _name = _report_file_name(_fa, _fb, f'span{_n}_SpliceReport', _mode, _gate)
             used_names.add(_name)
             out_xlsx = _project_run_path(_sr_dest, _name, traces=(_da, _db),
                                          taken=[q['out'] for q in queue])
@@ -10377,8 +10508,13 @@ def page_unidirectional():
         st.caption('⏳ Large folders can take a few minutes. Leave this '
                    'window open and don’t refresh.')
     if _run_uni:
-        out_xlsx = _project_run_path(_uni_dest, 'unidirectional_events.xlsx',
-                                     traces=(src_folder,))
+        # Named by the A-end and B-end boxes for now; the run says which way
+        # the shot went and the gate it ran at (_uni_named_report).
+        out_xlsx = _project_run_path(_uni_dest, _report_file_name(
+            uni_site_a, uni_site_b, 'Uni', analysis_mode(),
+            (uni_overrides or {}).get('UNI_BEND_THRESHOLD',
+                                      _UNI_DEFAULTS['UNI_BEND_THRESHOLD'])),
+            traces=(src_folder,))
         st.session_state['uni_pending_cmd'] = uni_cmd(_run_folder(folder), out_xlsx,
                                                       direction=dir_choice,
                                                       landmarks=landmarks,
@@ -10423,6 +10559,9 @@ def page_unidirectional():
                          {"folder": os.path.basename(folder)}, log=proc.stderr)
             return
         manifest['_folder'] = folder
+        if manifest.get('out'):
+            manifest['out'] = st.session_state['uni_out_xlsx'] = \
+                _uni_named_report(manifest)
         manifest['_viewer_removed'] = st.session_state.pop('uni_run_removed', None)
         st.session_state['uni_result'] = manifest
         # Disk cache: a grid-cell click into the Viewer is a URL nav that
@@ -12637,6 +12776,8 @@ EVENT_KINDS = ('Project', 'Traces', 'Report', 'Field Capture', 'Photo', 'GPS',
                'Production Sheet', 'FQA', 'File')
 # Where a report tool's output is recognised by its file name.
 _REPORT_KINDS = (('splicereport', 'Splice Report'), ('unidirectional', 'Unidirectional'),
+                 # <from>_to_<to>_Uni_<OTDR|FR>_<gate>.xlsx since main #567
+                 ('_uni_otdr_', 'Unidirectional'), ('_uni_fr_', 'Unidirectional'),
                  ('secretsauce', 'Secret Sauce'), ('secret sauce', 'Secret Sauce'))
 PICTURE_ENDS = {'A': 'A end', 'Z': 'Z end', 'other': 'Other'}
 _PICTURE_EXTS = ('.jpg', '.jpeg', '.png', '.heic', '.webp')

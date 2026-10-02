@@ -40,7 +40,8 @@ def test_the_chosen_folder_is_what_the_engines_are_handed():
     # to the name (_project_run_path), so every run is kept.  Either way a
     # rerun never writes over the last report: _project_run_path picks the
     # name through main's _unused_report_path ("name (2).xlsx", 2026-09-29).
-    assert "out_xlsx = _project_run_path(_uni_dest, 'unidirectional_events.xlsx'," in SRC
+    # The name says the span, the mode and the gate (main #567).
+    assert "out_xlsx = _project_run_path(_uni_dest, _report_file_name(" in SRC
     assert re.search(r"out_xlsx = _project_run_path\(_sr_dest,", SRC)
     run_path = SRC.split('def _project_run_path(', 1)[1].split('\ndef ', 1)[0]
     assert run_path.count('_unused_report_path(') == 2

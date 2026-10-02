@@ -105,7 +105,7 @@ def test_generate_queues_one_run_per_span_into_the_one_destination():
 
 def test_the_same_sites_twice_keep_both_files():
     page = _fn("page_splice_report")
-    assert "_span{_n}{_suffix}" in page
+    assert "f'span{_n}_SpliceReport'" in page
 
 
 # ── span 1 keeps the grid + Viewer; added spans are report-only ──────────
