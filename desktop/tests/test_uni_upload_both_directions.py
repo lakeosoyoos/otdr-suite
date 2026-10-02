@@ -5,7 +5,7 @@ together, loose or in one zip) used to run A alone and print a red PARTIAL
 COVERAGE error for the B files, with no say in it.  Now the page asks which
 direction to run, A by default, and runs only that one: the side not picked
 is not reported as missing.  Which files are A and which are B comes from the
-files' own direction stamps, the way the left panel splits such a folder.
+files' own direction stamps, the way the Traces tab splits such a folder.
 
 The uploader used to add every new drop to the files it held; a new upload
 now replaces the one before.
@@ -24,8 +24,8 @@ import zipfile
 import pytest
 import streamlit
 
-from conftest import (run_streamlit, finish_engine_run, FIXTURE_SPLICE_A_DIR,
-                      FIXTURE_SPLICE_B_DIR)
+from conftest import (run_streamlit, finish_engine_run, go_tab,
+                      FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
 
 A, B = FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR
 
@@ -92,7 +92,7 @@ def drops(monkeypatch, tmp_path):
 def _uni_page(tmp_path):
     at = run_streamlit(default_timeout=180).run()
     at.session_state['uni_report_dest'] = str(tmp_path)
-    at.sidebar.radio[0].set_value('Unidirectional').run()
+    go_tab(at, 'Unidirectional')
     assert not at.exception, at.exception
     return at
 

@@ -43,7 +43,10 @@ def test_installed_once_per_tab_and_never_fatal():
 
 
 def test_it_runs_on_every_page():
+    # Installed before the page's nav is drawn (the sidebar until
+    # 2026-10-01, the top bar since), on every run.
     i_nav = SRC.index("\n_handle_nav()\n")
     i_fix = SRC.index("\n_install_sidebar_drag_fix()\n")
-    i_sidebar = SRC.index("# ─── Sidebar nav")
-    assert i_nav < i_fix < i_sidebar
+    i_bar = SRC.index("# ─── Top bar")
+    assert i_nav < i_fix < i_bar
+    assert i_bar < SRC.index("\n_render_top_nav(page)\n")

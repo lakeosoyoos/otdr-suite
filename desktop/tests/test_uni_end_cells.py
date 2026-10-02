@@ -27,7 +27,7 @@ from html.parser import HTMLParser
 
 import pytest
 
-from conftest import run_streamlit, FIXTURE_SPLICE_A_DIR
+from conftest import run_streamlit, go_tab, FIXTURE_SPLICE_A_DIR
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -149,7 +149,7 @@ def page(tmp_path, monkeypatch):
 
     def show(ends, max_fiber=24, popout=False):
         at = run_streamlit(default_timeout=120).run()
-        at.sidebar.radio[0].set_value('Unidirectional').run()
+        go_tab(at, 'Unidirectional')
         at.session_state['uni_folder_input'] = folder
         at.session_state['uni_click_target'] = (
             'Separate window' if popout else 'This tab (Viewer page)')

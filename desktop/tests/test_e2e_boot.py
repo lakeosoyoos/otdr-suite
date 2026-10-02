@@ -8,7 +8,7 @@ real fixture.
 """
 from __future__ import annotations
 
-from conftest import run_streamlit, run_secretsauce, mixed_fixture_dir
+from conftest import run_streamlit, run_secretsauce, mixed_fixture_dir, go_tab
 
 
 # ── Page render (AppTest) ────────────────────────────────────────────────
@@ -20,13 +20,13 @@ def test_viewer_page_renders():
 
 def test_duplicate_check_page_renders():
     at = run_streamlit().run()
-    at.sidebar.radio[0].set_value("Secret Sauce").run()
+    go_tab(at, "Secret Sauce")
     assert not at.exception, f"Duplicate Check page raised: {list(at.exception)}"
 
 
 def test_splice_report_page_renders():
     at = run_streamlit().run()
-    at.sidebar.radio[0].set_value("Splice Report").run()
+    go_tab(at, "Splice Report")
     assert not at.exception, f"Splice Report page raised: {list(at.exception)}"
 
 

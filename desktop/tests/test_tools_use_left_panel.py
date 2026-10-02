@@ -1,9 +1,11 @@
-"""With traces loaded in the left panel, the tools draw no loader of their own
-(Robert 2026-09-28): one place to load traces, not one per tool.
+"""With traces loaded on the Traces tab (the left panel before the top bar
+replaced the sidebar), the tools draw no loader of their own (Robert
+2026-09-28): one place to load traces, not one per tool.  "The panel" below
+is the Traces tab's A and B boxes.
 
     Splice Report     runs on the panel's A and B
     Unidirectional    runs on the panel's A, or its B (the tech says which)
-    Secret Sauce      runs on both, as the one folder the sidebar builds
+    Secret Sauce      runs on both, as the one folder the hub builds
 
 With the panel empty each tool loads its own traces, as before.
 
@@ -21,6 +23,7 @@ import sys
 import pytest
 
 from conftest import (run_streamlit, run_secretsauce, finish_engine_run,
+                      go_tab, trace_box, trace_box_value, clear_traces,
                       SPLICEREPORT_DIR, FIXTURE_SPLICE_A_DIR,
                       FIXTURE_SPLICE_B_DIR)
 
@@ -28,8 +31,9 @@ A, B = str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR)
 N_A, N_B = len(os.listdir(A)), len(os.listdir(B))
 
 
-def _box(at, label):
-    return next(t for t in at.sidebar.text_input if t.label == label)
+def _boxes(at):
+    """What the Traces tab's A and B boxes hold, read on any page."""
+    return trace_box_value(at, 'a'), trace_box_value(at, 'b')
 
 
 def _hub(a='', b='', tmp_path=None, monkeypatch=None):
@@ -37,15 +41,15 @@ def _hub(a='', b='', tmp_path=None, monkeypatch=None):
         monkeypatch.setenv('OTDR_CACHE_DIR', str(tmp_path / 'cache'))
     at = run_streamlit(default_timeout=180).run()
     if a:
-        _box(at, 'A Folder').input(a).run()
+        trace_box(at, 'a').input(a).run()
     if b:
-        _box(at, 'B Folder').input(b).run()
+        trace_box(at, 'b').input(b).run()
     assert not at.exception, at.exception
     return at
 
 
 def _open(at, page):
-    at.sidebar.radio[0].set_value(page).run()
+    go_tab(at, page)
     assert not at.exception, at.exception
     return at
 
@@ -98,7 +102,7 @@ def test_with_the_panel_loaded_no_tool_draws_a_loader(page, a, b):
     at = _open(_hub(a, b), page)
     assert _loaders(at) == []
     assert 'Select Traces' not in _main(at)['radio']
-    assert 'left panel' in _main(at)['caption']
+    assert 'on the Traces tab' in _main(at)['caption']
 
 
 def test_the_splice_report_runs_on_the_panels_pair():
@@ -193,7 +197,7 @@ def test_a_new_session_inherits_the_span_the_suite_has_loaded():
     behaviour a tech relies on: reopen the tab and the span is still there."""
     _open(_hub(A, B), 'Viewer')              # the Viewer hands A/B to the server
     again = _open(run_streamlit(default_timeout=180).run(), 'Unidirectional')
-    assert _box(again, 'A Folder').value == A and _box(again, 'B Folder').value == B
+    assert _boxes(again) == (A, B)
     assert _loaders(again) == []
 
 
@@ -208,16 +212,18 @@ def test_a_folder_that_does_not_exist_is_not_a_loaded_panel(tmp_path):
 def test_clear_traces_brings_the_tools_loader_back(page):
     at = _open(_hub(A, B), page)
     assert _loaders(at) == []
-    next(b for b in at.sidebar.button if b.label == 'Clear Traces').click().run()
-    next(b for b in at.button if b.label == 'Allow').click().run()
+    clear_traces(at)                    # on the Traces tab, then back
     assert not at.exception, at.exception
+    _open(at, page)
     assert any('Browse for Folder' in l for l in _loaders(at))
 
 
 def test_clear_traces_brings_the_splice_reports_loader_back():
     at = _open(_hub(A, B), 'Splice Report')
-    next(b for b in at.sidebar.button if b.label == 'Clear Traces').click().run()
-    next(b for b in at.button if b.label == 'Allow').click().run()
+    assert 'Select Traces' not in _main(at)['radio']
+    clear_traces(at)
+    assert not at.exception, at.exception
+    _open(at, 'Splice Report')
     assert 'Select Traces' in _main(at)['radio']
 
 
@@ -266,10 +272,10 @@ def test_a_pair_click_gives_the_panel_back_with_the_report(tmp_path, monkeypatch
     seen = _click({'nav': 'viewer', 'fibers': '1,2', 'dir': 'a',
                    'ssfolder': ran_on, 'pa': A, 'pb': B})
     # in the Viewer the A box is the folder the pair is read from...
-    assert _box(seen, 'A Folder').value == ran_on
+    assert trace_box_value(seen, 'a') == ran_on
     _back(seen, 'Secret Sauce')
     # ...and on the way back the tech's own folders return, with the report
-    assert _box(seen, 'A Folder').value == A and _box(seen, 'B Folder').value == B
+    assert _boxes(seen) == (A, B)
     assert 'ss_pairs_result' in seen.session_state
     assert any(b.label == 'Clear Report' for b in seen.button)
     assert _loaders(seen) == []
@@ -294,20 +300,20 @@ def test_a_unidirectional_click_on_b_gives_the_panel_back_with_the_report(
                    'sra': B, 'src': 'uni', 'pa': A, 'pb': B})
     # The Viewer keeps both of the panel's folders and opens the fibre on B,
     # the side the report ran on (the A box used to hold B, and B was empty).
-    assert _box(seen, 'A Folder').value == A and _box(seen, 'B Folder').value == B
+    assert _boxes(seen) == (A, B)
     assert seen.session_state['viewer_target']['dir'] == 'b'
     _back(seen, 'Unidirectional')
-    assert _box(seen, 'A Folder').value == A and _box(seen, 'B Folder').value == B
+    assert _boxes(seen) == (A, B)
     assert next(r for r in seen.main.radio if r.label == 'Run On').value == 'B folder'
     assert (seen.session_state['uni_result'] or {}).get('_folder') == B
     assert any(b.label == 'Clear Report' for b in seen.button)
 
 
-def test_leaving_the_viewer_by_the_tool_list_gives_the_panel_back_too():
+def test_leaving_the_viewer_by_a_tab_gives_the_panel_back_too():
     seen = _click({'nav': 'viewer', 'fiber': '3', 'km': '1.0', 'dir': 'a',
                    'sra': B, 'src': 'uni', 'pa': A, 'pb': B})
     _open(seen, 'Splice Report')
-    assert _box(seen, 'A Folder').value == A and _box(seen, 'B Folder').value == B
+    assert _boxes(seen) == (A, B)
     assert '_panel_restore' not in seen.session_state
 
 
@@ -316,9 +322,9 @@ def test_a_link_from_an_empty_panel_gives_an_empty_panel_back(tmp_path):
     os.makedirs(own)
     seen = _click({'nav': 'viewer', 'fibers': '1,2', 'dir': 'a',
                    'ssfolder': own, 'pa': '', 'pb': ''})
-    assert _box(seen, 'A Folder').value == own
+    assert trace_box_value(seen, 'a') == own
     _back(seen, 'Secret Sauce')
-    assert _box(seen, 'A Folder').value == '' and _box(seen, 'B Folder').value == ''
+    assert _boxes(seen) == ('', '')
     # the tool is back on its own loader, on the folder the tech gave it
     assert any('Paste a Folder' in l for l in _loaders(seen))
     assert seen.session_state['ss_folder_input'] == own

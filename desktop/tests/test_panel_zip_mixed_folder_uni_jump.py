@@ -1,4 +1,4 @@
-"""The left panel's A and B boxes, read the same way by every tool, and the
+"""The Traces tab's A and B boxes, read the same way by every tool, and the
 way into the Viewer tab from a Unidirectional cell (click-through audit on
 main b4b30bb, a 24-fibre bidirectional span, 2026-09-29).
 
@@ -29,7 +29,7 @@ import zipfile
 import pytest
 
 from conftest import (run_streamlit, finish_engine_run, import_trace_server,
-                      SPLICEREPORT_DIR, FIXTURE_SPLICE_A_DIR,
+                      go_tab, trace_box, trace_box_value, SPLICEREPORT_DIR, FIXTURE_SPLICE_A_DIR,
                       FIXTURE_SPLICE_B_DIR)
 
 A, B = str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR)
@@ -53,7 +53,21 @@ def _plain_folder_sites():
 # ── helpers ───────────────────────────────────────────────────────────────
 
 def _box(at, label):
-    return next(t for t in at.sidebar.text_input if t.label == label)
+    """The Traces tab's box (goes to the Traces tab first)."""
+    return trace_box(at, label[0])
+
+
+def _held(at, label):
+    """What a Traces tab box holds, read without leaving the page."""
+    return trace_box_value(at, label[0])
+
+
+def _counts(at):
+    """The Traces tab's fiber counts (goes to the Traces tab first)."""
+    if at.session_state['nav_radio'] != 'Traces':
+        go_tab(at, 'Traces')
+    return [c.value for c in at.caption
+            if c.value[:3] in ('A: ', 'B: ') and c.value.endswith(' fibers')]
 
 
 def _hub(a='', b=''):
@@ -67,7 +81,7 @@ def _hub(a='', b=''):
 
 
 def _open(at, page):
-    at.sidebar.radio[0].set_value(page).run()
+    go_tab(at, page)
     assert not at.exception, at.exception
     return at
 
@@ -148,7 +162,7 @@ def _sor_names(folder):
     return sorted(f for f in os.listdir(folder) if f.lower().endswith('.sor'))
 
 
-# ── 1. a .zip in the left panel, and in the Unidirectional page's own box ──
+# ── 1. a .zip in the Traces tab, and in the Unidirectional page's own box ──
 
 def test_the_splice_report_runs_on_a_zip_in_each_box(zips):
     want = _plain_folder_sites()
@@ -156,13 +170,16 @@ def test_the_splice_report_runs_on_a_zip_in_each_box(zips):
     assert 'Pick **both**' not in _texts(at.main.info)
     assert _sites(at) == want
     assert _generate(at) is not None and not _generate(at).disabled
-    assert 'left panel' in _texts(at.main.caption)
+    assert 'Traces tab' in _texts(at.main.caption)
 
 
 def test_the_viewer_and_the_splice_report_read_the_zips_the_same(zips):
-    at = _open(_hub(*zips), 'Viewer')
-    assert f'A: {N_A} fibers · B: {N_B} fibers' in _texts(at.sidebar.caption)
+    at = _hub(*zips)
+    assert _counts(at) == [f'A: {N_A} fibers', f'B: {N_B} fibers']
+    _open(at, 'Viewer')
     served = _server()
+    tv = import_trace_server()
+    assert len(tv.list_fibers(served[0])) == N_A and len(tv.list_fibers(served[1])) == N_B
     _open(at, 'Splice Report')
     assert _generate(at) is not None
     # the report runs on the very folders the Viewer was given
@@ -221,14 +238,15 @@ def test_the_splice_reports_one_folder_box_takes_a_zip_of_both_directions(tmp_pa
 @pytest.mark.parametrize('box', ['A', 'B'])
 def test_a_folder_with_both_directions_is_split_like_a_drop(mixed, box):
     at = _open(_hub(*((mixed, '') if box == 'A' else ('', mixed))), 'Viewer')
-    assert f'A: {N_A} fibers · B: {N_B} fibers' in _texts(at.sidebar.caption)
-    assert 'holds both directions' in _texts(at.sidebar.caption)
     dir_a, dir_b = _server()
     assert _sor_names(dir_a) == _sor_names(A)
     assert _sor_names(dir_b) == _sor_names(B)
     # the Viewer serves each fibre once per direction: no a-1 twice
     tv = import_trace_server()
     assert len(tv.list_fibers(dir_a)) == N_A and len(tv.list_fibers(dir_b)) == N_B
+    # ...and the Traces tab says so
+    assert _counts(at) == [f'A: {N_A} fibers', f'B: {N_B} fibers']
+    assert 'holds both directions' in _texts(at.caption)
 
 
 def test_the_splice_report_names_both_sites_of_a_split_folder(mixed):
@@ -250,13 +268,13 @@ def test_the_split_matches_what_a_drop_of_the_same_files_does(mixed):
 def test_both_boxes_full_leaves_the_folders_alone_and_says_why(mixed):
     at = _open(_hub(mixed, B), 'Viewer')
     assert _server() == (mixed, B)
-    assert 'holds both directions' in _texts(at.sidebar.warning)
+    assert 'holds both directions' in _texts(at.main.warning)
 
 
 def test_a_secret_sauce_pair_folder_is_not_split(mixed):
     seen = _click({'nav': 'viewer', 'fibers': '1,2', 'dir': 'a',
                    'ssfolder': mixed, 'pa': '', 'pb': ''})
-    assert _box(seen, 'A Folder').value == mixed
+    assert _held(seen, 'A Folder') == mixed
     assert _server()[0] == mixed
 
 
@@ -270,10 +288,13 @@ def test_a_uni_cell_in_this_tab_keeps_both_folders_and_the_uni_gate(side):
     url = _viewer_url(seen)
     assert '&src=uni' in url
     assert f'&dir={side}' in url
-    assert _box(seen, 'A Folder').value == A and _box(seen, 'B Folder').value == B
-    assert f'A: {N_A} fibers · B: {N_B} fibers' in _texts(seen.sidebar.caption)
+    assert _held(seen, 'A Folder') == A and _held(seen, 'B Folder') == B
+    # the Viewer has both directions while the tech is in it
+    tv = import_trace_server()
+    dir_a, dir_b = _server()
+    assert len(tv.list_fibers(dir_a)) == N_A and len(tv.list_fibers(dir_b)) == N_B
     _back(seen, 'Unidirectional')
-    assert _box(seen, 'A Folder').value == A and _box(seen, 'B Folder').value == B
+    assert _held(seen, 'A Folder') == A and _held(seen, 'B Folder') == B
     assert next(r for r in seen.main.radio if r.label == 'Run On').value == (
         'A folder' if side == 'a' else 'B folder')
 
@@ -301,7 +322,7 @@ def test_the_uni_grid_link_says_which_panel_folder_it_ran_on(dest):
 # ── 4. the page's choices come back after ← Back; no silent overwrite ─────
 
 def _uni_report_on_a(tmp_path, monkeypatch):
-    """A saved Unidirectional report on the panel's A folder, as the page saves
+    """A saved Unidirectional report on the Traces tab's A folder, as the page saves
     it, so the page draws its grid (and the click choice) without a run."""
     monkeypatch.setenv('OTDR_CACHE_DIR', str(tmp_path / 'cache'))
     p = subprocess.run(

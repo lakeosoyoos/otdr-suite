@@ -9,7 +9,7 @@
    viewer to carry over with those same settings and thresholds"
 
     pop-up       landing on the Viewer, Splice Report or Unidirectional from
-                 another tool, by the Select Tool list or a "← Back" button,
+                 another tool, by a tab in the top bar or a "← Back" button,
                  when the settings come over from a DIFFERENT Settings tool
                  (2026-10-01: only if actually carried); never on Secret
                  Sauce, never on the first page, never back on the tool they
@@ -34,8 +34,8 @@ import sys
 import pytest
 
 from conftest import (REPO_ROOT, run_streamlit, import_trace_server,
-                      finish_engine_run, FIXTURE_SPLICE_A_DIR,
-                      FIXTURE_SPLICE_B_DIR)
+                      finish_engine_run, go_tab, run_splicereport,
+                      FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
 
 TS = import_trace_server()
 SRC = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
@@ -80,7 +80,7 @@ def _hub():
 
 
 def _open(at, page):
-    at.sidebar.radio[0].set_value(page).run()
+    go_tab(at, page)
     assert not at.exception, at.exception
     return at
 
@@ -240,14 +240,27 @@ def test_edit_settings_closes_it_and_opens_the_box_once():
     assert not [f for f in at.get("iframe") if ".st-key-otdr_settings_box" in f.proto.srcdoc]
 
 
-def test_another_popup_on_the_same_run_goes_first():
-    """Streamlit opens one pop-up per run: Clear Traces waits for nobody,
-    and this one comes back on the run after."""
-    at = _open(_hub(), "Splice Report")
-    next(b for b in at.sidebar.button if b.label == "Clear Traces").click().run()
+def test_another_popup_on_the_same_run_goes_first(tmp_path, monkeypatch):
+    """Streamlit opens one pop-up per run: the page's own (Clear Report)
+    waits for nobody, and this one comes back on the run after.
+
+    Clear Traces was the pop-up here while it sat in the sidebar beside every
+    page; it is on the Traces tab now, and going there drops a waiting
+    pop-up (not a Settings tool), so the page's own Clear Report stands in."""
+    monkeypatch.setenv("OTDR_CACHE_DIR", str(tmp_path / "cache"))
+    a, b = str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR)
+    rc, sr, err = run_splicereport(a, b, tmp_path / "sr.xlsx")
+    assert rc == 0 and sr and sr.get("ok"), err[-800:]
+    at = _loaded_hub()
+    at.session_state["sr_result"] = sr
+    at.session_state["sr_dirs"] = (a, b)
+    _open(at, "Splice Report")
+    assert len(_popup(at)) == 1
+    next(b_ for b_ in at.main.button if b_.label == "Clear Report").click().run()
     assert not at.exception, at.exception
-    assert [d.proto.dialog.title for d in at.get("dialog")] == ["Clear Traces"]
-    next(b for b in at.button if b.key == "clear_traces_cancel").click().run()
+    assert [d.proto.dialog.title for d in at.get("dialog")] == ["Clear Report"]
+    next(b_ for b_ in at.button if b_.key == "clear_report_skip").click().run()
+    assert not at.exception, at.exception
     assert len(_popup(at)) == 1
 
 
@@ -385,7 +398,7 @@ def _gated_cmd(tmp_path, name):
 
 
 def _loaded_hub():
-    """The hub with the splice fixture in the left panel, so the Splice
+    """The hub with the splice fixture on the Traces tab, so the Splice
     Report and Unidirectional pages reach their run block."""
     at = run_streamlit(default_timeout=180)
     at.session_state["view_dir_a_input"] = str(FIXTURE_SPLICE_A_DIR)

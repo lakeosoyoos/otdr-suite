@@ -206,9 +206,9 @@ def test_fec_cmd_runs_the_splice_report_runner():
 
 
 def test_the_fec_page_draws_and_asks_for_a_folder():
-    from conftest import run_streamlit
+    from conftest import run_streamlit, go_tab
     at = run_streamlit().run()
-    at.sidebar.radio[0].set_value('Splice Report FEC').run()
+    go_tab(at, 'Splice Report FEC')
     assert not at.exception, at.exception
     assert any('Splice Report FEC' in m.value for m in at.markdown)
     assert any('A end FEC folder' in i.value for i in at.info)
@@ -225,9 +225,9 @@ def _viewer_src(at):
 
 
 def test_the_fec_viewer_is_the_viewer_locked_in_fec_mode():
-    from conftest import run_streamlit
+    from conftest import run_streamlit, go_tab
     at = run_streamlit().run()
-    at.sidebar.radio[0].set_value('Viewer FEC').run()
+    go_tab(at, 'Viewer FEC')
     assert not at.exception, at.exception
     # the heading at half the old #### size (Robert 2026-10-01)
     assert any('font-size:0.75rem' in m.value and 'Viewer FEC</p>' in m.value
@@ -235,7 +235,7 @@ def test_the_fec_viewer_is_the_viewer_locked_in_fec_mode():
     assert 'fec=1' in _viewer_src(at)
     pop = [e.proto.srcdoc for e in at.get('iframe') if 'vpop2' in (e.proto.srcdoc or '')]
     assert pop and '/?fec=1"' in pop[0]       # the pop-out window stays in FEC mode
-    at.sidebar.radio[0].set_value('Viewer').run()
+    go_tab(at, 'Viewer')
     assert not at.exception, at.exception
     assert 'fec=1' not in _viewer_src(at)
 

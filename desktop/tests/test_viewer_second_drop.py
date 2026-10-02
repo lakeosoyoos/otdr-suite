@@ -23,7 +23,7 @@ import re
 
 import pytest
 
-from conftest import run_streamlit, import_trace_server, APP_PATH
+from conftest import run_streamlit, import_trace_server, go_tab, trace_box, APP_PATH
 from test_sor_writer import make_sor
 
 TS = import_trace_server()
@@ -97,7 +97,9 @@ def test_folders_picked_in_the_boxes_still_reload_the_viewer():
     path, src = _viewer_frame(at)
     other = os.path.join(os.environ['TMPDIR'], 'other_a')
     os.makedirs(other)
-    next(t for t in at.sidebar.text_input if t.label == 'A Folder').input(other).run()
+    trace_box(at, 'a').input(other).run()       # on the Traces tab
+    assert not at.exception, at.exception
+    go_tab(at, 'Viewer')
     assert not at.exception, at.exception
     new_path, new_src = _viewer_frame(at)
     assert new_path == path and new_src != src
@@ -163,8 +165,8 @@ def test_back_on_the_viewer_after_a_drop_the_old_cell_link_is_gone():
     _drop('ROMTUC')
     at.run()
     assert 'fiber=354' in _viewer_frame(at)[1]
-    at.sidebar.radio(key='nav_radio').set_value('Splice Report').run()
+    go_tab(at, 'Splice Report')
     assert not at.exception, at.exception
-    at.sidebar.radio(key='nav_radio').set_value('Viewer').run()
+    go_tab(at, 'Viewer')
     assert not at.exception, at.exception
     assert 'fiber=' not in _viewer_frame(at)[1]

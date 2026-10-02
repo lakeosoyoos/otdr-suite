@@ -22,7 +22,7 @@ import re
 from pathlib import Path
 
 from conftest import (
-    run_streamlit, run_splicereport,
+    run_streamlit, run_splicereport, go_tab,
     FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
     REPO_ROOT,
 )
@@ -39,7 +39,7 @@ def test_splice_report_page_renders_with_settings_box(tmp_path):
     at = run_streamlit().run()
     at.session_state["view_dir_a_input"] = str(FIXTURE_SPLICE_A_DIR)
     at.session_state["view_dir_b_input"] = str(FIXTURE_SPLICE_B_DIR)
-    at.sidebar.radio[0].set_value("Splice Report").run()
+    go_tab(at, "Splice Report")
     assert not at.exception, f"Splice Report page raised: {list(at.exception)}"
     # The panel seeded its session_state on first render.
     assert "otdr_settings" in at.session_state

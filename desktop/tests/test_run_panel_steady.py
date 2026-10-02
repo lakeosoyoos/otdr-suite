@@ -32,7 +32,7 @@ import types
 import pytest
 
 from conftest import (REPO_ROOT, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
-                      finish_engine_run, run_streamlit)
+                      finish_engine_run, run_streamlit, go_tab)
 
 SRC = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
 TREE = ast.parse(SRC)
@@ -71,7 +71,7 @@ def _page_with_run(cmd):
     at = run_streamlit().run()
     at.session_state["view_dir_a_input"] = str(FIXTURE_SPLICE_A_DIR)
     at.session_state["view_dir_b_input"] = str(FIXTURE_SPLICE_B_DIR)
-    at.sidebar.radio[0].set_value("Splice Report").run()
+    go_tab(at, "Splice Report")
     assert not at.exception, list(at.exception)
     at.session_state["sr_pending_cmd"] = cmd
     return at
@@ -127,10 +127,10 @@ def test_the_panel_shows_the_engines_current_step():
         _kill(at)
 
 
-def test_the_page_draws_no_report_under_a_run_but_keeps_its_sidebar():
+def test_the_page_draws_no_report_under_a_run_but_keeps_its_top_bar():
     """No earlier report under a run that is replacing it, as it always has
-    been.  The rest of the page is drawn as usual, down to the version line
-    and 'Check for updates' at the foot of the sidebar."""
+    been.  The rest of the page is drawn as usual: the top bar's tabs, and
+    the version line and 'Check for updates' in its update menu."""
     at = _page_with_run(_engine(8))
     try:
         at.session_state["sr_result"] = {"ok": True, "grid": [], "xlsx": "x"}
@@ -139,9 +139,10 @@ def test_the_page_draws_no_report_under_a_run_but_keeps_its_sidebar():
         assert "sr_job" in at.session_state
         labels = [b.label or "" for b in at.main.button]
         assert labels[-1] == "Cancel Run", labels
-        assert any("Check for Updates" in (b.label or "")
-                   for b in at.sidebar.button)
-        assert any("OTDR Suite" in c.value for c in at.sidebar.caption)
+        assert any(b.key == "nav_tab_Splice Report" for b in at.button)
+        (menu,) = at.get("popover")
+        assert any("Check for Updates" in (b.label or "") for b in menu.button)
+        assert any("OTDR Suite" in c.value for c in menu.caption)
     finally:
         _kill(at)
 

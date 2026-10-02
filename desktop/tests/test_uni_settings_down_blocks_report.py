@@ -19,7 +19,7 @@ import types
 
 import pytest
 
-from conftest import FIXTURE_SPLICE_A_DIR, run_streamlit
+from conftest import FIXTURE_SPLICE_A_DIR, go_tab, page_of, run_streamlit
 
 RUN = "Run Unidirectional Report"
 BLOCK_TEXT = "The settings did not load completely, so Run is turned off"
@@ -58,7 +58,7 @@ def _page(dest):
     at = run_streamlit().run()
     at.session_state["uni_folder_input"] = str(FIXTURE_SPLICE_A_DIR)
     at.session_state["uni_report_dest"] = str(dest)
-    at.sidebar.radio[0].set_value("Unidirectional").run()
+    go_tab(at, "Unidirectional")
     return at
 
 
@@ -128,8 +128,8 @@ def test_the_viewer_is_not_blocked(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "components.otdr_settings",
                         _broken_component(HALF_LOADED, AttributeError,
                                           {"table", "knobs", "uni"}))
-    at = run_streamlit().run()
-    at.sidebar.radio[0].set_value("Viewer").run()
+    at = go_tab(run_streamlit().run(), "Viewer")
     assert not at.exception, list(at.exception)
+    assert page_of(at) == "Viewer"
     assert not any(NOTICE in e.value for e in at.error), \
         [e.value for e in at.error]

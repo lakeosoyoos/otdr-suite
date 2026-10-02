@@ -1,6 +1,7 @@
 """The hub is a Streamlit script: it runs top to bottom on every rerun, and
-the sidebar's span loader (once _load_span, now the Trace Folders block) runs
-at module level about a third of the way down.  Anything that call reaches must already be defined
+the span loader (once _load_span, then the sidebar's Trace Folders block,
+now the trace-folder block under the top bar) runs at module level about a
+third of the way down.  Anything that call reaches must already be defined
 above it.
 
 #177 broke this: _load_span called _site_names_for, defined 1,300 lines
@@ -77,10 +78,13 @@ def test_site_names_are_still_derived_on_the_report_page():
     would stop it from running."""
     src = open(APP, encoding='utf-8').read()
     assert "_ila_a, _ila_b = _site_names_for(dir_a, dir_b)" in src
-    # The sidebar's Trace Folders loader (it replaced _load_span, 2026-09-26)
-    # runs at module level too, so it must not name the ends either.
-    loader_src = src[src.index("# ── Trace folders: the A and B directions"):
-                     src.index("st.markdown('##### Select Tool')")]
+    # The Trace Folders loader (it replaced _load_span, 2026-09-26) runs at
+    # module level too, so it must not name the ends either; nor does the
+    # Traces tab, which draws its boxes (they were in the sidebar until
+    # 2026-10-01).
+    i_traces = src.index("\ndef page_traces(")
+    loader_src = (src[src.index("# ── Trace folders: the A and B directions"):i_traces]
+                  + src[i_traces:].split("\ndef ", 2)[1])
     assert "_site_names_for(" not in loader_src          # a CALL; the comment may name it
     assert "st.session_state['sr_site_src'] = (dir_a, dir_b)" not in loader_src
 

@@ -2,18 +2,18 @@
 across a trip to another tool.
 
 Streamlit drops a widget's state on any run that does not draw it, so every
-box that lives on one page was emptied by Select Tool -> another tool ->
+box that lives on one page was emptied by a trip to another tool and
 back.  test_page_boxes_survive_a_trip.py covers the Splice Report's site
 names and every 'Save Reports To' box.  This covers the rest:
 
-    Splice Report   Select Traces, and the one-folder box (left panel empty)
+    Splice Report   Select Traces, and the one-folder box (Traces tab empty)
                     every added span's Select Traces and folder boxes
-    Unidirectional  its own folder box (left panel empty), Job Landmarks,
+    Unidirectional  its own folder box (Traces tab empty), Job Landmarks,
                     and the Direction pick after a run on a mixed folder
 
 Each box keeps what it shows in a slot no widget owns and is seeded from it
 before it is drawn.  Anything that writes a box from off its page (Clear
-Traces, a new pair in the left panel, Remove span) keeps the slot in step,
+Traces, a new pair on the Traces tab, Remove span) keeps the slot in step,
 so the old text cannot come back after it.
 """
 from __future__ import annotations
@@ -22,19 +22,15 @@ import os
 
 import pytest
 
-from conftest import (run_streamlit, finish_engine_run,
-                      FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
+from conftest import (run_streamlit, finish_engine_run, go_tab, trace_box,
+                      clear_traces, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
 
 A, B = str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR)
 TWO, ONE = 'Two folders (A + B)', 'One folder / zip (both directions)'
 
 
-def _box(at, label, where='main'):
-    return next(t for t in getattr(at, where).text_input if t.label == label)
-
-
 def _open(at, page):
-    at.sidebar.radio[0].set_value(page).run()
+    go_tab(at, page)
     assert not at.exception, at.exception
     return at
 
@@ -42,9 +38,9 @@ def _open(at, page):
 def _hub(a='', b=''):
     at = run_streamlit(default_timeout=180).run()
     if a:
-        _box(at, 'A Folder', 'sidebar').input(a).run()
+        trace_box(at, 'a').input(a).run()
     if b:
-        _box(at, 'B Folder', 'sidebar').input(b).run()
+        trace_box(at, 'b').input(b).run()
     assert not at.exception, at.exception
     return at
 
@@ -56,9 +52,11 @@ def _trip(at, back_to, via='Viewer'):
 
 
 def _clear_traces_on(at, page):
+    """Away on `page`, then Clear Traces (on the Traces tab, itself away
+    from the page whose boxes are watched)."""
     _open(at, page)
-    next(b for b in at.sidebar.button if b.label == 'Clear Traces').click().run()
-    next(b for b in at.button if b.label == 'Allow').click().run()
+    at.run()
+    clear_traces(at)
     assert not at.exception, at.exception
     at.run()
     return at
@@ -70,7 +68,7 @@ def _click(at, label):
     return at
 
 
-# ── Splice Report, left panel empty ───────────────────────────────────────
+# ── Splice Report, Traces tab empty ───────────────────────────────────────
 
 def _one_folder(at, key='sr_input_mode', box='sr_one_folder', folder=A):
     at.radio(key=key).set_value(ONE).run()
@@ -98,10 +96,10 @@ def test_clear_traces_on_another_tool_still_empties_the_splice_reports_loader():
 def test_a_pair_loaded_on_another_tool_still_puts_select_traces_back_to_two():
     at = _one_folder(_open(_hub(), 'Splice Report'))
     _open(at, 'Viewer')
-    _box(at, 'A Folder', 'sidebar').input(A).run()
-    _box(at, 'B Folder', 'sidebar').input(B).run()
-    _box(at, 'A Folder', 'sidebar').input('').run()
-    _box(at, 'B Folder', 'sidebar').input('').run()
+    trace_box(at, 'a').input(A).run()
+    trace_box(at, 'b').input(B).run()
+    trace_box(at, 'a').input('').run()
+    trace_box(at, 'b').input('').run()
     at.run()
     _open(at, 'Splice Report')
     assert at.radio(key='sr_input_mode').value == TWO
@@ -150,8 +148,9 @@ def test_clear_traces_on_another_tool_leaves_no_added_span_behind():
     at.text_input(key='sr2_dir_a').input(B).run()
     _clear_traces_on(at, 'Viewer')
     _open(at, 'Splice Report')
-    _box(at, 'A Folder', 'sidebar').input(A).run()
-    _box(at, 'B Folder', 'sidebar').input(B).run()
+    trace_box(at, 'a').input(A).run()
+    trace_box(at, 'b').input(B).run()
+    _open(at, 'Splice Report')
     _span_2(at)
     assert at.text_input(key='sr2_dir_a').value == ''
 
@@ -221,7 +220,7 @@ def _uni_run(at, dest):
 
 def test_the_direction_pick_survives_a_trip(mixed):
     folder, dest = mixed
-    # Uni's own folder box, the left panel empty: in the left panel a folder
+    # Uni's own folder box, the Traces tab empty: on the Traces tab a folder
     # holding two directions is split into A and B (_panel_dirs), so Uni
     # would run on one direction there and offer no Direction pick.
     at = _open(_hub(), 'Unidirectional')
@@ -236,7 +235,7 @@ def test_the_direction_pick_survives_a_trip(mixed):
 
 def test_a_kept_direction_that_is_no_longer_offered_is_left_out(mixed):
     folder, dest = mixed
-    # Uni's own folder box, the left panel empty: in the left panel a folder
+    # Uni's own folder box, the Traces tab empty: on the Traces tab a folder
     # holding two directions is split into A and B (_panel_dirs), so Uni
     # would run on one direction there and offer no Direction pick.
     at = _open(_hub(), 'Unidirectional')
