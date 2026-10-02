@@ -16422,10 +16422,8 @@ def uni_write_reburn_sheet(wb, summary, insert_at=1,
     title.fill = hdr_fill
     for c in (2, 3, 4):
         ws.cell(row=1, column=c).fill = hdr_fill
-    ws.cell(row=2, column=1,
-            value="Splice cells that need a reburn, expressed as a fraction "
-                  "of the ribbon × splice grid.").font = Font(
-        name=FN, size=10, italic=True, color="595959")
+    # Row 2 stays empty: the grey sentence that explained the percentage
+    # is gone (Robert 2026-10-01), and every row below keeps its place.
     pct_cell = ws.cell(row=4, column=1, value=f"{summary['percentage']:.2f}%")
     pct_cell.font = Font(name=FN, size=28, bold=True, color="9C5700")
     pct_cell.alignment = Alignment(horizontal='left', vertical='center')

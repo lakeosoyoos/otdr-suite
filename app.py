@@ -1703,12 +1703,23 @@ st.set_page_config(page_title=PRODUCT_NAME, layout='wide',
 # Light / Dark: every new session starts Dark, and the session's choice is
 # applied before anything draws.  Streamlit sends the theme at the START of a
 # run, so when this run changed it the page on screen still has the old one:
-# rerun once to paint the right one.
+# rerun once to paint the right one.  Fail-safe (boss, 2026-10-01): at most
+# one such rerun per theme change, so a Streamlit that does not keep the
+# setting draws the page in whatever theme it has instead of rerunning for
+# ever; and a theme error leaves Streamlit's own look rather than no page.
 if 'ui_theme' not in st.session_state:
     st.session_state['ui_theme'] = THEME_DEFAULT
-if apply_streamlit_theme(st.session_state['ui_theme']):
+try:
+    _theme_changed = apply_streamlit_theme(st.session_state['ui_theme'])
+except Exception:
+    _theme_changed = False
+if _theme_changed and st.session_state.get('_theme_rerun_for') != st.session_state['ui_theme']:
+    st.session_state['_theme_rerun_for'] = st.session_state['ui_theme']
     st.rerun()
-st.markdown(theme_css_vars(), unsafe_allow_html=True)
+try:
+    st.markdown(theme_css_vars(), unsafe_allow_html=True)
+except Exception:
+    pass
 try:
     trace_server.CONFIG['theme'] = st.session_state['ui_theme']
 except Exception:
@@ -1732,21 +1743,30 @@ st.markdown('<style>[data-testid="stToolbarActions"],'
 # switch: once a browser has chosen Light or Dark there, Streamlit keeps it
 # and ignores the theme the hub sends, so the switch does nothing.  ("Use
 # system setting" removes Streamlit's entry instead, so it never blocks.)  The menu is hidden above; this clears a pick already made, once,
-# and reloads so the hub's theme takes.  Streamlit stores its own theme as
-# "Custom Theme", which is left alone.
+# and reloads so the hub's theme takes.  Only that pick is removed: an
+# entry {"name": "Light"} or {"name": "Dark"}.  Everything else is left
+# alone, above all what Streamlit writes by itself on every page load
+# ("Custom Theme" up to 1.50, a bare "System"/"Light"/"Dark" from 1.6x on,
+# which the hub's theme beats anyway).  Removing that one reloaded the page
+# for ever on the 1.64 build (boss, 2026-10-01, run 1416), so the reload
+# also happens at most once per window.
 THEME_PICK_CLEAR_JS = """
 <script>
 (function () {
   var w; try { w = window.parent; void w.document; } catch (e) { return; }
   try {
+    var ss = null; try { ss = w.sessionStorage; } catch (e) {}
+    if (ss && ss.getItem('otdrThemePickCleared')) return;
     var ls = w.localStorage, gone = false;
     for (var i = ls.length - 1; i >= 0; i--) {
       var k = ls.key(i);
       if (!k || k.indexOf('stActiveTheme') !== 0) continue;
       var v = null; try { v = JSON.parse(ls.getItem(k)); } catch (e) {}
-      if (!v || v.name !== 'Custom Theme') { ls.removeItem(k); gone = true; }
+      if (v && typeof v === 'object' && (v.name === 'Light' || v.name === 'Dark')) {
+        ls.removeItem(k); gone = true;
+      }
     }
-    if (gone) w.location.reload();
+    if (gone && ss) { ss.setItem('otdrThemePickCleared', '1'); w.location.reload(); }
   } catch (e) { /* no storage: nothing was picked */ }
 })();
 </script>
@@ -1889,10 +1909,19 @@ HUB_DROP_CATCH_JS = r"""
         });
       });
     }
+    var lastLit = 0;
     function onOver(ev) {
       if (ev.defaultPrevented || !isFiles(ev)) return;   // a file box's own
       ev.preventDefault();
-      ev.dataTransfer.dropEffect = viewerFrame() ? 'copy' : 'none';
+      var fr = viewerFrame();
+      ev.dataTransfer.dropEffect = fr ? 'copy' : 'none';
+      // Light the Viewer's FILES panel ("Drop to load"), as a drag over the
+      // Viewer itself does: the tech sees the drop will be taken.
+      var now = Date.now();
+      if (fr && fr.contentWindow && now - lastLit > 200) {
+        lastLit = now;
+        fr.contentWindow.postMessage({ type: 'otdr-drag' }, new URL(fr.getAttribute('src')).origin);
+      }
     }
     function onDrop(ev) {
       if (ev.defaultPrevented || !isFiles(ev)) return;
@@ -4852,6 +4881,10 @@ with st.sidebar:
             # frame must not reload for them (see page_viewer).
             st.session_state['_viewer_drop_dirs'] = (
                 trace_server.CONFIG.get('dir_a') or '', trace_server.CONFIG.get('dir_b') or '')
+            # Nor for the report link it was opened on, which goes below (see
+            # page_viewer): the frame keeps the whole address it had.
+            if '_viewer_q' in st.session_state:
+                st.session_state['_viewer_drop_q'] = st.session_state['_viewer_q']
             st.session_state.pop('_panel_restore', None)
             st.session_state.pop('_ss_nav_folder', None)
             _trace_folders_changed()
@@ -5318,6 +5351,10 @@ def page_viewer():
                 # frame must not reload for them (the b= below).
                 st.session_state['_viewer_drop_dirs'] = (
                     trace_server.CONFIG.get('dir_a') or '', trace_server.CONFIG.get('dir_b') or '')
+                # Nor for the report link it was opened on: the frame below keeps
+                # the whole address it had.
+                if '_viewer_q' in st.session_state:
+                    st.session_state['_viewer_drop_q'] = st.session_state['_viewer_q']
 
         if not _PANEL_DRAWN:
             # In a project there is no left-panel Trace Folders: the Viewer
@@ -5495,6 +5532,17 @@ document.getElementById("vpop2").addEventListener("click", function(){
         if announce:
             _note.caption(f"Jumped to fiber {tgt['fiber']}"
                        + (f" @ {tgt['km']} km" if tgt.get('km') else ''))
+    # A drop on a Viewer opened from a report cell: the drop is a new span,
+    # so the cell's link goes (_trace_folders_changed), and the address
+    # without it reloaded the frame.  The hub reruns by itself just after a
+    # drop (_follow_viewer_folders), so the Viewer lost the A set it had just
+    # loaded, and the B set dropped while it came back went to Chrome's
+    # Downloads (the boss, 2026-10-01, after #466).  Until the next cell
+    # click the frame keeps the address it had.
+    _frozen = st.session_state.get('_viewer_drop_q')
+    if _key == st.session_state.get('_viewer_drop_dirs') and _frozen and not tgt:
+        q = dict(_frozen)
+    st.session_state['_viewer_q'] = q
     # Use the whole window (Robert, 2026-09-29: blank space at every edge).
     # Streamlit's wide layout keeps ~5rem each side and 6rem / 10rem above and
     # below the page, and the Viewer was a fixed 760 px tall, so a big screen
@@ -14466,6 +14514,10 @@ def page_project_setup():
 # Global catch-all: any unhandled error during a page render/action posts to
 # Slack, then re-raises so Streamlit still shows the tech its red error box.
 _note_tool_change(page)
+if page != 'Viewer':
+    # The Viewer frame goes with the page, so the address it kept through a
+    # drop (see page_viewer) has nothing left to keep.
+    st.session_state.pop('_viewer_drop_q', None)
 try:
     if _sp_section is not None and st.session_state.get('app_mode') != 'setup':
         # (New Project draws the box itself, in its Traces step.)

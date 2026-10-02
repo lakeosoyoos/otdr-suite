@@ -122,16 +122,19 @@ def test_both_tables_name_their_rows_and_wire_the_drawer():
 def test_clicks_on_drawer_marks():
     up = SRC[SRC.index("window.addEventListener('mouseup'"):]
     up = up[:up.index("\n});")]
-    assert "if (still && c.hit.go) c.hit.go();" in up
-    assert "else if (still && gGridGoTo) gGridGoTo(c.hit.t, c.hit.e);" in up
+    assert "if (!still) return;" in up
+    assert "if (c.hit.go) c.hit.go();" in up
+    assert "else if (gGridGoTo) gGridGoTo(c.hit.t, c.hit.e);" in up
     menu = SRC[SRC.index("canvas.addEventListener('contextmenu'"):]
     menu = menu[:menu.index("\n});")]
     assert "if (!lh || !lh.t) return;" in menu
     assert "if (!gShowEvents) return;" in menu
 
 
-def test_events_checkbox_still_hides_every_mark():
-    assert re.search(r"cb-events'\)\.onchange = \(e\) => \{ gShowEvents = e\.target\.checked; draw\(\); \}", SRC)
+def test_event_labels_switch_still_hides_every_mark():
+    i = SRC.index("getElementById('set-event-labels').onchange")
+    assert "gShowEvents = e.target.checked;" in SRC[i:i + 300]
+    assert "draw();" in SRC[i:i + 300]
     fn = _fn("draw")
     assert fn.index("if (gShowEvents) {") < fn.index("drawPairing(")
 
