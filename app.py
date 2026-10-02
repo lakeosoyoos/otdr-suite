@@ -4035,6 +4035,21 @@ document.getElementById("vpop2").addEventListener("click", function(){
 # ═════════════════════════════════════════════════════════════════════════
 #  PAGE: Duplicate Check (Secret Sauce)
 # ═════════════════════════════════════════════════════════════════════════
+def _ss_forget_other_input(src):
+    """Drop the report on screen when the page's input changed since the
+    last pass: the left panel's boxes, the page's own box, or a drop.  The
+    page went on showing the old folders' report under a line naming the new
+    ones (2026-10-02 click audit: a 48-file A+B report under "the A folder").
+    A report for the folders loaded now still comes back from the disk cache,
+    which is filed per folder.  A Viewer Remove is not a new input: the
+    report stays, with the note that says it predates the Remove."""
+    ss = st.session_state
+    if ss.get('_ss_input_src', src) != src:
+        ss.pop('ss_result', None)
+        ss.pop('ss_pairs_result', None)
+    ss['_ss_input_src'] = src
+
+
 def page_duplicate_check():
     st.markdown('#### Secret Sauce')
     st.session_state.pop('_ss_removed_note', None)     # a slot from an earlier run
@@ -4048,7 +4063,7 @@ def page_duplicate_check():
     st.session_state.setdefault('ss_folder_input', '')
 
     _pa, _pb = _panel_traces()
-    _dropped = None
+    _dropped, _from_drop = None, False
     if _pa or _pb:
         # Traces loaded in the left panel: the page draws no loader of its
         # own and runs on those (Robert 2026-09-28).  Both directions go in
@@ -4103,12 +4118,18 @@ def page_duplicate_check():
         if _sn:
             st.caption(f'📥 {_sn} file(s) staged from the drop, used as the '
                        'input folder.')
-            folder = _sdir
+            folder, _from_drop = _sdir, True
         else:
             st.warning('The drop contained no readable OTDR files.')
         if _sdupes:
             import folder_intake as _fi_d
             st.warning('⚠ ' + _fi_d.duplicate_names_message(_sdupes, kept=False))
+    # What the report on screen must have come from: the left panel's two
+    # boxes, the page's own folder box, or the drop.
+    _src = (('drop', folder) if _from_drop
+            else ('panel', _pa, _pb) if (_pa or _pb)
+            else ('box', folder))
+    _ss_forget_other_input(_src)
     if not folder or not os.path.isdir(folder):
         st.info('👆 Choose the folder that holds your `.sor` / `.trc` / `.json` '
                 'files, or drag & drop them above.')
@@ -4146,6 +4167,7 @@ def page_duplicate_check():
         # What this run leaves out, for the note over its report.  Only a run
         # on the left panel's folders leaves anything out (_run_folder).
         st.session_state['ss_run_removed'] = _removed_now(_pa, _pb)
+        st.session_state['ss_run_src'] = _src
         st.session_state.pop('ss_result', None)        # clear any prior result
         st.session_state.pop('ss_pairs_result', None)
         st.rerun()
@@ -4210,15 +4232,23 @@ def page_duplicate_check():
         # Stash the folder so the in-app pair links can point the viewer at it.
         manifest['_folder'] = st.session_state.pop('ss_run_folder', None) or folder
         manifest['_viewer_removed'] = st.session_state.pop('ss_run_removed', None)
-        if manifest.get('mode') == 'pairs':
+        _ran_on = st.session_state.pop('ss_run_src', _src)
+        # Filed under the folder it RAN on, which _ss_cache_read checks: filed
+        # under the folder on screen, a run that ended after the folders
+        # changed was never read back.
+        _ss_cache_write('pairs_cache.json' if manifest.get('mode') == 'pairs'
+                        else 'ss_result_cache.json', manifest['_folder'], manifest)
+        if _ran_on != _src:
+            # The folders changed while it ran: its report is not for these.
+            st.info('The analysis finished on the folders loaded when it '
+                    'started, not the ones loaded now. Load those folders '
+                    'again to see its report.')
+        elif manifest.get('mode') == 'pairs':
+            # Cached to disk above, so "← Back" from the Viewer (which reset
+            # session_state via the URL nav) re-shows the pairs list instantly.
             st.session_state['ss_pairs_result'] = manifest
-            # Cache to disk so "← Back" from the Viewer (which reset session_state
-            # via the URL nav) re-shows the pairs list instantly — no re-run.
-            _ss_cache_write('pairs_cache.json', folder, manifest)
         else:
             st.session_state['ss_result'] = manifest
-            # Same round trip, same loss — the Excel/PDF result needs it too.
-            _ss_cache_write('ss_result_cache.json', folder, manifest)
 
     # ── In-app duplicate report (persists across reruns; restore from the
     #    on-disk cache after a pair-click round trip cleared session_state) ──
@@ -4279,7 +4309,13 @@ def page_duplicate_check():
                      f"{w.get('n_pairs','?')} pairs)")
             st.download_button(label, data=data, file_name=os.path.basename(p),
                                key='dl_' + p)
-        st.caption(f'Saved to: {os.path.join(folder, "SecretSauce_reports")}')
+        _where = sorted({os.path.dirname(w['path']) for w in res.get('written', [])
+                         if w.get('path')})
+        if _where:
+            # Where the engine wrote them (the Save Reports To folder).  It
+            # used to name the traces folder, which on a left-panel A+B run
+            # is a temp copy the report was never in (2026-10-02 audit).
+            st.caption('Saved to: ' + '; '.join(_where))
 
 
 # Likelihood-tier colors for the in-app duplicate-pair report.
