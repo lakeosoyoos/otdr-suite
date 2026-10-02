@@ -108,6 +108,23 @@ def test_the_short_shot_warning_points_to_fec_mode():
     assert 'For facility-entrance (FEC) shots, use the Viewer FEC tool.' in HTML
 
 
+def test_fec_table_ends_with_min_max_average_that_pins():
+    """Robert 2026-10-01: the FEC table had no Min/Max/Average strip, so
+    "Pin Min/Max/Average" did nothing there.  It now ends in a <tfoot> like
+    the other grids (the sticky/unpinned CSS works on any fr-table tfoot)."""
+    body = HTML[HTML.index('function paintFecGrid('):]
+    body = body[:body.index('\n}\n')]
+    for label in ("'Minimum'", "'Maximum'", "'Average'"):
+        assert label in body
+    assert '<tfoot>${aggRows.join' in body
+    assert 'class="fr-agg"' in body
+    # Min/Max name their trace and a click finds the row; centred in the
+    # window the pinned footer leaves
+    assert 'class="fr-own"' in body and 'pinnedFootH(table)' in body
+    assert 'table.fr-table tfoot { position: sticky; bottom: 0;' in HTML
+    assert '#event-panel.agg-unpinned table.fr-table tfoot { position: static; }' in HTML
+
+
 def test_viewer_script_still_parses():
     jsc = ('/System/Library/Frameworks/JavaScriptCore.framework/Versions/'
            'Current/Helpers/jsc')

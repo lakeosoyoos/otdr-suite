@@ -5841,7 +5841,7 @@ function paintFecGrid(traces, res, host, hint) {
   const f3 = v => (v == null || isNaN(v)) ? '---' : Number(v).toFixed(3);
   const f1 = v => (v == null || isNaN(v)) ? '---' : Number(v).toFixed(1);
   const fecHi = x => (x && !flagsOff()) ? 'fr-hi' : '';
-  const body = rows.map(({ t, side, g }) => {
+  const body = rows.map(({ t, side, g }, ti) => {
     const dot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;`
       + `background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>`;
     const lead = `<td class="fr-rowlab">${dot}F${t.fiber}</td>`;
@@ -5852,16 +5852,48 @@ function paintFecGrid(traces, res, host, hint) {
     const fail = g.fail_loss || g.fail_refl;
     const comb = (g.combined || []).map(c => `${f3(c.loss)} @ ${Number(c.km).toFixed(3)} km`).join('; ');
     const dist = g.fail_loss && (g.combined || []).length ? 'COMBINE' : `${Number(g.conn_km).toFixed(3)}km`;
-    return `<tr>${lead}`
+    return `<tr data-ti="${ti}">${lead}`
       + `<td class="${pfClass(fail)}" title="FEC rule: ${fecGateText(gates)}">${pfMark(fail)}</td>`
       + `<td>${(t.data && t.data.wavelength_nm) || '---'}</td><td>${side}</td>`
-      + `<td class="fr-fec-km" data-km="${g.conn_km}" style="cursor:pointer" title="zoom to the connector">${Number(g.conn_km).toFixed(4)}</td>`
-      + `<td>${f3(g.conn_loss)}</td><td>${comb || '---'}</td>`
-      + `<td class="${fecHi(g.fail_loss)}">${f3(g.loss)}</td>`
-      + `<td class="${fecHi(g.fail_refl)}">${f1(g.refl)}</td>`
+      + `<td class="fr-fec-km" data-col="km" data-km="${g.conn_km}" style="cursor:pointer" title="zoom to the connector">${Number(g.conn_km).toFixed(4)}</td>`
+      + `<td data-col="conn">${f3(g.conn_loss)}</td><td>${comb || '---'}</td>`
+      + `<td data-col="loss" class="${fecHi(g.fail_loss)}">${f3(g.loss)}</td>`
+      + `<td data-col="refl" class="${fecHi(g.fail_refl)}">${f1(g.refl)}</td>`
       + `<td>${fail ? dist : ''}</td></tr>`;
   });
-  table.innerHTML = `<thead><tr>${head}</tr></thead><tbody>${body.join('')}</tbody>`;
+  // Minimum / Maximum / Average down each number column, over the graded
+  // traces, as every other Viewer table ends.  A Minimum or Maximum is one
+  // trace's figure, so the cell names it and a click finds its row (the
+  // owner is matched on the PRINTED figure; ties go to the first row).  The
+  // Average is nobody's measurement and stays inert; all three stay plain,
+  // since the FEC verdict is per trace.
+  const graded = rows.map((r, ti) => ({ ...r, ti })).filter(r => r.g && r.g.found);
+  const AGG_COLS = [['km', g => g.conn_km, v => Number(v).toFixed(4)],
+                    ['conn', g => g.conn_loss, f3], ['loss', g => g.loss, f3],
+                    ['refl', g => g.refl, f1]];
+  const aggCell = (col, fn, owned) => {
+    const [key, get, fmt] = col;
+    const have = graded.filter(r => get(r.g) != null && !isNaN(get(r.g)));
+    if (!have.length) return '<td>---</td>';
+    const v = fn(have.map(r => Number(get(r.g))));
+    const own = owned ? have.find(r => fmt(get(r.g)) === fmt(v)) : null;
+    return own
+      ? `<td class="fr-own" data-ti="${own.ti}" data-own-col="${key}"`
+        + ` title="F${own.t.fiber} ${own.side}: click to find it">${fmt(v)}</td>`
+      : `<td>${fmt(v)}</td>`;
+  };
+  const aggRow = (label, fn, owned) => {
+    const c = AGG_COLS.map(col => aggCell(col, fn, owned));
+    return `<tr class="fr-agg"><td class="fr-rowlab">${label}</td><td></td><td></td><td></td>`
+      + `${c[0]}${c[1]}<td></td>${c[2]}${c[3]}<td></td></tr>`;
+  };
+  const aggRows = graded.length ? [
+    aggRow('Minimum', a => Math.min(...a), true),
+    aggRow('Maximum', a => Math.max(...a), true),
+    aggRow('Average', a => a.reduce((s, v) => s + v, 0) / a.length, false),
+  ] : [];
+  table.innerHTML = `<thead><tr>${head}</tr></thead><tbody>${body.join('')}</tbody>`
+    + (aggRows.length ? `<tfoot>${aggRows.join('')}</tfoot>` : '');
   gTableExport = { table, rows: () => body };
   scroller.appendChild(table);
   host.appendChild(scroller);
@@ -5870,6 +5902,28 @@ function paintFecGrid(traces, res, host, hint) {
   table.querySelectorAll('thead th').forEach(th => { th.style.top = '0px'; });
   table.querySelectorAll('td.fr-fec-km').forEach(td => {
     td.addEventListener('click', () => zoomToKm(+td.dataset.km, 0.3));
+  });
+  // A Minimum or Maximum click: pick its trace on the chart, centre its row in
+  // the window the pinned header and footer leave, and flash the cell.  A
+  // second click lets go, as on the other grids.
+  if (table.tFoot) table.tFoot.addEventListener('click', (ev) => {
+    const td = ev.target.closest('td.fr-own');
+    if (!td) return;
+    const t = rows[+td.dataset.ti].t;
+    if (gPickKey === t.key) { gPickKey = null; draw(); return; }
+    gPickKey = t.key;
+    draw();
+    const tr = table.tBodies[0].querySelector(`tr[data-ti="${td.dataset.ti}"]`);
+    if (!tr) return;
+    const headH = table.tHead ? table.tHead.offsetHeight : 0;
+    const view = Math.max(FR_ROW_H, scroller.clientHeight - headH - pinnedFootH(table));
+    scroller.scrollTop = Math.max(0, tr.offsetTop - headH - (view - tr.offsetHeight) / 2);
+    const cell = tr.querySelector(`td[data-col="${td.dataset.ownCol}"]`);
+    if (!cell) return;
+    table.querySelectorAll('td.fr-hit').forEach(x => x.classList.remove('fr-hit', 'fading'));
+    cell.classList.add('fr-hit');
+    setTimeout(() => cell.classList.add('fading'), 1500);
+    setTimeout(() => cell.classList.remove('fr-hit', 'fading'), 2200);
   });
   draw();
 }
