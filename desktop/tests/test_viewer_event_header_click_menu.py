@@ -7,7 +7,7 @@ the heading zooms to the event and opens the menu the ⋯ opens (the span
 menu for one direction, Which Direction? for two), in all four tables.
 
 Plain JS, no runtime here: pins the source.  Browser-checked 2026-10-02 on
-WSC<->SUI 1-6, Suite mode, A+B and A only.
+a 6-fiber bidirectional job, Suite mode, A+B and A only.
 """
 from __future__ import annotations
 

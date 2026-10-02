@@ -7624,14 +7624,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   // you set one.  The row names the direction, the cell names the event, so
   // there is nothing to disambiguate — and the km recorded is the event's own,
   // which is what the store and (later) the engine both speak.
-  tb.addEventListener('contextmenu', (ev) => {
-    const td = ev.target.closest('td[data-km]');
-    const tr = td && td.closest('tr[data-dir]');
-    if (!td || !tr) return;
-    ev.preventDefault();
-    showSpanMenu(ev.clientX, ev.clientY, tr.dataset.dir, +td.dataset.km,
-                 tr.dataset.fiber, tr.dataset.src);
-  });
+  tb.addEventListener('contextmenu', (ev) => wireCellMenu(ev, tb));
 }
 
 // ─── FastReporter mode: FR's bidirectional table, verbatim ─────────────
@@ -8202,16 +8195,9 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     pickRow(tr.dataset.avg ? [p.ta.key, p.tb.key] : [`${tr.dataset.src}-${tr.dataset.fiber}`]);
     paintRows();
   });
-  // Right-click a direction's cell for the span menu, as in the other grid;
-  // the Average row names no direction, so it has no menu.
-  tb.addEventListener('contextmenu', (ev) => {
-    const td = ev.target.closest('td[data-km]');
-    const tr = td && td.closest('tr[data-dir]');
-    if (!td || !tr) return;
-    ev.preventDefault();
-    showSpanMenu(ev.clientX, ev.clientY, tr.dataset.dir, +td.dataset.km,
-                 tr.dataset.fiber, tr.dataset.src);
-  });
+  // Right-click any cell for the span menu, as in the other grids
+  // (wireCellMenu: the Average row asks which direction).
+  tb.addEventListener('contextmenu', (ev) => wireCellMenu(ev, tb));
   // End verdicts landing later move only the end marks, the P/F column and
   // the drawer's marks (see endVerdictsLanded): the rows on screen are
   // painted again, the rest stays.  A filter or the one-direction fibres'
@@ -8262,6 +8248,49 @@ function showColumnMenu(x, y, picks) {
     const p = picks[0];
     showSpanMenu(x, y, p.dir, p.km, p.fiber, p.src);
   } else showDirChooser(x, y, picks);
+}
+// Every cell of an event table opens the span menu on a right-click (Robert
+// 2026-10-02: only a direction's loss cell with its own event did, about one
+// cell in five; the rest gave the browser's menu).  A cell names its event
+// column (data-col) or sits after the one it belongs to (Refl., Type, a
+// Section).  Its own direction's event there is the pick; a gray cell, a
+// blank or an Average row take each direction's event in that column for
+// the fibre, so two directions ask which one first.  A cell before any
+// event column (Identifiers, P/F, wavelength, direction) takes the row's
+// first event.
+function cellMenuPicks(tb, td) {
+  const tr = td.closest('tr');
+  if (!tr || tr.dataset.fiber == null) return [];
+  let c = td;
+  while (c && c.dataset.col == null) c = c.previousElementSibling;
+  const col = c ? c.dataset.col : null;
+  const fid = tr.dataset.row ? tr.dataset.row.split('-')[0] : null;
+  const rows = fid != null
+    ? [...tb.querySelectorAll(`tr[data-dir][data-row^="${fid}-"]`)]
+    : (tr.dataset.dir ? [tr] : []);
+  rows.sort((a, b) => (b === tr) - (a === tr));    // this row first
+  const pickOf = row => {
+    const cell = col != null ? row.querySelector(`td[data-col="${col}"][data-km]`)
+                             : row.querySelector('td[data-km]');
+    return cell ? { dir: row.dataset.dir, km: +cell.dataset.km,
+                    fiber: row.dataset.fiber, src: row.dataset.src } : null;
+  };
+  const own = tr.dataset.dir ? pickOf(tr) : null;
+  if (own) return [own];
+  const picks = [];
+  for (const row of rows) {
+    const p = pickOf(row);
+    if (p && !picks.some(q => q.dir === p.dir)) picks.push(p);
+  }
+  return picks;
+}
+// No event for the cell at all (a column neither direction of the fibre
+// reached, a statistics row): the View items alone, never the browser's menu.
+function wireCellMenu(ev, tb) {
+  const td = ev.target.closest('td');
+  if (!td) return;
+  ev.preventDefault();
+  showColumnMenu(ev.clientX, ev.clientY, cellMenuPicks(tb, td));
 }
 // Every header cell opens the menu on a right-click, not only the ⋯: on a
 // wide table the ⋯ of the event you are reading is often scrolled out of
@@ -8934,16 +8963,9 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     pickRow(tr.dataset.avg ? [p.ta.key, p.tb.key] : [`${tr.dataset.src}-${tr.dataset.fiber}`]);
     paintRows();
   });
-  // Right-click a direction's cell for the span menu, as in the other grids;
-  // the Average row names no direction, so it has no menu.
-  tb.addEventListener('contextmenu', (ev) => {
-    const td = ev.target.closest('td[data-km]');
-    const tr = td && td.closest('tr[data-dir]');
-    if (!td || !tr) return;
-    ev.preventDefault();
-    showSpanMenu(ev.clientX, ev.clientY, tr.dataset.dir, +td.dataset.km,
-                 tr.dataset.fiber, tr.dataset.src);
-  });
+  // Right-click any cell for the span menu, as in the other grids
+  // (wireCellMenu: the Average row asks which direction).
+  tb.addEventListener('contextmenu', (ev) => wireCellMenu(ev, tb));
   // The end verdicts landing (see endVerdictsLanded) can move a connector's
   // one-direction gate (gateFor stands it down on a panel tie): the rows on
   // screen and the drawer's marks are judged again, the rest stays.

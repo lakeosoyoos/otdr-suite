@@ -10,7 +10,7 @@ opens the same menu on a right-click.  A header over no event (Identifiers,
 a Section, the Statistics) opens the View items.
 
 Plain JS, no runtime here: pins the source.  Browser-checked 2026-10-02 on
-WSC<->SUI 1-19 in both modes, one direction, A+B and FEC.
+a 19-fiber bidirectional job in both modes, one direction, A+B and FEC.
 """
 from __future__ import annotations
 

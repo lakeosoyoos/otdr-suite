@@ -181,8 +181,9 @@ def test_the_declaration_is_stored_in_the_directions_own_frame():
     connector sits at does not move."""
     # the FastReporter grid's (the FEC table's own comes earlier in the file)
     fr = SRC[SRC.index('function renderFastReporterGrid('):]
-    fn = fr[fr.index("tb.addEventListener('contextmenu'"):][:600]
-    assert 'data-km' in fn
+    assert "tb.addEventListener('contextmenu', (ev) => wireCellMenu(ev, tb));" in fr[:fr.index('\n}\n')]
+    fn = SRC[SRC.index('function cellMenuPicks('):][:1600]
+    assert 'km: +cell.dataset.km' in fn
     grid = SRC[SRC.index('cells.push(lossCell(evLoss(e)'):][:400]
     assert 'data-km="${e.dist_km}"' in grid, 'must tag the RAW km, not dispKm'
 
