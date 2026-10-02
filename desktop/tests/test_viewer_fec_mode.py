@@ -402,7 +402,7 @@ def test_fec_gates_show_in_the_viewer_boxes_and_override_per_window():
     # the Viewer's boxes hand over to FEC's in FEC mode
     assert 'if (gFecMode) { syncFecGateUI(); return; }' in HTML
     assert "if (gFecMode) { setFecGateOverride('loss', v); return; }" in HTML
-    assert '<span id="loss-op">Loss &ge;</span> <input id="set-loss"' in HTML
+    assert '<span id="loss-op">Bidirectional Loss &ge;</span> <input id="set-loss"' in HTML
     assert '&loss_gate=${gFecOverride.loss}' in HTML and '&refl_gate=${gFecOverride.refl}' in HTML
 
 

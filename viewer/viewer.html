@@ -915,7 +915,7 @@
       <span class="hint" id="event-hint">add a trace to see events</span>
       <span id="evt-settings">
         <label title="An event at or above this loss is flagged. Seeded from the report that opened this Viewer, so the two agree; edit to explore.">
-          <span id="loss-op">Loss &ge;</span> <input id="set-loss" type="number" step="0.005" min="0" value="0.160"> dB</label>
+          <span id="loss-op">Bidirectional Loss &ge;</span> <input id="set-loss" type="number" step="0.005" min="0" value="0.160"> dB</label>
         <span id="gate-src" class="gate-src" title="Which report's threshold this Viewer is judging by."></span>
         <label title="Reflectance band low end (engine UNI_REFL_FLOOR_DB). 0 turns the reflectance rule off.">
           Refl Band <input id="set-refl-lo" type="number" step="1" max="0" value="-80"></label>
@@ -2391,6 +2391,13 @@ function syncGateUI() {
     lbl.classList.toggle('overridden', gGateOverride != null);
   }
   if (el) el.title = unusual ? gateLabel() : `following ${gateLabel()}`;
+  // The box is the gate on the Average of a two-direction load (Robert
+  // 2026-10-01: "Bidirectional Loss"); with one direction loaded, or on a
+  // Uni report, it grades single readings and says so.  Also puts the
+  // label back after FEC mode wrote its own "Loss >" there.
+  const op = document.getElementById('loss-op');
+  if (op) op.textContent = (gSourceReport === 'uni' || oneDirOnly())
+    ? 'Unidirectional Loss ≥' : 'Bidirectional Loss ≥';
 }
 
 // ─── Back to the report ───────────────────────────────────────────────

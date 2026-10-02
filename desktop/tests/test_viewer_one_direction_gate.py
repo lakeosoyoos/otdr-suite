@@ -61,3 +61,14 @@ def test_the_gate_is_snapshotted_before_gInfo_moves():
 def test_an_unticked_uni_row_reaches_the_viewer_as_off():
     TS = import_trace_server()
     assert TS._gates({'SINGLE_DIR_THRESHOLD': 1e9})['single_dir'] >= 1e6
+
+
+def test_the_loss_box_is_named_for_what_it_grades():
+    """Robert 2026-10-02: the Viewer showed no Bidi / Uni before the loss
+    box.  Two directions loaded it reads "Bidirectional Loss"; one direction
+    loaded, or opened from the Uni report, "Unidirectional Loss"."""
+    vw = _viewer_src()
+    assert '<span id="loss-op">Bidirectional Loss &ge;</span> <input id="set-loss"' in vw
+    sync = _fn(vw, 'syncGateUI')
+    assert "if (op) op.textContent = (gSourceReport === 'uni' || oneDirOnly())" in sync
+    assert "? 'Unidirectional Loss ≥' : 'Bidirectional Loss ≥';" in sync
