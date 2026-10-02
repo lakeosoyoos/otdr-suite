@@ -120,3 +120,14 @@ trc/            Two EXFO .trc files (one direction, three wavelengths each), eve
                 TRCDECL0001_155016251310.trc: 1550/1625/1310 nm, 1.04 km, span start
                 declared 1.006 km in, so the file keeps the OTDR port as an extra
                 record upstream (test_trc_reader.py).
+
+olts/           OLTSFX_SAMPLE.olts: five fibers (1, 7, 11, 721, 864) of an 864-fiber
+                EXFO FTB-945 OLTS job, 1550 nm, bidirectional, Loopback reference,
+                93.5 km.  Every identifier scrubbed in place at the same length
+                inside each measurement's gzip (customer, company, job, operators,
+                site code; fiber ids OLTSFX001..), re-packed into a fresh compound
+                file, and the readings left unchanged.  Fiber 721 is past the point
+                where unit B's phase stepped mid-job; 7 and 11 have A->B phases near
+                -pi.  OLTSFX_SAMPLE_exfo.json is EXFO's own library's loss, ORL and
+                length for it at full precision (FastReporter 3.21's Metrino.Oltsx
+                loading this very file), the answer key of test_olts_reader.py.
