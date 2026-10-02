@@ -425,6 +425,7 @@
   #edit-dlg .fr-panel td:first-child { color: var(--text-sec); white-space: nowrap; }
   #edit-dlg .fr-panel td.off { color: #99a; }
   #edit-dlg .fr-panel input[type=number] { border: 0; padding: 0; height: 16px; }
+  #edit-dlg .fr-panel input#edit-bs { width: 64px; }
   @media (max-width: 680px) { #edit-dlg.has-panel { width: calc(100vw - 32px); }
     #edit-dlg .fr-panels { grid-template-columns: 1fr; } }
   #edit-dlg .btns button { font-size: 11px; padding: 4px 12px; border-radius: 3px; border: 1px solid #c9d5e1; background: #fff; cursor: pointer; }
@@ -7507,8 +7508,10 @@ function spanRow(dir) {
 // FR's Test Parameters and Test Settings, row for row.  Formats are FR's:
 // the boss reads that panel daily, and one that rounds differently is one he
 // has to stop and re-check.  A value the file does not carry prints '---'.
-// IOR is the one row that can be changed here, so it is the input itself.
-function frPanelHtml(p, iorVal) {
+// IOR and Backscatter are the rows that can be changed here, so they are the
+// inputs themselves.  Backscatter goes in 0.1 dB steps: the .sor's own field
+// holds tenths, and FR stores what was typed (-80.5 stays -80.5).
+function frPanelHtml(p, iorVal, bsVal) {
   const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const n = (v, dp, unit) => (v == null || !isFinite(v)) ? '---' : `${(+v).toFixed(dp)}${unit}`;
   const row = (label, val, cls) => `<tr><td>${label}</td><td${cls ? ` class="${cls}"` : ''}>${val}</td></tr>`;
@@ -7524,7 +7527,7 @@ function frPanelHtml(p, iorVal) {
   const splitOn = !!p.splitter_on;
   const settings = [
     ['IOR', `<input type="number" id="edit-ior" step="0.000001" min="1.40" max="1.55" value="${iorVal}" title="type a new IOR to write it into the copies">`],
-    ['Backscatter', n(p.backscatter_db, 2, ' dB')],
+    ['Backscatter', `<input type="number" id="edit-bs" step="0.1" min="-100" max="-40" value="${bsVal}" title="type a new backscatter coefficient (dB) to write it into the copies; every reflectance and the ORL move by the same change, the trace does not"> dB`],
     ['Helix Factor', n(p.helix_pct, 2, ' %')],
     ['Splice Loss Detection Threshold', n(p.splice_thr_db, 3, ' dB')],
     [`<label><input type="checkbox" disabled${splitOn ? ' checked' : ''}> Splitter Loss (SM Only)</label>`,
@@ -7563,13 +7566,16 @@ async function showEditDialog(dir, fiber) {
   // the fallback.  Either way the dialog compares against what it SHOWED.
   const shownIor = (s.panel && s.panel.ior != null) ? s.panel.ior : s.ior;
   const iorVal = shownIor == null ? '' : shownIor.toFixed(s.panel && s.panel.ior != null ? 6 : 5);
+  // Backscatter: FR's float64 Rbs when the panel has it, else the FxdParams one.
+  const shownBs = (s.panel && s.panel.backscatter_db != null) ? s.panel.backscatter_db : s.backscatter;
+  const bsVal = shownBs == null ? '' : shownBs.toFixed(2);
   const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   d.innerHTML = `<h3>Trace Settings: ${arrow}</h3>`
     + `<div class="sub">read from ${esc(s.filename)}${s.editable ? '' : ': <b>' + esc(s.why) + '</b>'}</div>`
     + `<div class="scope"><label><input type="radio" name="edit-scope" value="all" checked> All Fibers in This Folder</label>`
     + `<label><input type="radio" name="edit-scope" value="one"> Only F${fiber}</label></div>`
     + (s.panel
-       ? frPanelHtml(s.panel, iorVal)
+       ? frPanelHtml(s.panel, iorVal, bsVal)
        : `<div class="row"><label>IOR</label><input type="number" id="edit-ior" step="0.00001" min="1.40" max="1.55" value="${iorVal}"></div>`)
     + EDIT_FIELDS.map(([k, label]) =>
         `<div class="row"><label>${label}</label><input type="text" id="edit-${k}" data-key="${k}" value="${esc(ids[k])}"></div>`).join('')
@@ -7585,7 +7591,7 @@ async function showEditDialog(dir, fiber) {
   // change: the writer re-lays the proprietary stream for every field it is
   // handed, and "same text" is still a rewrite.
   if (s.panel) d.classList.add('has-panel');
-  const original = { ior: iorVal === '' ? null : +iorVal, ids };
+  const original = { ior: iorVal === '' ? null : +iorVal, bs: bsVal === '' ? null : +bsVal, ids };
   const fid = d.querySelector('#edit-fiber_id');
   const syncScope = () => {
     const all = d.querySelector('input[name=edit-scope]:checked').value === 'all';
@@ -7631,12 +7637,17 @@ async function submitEdit(dir, fiber, original) {
     fields[inp.dataset.key] = v;
   }
   const iorChanged = ior != null && (original.ior == null || Math.abs(ior - original.ior) > 5e-7);
+  const bsBox = d.querySelector('#edit-bs');
+  const bsTxt = bsBox ? bsBox.value.trim() : '';
+  const bs = bsTxt === '' ? null : Math.round(+bsTxt * 10) / 10;
+  const bsChanged = bs != null && (original.bs == null || Math.abs(bs - original.bs) > 0.04);
   const spanBox = d.querySelector('#edit-span');
   const span = (spanBox && spanBox.checked && gSpanDecl[dir])
     ? { start_km: gSpanDecl[dir].start_km ?? null, end_km: gSpanDecl[dir].end_km ?? null } : {};
   const spanOn = span.start_km != null || span.end_km != null;
-  if (!iorChanged && !Object.keys(fields).length && !spanOn) { err.textContent = 'nothing changed'; return; }
+  if (!iorChanged && !bsChanged && !Object.keys(fields).length && !spanOn) { err.textContent = 'nothing changed'; return; }
   if (ior != null && !(ior >= 1.40 && ior <= 1.55)) { err.textContent = 'IOR must be between 1.40 and 1.55'; return; }
+  if (bsChanged && !(bs >= -100 && bs <= -40)) { err.textContent = 'Backscatter must be between -100 and -40 dB'; return; }
   err.textContent = '';
   d.querySelector('#edit-save').disabled = true;
   let j;
@@ -7644,6 +7655,7 @@ async function submitEdit(dir, fiber, original) {
     const r = await fetch('/api/trace_edit', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ dir, fibers: all ? 'all' : [+fiber], ior: iorChanged ? ior : null,
+                             backscatter: bsChanged ? bs : null,
                              fields, span, dest_name: d.querySelector('#edit-dest').value }),
     });
     j = await r.json();
