@@ -1475,49 +1475,6 @@ def _render_update_blocked():
                  f'{_pn} again.')
 
 
-def _render_update_nudge():
-    """Sidebar banner, above the page radio, when the published engine is newer
-    than the one this session runs — plus the same one-click restart the footer
-    offers, so an always-on machine can't sit on an old build unnoticed.
-
-    The staleness answer comes from _update_state — the same TTL-cached check
-    the report block uses, so the banner and the block can never disagree and
-    only ONE manifest fetch happens per recheck window (3 s cap).  Every
-    failure is swallowed by _nudge_check: equal, older or unreachable renders
-    nothing at all."""
-    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
-    _render_update_blocked()
-
-    if _cache_pinned():
-        _render_cache_pinned_notice()
-        return
-
-    nudge = _update_state()
-    if not nudge:
-        return
-    latest, running = nudge
-    try:
-        note = _deadline_note(running)
-    except Exception:
-        note = ''
-    if _needs_install():
-        _render_install_notice(latest, running)
-        if note:
-            st.caption(note.strip())
-        return
-    st.warning(f'Update {latest} is available (running {running}).{note}')
-    if getattr(sys, 'frozen', False):
-        if st.button('⬇ Update & Restart Now', key='upd_nudge_restart',
-                     type='primary', use_container_width=True):
-            if _relaunch_and_exit():
-                _render_restart_watchdog()
-            else:
-                st.error(f'Couldn\'t start the restart. Close {_pn} and '
-                         'open it again to pick up the update.')
-    else:
-        st.caption('Restart the app to apply. Updates install at launch.')
-
-
 # The viewer's engine lives in viewer/ — put it first so `import trace_server`
 # resolves its sor_reader copy (NOT Secret Sauce's).  Secret Sauce is never
 # imported in this process; it runs as a subprocess with its own path.
@@ -3238,18 +3195,36 @@ def _nav_go(target):
     st.session_state['nav_picks'] = st.session_state.get('nav_picks', 0) + 1
 
 
-def _update_actions(latest, cur, key):
-    """What the update menu offers for a published update newer than this
-    copy: the pinned-cache note, the reinstall note, or Update & Restart."""
+def _update_actions(latest, running, key):
+    """What the update menu says about a published update newer than this
+    copy, worded as the old sidebar banner was: on a machine that keeps no
+    updates only the pinned-cache note, when a restart cannot apply it only
+    the reinstall note, otherwise "Update N is available" and Update &
+    Restart.  A restart that starts asks for the reconnect watchdog, which
+    is drawn on the page under the bar (see _render_top_nav's caller), not
+    in the menu, so closing the menu cannot stop it."""
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')
     if _cache_pinned():
         _render_cache_pinned_notice()
-    elif _needs_install():
-        _render_install_notice(latest, cur)
-    elif getattr(sys, 'frozen', False):
+        return
+    try:
+        note = _deadline_note(running)
+    except Exception:
+        note = ''
+    if _needs_install():
+        _render_install_notice(latest, running)
+        if note:
+            st.caption(note.strip())
+        return
+    st.warning(f'Update {latest} is available (running {running}).{note}')
+    if getattr(sys, 'frozen', False):
         if st.button('⬇ Update & Restart Now', key=key,
                      type='primary', use_container_width=True):
             if _relaunch_and_exit():
-                _render_restart_watchdog()
+                st.session_state['_upd_watchdog'] = True
+            else:
+                st.error(f'Couldn\'t start the restart. Close {_pn} and '
+                         'open it again to pick up the update.')
     else:
         st.caption('Restart the app to apply. Updates install at launch.')
 
@@ -3258,27 +3233,31 @@ def _render_update_menu():
     """Far right of the top bar: the build this copy runs, opening a small
     menu with the update check that was the sidebar footer.  When a newer
     update is published, an orange "Update" sits under the build (Robert
-    2026-10-01) and the menu opens on Update & Restart."""
+    2026-10-01) and the menu opens on it.  A machine that keeps no updates
+    (the launcher's cache pin) shows the orange Update all the time, as the
+    old banner showed its note, and never asks the update server: a restart
+    would land on the same bundled engine, so only a reinstall helps."""
     _appv, _engv = _app_version(), _engine_version()
-    try:
-        _nudge = _update_state()
-    except Exception:
-        _nudge = None
+    _pinned = bool(_cache_pinned())
+    _nudge = None
+    if not _pinned:
+        try:
+            _nudge = _update_state()
+        except Exception:
+            _nudge = None
     _cur = _parse_engine_version(_appv, _engv)
     label = 'Dev Build' if _cur is None else f'Version {_cur}'
-    with st.container(key='nav_update_ready' if _nudge else 'nav_update',
+    _flag = _pinned or bool(_nudge)
+    with st.container(key='nav_update_ready' if _flag else 'nav_update',
                       width=165, horizontal_alignment='right'):
         with st.popover(label, icon=':material/system_update_alt:'):
             if _appv == 'dev' and _engv == 'dev':
                 st.caption(f'{PRODUCT_NAME} · dev')
             else:
                 st.caption(f'{PRODUCT_NAME} · app {_appv} · engine: {_engv}')
-            if _nudge:
-                try:
-                    _note = _deadline_note(_nudge[1])
-                except Exception:
-                    _note = ''
-                st.warning(f'Update {_nudge[0]} is available (running {_nudge[1]}).{_note}')
+            if _pinned:
+                _render_cache_pinned_notice()
+            elif _nudge:
                 _update_actions(_nudge[0], _nudge[1], 'upd_menu_restart')
             if st.button('🔄 Check for Updates', key='upd_check',
                          use_container_width=True):
@@ -3294,10 +3273,9 @@ def _render_update_menu():
                 elif _cur is None:
                     st.info(f'Latest published update: {_latest} · running: dev '
                             'checkout (updates apply to installed builds only).')
-                elif not _nudge:
-                    st.info(f'Update {_latest} is available (running {_cur}).')
+                elif not (_nudge or _pinned):
                     _update_actions(_latest, _cur, 'upd_restart')
-        if _nudge:
+        if _flag:
             st.markdown('<p class="nav-update-flag">Update</p>',
                         unsafe_allow_html=True)
 
@@ -3356,6 +3334,10 @@ for _k in _TRACE_BOXES:
 st.session_state.setdefault('nav_radio', 'Viewer')
 page = st.session_state['nav_radio']
 _render_top_nav(page)
+# An Update & Restart from the bar's menu has started the new copy: the
+# watchdog that reloads the page once it answers is drawn here, on the page.
+if st.session_state.pop('_upd_watchdog', False):
+    _render_restart_watchdog()
 
 # No update banner under the bar (Robert 2026-10-01): the orange Update
 # under the build label says an update is waiting, and its menu holds the
@@ -6824,7 +6806,7 @@ def _sr_span_inputs(span):
             st.caption('Traces: the A and B folders loaded on the Traces tab.')
         else:
             st.caption(f"Traces: only the {'A' if dir_a else 'B'} folder is "
-                       f"loaded in the left panel. Load the "
+                       f"loaded on the Traces tab. Load the "
                        f"{'B' if dir_a else 'A'} folder there too.")
     else:
         # Input mode: two A/B folders (shared with the Viewer) OR a single
