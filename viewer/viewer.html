@@ -1021,6 +1021,15 @@ let gHoverKey = null;                  // the trace nearest the cursor, if one i
 let gTraceClick = null;                // trace under the mouse at mousedown, until mouseup
 let gTableExport = null;               // set by the grid: {table, rows(), headExtra} for the Report
 let gExportDpr = 0;                    // the Report draws the chart at this scale; 0 = the screen's
+// The shared Viewer state (see pushViewerState).
+const gClientId = Math.random().toString(36).slice(2, 10);
+let gStateVer = 0;                     // newest shared state this window has
+let gStateSig = '';
+let gStateReady = false;               // boot has taken the shared state
+let gStatePushT = null;
+let gStateApplying = 0;                // applying another window's state
+let gStateLoad = null;                 // that state's load, while it runs
+let gGateSig = null;                    // the gates' fingerprint (gate_sig)
 const MARKER_HIT_PX = 6;               // grab radius for dragging a marker
 
 // ─── Display transforms (stacked mode flips B to A's km frame + offsets Y) ─
@@ -2173,6 +2182,7 @@ async function loadInfo() {
     gLaunchA = Number(gInfo.launch_a_km) || 0;   // null (no reel) → 0
     gSpanDecl = gInfo.span_decl || { a: null, b: null };
     if (gInfo.thresholds) gThresholds = gInfo.thresholds;
+    if (gInfo.gate_sig != null) gGateSig = gInfo.gate_sig;
     gEndRefl = Array.isArray(gInfo.end_refl) ? gInfo.end_refl : [];
     if (gInfo.end_pending) pollEndVerdicts();
     syncGateUI();
@@ -2397,6 +2407,18 @@ async function pollAnalysisMode() {
       draw();
       renderEventTable();
     } else if (m !== gAnalysisMode) await loadInfo();
+    // A Customer Profile picked in the hub (or any setting, or a report run)
+    // moves the gates: take them now, not at the next load.
+    else if (j && j.gate_sig != null && gGateSig != null && j.gate_sig !== gGateSig) {
+      await loadInfo();
+      if (gTraces.length) renderEventTable();
+    }
+    // Another window changed the shared state: follow it (not awaited, so a
+    // whole-cable load does not hold up the next poll).
+    if (gStateReady && !gStateApplying && j && j.state_ver > gStateVer) {
+      fetchViewerState().then(st => applyViewerState(st))
+        .catch(e => reportJsError((e && e.message) || String(e), e && e.stack));
+    }
   } catch (e) { /* server busy or restarting: the next tick asks again */ }
   finally { gModePollBusy = false; }
 }
@@ -2405,8 +2427,14 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) poll
 
 // ─── Add traces ───────────────────────────────────────────────────────
 async function addFibers() {
-  gSelNext = null;                   // the box (or a report jump) is the newer ask
+  // What was typed, read before anything waits: the box is rewritten from
+  // the chart as a load lands (syncFiberBox).
   const raw = document.getElementById('fiber-input').value;
+  // A restore still loading (another window's state, or the chart coming
+  // back after a trip to another tool) finishes first: an Add planned while
+  // it loads raced it, and a file could end up neither loaded nor failed.
+  if (gStateLoad) { try { await gStateLoad; } catch (e) {} }
+  gSelNext = null;                   // the box (or a report jump) is the newer ask
   const fibers = parseFibers(raw);
   if (!fibers.length) { setReadout('no valid fibers in input'); return; }
   const plan = planOrSay(fibers, gAddDir);
@@ -2456,7 +2484,12 @@ async function addFibers() {
   // meant one direction of a 1728-fiber cable was capped while the SAME 1728
   // traces loaded fine as 864 A + 864 B, which is a difference the glass does
   // not have.
-  const overview = tasks.length > MAX_DETAIL_TRACES;
+  // Also when they join a chart already past the detail cap (a big partial
+  // load: fibres 1-100, then 101-105): a detail load there was refused,
+  // "already at the 48-trace limit" (Robert 2026-10-01: "add should
+  // definitely work after a big partial load").
+  const overview = tasks.length > MAX_DETAIL_TRACES
+    || gTraces.length + tasks.length > MAX_DETAIL_TRACES;
   const MAX_TRACES = overview ? MAX_OVERVIEW_FIBERS * dirs.length
                               : MAX_DETAIL_TRACES;
   let capped = false;
@@ -2749,7 +2782,29 @@ function removeFile(key, fiber) {
   const next = fileAfterRemove(fileRowKeys(), new Set([key]));
   gRemovedFiles.add(key);
   removeTrace(key);
-  const msg = `F${fiber} removed from the viewer (reopen the Viewer to list it again)`;
+  const msg = `F${fiber} removed from the viewer and its reports (right-click a file to put it back)`;
+  setReadout(msg);
+  selectAfterRemove(next, msg);
+  unloadEmptiedSides();
+}
+
+// Remove This File / Remove This Fiber: these files only, whatever else is
+// marked.  The rest of the chart stays on it and the Fibers box follows
+// ("1-199, 201-432"); only a Remove that empties the chart moves on to the
+// next file, as FastReporter does (selectAfterRemove).
+function removeOnly(keys, what) {
+  const listed = fileRowKeys();
+  keys = keys.filter(key => listed.includes(key));
+  if (!keys.length) return;
+  const next = fileAfterRemove(listed, new Set(keys));
+  keys.forEach(key => { gRemovedFiles.add(key); COLORS_USED.delete(key); });
+  gTraces = gTraces.filter(t => !gRemovedFiles.has(t.key));
+  syncFileMarks();
+  renderChips();
+  if (gAutoFit) fit();
+  draw();
+  renderEventTable();
+  const msg = `${what} removed from the viewer and its reports (right-click a file to put it back)`;
   setReadout(msg);
   selectAfterRemove(next, msg);
   unloadEmptiedSides();
@@ -2768,10 +2823,35 @@ function removeSelectedFiles() {
   draw();
   renderEventTable();
   const msg = `${keys.length} file${keys.length === 1 ? '' : 's'} removed from the viewer`
-    + ` (reopen the Viewer to list ${keys.length === 1 ? 'it' : 'them'} again)`;
+    + ` and its reports (right-click a file to put ${keys.length === 1 ? 'it' : 'them'} back)`;
   setReadout(msg);
   selectAfterRemove(next, msg);
   unloadEmptiedSides();
+}
+
+// Removed files stay out of the list, the chart and every report until the
+// tech puts them back here (a trip to another tool no longer lists them
+// again, now that the state is kept: see pushViewerState).
+async function putBackRemovedFiles() {
+  const keys = [...gRemovedFiles];
+  const n = keys.length;
+  if (!n) return;
+  gRemovedFiles.clear();
+  renderChips();
+  // With traces on the chart the files go back on it too, the way the chart
+  // is loaded: next to a whole cable (overview traces) a detail load is
+  // refused at MAX_DETAIL_TRACES, so they come back as overview traces.
+  if (gTraces.length) {
+    const tasks = keys.map(key => { const [d, f] = splitFileKey(key); return { key, f, d }; });
+    if (gTraces.length + tasks.length > MAX_DETAIL_TRACES) await loadOverview(tasks);
+    else for (const t of tasks) await loadOne(t.key, t.f, t.d);
+    syncFileMarks();
+    renderChips();
+    if (gAutoFit) fit();
+    draw();
+    renderEventTable();
+  }
+  setReadout(`${n} removed file${n === 1 ? '' : 's'} put back in the list, the chart and the reports`);
 }
 
 // FastReporter never leaves the list with nothing selected: after a Remove
@@ -2816,6 +2896,87 @@ function renderChips() {
   refreshMirrorFrame();
   renderFilesPanel();
   syncFiberBox();
+  pushViewerState();
+}
+
+// ─── The state every Viewer window shares (trace_server.viewer_state) ──
+// What is on the chart, what was removed from the FILES list and the Dir
+// buttons go to the server whenever they change (renderChips is the one
+// choke point every add, remove and clear goes through).  A window that
+// opens takes them back (bootLoad), so a trip to another tool and back finds
+// the chart as it was; a window already open follows the newer state from
+// another one (pollAnalysisMode), so the hub's Viewer and the pop-out keep
+// each other up to date.  `gStateSig` is the last state this window sent or
+// took: the same state is never sent twice, so two windows cannot echo one
+// change back and forth.
+function stateSig(keys, removed, addDir) {
+  return JSON.stringify([[...keys].sort(), [...removed].sort(), addDir]);
+}
+function pushViewerState() {
+  if (!gStateReady || gStateApplying || !gInfo) return;
+  clearTimeout(gStatePushT);
+  gStatePushT = setTimeout(async () => {
+    if (gStateApplying || !gStateReady) return;
+    const keys = gTraces.map(t => t.key), removed = [...gRemovedFiles];
+    const sig = stateSig(keys, removed, gAddDir);
+    if (sig === gStateSig) return;
+    const removedMoved = !gStateSig
+      || JSON.parse(gStateSig)[1].join() !== [...removed].sort().join();
+    gStateSig = sig;
+    try {
+      const r = await fetch('/api/viewer_state', { method: 'POST',
+        body: JSON.stringify({ by: gClientId, keys, removed, add_dir: gAddDir }) });
+      const j = await r.json();
+      if (j && j.ver) gStateVer = Math.max(gStateVer, j.ver);
+      // The table is the span run again without the removed files (the
+      // server's run follows this state), so ask for it again now the
+      // server has it: a table asked for before this landed is the old run.
+      if (removedMoved && gTraces.length) renderEventTable();
+    } catch (e) { gStateSig = ''; }    // the next change tries again
+  }, 300);
+}
+async function fetchViewerState() {
+  try { return await (await fetch('/api/viewer_state', { cache: 'no-store' })).json(); }
+  catch (e) { return null; }
+}
+// A state made on the folders loaded now (a state from before a drop or a
+// new folder belongs to the old span).
+function stateFits(s) {
+  return !!(s && gInfo && (s.dir_a || '') === (gInfo.dir_a || '')
+            && (s.dir_b || '') === (gInfo.dir_b || ''));
+}
+// Take a state: its removed files, its Dir and, unless `keysToo` is false,
+// its traces (loading the missing ones and dropping the rest).
+async function applyViewerState(s, keysToo = true) {
+  if (!s) return;
+  gStateVer = Math.max(gStateVer, s.ver || 0);
+  if (s.by === gClientId || !stateFits(s)) return;
+  gStateApplying++;
+  try {
+    gRemovedFiles.clear();
+    (s.removed || []).forEach(k => gRemovedFiles.add(k));
+    const want = new Set((s.keys || []).filter(k => !gRemovedFiles.has(k)));
+    gStateSig = stateSig(keysToo ? [...want] : gTraces.map(t => t.key),
+                         [...gRemovedFiles], s.add_dir || 'both');
+    if (keysToo) {
+      if (want.size) {
+        // until the selection queue is empty: selectFiles returns at once
+        // when a load is already running and queues this one behind it
+        gStateLoad = (async () => {
+          await selectFiles(want);
+          while (gSelLoading) await new Promise(r => setTimeout(r, 100));
+        })();
+        try { await gStateLoad; } finally { gStateLoad = null; }
+      } else if (gTraces.length) clearAll();
+    }
+    setAddDir(s.add_dir || 'both');
+    renderFilesPanel();
+  } finally {
+    gStateApplying--;
+  }
+  // What the tech did while it loaded (a Put Back, a Remove) was held back
+  // with the echo; send it now if the page no longer matches what it took.
+  if (!gStateApplying) pushViewerState();
 }
 
 // The Fibers box says what is loaded, however it got there: a FILES-panel
@@ -3737,6 +3898,11 @@ function showFileDirMenu(x, y, src, fiber, name) {
   // What Save would write: the marked files whose direction was changed.
   const dirty = marks.filter(key => gDirOverride[key]);
   const loaded = gTraces.some(t => t.key === k);   // (a removed file has no row to right-click)
+  // Remove This File / Remove This Fiber (Robert 2026-10-01): with the whole
+  // span marked, "Remove N Marked Files" was the only Remove, so one file
+  // could not come off without first narrowing the chart down to it.
+  const fileLabel = `F${fiber} ${effDir(src, fiber) === 'a' ? 'A→B' : 'B→A'}`;
+  const fiberKeys = fileRowKeys().filter(key => splitFileKey(key)[1] === +fiber);
   m.innerHTML = `<div class="span-menu-hd">Direction${marked ? ` (${marked} Marked)` : ''}</div>`
     + [['a', 'A→B'], ['b', 'B→A']].map(([d, label]) =>
         `<button data-d="${d}">${allAre(d) ? '✓ ' : '\u2003'}${label}</button>`).join('')
@@ -3755,8 +3921,16 @@ function showFileDirMenu(x, y, src, fiber, name) {
     + `<button data-rename="1">Rename ${marked > 1 ? marked + ' Marked Files' : 'File'}…</button>`
     // Take the file out of the list, off the chart and out of the grid.
     // Says the count first: a marked range removes the whole range.
-    + `<button data-remove="1">Remove ${marked > 1 ? marked + ' Marked Files' : 'File'}`
-    + ` from Viewer</button>`
+    + (marked
+       ? `<button data-remove-one="1">Remove This File (${fileLabel})</button>`
+         + (fiberKeys.length > 1
+            ? `<button data-remove-fiber="1">Remove This Fiber (F${fiber}, Both Directions)</button>`
+            : '')
+         + `<button data-remove="1">Remove ${marked} Marked Files from Viewer</button>`
+       : `<button data-remove="1">Remove This File (${fileLabel})</button>`)
+    + (gRemovedFiles.size
+       ? `<button data-putback="1">Put Back ${gRemovedFiles.size} Removed File`
+         + `${gRemovedFiles.size === 1 ? '' : 's'}</button>` : '')
     + (gRenameUndo.length
        ? `<button data-undo="1">Undo Rename of ${gRenameUndo[gRenameUndo.length - 1].n} File`
          + `${gRenameUndo[gRenameUndo.length - 1].n === 1 ? '' : 's'}</button>` : '')
@@ -3779,6 +3953,15 @@ function showFileDirMenu(x, y, src, fiber, name) {
   m.querySelector('button[data-rename]').onclick = () => { closeSpanMenu(); showRenameDialog(src, fiber, name); };
   const un = m.querySelector('button[data-undo]');
   if (un) un.onclick = () => { closeSpanMenu(); undoLastRename(); };
+  const pb = m.querySelector('button[data-putback]');
+  if (pb) pb.onclick = () => { closeSpanMenu(); putBackRemovedFiles(); };
+  const r1 = m.querySelector('button[data-remove-one]');
+  if (r1) r1.onclick = () => { closeSpanMenu(); removeOnly([k], fileLabel); };
+  const rf = m.querySelector('button[data-remove-fiber]');
+  if (rf) rf.onclick = () => {
+    closeSpanMenu();
+    removeOnly(fiberKeys, `F${fiber} (both directions)`);
+  };
   const rm = m.querySelector('button[data-remove]');
   if (rm) rm.onclick = () => {
     closeSpanMenu();
@@ -3895,8 +4078,11 @@ async function applyFileSelection(want) {
     return { key: k, f, d };
   });
   // Same two regimes as the Fibers box: a selection past MAX_DETAIL_TRACES
-  // goes through the bulk overview instead of being cut off at 48.
-  const overview = tasks.length > MAX_DETAIL_TRACES;
+  // goes through the bulk overview instead of being cut off at 48, and so do
+  // a few files added to a chart already past it (they were cut off
+  // silently, the room left under 48 being none).
+  const overview = tasks.length > MAX_DETAIL_TRACES
+    || gTraces.length + tasks.length > MAX_DETAIL_TRACES;
   const MAX = overview ? MAX_OVERVIEW_FIBERS * 2 : MAX_DETAIL_TRACES;
   const room = Math.max(0, MAX - gTraces.length);
   const capped = tasks.length > room;
@@ -9650,8 +9836,20 @@ let gDeepLinkDone = false;
 async function bootLoad() {
   if (!gInfo || gDeepLinkDone) return;
   const p = new URLSearchParams(location.search);
-  await applyTarget({ fibers: p.get('fibers'), fiber: p.get('fiber'),
-                      km: p.get('km'), dir: p.get('dir'), src: p.get('src') });
+  // The chart as the tech left it (see viewer_state): its removed files
+  // always, its traces unless a report cell sent this window to a fiber.
+  const linked = !!(p.get('fibers') || p.get('fiber'));
+  try {
+    const st = await fetchViewerState();
+    if (stateFits(st)) await applyViewerState(st, !linked);
+    else if (st) gStateVer = Math.max(gStateVer, st.ver || 0);
+  } finally {
+    gStateReady = true;
+    pushViewerState();                 // anything done while it loaded
+  }
+  if (!gTraces.length || linked)
+    await applyTarget({ fibers: p.get('fibers'), fiber: p.get('fiber'),
+                        km: p.get('km'), dir: p.get('dir'), src: p.get('src') });
   if (gTraces.length) gDeepLinkDone = true;
 }
 

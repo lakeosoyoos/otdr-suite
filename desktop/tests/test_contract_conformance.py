@@ -324,7 +324,8 @@ def test_run_button_passes_the_active_profiles_contract():
     src = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
     # Since the Add-span chain the command is built per queued span, with
     # the contract resolved ONCE from the active profile above the loop.
-    site = src.split("'cmd': splicereport_cmd(_da, _db, out_xlsx, _sa, _sb,", 1)
+    # (each folder without the files removed in the Viewer: _run_folder)
+    site = src.split("'cmd': splicereport_cmd(_run_folder(_da), _run_folder(_db),", 1)
     assert len(site) == 2
     before = site[0][-1500:]
     # The overrides (threshold table, connector knobs, profile engine
