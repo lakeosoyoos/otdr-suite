@@ -1210,7 +1210,7 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
     # a reviewer skims for "how big was this run".
     if cov_incomplete:
         _count = (f"{cov['n_loaded']} of {cov['n_candidates']} trace(s) in "
-                  f"folder analysed, {cov['n_dropped']} NOT analysed")
+                  f"folder analyzed, {cov['n_dropped']} NOT analyzed")
         _fnt = fnt_alarm_detail
     else:
         _count = f"{audit['n_files']} trace(s)"

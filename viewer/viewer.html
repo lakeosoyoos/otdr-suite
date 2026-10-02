@@ -223,15 +223,15 @@
   .chip .vis { cursor: pointer; padding: 0 2px; color: var(--text-sec); }
   .chip .vis:hover { color: var(--accent); }
   #chip-empty { color: var(--text-sec); font-style: italic; font-size: 11px; align-self: center; }
-  /* The FILES panel is a drop target: files, a folder, or a zip. */
-  #files-panel.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; background: #f3f7fb; }
-  #canvas-wrap.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; }
+  /* The FILES panel is THE drop target: files, a folder, or a zip. */
   #files-drop-hint { color: var(--text-sec); font-size: 11px; padding: 6px 8px; border-top: 1px dashed var(--border); }
-  /* A file dragged anywhere over the Viewer, or over the hub page around it,
-     lights the FILES panel up and says what letting go will do, so the tech
-     sees the drop will be taken before letting go (Robert 2026-10-01, after
-     the boss's B set went to Downloads with nothing on screen to say it
-     would).  The sign stays up while the drop uploads, then says what loaded. */
+  /* A file dragged over the FILES panel lights it up and says what letting
+     go will do, so the tech sees the drop will be taken before letting go
+     (Robert 2026-10-01, after the boss's B set went to Downloads with nothing
+     on screen to say it would).  Dragged anywhere else on the Viewer or the
+     hub page around it, where a drop does nothing, the panel shows a paler
+     "Drop here".  The sign stays up while the drop uploads, then says what
+     loaded. */
   #files-panel { position: relative; }
   #drop-sign {
     display: none; position: absolute; inset: 0; z-index: 20; pointer-events: none;
@@ -242,6 +242,7 @@
   #drop-sign.on { display: flex; }
   #drop-sign .ds-big { font-size: 20px; font-weight: 700; }
   #drop-sign .ds-small { font-size: 12px; font-weight: 600; }
+  #drop-sign.hint { background: rgba(243, 247, 251, 0.85); box-shadow: inset 0 0 0 2px var(--accent); outline: 2px dashed var(--accent); outline-offset: -8px; }
   #drop-sign.done { color: #2e7d32; background: rgba(226, 245, 230, 0.96); box-shadow: inset 0 0 0 3px #2e7d32; }
 
   /* Main */
@@ -319,13 +320,19 @@
     position: fixed; z-index: 50; display: flex; flex-direction: column; gap: 3px;
     background: #ffffff; border: 1px solid #c9d5e1; border-radius: 5px;
     box-shadow: 0 3px 10px rgba(0,0,0,.15); padding: 6px 10px;
+    max-height: calc(100vh - 8px); overflow-y: auto; box-sizing: border-box;
   }
   #evt-view-menu[hidden] { display: none; }
   #evt-view-menu label { display: flex; gap: 5px; align-items: center; white-space: nowrap;
                          font-size: 11px; color: #000000; cursor: pointer; }
   #evt-view-menu input[type="checkbox"] { width: 11px; height: 11px; margin: 0; }
-  #evt-settings { margin-left: auto; display: flex; gap: 12px; align-items: center;
-                  font-size: 11px; color: #000000; }
+  #evt-settings { margin-left: auto; display: flex; gap: 4px 12px; align-items: center;
+                  font-size: 11px; color: #000000;
+                  flex-wrap: wrap; justify-content: flex-end; }
+  /* A narrow Viewer (the hub at 800 px with its sidebar open) cut the Refl
+     Band boxes off the panel's right edge, out of reach (window-size audit
+     2026-10-01).  The header wraps to a second line instead. */
+  #event-panel-header { flex-wrap: wrap; row-gap: 4px; }
   #evt-settings input[type="number"] { width: 62px; font-size: 11px; padding: 1px 3px; }
   #evt-settings label { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
   .evt-scroll { overflow-y: auto; flex: 1; min-height: 0; background: var(--plot-bg); }
@@ -553,6 +560,12 @@
   /* "Pin Min/Max/Average" off: the strip stays at the end of the table, under
      the last row, and covers nothing while you scroll. */
   #event-panel.agg-unpinned table.fr-table tfoot { position: static; }
+  /* Pinned, but the box has no room for it: under FOOT_PIN_MIN_ROWS rows
+     between the header and the strip, the strip sat on top of the column
+     headers and hid every row (window-size audit 2026-10-01: the table
+     dragged low, or a 640 x 480 window).  It goes under the last row until
+     the box has the room again; the switch itself is not changed. */
+  .fr-scroll.foot-free table.fr-table tfoot { position: static; }
   table.fr-table tfoot tr.fr-agg td { background: #eef3f8; }
   /* Two sticky axes meet in the top-left and bottom-left corners: the body's
      sticky-left fiber column and the sticky header/footer.  `.fr-rowlab` sets
@@ -701,8 +714,8 @@
   html[data-theme="dark"] .file-row.selected, html[data-theme="dark"] .fiber-row.selected { background: #1e293b; }
   html[data-theme="dark"] .fiber-row:hover { background: #1c1917; }
   html[data-theme="dark"] .fiber-row.partial { box-shadow: inset 3px 0 0 #57534e; background: #171412; }
-  html[data-theme="dark"] #files-panel.dragging { background: #1c1917; }
   html[data-theme="dark"] #drop-sign { background: rgba(23, 37, 58, 0.94); }
+  html[data-theme="dark"] #drop-sign.hint { background: rgba(28, 25, 23, 0.85); }
   html[data-theme="dark"] #drop-sign.done { color: #4ade80; background: rgba(20, 45, 30, 0.96); box-shadow: inset 0 0 0 3px #4ade80; }
   html[data-theme="dark"] .file-row .file-pf.fpf-pass { color: #4ade80; }
   html[data-theme="dark"] .file-row .file-pf.fpf-fail,
@@ -751,7 +764,7 @@
     <label id="lbl-yspace" style="margin-left:6px;"
            title="Y Spacing: push the B traces down this many dB so they do not overlap. 0 = FastReporter's default, one true common dB scale.">Y
       Spacing: <input type="number" id="num-yspace" value="0" step="1" min="0" max="60"> dB</label>
-    <label style="margin-left:8px;" title="On: TIA-598 fiber colours by ribbon position. Off: FastReporter's scheme, A blue and B dark gray."><input type="checkbox" id="cb-colors" checked> Fiber Colors</label>
+    <label style="margin-left:8px;" title="On: TIA-598 fiber colors by ribbon position. Off: FastReporter's scheme, A blue and B dark gray."><input type="checkbox" id="cb-colors" checked> Fiber Colors</label>
   </div>
 
   <div class="group">
@@ -790,7 +803,7 @@
           <input id="set-warncells" type="checkbox"> Show Warning Cells Only</label>
         <label title="Hide the Section columns (length, loss, attenuation between events) and the Section statistics.">
           <input id="set-sections-off" type="checkbox"> Sections Off</label>
-        <label title="Each fibre shows only its Average row: its A→B and B→A rows are hidden.">
+        <label title="Each fiber shows only its Average row: its A→B and B→A rows are hidden.">
           <input id="set-avg-only" type="checkbox"> Show Averages Only</label>
         <label title="Untick to blank every gainer: a single-direction reading with a negative loss (FastReporter's 'Positive').  A hidden gainer is not judged, so it cannot fail its row.  The bidirectional Average is always shown.">
           <input id="set-gainers" type="checkbox" checked> Show Gainers</label>
@@ -1337,12 +1350,20 @@ window.addEventListener('resize', resizeCanvas);
 // Drag the bar left of the FILES panel to trade chart width for panel width
 // (long file names, or more chart).  Remembered per browser; double-click
 // puts the default width back.
+// The chart keeps MIN_CHART on every window size, not only while dragging
+// (window-size audit 2026-10-01): a panel widened on a big window, then the
+// window made smaller (restored, another screen, the hub sidebar opened),
+// pushed the chart and the event table to no width at all, and the
+// remembered width brought that back on every reload.  The tech's width is
+// kept as the wish; the panel takes as much of it as the window leaves room
+// for, and grows back to it when the window does.
 (function () {
   const bar   = document.getElementById('files-resizer');
   const panel = document.getElementById('files-panel');
   const ws    = document.getElementById('workspace');
   const KEY   = 'viewer.filesPanelWidth';
   const MIN_PANEL = 140, MIN_CHART = 300;
+  let want = null;                      // the tech's own width, once dragged
 
   function clamp(w) {
     const max = ws.clientWidth - bar.offsetWidth - MIN_CHART;
@@ -1352,10 +1373,15 @@ window.addEventListener('resize', resizeCanvas);
     panel.style.width = clamp(w) + 'px';
     resizeCanvas();
   }
+  function refit() {
+    if (want != null) panel.style.width = clamp(want) + 'px';
+  }
   try {
     const saved = parseInt(localStorage.getItem(KEY), 10);
-    if (saved > 0) panel.style.width = saved + 'px';
+    if (saved > 0) { want = saved; refit(); }
   } catch (e) {}
+  // resizeCanvas's own resize listener ran first, on the old panel width.
+  window.addEventListener('resize', () => { if (want != null) { refit(); resizeCanvas(); } });
 
   let startX = 0, startW = 0;
   bar.addEventListener('pointerdown', ev => {
@@ -1374,11 +1400,13 @@ window.addEventListener('resize', resizeCanvas);
     if (!bar.classList.contains('dragging')) return;
     bar.classList.remove('dragging');
     document.body.classList.remove('resizing-files');
-    try { localStorage.setItem(KEY, String(panel.offsetWidth)); } catch (e) {}
+    want = panel.offsetWidth;
+    try { localStorage.setItem(KEY, String(want)); } catch (e) {}
   }
   bar.addEventListener('pointerup', stop);
   bar.addEventListener('pointercancel', stop);
   bar.addEventListener('dblclick', () => {
+    want = null;
     panel.style.width = '';
     try { localStorage.removeItem(KEY); } catch (e) {}
     resizeCanvas();
@@ -1426,13 +1454,18 @@ window.addEventListener('resize', resizeCanvas);
   const TABLE_SHARE = 2 / 3;   // the table gets two thirds by default
   const avail = () => Math.max(0, main.clientHeight - bar.offsetHeight);
   let share = null;                     // the tech's own split, once dragged
+  // A split dragged in THIS visit is kept exactly when the window changes
+  // size (window-size audit 2026-10-01): the table pulled to the top came
+  // back down to a 150 px chart on every resize, the hub sidebar opening
+  // included.  The 150 px floor is for opening the Viewer only.
+  let draggedNow = false;
   try {
     const s = parseFloat(localStorage.getItem(SHARE_KEY));
     if (s > 0 && s < 1) share = s;
   } catch (e) {}
   function fitShare() {
     const h = Math.round((share != null ? share : TABLE_SHARE) * avail());
-    panel.style.height = openHeight(h) + 'px';
+    panel.style.height = (draggedNow ? clamp(h) : openHeight(h)) + 'px';
   }
   try {
     const saved = parseInt(localStorage.getItem(KEY), 10);
@@ -1461,6 +1494,7 @@ window.addEventListener('resize', resizeCanvas);
     if (!bar.classList.contains('dragging')) return;
     bar.classList.remove('dragging');
     document.body.classList.remove('resizing-panel');
+    draggedNow = true;
     if (avail() > 0) share = panel.offsetHeight / avail();
     try {
       localStorage.setItem(KEY, String(panel.offsetHeight));
@@ -1471,6 +1505,7 @@ window.addEventListener('resize', resizeCanvas);
   bar.addEventListener('pointercancel', stop);
   bar.addEventListener('dblclick', () => {
     share = null;
+    draggedNow = false;
     try { localStorage.removeItem(KEY); localStorage.removeItem(SHARE_KEY); } catch (e) {}
     fitShare();
     resizeCanvas();
@@ -1651,8 +1686,7 @@ function _packDropBatch(files) {
   return new Blob(parts);
 }
 async function handleFilesDrop(dt) {
-  // A list of files is a drop the hub caught outside this frame and passed
-  // on (see the 'otdr-drop' message below); a DataTransfer is our own.
+  // A DataTransfer from the FILES panel; a list of files is the tests' own.
   showDropSign('load', 'reading the files');
   let files;
   try {
@@ -1909,50 +1943,40 @@ function _dragHasFiles(ev) {
   const t = ev.dataTransfer && ev.dataTransfer.types;
   return !!t && Array.prototype.indexOf.call(t, 'Files') >= 0;
 }
+// Only the FILES panel takes a drop, where the sign lights up (Robert
+// 2026-10-01).  Anywhere else on the Viewer a file dragged in is refused:
+// the cursor says no, letting go does nothing, and the page never navigates
+// to the file or lets the browser save it.  The panel shows where to go.
 (() => {
   const panel = document.getElementById('files-panel');
-  let depth = 0;
-  panel.addEventListener('dragenter', (ev) => { ev.preventDefault(); depth += 1; panel.classList.add('dragging'); });
-  panel.addEventListener('dragover', (ev) => { ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; });
-  panel.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) panel.classList.remove('dragging'); });
+  const take = (ev) => {
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = 'copy';
+    showDropSign('drag');
+  };
+  panel.addEventListener('dragenter', take);
+  panel.addEventListener('dragover', take);
   panel.addEventListener('drop', (ev) => {
-    ev.preventDefault(); depth = 0; panel.classList.remove('dragging');
+    ev.preventDefault();
     handleFilesDrop(ev.dataTransfer);
   });
-  // The chart and the event table under it take the same drop.
-  const main = document.getElementById('main'), wrap = document.getElementById('canvas-wrap');
-  let mdepth = 0;
-  main.addEventListener('dragenter', (ev) => {
-    if (!_dragHasFiles(ev)) return;
-    ev.preventDefault(); mdepth += 1; wrap.classList.add('dragging');
-  });
-  main.addEventListener('dragover', (ev) => {
-    if (!_dragHasFiles(ev)) return;
-    ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy';
-  });
-  main.addEventListener('dragleave', () => { mdepth = Math.max(0, mdepth - 1); if (!mdepth) wrap.classList.remove('dragging'); });
-  main.addEventListener('drop', (ev) => {
-    ev.preventDefault(); mdepth = 0; wrap.classList.remove('dragging');
-    if (_dragHasFiles(ev)) handleFilesDrop(ev.dataTransfer);
-  });
-  // A drop anywhere else must not navigate the page away to the file, and
-  // it loads like a drop on the panel: the sign below says "Drop to load"
-  // over the whole Viewer.  The panel and the chart took their own drops
-  // already (defaultPrevented).
-  window.addEventListener('dragover', ev => {
+  window.addEventListener('dragover', (ev) => {
+    if (panel.contains(ev.target)) return;
     ev.preventDefault();
-    if (_dragHasFiles(ev)) showDropSign('drag');
+    ev.dataTransfer.dropEffect = 'none';
+    if (_dragHasFiles(ev)) showDropSign('hint');
   });
-  window.addEventListener('drop', ev => {
-    if (ev.defaultPrevented) return;
+  window.addEventListener('drop', (ev) => {
+    if (panel.contains(ev.target)) return;
     ev.preventDefault();
-    if (_dragHasFiles(ev)) handleFilesDrop(ev.dataTransfer);
-    else hideDropSign();
+    hideDropSign();
   });
 })();
 
 // The sign over the FILES panel (#drop-sign): 'drag' while files are dragged
-// over the Viewer or the hub page around it, 'load' while a drop uploads,
+// over the panel, 'hint' while they are dragged over the rest of the Viewer or
+// the hub page around it (where a drop does nothing), 'load' while a drop
+// uploads,
 // 'done' for a few seconds once it has loaded.  Dragover repeats while the
 // drag is over the page, so a 'drag' sign goes by itself shortly after the
 // drag leaves or is let go of elsewhere; a drag over the page during a drop
@@ -1960,14 +1984,15 @@ function _dragHasFiles(ev) {
 const DROP_SIGN_DRAG_MS = 800, DROP_SIGN_DONE_MS = 4000;
 let gDropSignTimer = null;
 function showDropSign(state, small = '', big = '') {
-  if (state === 'drag' && gDropInFlight) return;
+  if ((state === 'drag' || state === 'hint') && gDropInFlight) return;
   const el = document.getElementById('drop-sign');
   clearTimeout(gDropSignTimer);
-  el.className = 'on' + (state === 'done' ? ' done' : '');
+  el.className = 'on' + (state === 'done' || state === 'hint' ? ' ' + state : '');
   el.querySelector('.ds-big').textContent =
-    big || { drag: 'Drop to load', load: 'Loading…', done: 'Loaded' }[state];
+    big || { drag: 'Drop to load', hint: 'Drop here', load: 'Loading…', done: 'Loaded' }[state];
   el.querySelector('.ds-small').textContent = small
-    || (state === 'drag' ? 'an A or B folder, .sor / .json / .trc files, or a .zip' : '');
+    || { drag: 'an A or B folder, .sor / .json / .trc files, or a .zip',
+         hint: 'drag the files onto this Files panel' }[state] || '';
   if (state !== 'load') {
     gDropSignTimer = setTimeout(hideDropSign, state === 'done' ? DROP_SIGN_DONE_MS : DROP_SIGN_DRAG_MS);
   }
@@ -2986,7 +3011,7 @@ function renderFibersView(list, esc) {
   hd.classList.add('fibers');
   hd.innerHTML = '<span></span><span>Fiber</span><span>A→B</span><span>B→A</span>'
                + '<span title="whether the two files make the pair the table averages">Pair</span>';
-  const WHY = { 'A only': 'no B→A file for this fibre', 'B only': 'no A→B file for this fibre' };
+  const WHY = { 'A only': 'no B→A file for this fiber', 'B only': 'no A→B file for this fiber' };
   list.innerHTML = rows.length ? rows.map(r => {
     const t = loaded.get(`a-${r.fiber}`) || loaded.get(`b-${r.fiber}`);
     const pair = fiberPairNote(r, effDir);
@@ -6341,7 +6366,7 @@ function renderFrBidiGrid(traces, host, hint) {
   }
   if (!pairs.length) return false;
   const seq = ++gFrTableSeq;
-  hint.textContent = `FastReporter table: reading ${pairs.length} fibre pair${pairs.length === 1 ? '' : 's'}…`;
+  hint.textContent = `FastReporter table: reading ${pairs.length} fiber pair${pairs.length === 1 ? '' : 's'}…`;
   fetch(`/api/fr_table?fibers=${pairs.map(p => p.fiber).join(',')}`)
     .then(r => r.json())
     .then(res => { if (seq === gFrTableSeq) paintFrBidiGrid(pairs, singles, res || {}, host, hint); })
@@ -6362,7 +6387,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   if (!have.length) {
     gTableKm = null; draw();             // no table: every event, as before
     hint.textContent = 'FastReporter table: ' + (res.error
-      || "no table for these fibres (both directions must be .sor files with EXFO's trace block)");
+      || "no table for these fibers (both directions must be .sor files with EXFO's trace block)");
     return;
   }
   // Display km is A's raw frame -- FR's MeanPosition -- measured from A's
@@ -7033,8 +7058,8 @@ function renderSuiteBidiGrid(traces, host, hint) {
   }
   const seq = ++gSuiteTableSeq;
   hint.textContent = oneDir
-    ? `${PRODUCT_NAME} table: reading ${pairs.length} fibre${pairs.length === 1 ? '' : 's'} from one direction…`
-    : `${PRODUCT_NAME} table: reading ${pairs.length} fibre pair${pairs.length === 1 ? '' : 's'}…`;
+    ? `${PRODUCT_NAME} table: reading ${pairs.length} fiber${pairs.length === 1 ? '' : 's'} from one direction…`
+    : `${PRODUCT_NAME} table: reading ${pairs.length} fiber pair${pairs.length === 1 ? '' : 's'}…`;
   // No report table: say so and why.  FastReporter's table never stands in
   // for it (Robert 2026-09-30: "Error, no FR stand-in"), so a tech can never
   // read FR's pairing as OTDR Suite's; FastReporter mode shows that table.
@@ -8421,7 +8446,7 @@ function reportFibreCharts(fibres, token, progress) {
                             { method: 'POST', body: blob });
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
-        throw new Error(j.error || `a fibre chart did not reach the server (${r.status})`);
+        throw new Error(j.error || `a fiber chart did not reach the server (${r.status})`);
       }
       out.set(f, 'ref:' + name);
     }
@@ -8602,7 +8627,7 @@ function reportDefaultName(vis) {
   const fibers = [...new Set(vis.map(t => t.fiber))].sort((a, b) => a - b);
   const f = fibers.length === 1 ? `F${fibers[0]}`
           : (fibers[fibers.length - 1] - fibers[0] === fibers.length - 1)
-            ? `F${fibers[0]}-F${fibers[fibers.length - 1]}` : `${fibers.length} fibres`;
+            ? `F${fibers[0]}-F${fibers[fibers.length - 1]}` : `${fibers.length} fibers`;
   const d = new Date(), p = v => String(v).padStart(2, '0');
   const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}${p(d.getMinutes())}`;
   const job = reportJob();
@@ -8619,7 +8644,7 @@ async function reportPayload(opt, token, progress) {
     if (vis.some(t => t.src === 'a') && folderLabel('a')) meta.push(['A folder', folderLabel('a')]);
     if (vis.some(t => t.src === 'b') && folderLabel('b')) meta.push(['B folder', folderLabel('b')]);
     const nf = new Set(vis.map(t => t.fiber)).size;
-    meta.push(['Fibres', `${fiberRanges(vis.map(t => t.fiber))} (${nf} fibre${nf === 1 ? '' : 's'})`]);
+    meta.push(['Fibers', `${fiberRanges(vis.map(t => t.fiber))} (${nf} fiber${nf === 1 ? '' : 's'})`]);
     meta.push(['Loss gate', gateLabel()]);
     const lo = document.getElementById('set-refl-lo').value, hi = document.getElementById('set-refl-hi').value;
     meta.push(['Reflectance band', `${lo} to ${hi} dB`]);
@@ -8685,7 +8710,7 @@ async function reportPayload(opt, token, progress) {
         meta.push(['IOR', one(ts, t => t.data.ior ? t.data.ior.toFixed(5) : null)]);
         for (const t of ts) {
           const end = (t.data.events || []).find(e => e.is_end);
-          if (end) meta.push([`Fibre end ${arrow(t)}`, kmFt(end.dist_km)]);
+          if (end) meta.push([`Fiber end ${arrow(t)}`, kmFt(end.dist_km)]);
         }
         if (tab && tab.pf) meta.push(['P/F', tab.pf]);
         fibres.push({
@@ -8693,7 +8718,7 @@ async function reportPayload(opt, token, progress) {
           png: charts.get(f) || '',
           key: ts.map(t => ({ label: `F${t.fiber} ${arrow(t)}`, color: colorHex(t.color) })),
           table: tab ? tab.table : null,
-          note: tab ? '' : 'This fibre has no rows in the event table on screen.',
+          note: tab ? '' : 'This fiber has no rows in the event table on screen.',
         });
       }
     }
@@ -8801,7 +8826,7 @@ async function submitReport() {
   }
   let payload;
   try {
-    payload = await reportPayload(opt, token, (k, n) => say(`drawing the fibre pages: ${k + 1} of ${n}…`));
+    payload = await reportPayload(opt, token, (k, n) => say(`drawing the fiber pages: ${k + 1} of ${n}…`));
   } catch (e) {
     fail('could not read the chart or the table: ' + ((e && e.message) || e));
     return;
@@ -9196,12 +9221,21 @@ function syncViewBtn() {
 function setViewMenu(open) {
   const btn = document.getElementById('evt-view-btn');
   const menu = document.getElementById('evt-view-menu');
-  if (open) {
-    const r = btn.getBoundingClientRect();
-    menu.style.left = r.left + 'px';
-    menu.style.top = (r.bottom + 3) + 'px';
-  }
   menu.hidden = !open;
+  if (open) {
+    // Under the gear when it fits, else above it (window-size audit
+    // 2026-10-01: with the table dragged low, five of the eight switches,
+    // Pin Min/Max/Average among them, opened below the window's edge).
+    // Too short for either: against the bottom, scrolling (CSS max-height).
+    const r = btn.getBoundingClientRect();
+    const h = menu.offsetHeight, w = menu.offsetWidth;
+    let top = r.bottom + 3;
+    if (top + h > window.innerHeight - 4) {
+      top = r.top - 3 - h >= 4 ? r.top - 3 - h : Math.max(4, window.innerHeight - 4 - h);
+    }
+    menu.style.left = Math.max(4, Math.min(r.left, window.innerWidth - 4 - w)) + 'px';
+    menu.style.top = top + 'px';
+  }
   btn.setAttribute('aria-expanded', open ? 'true' : 'false');
 }
 document.getElementById('evt-view-btn').addEventListener('click', (e) => {
@@ -9228,6 +9262,32 @@ syncViewBtn();
     try { localStorage.setItem('otdr_viewer_pin_agg', box.checked ? '1' : '0'); } catch (e) {}
   };
 }
+// ─── Pinned Min/Max/Average needs room ────────────────────────────────
+// See .foot-free in the stylesheet.  Checked whenever the table box changes
+// size or the table is redrawn, at most once a frame.
+const FOOT_PIN_MIN_ROWS = 3, FOOT_PIN_ROW_PX = 22;
+(function () {
+  const host = document.getElementById('event-tbody-wrap');
+  let queued = false;
+  function check() {
+    queued = false;
+    for (const sc of host.querySelectorAll('.fr-scroll')) {
+      const t = sc.querySelector('table.fr-table');
+      const foot = t && t.tFoot;
+      if (!foot) { sc.classList.remove('foot-free'); continue; }
+      const room = sc.clientHeight - (t.tHead ? t.tHead.offsetHeight : 0) - foot.offsetHeight;
+      sc.classList.toggle('foot-free', room < FOOT_PIN_MIN_ROWS * FOOT_PIN_ROW_PX);
+    }
+  }
+  function queue() {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(check);
+  }
+  if (window.ResizeObserver) new ResizeObserver(queue).observe(host);
+  new MutationObserver(queue).observe(host, { childList: true, subtree: true });
+})();
+
 document.getElementById('cb-stack').onchange = (e) => {
   gStacked = e.target.checked;
   syncYSpacingEnabled();
@@ -9400,24 +9460,10 @@ window.addEventListener('message', function (ev) {
   try {
     if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(ev.origin)) return;
     const d = ev.data;
-    // Files dropped on the hub page around this frame (its sidebar, the
-    // settings box above): the hub catches them and passes them here, so they
-    // load as a drop on the FILES panel would.  Chrome used to take them as
-    // a download (the boss, 2026-09-30: A loaded, the B set went to
-    // Downloads).
-    // A file dragged over the hub page around this frame: light the sign,
-    // as a drag over this page does (the drop itself comes as 'otdr-drop').
-    if (d && d.type === 'otdr-drag') { showDropSign('drag'); return; }
-    if (d && d.type === 'otdr-drop' && Array.isArray(d.files)) {
-      // the folder each file came from, for the name its side goes by
-      if (Array.isArray(d.folders)) {
-        d.files.forEach((f, i) => {
-          if (f && typeof d.folders[i] === 'string') gDropFolder.set(f, d.folders[i]);
-        });
-      }
-      handleFilesDrop(d.files);
-      return;
-    }
+    // A file dragged over the hub page around this frame (its sidebar, the
+    // settings box above): the hub refuses the drop there, and the panel
+    // shows where to take it, as a drag over the rest of this page does.
+    if (d && d.type === 'otdr-drag') { showDropSign('hint'); return; }
     if (!d || d.type !== 'otdr-jump') return;
     // This jump is newer than the page URL, so the URL's link is spent (see
     // gDeepLinkDone).  Set here, before anything awaits, so no focus retry
