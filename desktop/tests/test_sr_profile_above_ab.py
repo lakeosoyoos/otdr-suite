@@ -22,8 +22,8 @@ def test_the_profile_picker_renders_before_the_input_radio_and_the_settings_afte
     # The Splice Report's call also asks the box to block the report.
     i_panel = page.index("_render_settings_box('splice report'")
     assert i_pick < i_mode < i_panel
-    picker_box = SRC.split("def _render_profile_picker_box(where):", 1)[1].split("\ndef ", 1)[0]
-    assert "_render_customer_profile_picker()" in picker_box
+    picker_box = SRC.split("def _render_profile_picker_box(where", 1)[1].split("\ndef ", 1)[0]
+    assert "_render_customer_profile_picker(compact)" in picker_box
     settings_box = SRC.split("def _render_settings_box(where", 1)[1].split("\ndef ", 1)[0]
     assert "_render_otdr_settings_panel(in_expander=False)" in settings_box
 
@@ -31,7 +31,7 @@ def test_the_profile_picker_renders_before_the_input_radio_and_the_settings_afte
 def test_the_dropdown_left_the_expander_but_kept_its_state_and_reload():
     panel = SRC.split("def _render_otdr_settings_panel(in_expander=True):", 1)[1].split("\ndef ", 1)[0]
     assert "otdr_profile_select" not in panel
-    picker = SRC.split("def _render_customer_profile_picker():", 1)[1].split("\ndef ", 1)[0]
+    picker = SRC.split("def _render_customer_profile_picker(", 1)[1].split("\ndef ", 1)[0]
     assert "key='otdr_profile_select'" in picker
     assert "st.session_state.otdr_settings = _otdr_settings_from_profile(_picked)" in picker
     assert "st.session_state.conn_settings = _conn_settings_from_profile(_picked)" in picker

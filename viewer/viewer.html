@@ -83,13 +83,16 @@
   /* Tighter in the toolbar (demo list #32): embedded in the hub at
      1184 px with the sidebar open the bar wrapped to three lines, and every
      line came out of the chart and the table.  Same controls, less padding,
-     so it fits two lines there and one on a wide screen. */
-  #toolbar { gap: 6px; padding: 6px 10px; }
-  #toolbar .group { padding: 2px 6px; }
+     so it fits two lines there and one on a wide screen.
+     Tighter again (window-size audit 2026-10-01): at 1366 px the pop-out
+     wrapped a second line for Summary Report alone, 50 px over. */
+  #toolbar { gap: 4px; padding: 6px 10px; }
+  #toolbar .group { padding: 2px 4px; }
   #toolbar button { padding: 4px 7px; }
   #toolbar .seg button { padding: 4px 8px; }
   #toolbar .group > label[style] { margin-left: 4px !important; }
-  #toolbar #fiber-input { width: 150px; }
+  #toolbar #fiber-input { width: 136px; }   /* its "e.g. 354, add files first" just fits */
+  #toolbar #num-yspace { width: 44px; }
   label { color: var(--text-sec); font-size: 12px; }
   input[type=text], input[type=number] {
     background: #ffffff; color: var(--text);
@@ -203,6 +206,12 @@
   #files-list:focus { outline: none; }
   #files-list:focus .file-row.focus { outline: 1px dotted var(--accent); outline-offset: -2px; }
   .file-row .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Cut from the front, not the end (window-size audit 2026-10-01): at the
+     panel's narrowest every name read the same "AAA_BBB…", the part they share,
+     and the fiber number that tells them apart was gone.  Right to left
+     puts the ellipsis in front; the <bdi> keeps the name itself in order.
+     A name that fits sits left as before. */
+  .file-row .file-name { direction: rtl; text-align: left; }
   .file-row .file-vis { text-align: center; }
   .file-row.loaded .file-vis:hover { opacity: 0.6; }
   .chip {
@@ -1458,8 +1467,31 @@ window.addEventListener('resize', resizeCanvas);
     const s = parseFloat(localStorage.getItem(SHARE_KEY));
     if (s > 0 && s < 1) share = s;
   } catch (e) {}
+  // Until the tech drags the bar, the table takes what its rows need, up to
+  // TABLE_SHARE, and the chart the rest (window-size audit 2026-10-01: one
+  // fiber on a 1080p screen left ~500 px of empty table under its six rows
+  // while the chart had 341).  Re-fitted whenever the table is redrawn.
+  const head = document.getElementById('event-panel-header');
+  const host = document.getElementById('event-tbody-wrap');
+  function scrollerNeeds(sc) {     // its content, plus a scroll bar it shows
+    let h = sc.offsetHeight - sc.clientHeight;
+    for (const c of sc.children) h += c.offsetHeight;
+    return h;
+  }
+  function tableNeeds() {
+    if (!head || !host) return Infinity;
+    let h = head.offsetHeight;
+    for (const c of host.children) {
+      if (c.classList.contains('fr-scroll')) { h += scrollerNeeds(c); continue; }
+      const sc = c.querySelector && c.querySelector('.fr-scroll');
+      if (!sc) { h += c.offsetHeight; continue; }
+      for (const k of c.children) h += k === sc ? scrollerNeeds(sc) : k.offsetHeight;
+    }
+    return h + 2;
+  }
   function fitShare() {
-    const h = Math.round((share != null ? share : TABLE_SHARE) * avail());
+    let h = Math.round((share != null ? share : TABLE_SHARE) * avail());
+    if (share == null) h = Math.min(h, tableNeeds());
     panel.style.height = (draggedNow ? clamp(h) : openHeight(h)) + 'px';
   }
   try {
@@ -1506,6 +1538,16 @@ window.addEventListener('resize', resizeCanvas);
     resizeCanvas();
   });
   window.addEventListener('resize', () => { fitShare(); resizeCanvas(); });
+  // Called once the redraw's script has finished (observer callbacks wait
+  // for it), so the whole table is there to measure.
+  if (host && window.MutationObserver) {
+    new MutationObserver(() => {
+      if (share != null) return;
+      const before = panel.style.height;
+      fitShare();
+      if (panel.style.height !== before) resizeCanvas();
+    }).observe(host, { childList: true });
+  }
   // The toolbar folding or wrapping changes the column's height too.
   if (window.ResizeObserver) {
     let lastH = main.clientHeight;
@@ -2150,8 +2192,14 @@ function placeReadout() {
   }
   let left = 56;                       // the plot's left margin, M.l
   try { left = M.l; } catch (e) { /* not set up yet */ }
-  el.style.left = left + 'px';
   el.style.transform = 'none';
+  if (box.style.left) {                // the readout moved to the left corner
+    const from = box.offsetLeft + box.offsetWidth + 10;
+    el.style.left = from + 'px';
+    el.style.maxWidth = Math.max(60, el.parentElement.clientWidth - from - 16) + 'px';
+    return;
+  }
+  el.style.left = left + 'px';
   el.style.maxWidth = Math.max(60, box.offsetLeft - left - 10) + 'px';
 }
 function setReadout(s, extra = {}) {
@@ -2738,7 +2786,7 @@ function renderFilesPanel() {
       const cell = {
         pf: `<span class="file-pf${tr ? (tr.pf ? ' fpf-fail' : flagsOff() ? '' : ' fpf-pass') : ''}">`
           + `${tr ? pfMark(tr.pf) : ''}</span>`,
-        name: `<span class="file-name">${esc(files[i] || 'F' + f)}</span>`,
+        name: `<span class="file-name"><bdi>${esc(files[i] || 'F' + f)}</bdi></span>`,
         dir: `<span class="file-dir"${eff !== dir ? ' title="direction changed from the folder\'s"' : ''}>`
           + `${arrow}${eff !== dir ? '*' : ''}</span>`,
         fiber: `<span class="file-num">${f}</span>`,
@@ -4045,14 +4093,17 @@ function updateMarkerReadout() {
   let html = `<div><span class="mr-a">A</span>: ${at(a)}` +
              ` &nbsp; <span class="mr-b">B</span>: ${at(b)}</div>`;
 
+  // The trace rows, at most `maxRows` of them (see the fit below).
+  let traceTable = () => '';
   if (a != null && b != null) {
     const dkm = Math.abs(b - a);
     html += `<div>Δ: <b>${dist(dkm)}</b></div>`;
     const vis = gTraces.filter(t => t.visible);
-    if (vis.length) {
+    if (vis.length) traceTable = (maxRows) => {
+      let html = '';
       // 240 traces made 240 rows, down over the event table: the picked
       // trace (a Min/Max cell click) and the first few, then a count.
-      const cap = capReadoutRows(vis.map(t => ({ t })), gPickKey, MARKER_MAX_ROWS);
+      const cap = capReadoutRows(vis.map(t => ({ t })), gPickKey, maxRows);
       html += '<table><thead><tr><th>Trace</th><th>dB@A</th><th>dB@B</th><th>Δ Loss</th><th>dB/km</th></tr></thead><tbody>';
       for (const { t } of cap.shown) {
         const va = traceDbAtDispKm(t, a);
@@ -4081,12 +4132,37 @@ function updateMarkerReadout() {
       }
       if (cap.more) html += `<tr><td colspan="5" class="hint">+${cap.more} more traces</td></tr>`;
       html += '</tbody></table>';
-    }
+      return html;
+    };
   } else if (gMarkerMode) {
     html += `<div class="hint">click to place ${a == null ? 'A' : 'B'}</div>`;
   }
-  box.innerHTML = html;
+  // As many trace rows as the chart has room for (window-size audit
+  // 2026-10-01): on a short chart eight rows ran past the box's bottom
+  // edge, the last one cut in half, and the "+N more" line never showed.
+  let rows = MARKER_MAX_ROWS;
+  box.innerHTML = html + traceTable(rows);
+  while (rows > 1 && box.scrollHeight > box.clientHeight + 1) {
+    rows--;
+    box.innerHTML = html + traceTable(rows);
+  }
+  placeMarkerReadout(box);
   if (typeof placeReadout === 'function') placeReadout();   // the status keeps clear
+}
+
+// The readout holds the chart's top right corner, and sat over marker B
+// whenever B was there (window-size audit 2026-10-01).  A marker under it
+// sends it to the top left corner, unless a marker is under that one too.
+function placeMarkerReadout(box) {
+  box.style.left = box.style.right = '';
+  const r = plotRect();
+  const xs = [gMarkers.a, gMarkers.b].filter(v => v != null).map(v => xToPx(v, r));
+  const w = box.offsetWidth, right = box.offsetLeft;
+  const under = (x0) => xs.some(x => x >= x0 - 4 && x <= x0 + w + 4);
+  if (under(right) && !under(r.x + 6)) {
+    box.style.left = (r.x + 6) + 'px';
+    box.style.right = 'auto';
+  }
 }
 
 const X_LABEL_GAP_PX = 12;         // clear space between two distance labels
@@ -4160,13 +4236,19 @@ function drawGrid(r) {
     labels.take({ x0: r.x - 6 - w, x1: r.x - 6, y0: cy - 5.5, y1: cy + 5.5 });
   }
 
-  // Axis labels
+  // Axis labels.  The y title is centred on the plot and was cut off at
+  // the canvas edges on a short chart (window-size audit 2026-10-01: under
+  // ~200 px, 800 x 600 and the hub's narrow frames); the longest wording
+  // that fits is drawn.
   ctx.save();
   ctx.translate(14, r.y + r.h / 2);
   ctx.rotate(-Math.PI / 2);
   ctx.textAlign = 'center';
   ctx.fillStyle = '#000000';
-  ctx.fillText('signal (dB, descending = loss)', 0, 0);
+  const yRoom = 2 * Math.min(r.y + r.h / 2, canvas.clientHeight - (r.y + r.h / 2)) - 4;
+  const yTitle = ['signal (dB, descending = loss)', 'signal (dB)', 'dB']
+    .find(t => ctx.measureText(t).width <= yRoom) || 'dB';
+  ctx.fillText(yTitle, 0, 0);
   ctx.restore();
   ctx.fillStyle = '#000000';
   ctx.textAlign = 'center';
@@ -6157,6 +6239,18 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
     if (f !== lastFirst) { lastFirst = f; paintRows(); }
   });
+  // The slice is sized to the box when painted; a box made taller (the
+  // divider dragged, the window grown, the table fitted to its rows) left
+  // blank space under the last painted row until a scroll (window-size
+  // audit 2026-10-01).  Repaint when the box changes size.
+  if (window.ResizeObserver) {
+    let lastH = -1;
+    new ResizeObserver(() => {
+      if (scroller.clientHeight === lastH) return;
+      lastH = scroller.clientHeight;
+      paintRows();
+    }).observe(scroller);
+  }
   fitColumns(table, shown.map(rowHtml), statNameRow);   // widths from every row
   paintRows();
   // A click on the drawer's mark for a cell comes here (drawPairing).
@@ -6762,6 +6856,18 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
     if (f !== lastFirst) { lastFirst = f; paintRows(); }
   });
+  // The slice is sized to the box when painted; a box made taller (the
+  // divider dragged, the window grown, the table fitted to its rows) left
+  // blank space under the last painted row until a scroll (window-size
+  // audit 2026-10-01).  Repaint when the box changes size.
+  if (window.ResizeObserver) {
+    let lastH = -1;
+    new ResizeObserver(() => {
+      if (scroller.clientHeight === lastH) return;
+      lastH = scroller.clientHeight;
+      paintRows();
+    }).observe(scroller);
+  }
   fitColumns(table, descs.map(rowHtml));   // widths from every row
   paintRows();
   // A click on the drawer's mark for a cell comes here (drawPairing), and a
@@ -7405,6 +7511,18 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     const f = Math.max(0, Math.floor((scroller.scrollTop - headH) / FR_ROW_H) - 4);
     if (f !== lastFirst) { lastFirst = f; paintRows(); }
   });
+  // The slice is sized to the box when painted; a box made taller (the
+  // divider dragged, the window grown, the table fitted to its rows) left
+  // blank space under the last painted row until a scroll (window-size
+  // audit 2026-10-01).  Repaint when the box changes size.
+  if (window.ResizeObserver) {
+    let lastH = -1;
+    new ResizeObserver(() => {
+      if (scroller.clientHeight === lastH) return;
+      lastH = scroller.clientHeight;
+      paintRows();
+    }).observe(scroller);
+  }
   fitColumns(table, descs.map(rowHtml));   // widths from every row
   paintRows();
   // A click on the drawer's mark for a cell comes here (drawPairing), and a

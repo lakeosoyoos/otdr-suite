@@ -228,7 +228,8 @@ def test_clear_all_empties_the_box_and_the_readout():
 def test_the_marker_box_is_capped():
     assert "const MARKER_MAX_ROWS = 8;" in SRC
     mark = _js_func(SRC, 'updateMarkerReadout')
-    assert "capReadoutRows(vis.map(t => ({ t })), gPickKey, MARKER_MAX_ROWS)" in mark
+    assert "capReadoutRows(vis.map(t => ({ t })), gPickKey, maxRows)" in mark
+    assert "let rows = MARKER_MAX_ROWS;" in mark          # then fewer, to fit the chart
     css = SRC.split("#marker-readout {", 1)[1].split("}", 1)[0]
     assert "max-height: calc(100% - 20px);" in css and "overflow: hidden;" in css
 
