@@ -1023,6 +1023,8 @@ let gHoverKey = null;                  // the trace nearest the cursor, if one i
 let gTraceClick = null;                // trace under the mouse at mousedown, until mouseup
 let gTableExport = null;               // set by the grid: {table, rows(), headExtra} for the Report
 let gExportDpr = 0;                    // the Report draws the chart at this scale; 0 = the screen's
+let gBase = null;                      // the chart without its overlay (keepBase)
+let gBaseImg = null;                   // that copy's canvas, reused
 const MARKER_HIT_PX = 6;               // grab radius for dragging a marker
 
 // ─── Display transforms (stacked mode flips B to A's km frame + offsets Y) ─
@@ -4064,6 +4066,7 @@ function plotBg() {
 function draw() {
   const w = canvas.width / canvasDpr();
   const h = canvas.height / canvasDpr();
+  gBase = null;                          // kept again at the end, if a chart is drawn
   ctx.fillStyle = plotBg();
   ctx.fillRect(0, 0, w, h);
 
@@ -4094,10 +4097,6 @@ function draw() {
     dim(t);
     drawTrace(t, r);
   }
-  // The trace under the cursor is drawn as it was: the hover box names it
-  // and nothing else changes (the boss, 2026-10-01: "we dont want the trace
-  // to change when we hover over it, just give us the box").
-  const hovered = hoverTrace();
   ctx.globalAlpha = 1;
   // Every event's line and number is always drawn, as before the drawer
   // marked the table (Robert 2026-10-01: "unless Display Events is selected
@@ -4129,6 +4128,17 @@ function draw() {
   ctx.lineWidth = 1;
   ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w, r.h);
 
+  // A/B measurement markers (drawn above traces, below crosshair)
+  drawMarkers(r);
+  updateMarkerReadout();
+
+  keepBase();
+  drawOverlay(r);
+}
+
+// What only the mouse moves, over the chart: the box-zoom rectangle, the
+// crosshair and the hover box.
+function drawOverlay(r) {
   // Box-zoom rectangle
   if (gDragging && gDragging.kind === 'box') {
     const x0 = Math.min(gDragging.startPx, gDragging.curPx);
@@ -4140,15 +4150,49 @@ function draw() {
     ctx.strokeRect(x0 + 0.5, r.y + 0.5, x1 - x0, r.h);
     ctx.setLineDash([]);
   }
-
-  // A/B measurement markers (drawn above traces, below crosshair)
-  drawMarkers(r);
-  updateMarkerReadout();
-
-  // Crosshair + readout values for each visible trace at cursor x
+  // The trace under the cursor is drawn as it was: the hover box names it
+  // and nothing else changes (the boss, 2026-10-01: "we dont want the trace
+  // to change when we hover over it, just give us the box").
+  const hovered = hoverTrace();
   if (gMouse) drawCrosshair(r);
   if (gMouse && hovered) drawHoverBox(hovered);
   if (gMouse && !hovered) drawLabelTip();   // a label left off, over its tick
+}
+
+// ─── Mouse moves repaint only the overlay ─────────────────────────────
+// draw() paints every trace: with a whole cable on screen (864 traces of
+// a 432-fiber span) that is 35-50 ms, and every mouse move paid it, so hovering
+// lagged (2026-10-01).  The chart as draw() leaves it, before the overlay,
+// is kept here; a mouse move puts it back (a copy, well under a millisecond)
+// and draws the overlay on it.  Anything that changes the chart calls draw(),
+// which keeps it again; the few things a stale copy would show wrong are
+// checked too (baseSig), and a mismatch falls back to draw().
+function baseSig() {
+  const v = gView || {};
+  return [canvas.width, canvas.height, gTraces, gTraces.length,
+          gTraces.filter(t => t.visible).length, v.x0, v.x1, v.y0, v.y1,
+          gPickKey, gMarkers.a, gMarkers.b,
+          document.documentElement.getAttribute('data-theme')];
+}
+function keepBase() {
+  if (gExportDpr) return;              // a Report snapshot, not the screen
+  if (!gBaseImg) gBaseImg = document.createElement('canvas');
+  if (gBaseImg.width !== canvas.width) gBaseImg.width = canvas.width;
+  if (gBaseImg.height !== canvas.height) gBaseImg.height = canvas.height;
+  const c = gBaseImg.getContext('2d');
+  c.clearRect(0, 0, gBaseImg.width, gBaseImg.height);
+  c.drawImage(canvas, 0, 0);
+  gBase = { img: gBaseImg, sig: baseSig() };
+}
+function drawHover() {
+  const now = baseSig();
+  if (!gBase || gBase.sig.length !== now.length
+      || gBase.sig.some((x, i) => x !== now[i])) { draw(); return; }
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(gBase.img, 0, 0);
+  ctx.restore();
+  drawOverlay(plotRect());
 }
 
 // ─── A/B measurement markers ──────────────────────────────────────────
@@ -9311,7 +9355,9 @@ canvas.addEventListener('mousemove', (ev) => {
       gDragging.curPx = ev.offsetX;
     }
   }
-  draw();
+  // A pan moves the chart; anything else only moves the overlay.
+  if (gDragging && gDragging.kind === 'pan') draw();
+  else drawHover();
 });
 
 window.addEventListener('mouseup', (ev) => {
@@ -9380,7 +9426,7 @@ canvas.addEventListener('contextmenu', (ev) => {
   gLabelClick = null;
   showSpanMenu(ev.clientX, ev.clientY, lh.t.dir, lh.e.dist_km, lh.t.fiber, lh.t.src || lh.t.dir);
 });
-canvas.addEventListener('mouseleave', () => { gMouse = null; gHoverKey = null; draw(); });
+canvas.addEventListener('mouseleave', () => { gMouse = null; gHoverKey = null; drawHover(); });
 
 // Keyboard: + / - to zoom, f fit, m toggle markers, Esc clear markers
 window.addEventListener('keydown', (ev) => {
