@@ -20,6 +20,7 @@ Usage:
 """
 
 import re
+import math
 import struct
 import os
 import sys
@@ -1716,3 +1717,626 @@ def trc_head(data):
     return {'fiber_id': _trc_text(stream, 'Identifier'),
             'loc_a': _trc_text(stream, 'LocationA'),
             'loc_b': _trc_text(stream, 'LocationB')}
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  EXFO .olts (FTB-940/945 OLTS: loss, ORL and length per fiber)
+# ─────────────────────────────────────────────────────────────────────
+# The boss, 2026-10-01: the Viewer has to take these.  An .olts has no trace,
+# only numbers, and EXFO does not store the numbers it prints: it stores the
+# raw lock-in readings (amplitude and phase of a 106 kHz modulated source,
+# at the far detector and at the source's own monitor) and computes loss,
+# ORL and length when the file is opened.  The formulas below reproduce
+# EXFO's own library to floating-point precision on all 864 fibers of the
+# first file (loss and its average exactly, ORL within 1e-14 dB, length
+# within 1e-10 m), and every printed cell of EXFO's PDF report for it.
+#
+# Container: an OLE compound file; storage OltsMeasures holds one stream per
+# fiber, each a gzip of a .NET BinaryFormatter graph (MS-NRBF) of
+# Metrino.Oltsx.OltsMeasurement.  The readings sit in that class's own
+# packed byte fields ('fs', 'results', 'sources'), read here by offset.
+#
+# Verified only for what that file holds: Loopback reference, bidirectional,
+# 1550 nm, single-mode.  Anything else is refused with a reason rather than
+# read on a guess.
+
+_OLTS_MAX_STREAM = 64 * 1024 * 1024
+_OLTS_C = 299792458.0
+# EXFO's group index for single-mode fiber (PhysicalFiberCharacteristics in
+# its library): 1310 / 1550 / 1625 nm, else 1.468.  Not stored in the file.
+_OLTS_IOR = {1310: 1.4677, 1550: 1.468325, 1625: 1.468734}
+
+
+def is_olts(filename):
+    return str(filename).lower().endswith('.olts')
+
+
+def _cfb_streams(data, want=None):
+    """{path: bytes} for the streams of an OLE compound file.  `want(path)`
+    picks which streams to read (all by default).  ValueError when it is not
+    one or is damaged."""
+    if len(data) < 512 or data[:8] != b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1':
+        raise ValueError('not an OLE compound file')
+    ss = 1 << struct.unpack_from('<H', data, 0x1E)[0]
+    mss = 1 << struct.unpack_from('<H', data, 0x20)[0]
+    if ss not in (512, 4096) or mss != 64:
+        raise ValueError('unexpected compound-file sector size')
+    (n_fat, dir_start, _tx, cutoff, minifat_start, n_minifat,
+     difat_start, n_difat) = struct.unpack_from('<IIIIIIII', data, 0x2C)
+    nsec = (len(data) - ss) // ss
+    per = ss // 4
+
+    def sector(sid):
+        if not 0 <= sid < nsec:
+            raise ValueError('compound-file sector out of range')
+        o = ss + sid * ss
+        return data[o:o + ss]
+
+    fat_sids = list(struct.unpack_from('<109I', data, 0x4C))
+    sid, seen = difat_start, set()
+    while sid < 0xFFFFFFFA and len(seen) <= n_difat:
+        if sid in seen:
+            raise ValueError('compound-file DIFAT loop')
+        seen.add(sid)
+        ent = struct.unpack('<%dI' % per, sector(sid))
+        fat_sids += ent[:-1]
+        sid = ent[-1]
+    fat = []
+    for s in fat_sids[:n_fat]:
+        fat += struct.unpack('<%dI' % per, sector(s))
+
+    def chain(start, table, limit):
+        out, s = [], start
+        while s < 0xFFFFFFFA:
+            if s >= len(table) or len(out) > limit:
+                raise ValueError('compound-file chain is broken')
+            out.append(s)
+            s = table[s]
+        return out
+
+    def read(start, size):
+        if size > _OLTS_MAX_STREAM:
+            raise ValueError('compound-file stream too large')
+        buf = b''.join(sector(s) for s in chain(start, fat, nsec))
+        return buf[:size]
+
+    dir_buf = read(dir_start, nsec * ss)
+    ents = []
+    for o in range(0, len(dir_buf) - 127, 128):
+        e = dir_buf[o:o + 128]
+        nlen = struct.unpack_from('<H', e, 64)[0]
+        name = e[:max(0, min(nlen, 64) - 2)].decode('utf-16-le', 'replace')
+        etype = e[66]
+        left, right, child = struct.unpack_from('<III', e, 68)
+        start, size = struct.unpack_from('<II', e, 116)
+        ents.append((name, etype, left, right, child, start, size))
+    if not ents or ents[0][1] != 5:
+        raise ValueError('compound file has no root entry')
+    root = ents[0]
+    mini = read(root[5], root[6]) if root[6] else b''
+    minifat = []
+    if n_minifat:
+        mf = read(minifat_start, n_minifat * ss)
+        minifat = list(struct.unpack('<%dI' % (len(mf) // 4), mf))
+
+    def read_mini(start, size):
+        idx = chain(start, minifat, len(mini) // mss + 1)
+        return b''.join(mini[i * mss:(i + 1) * mss] for i in idx)[:size]
+
+    out, todo, visited = {}, [(root[4], '')], set()
+    while todo:
+        i, prefix = todo.pop()
+        if i == 0xFFFFFFFF or i >= len(ents) or i in visited:
+            continue
+        visited.add(i)
+        name, etype, left, right, child, start, size = ents[i]
+        todo += [(left, prefix), (right, prefix)]
+        path = prefix + name
+        if etype == 1:
+            todo.append((child, path + '/'))
+        elif etype == 2 and (want is None or want(path)):
+            out[path] = read_mini(start, size) if size < cutoff else read(start, size)
+    return out
+
+
+class _NrbfRef:
+    __slots__ = ('id',)
+
+    def __init__(self, i):
+        self.id = i
+
+
+_NRBF_PRIM = {1: '<?', 2: '<B', 6: '<d', 7: '<h', 8: '<i', 9: '<q', 10: '<b',
+              11: '<f', 12: '<q', 13: '<Q', 14: '<H', 15: '<I', 16: '<Q'}
+
+
+class _Nrbf:
+    """Just enough MS-NRBF (.NET BinaryFormatter) to turn an OltsMeasurement
+    into dicts and lists.  A class becomes {'__class': name, member: value};
+    an enum is {'value__': n}; a byte array is a list of ints."""
+
+    def __init__(self, data):
+        self.d, self.p, self.objs, self.meta = data, 0, {}, {}
+
+    def u8(self):
+        v = self.d[self.p]
+        self.p += 1
+        return v
+
+    def i32(self):
+        v = struct.unpack_from('<i', self.d, self.p)[0]
+        self.p += 4
+        return v
+
+    def count(self):
+        n = self.i32()
+        if not 0 <= n <= len(self.d):
+            raise ValueError('bad .NET array length')
+        return n
+
+    def lps(self):
+        n, shift = 0, 0
+        while True:
+            b = self.u8()
+            n |= (b & 0x7F) << shift
+            shift += 7
+            if not b & 0x80:
+                break
+            if shift > 35:
+                raise ValueError('bad .NET string length')
+        s = self.d[self.p:self.p + n].decode('utf-8', 'replace')
+        self.p += n
+        return s
+
+    def prim(self, t):
+        if t in (5, 18):
+            return self.lps()
+        if t == 3:
+            b = self.d[self.p]
+            n = 1 if b < 0x80 else 2 if b < 0xE0 else 3 if b < 0xF0 else 4
+            s = self.d[self.p:self.p + n].decode('utf-8', 'replace')
+            self.p += n
+            return s
+        if t == 17:
+            return None
+        f = _NRBF_PRIM.get(t)
+        if f is None:
+            raise ValueError('bad .NET primitive type %d' % t)
+        v = struct.unpack_from(f, self.d, self.p)[0]
+        self.p += struct.calcsize(f)
+        return v & 0x3FFFFFFFFFFFFFFF if t == 13 else v     # DateTime: ticks
+
+    def typeinfo(self, bt):
+        if bt in (0, 7):
+            return self.u8()
+        if bt == 3:
+            return self.lps()
+        if bt == 4:
+            return (self.lps(), self.i32())
+        return None
+
+    def values(self, oid, name, members, bts, extra):
+        obj = {'__class': name}
+        self.objs[oid] = obj
+        for m, bt, ex in zip(members, bts, extra):
+            obj[m] = self.prim(ex) if bt == 0 else self.record()
+        return obj
+
+    def items(self, n):
+        arr = []
+        while len(arr) < n:
+            r = self.record()
+            if isinstance(r, tuple) and r and r[0] == 'NULLS':
+                arr.extend([None] * r[1])
+            else:
+                arr.append(r)
+        return arr
+
+    def record(self):
+        rt = self.u8()
+        if rt == 0:                                  # stream header
+            self.p += 16
+            return self.record()
+        if rt == 12:                                 # library
+            self.i32()
+            self.lps()
+            return self.record()
+        if rt in (2, 3, 4, 5):                       # class with its own metadata
+            oid, name = self.i32(), self.lps()
+            members = [self.lps() for _ in range(self.count())]
+            if rt in (4, 5):
+                bts = [self.u8() for _ in members]
+                extra = [self.typeinfo(bt) for bt in bts]
+            else:
+                bts, extra = [2] * len(members), [None] * len(members)
+            if rt in (3, 5):
+                self.i32()
+            self.meta[oid] = (name, members, bts, extra)
+            return self.values(oid, name, members, bts, extra)
+        if rt == 1:                                  # class reusing metadata
+            oid, mid = self.i32(), self.i32()
+            if mid not in self.meta:
+                raise ValueError('bad .NET metadata reference')
+            self.meta[oid] = self.meta[mid]
+            return self.values(oid, *self.meta[mid])
+        if rt == 6:
+            oid = self.i32()
+            s = self.objs[oid] = self.lps()
+            return s
+        if rt == 8:
+            return self.prim(self.u8())
+        if rt == 9:
+            return _NrbfRef(self.i32())
+        if rt == 10:
+            return None
+        if rt == 13:
+            return ('NULLS', self.u8())
+        if rt == 14:
+            return ('NULLS', self.count())
+        if rt == 15:
+            oid, n, t = self.i32(), self.count(), self.u8()
+            if t == 2:                               # byte[]: one slice, not n calls
+                arr = list(self.d[self.p:self.p + n])
+                self.p += n
+            else:
+                arr = [self.prim(t) for _ in range(n)]
+            self.objs[oid] = arr
+            return arr
+        if rt in (16, 17):
+            oid, n = self.i32(), self.count()
+            arr = self.objs[oid] = self.items(n)
+            return arr
+        if rt == 7:
+            oid, at, rank = self.i32(), self.u8(), self.i32()
+            if not 1 <= rank <= 8:
+                raise ValueError('bad .NET array rank')
+            lens = [self.count() for _ in range(rank)]
+            if at in (3, 4, 5):
+                self.p += 4 * rank
+            bt = self.u8()
+            ex = self.typeinfo(bt)
+            n = 1
+            for k in lens:
+                n *= k
+            if n > len(self.d):
+                raise ValueError('bad .NET array size')
+            arr = [self.prim(ex) for _ in range(n)] if bt == 0 else self.items(n)
+            self.objs[oid] = arr
+            return arr
+        if rt == 11:
+            return StopIteration
+        raise ValueError('unsupported .NET record type %d' % rt)
+
+    def parse(self):
+        first = None
+        while self.p < len(self.d):
+            r = self.record()
+            if r is StopIteration:
+                break
+            if first is None and isinstance(r, dict):
+                first = r
+        return self.resolve(first, 0)
+
+    def resolve(self, o, depth):
+        if depth > 200:
+            raise ValueError('.NET object graph too deep')
+        if isinstance(o, _NrbfRef):
+            return self.resolve(self.objs.get(o.id), depth + 1)
+        if isinstance(o, dict):
+            return {k: self.resolve(v, depth + 1) for k, v in o.items()}
+        if isinstance(o, list) and o and not isinstance(o[0], int):
+            return [self.resolve(v, depth + 1) for v in o]
+        return o
+
+
+def _gunzip_capped(data):
+    import zlib
+    d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    out = d.decompress(data, _OLTS_MAX_STREAM)
+    if d.unconsumed_tail:
+        raise ValueError('.olts measurement inflates past the cap')
+    return out + d.flush()
+
+
+def _olts_d(b, o):
+    return struct.unpack_from('<d', b, o)[0] if 0 <= o and o + 8 <= len(b) else float('nan')
+
+
+def _olts_pairs(blob):
+    """The (detector, monitor) readings of one TxRx 'results' field: a list of
+    {wl_nm, freq, det_amp, det_ph, mon_amp, mon_ph}, one per wavelength or
+    modulation frequency.  Layout: version, count (u16), then 177-byte items
+    of [flag, wavelength, detector reading, monitor reading, modulation]."""
+    b = bytes(blob or b'')
+    if len(b) < 3:
+        return []
+    n = struct.unpack_from('<H', b, 1)[0]
+    out = []
+    for i in range(n):
+        o = 3 + 177 * i
+        if o + 153 > len(b) or b[o] != 1 or b[o + 9] != 2 or b[o + 76] != 2:
+            raise ValueError('unsupported .olts reading layout')
+        wl = _olts_d(b, o + 1)
+        out.append({'wl_nm': int(round(wl * 1e9)) if wl == wl else None,
+                    'freq': _olts_d(b, o + 145),
+                    'det_amp': _olts_d(b, o + 60), 'det_ph': _olts_d(b, o + 52),
+                    'mon_amp': _olts_d(b, o + 127), 'mon_ph': _olts_d(b, o + 119)})
+    return out
+
+
+def _olts_txrx(acq, side):
+    """Every reading of one direction ('ab' / 'ba') of an acquisition."""
+    coll = (acq or {}).get(side) or {}
+    out = []
+    for t in coll.get('items') or []:
+        if t:
+            out += _olts_pairs(t.get('results'))
+    return out
+
+
+def _olts_ratio(p):
+    if not p or not p['mon_amp'] or p['det_amp'] != p['det_amp'] or p['det_amp'] <= 0:
+        return None
+    return p['det_amp'] / p['mon_amp']
+
+
+def _olts_source_refl(acq, side, wl_nm):
+    """(internal reflectance, far-end reflectance) the ORL reading of `side`
+    at `wl_nm` is corrected for: the two doubles after the source's exact
+    wavelength in its 'sources' field."""
+    for t in ((acq or {}).get(side) or {}).get('items') or []:
+        b = bytes((t or {}).get('sources') or b'')
+        for i in range(len(b) - 32):
+            if b[i + 8] == 2 and abs(_olts_d(b, i) * 1e9 - wl_nm) < 0.01:
+                return _olts_d(b, i + 17), _olts_d(b, i + 25)
+    return None, None
+
+
+def _olts_db(x):
+    return -10.0 * math.log10(x) if x and x > 0 else None
+
+
+def _olts_lin_avg(a, b):
+    """EXFO's bidirectional loss: the mean of the two transmittances, in dB."""
+    if a is None or b is None:
+        return a if b is None else b
+    return -10.0 * math.log10((10 ** (-a / 10.0) + 10 ** (-b / 10.0)) / 2.0)
+
+
+def _olts_delay_sum(freqs, psi):
+    """tau_AB + tau_BA from the phases psi(f) = -2 pi f (tau_AB + tau_BA) + 2 pi k:
+    a search for the sum, then each frequency's absolute delay with its own
+    whole turns, averaged (what EXFO does).  Unique to 1/gcd(f) = 4 ms."""
+    f = np.asarray(freqs, float)
+    p = np.asarray(psi, float)
+    taus = np.arange(0.0, 4e-3, 1e-7)
+    z = np.exp(1j * (p[None, :] + 2 * np.pi * f[None, :] * taus[:, None]))
+    t = taus[int(np.abs(z.mean(1)).argmax())]
+    a = np.vstack([np.ones_like(f), -2 * np.pi * f]).T
+    for _ in range(4):
+        r = np.angle(np.exp(1j * (p + 2 * np.pi * f * t)))
+        t += np.linalg.lstsq(a, r, rcond=None)[0][1]
+    k = np.round((-t * 2 * np.pi * f - p) / (2 * np.pi))
+    return float(np.mean(-(p + 2 * np.pi * k) / (2 * np.pi * f)))
+
+
+def _olts_length_m(m, ref_a, ref_b):
+    ab = _olts_txrx(m.get('lengthAcquisition'), 'ab')
+    ba = {round(x['freq']): x for x in _olts_txrx(m.get('lengthAcquisition'), 'ba')}
+    ra = {round(x['freq']): x for x in ref_a}
+    rb = {round(x['freq']): x for x in ref_b}
+    f, psi = [], []
+    for x in ab:
+        k = round(x['freq'])
+        if k not in ba or k not in ra or k not in rb:
+            continue
+        ref = (ra[k]['det_ph'] - ra[k]['mon_ph']) + (rb[k]['det_ph'] - rb[k]['mon_ph'])
+        psi.append((x['det_ph'] - x['mon_ph'] - ref) + (ba[k]['det_ph'] - ba[k]['mon_ph'] - ref))
+        f.append(x['freq'])
+    if len(f) < 3 or not all(v == v for v in psi):
+        return None
+    wl = ab[0]['wl_nm']
+    v = _OLTS_C / _OLTS_IOR.get(wl, 1.468)
+    return v * _olts_delay_sum(f, psi) / 2.0
+
+
+def _olts_ticks(t):
+    """A .NET DateTime's ticks as a UTC datetime, None when unset."""
+    import datetime as _dt
+    if not t:
+        return None
+    return (_dt.datetime(1, 1, 1, tzinfo=_dt.timezone.utc)
+            + _dt.timedelta(microseconds=int(t) // 10))
+
+
+def _olts_thresholds(cfg):
+    """[{set, kind, fiber_types, wl_nm, fail, enabled}] from the test
+    configuration's packed field.  Each set is '$ct' (custom) or '$mt'
+    (manual): a count, then 17-byte entries [2, 1, kind, ?, fiber types (u16),
+    wavelength nm (u16, 0 = all), fail (double), enabled]."""
+    b = bytes((cfg or {}).get('fs') or b'')
+    out = []
+    for tag in (b'$ct', b'$mt'):
+        i = b.find(b'\x03' + tag)
+        if i < 0 or i + 8 > len(b):
+            continue
+        n = struct.unpack_from('<H', b, i + 6)[0]
+        o = i + 8
+        for _ in range(min(n, 64)):
+            if o + 17 > len(b) or b[o] != 2:
+                break
+            ft, wl = struct.unpack_from('<HH', b, o + 4)
+            out.append({'set': tag.decode(), 'kind': b[o + 2], 'fiber_types': ft,
+                        'wl_nm': wl, 'fail': _olts_d(b, o + 8), 'enabled': bool(b[o + 16])})
+            o += 17
+    return out
+
+
+# Kind 3 is the only one seen so far: EXFO calls it Link ORL (a minimum).
+_OLTS_KIND_LINK_ORL = 3
+
+
+def _olts_measurement(m, ref):
+    """One fiber's rows: {'id', 'when', 'rows': [{wl_nm, loss_ab, loss_ba,
+    loss_avg, orl_a, orl_b}], 'length_m'}."""
+    rows = []
+    loss_ab = {x['wl_nm']: x for x in _olts_txrx(m.get('lossAcquisition'), 'ab')}
+    loss_ba = {x['wl_nm']: x for x in _olts_txrx(m.get('lossAcquisition'), 'ba')}
+    orl_ab = {x['wl_nm']: x for x in _olts_txrx(m.get('orlAcquisition'), 'ab')}
+    orl_ba = {x['wl_nm']: x for x in _olts_txrx(m.get('orlAcquisition'), 'ba')}
+    for wl in sorted(set(loss_ab) | set(loss_ba) | set(orl_ab) | set(orl_ba)):
+        r_a, r_b = ref['loss_a'].get(wl), ref['loss_b'].get(wl)
+        both = (r_a + r_b) if r_a is not None and r_b is not None else None
+        la = lb = None
+        if both is not None:
+            if _olts_ratio(loss_ab.get(wl)):
+                la = _olts_db(_olts_ratio(loss_ab[wl])) - both
+            if _olts_ratio(loss_ba.get(wl)):
+                lb = _olts_db(_olts_ratio(loss_ba[wl])) - both
+
+        def orl(side, reading, r_own, loss):
+            rr = _olts_ratio(reading)
+            if rr is None or r_own is None or both is None or loss is None:
+                return None
+            r_int, r_far = _olts_source_refl(m.get('orlAcquisition'), side, wl)
+            if r_int is None:
+                return None
+            r_int = r_int if r_int == r_int else 0.0
+            r_far = r_far if r_far == r_far else 0.0
+            t2 = 10 ** (-2 * loss / 10.0)
+            return _olts_db(10 ** (2 * r_own / 10.0)
+                            * (rr - r_int - r_far * 10 ** (-2 * both / 10.0) * t2))
+
+        rows.append({'wl_nm': wl, 'loss_ab': la, 'loss_ba': lb,
+                     'loss_avg': _olts_lin_avg(la, lb),
+                     'orl_a': orl('ab', orl_ab.get(wl), r_a, la),
+                     'orl_b': orl('ba', orl_ba.get(wl), r_b, lb)})
+    length = None
+    if m.get('lengthAcquisition'):
+        length = _olts_length_m(m, ref['len_a'], ref['len_b'])
+    return {'id': m.get('testName') or (m.get('fiberInformation') or {}).get('id') or '',
+            'when': _olts_ticks(m.get('dateTime')), 'rows': rows, 'length_m': length}
+
+
+def _olts_reference(m):
+    """The loopback reference every measurement carries: per-wavelength
+    reference loss of each unit (dB) and the test cords' length phases."""
+    ref = m.get('reference') or {}
+    if 'fsSxLpbk' not in ref:
+        raise ValueError('this .olts uses a reference method other than Loopback, '
+                         'which the Viewer does not read yet')
+
+    def unit_loss(u):
+        out = {}
+        for t in (((ref.get(u) or {}).get('tc1Loss') or {}).get('items') or []):
+            for p in _olts_pairs((t or {}).get('results')):
+                if _olts_ratio(p):
+                    out[p['wl_nm']] = _olts_db(_olts_ratio(p))
+        return out
+
+    def unit_len(u):
+        out = []
+        for t in (((ref.get(u) or {}).get('tc1Length') or {}).get('items') or []):
+            out += _olts_pairs((t or {}).get('results'))
+        return out
+
+    fs = bytes(ref.get('fs') or b'')
+    when = None
+    if len(fs) > 2 and len(fs) >= fs[1] + 11:
+        when = _olts_ticks(struct.unpack_from('<q', fs, fs[1] + 3)[0] & 0x3FFFFFFFFFFFFFFF)
+    return {'loss_a': unit_loss('unitA'), 'loss_b': unit_loss('unitB'),
+            'len_a': unit_len('unitA'), 'len_b': unit_len('unitB'),
+            'key': fs[2:2 + fs[1]].decode('ascii', 'replace') if len(fs) > 2 else '',
+            'when': when, 'method': 'Loopback'}
+
+
+def _olts_ids(m):
+    """{name: value} of the measurement's custom ID configuration (job,
+    units, calibration dates, ...), as EXFO's report header reads them."""
+    out = {}
+    for it in ((m.get('customIDConfigurationCollection') or {}).get('items') or []):
+        if it and it.get('name'):
+            out.setdefault(it['name'], it.get('value') or '')
+    return out
+
+
+def parse_olts(filepath):
+    """Read an EXFO .olts.  Returns
+      {'file', 'job', 'customer', 'company', 'units': {'A': {...}, 'B': {...}},
+       'fibers': [{id, when, rows: [{wl_nm, loss_ab, loss_ba, loss_avg,
+                   orl_a, orl_b}], length_m}],
+       'references': [{key, when, method, rows: [{wl_nm, ref_ab, ref_ba}]}],
+       'thresholds': [{kind, wl_nm, fail, ...}], 'wavelengths': [nm]}
+    Times are UTC datetimes; dB and metres as floats (None where the file has
+    no reading).  ValueError on anything that is not a readable .olts."""
+    with open(filepath, 'rb') as fh:
+        data = fh.read()
+    try:
+        streams = _cfb_streams(data, want=lambda p: p.startswith('OltsMeasures/'))
+    except (ValueError, struct.error) as e:
+        raise ValueError(f'{os.path.basename(filepath)}: not an EXFO .olts ({e})')
+
+    def num(path):
+        tail = path.rsplit('/', 1)[-1]
+        return int(tail) if tail.isdigit() else 1 << 30
+
+    fibers, refs, first, ths = [], {}, None, []
+    for path in sorted(streams, key=num):
+        try:
+            m = _Nrbf(_gunzip_capped(streams[path])).parse()
+        except Exception as e:                       # noqa: BLE001 - name the stream
+            raise ValueError(f'{os.path.basename(filepath)}: measurement {path} '
+                             f'is not readable ({e})')
+        if not m or m.get('__class') != 'Metrino.Oltsx.OltsMeasurement':
+            continue
+        ref = _olts_reference(m)
+        key = ref['key'] or str(len(refs))
+        if key not in refs:
+            refs[key] = ref
+        fibers.append(_olts_measurement(m, refs[key]))
+        if first is None:
+            first = m
+            ths = _olts_thresholds(m.get('testConfiguration'))
+    if first is None:
+        raise ValueError(f'{os.path.basename(filepath)}: holds no OLTS measurements')
+    ids = _olts_ids(first)
+    job = first.get('jobInformation') or {}
+
+    def unit(u, role, op):
+        info = first.get(u) or {}
+        serial = info.get('serialNumber') or ''
+        cal = ''
+        for r in ('Main', 'Remote'):
+            if ids.get(f'{r} unit serial number') == serial:
+                cal = ids.get(f'{r} unit calibration date') or ''
+        return {'role': role, 'operator': first.get(op) or '',
+                'model': info.get('modelName') or '', 'serial': serial,
+                'calibration': cal}
+
+    wls = sorted({r['wl_nm'] for f in fibers for r in f['rows']})
+    references = [{'key': k, 'when': r['when'], 'method': r['method'],
+                   'rows': [{'wl_nm': wl, 'ref_ab': r['loss_a'].get(wl),
+                             'ref_ba': r['loss_b'].get(wl)} for wl in wls]}
+                  for k, r in refs.items()]
+    return {'file': os.path.basename(filepath),
+            'job': job.get('id') or ids.get('Job ID') or '',
+            'customer': job.get('customerName') or ids.get('Customer') or '',
+            'company': job.get('companyName') or ids.get('Company') or '',
+            'units': {'A': unit('unitA', 'Location A', 'operatorA'),
+                      'B': unit('unitB', 'Location B', 'operatorB')},
+            'fibers': fibers, 'references': references,
+            'thresholds': ths, 'wavelengths': wls}
+
+
+def olts_orl_min(parsed, wl_nm):
+    """The Link ORL minimum (dB) EXFO grades this wavelength against, or None:
+    the custom set's enabled entry for that wavelength, else for all."""
+    best = None
+    for t in parsed.get('thresholds') or []:
+        if t['set'] != '$ct' or t['kind'] != _OLTS_KIND_LINK_ORL or not t['enabled']:
+            continue
+        if t['wl_nm'] == wl_nm:
+            return t['fail']
+        if t['wl_nm'] == 0 and best is None:
+            best = t['fail']
+    return best

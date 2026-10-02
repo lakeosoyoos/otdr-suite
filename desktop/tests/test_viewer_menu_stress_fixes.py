@@ -12,12 +12,10 @@
      and a repeat of a load still coming does nothing.
   3. A double-click on Summary Report stacked two dialogs; only the latest
      click builds one now (Trace Settings the same).
-  4. A Settings box or customer profile change never reached a loaded Viewer:
-     /api/mode carries the gates and the Viewer re-reads when they move.
-  5. Summary Report with nothing on the chart did nothing visible.
-  6. M behind the Summary Report dialog turned the markers on.
-  7. Escape shut the gear menus but not a right-click menu.
-  8. The event panel said "add a trace to see events" for the whole load.
+  4. Summary Report with nothing on the chart did nothing visible.
+  5. M behind the Summary Report dialog turned the markers on.
+  6. Escape shut the gear menus but not a right-click menu.
+  7. The event panel said "add a trace to see events" for the whole load.
 
 Run in JavaScriptCore where present; the server route and the wiring are
 checked everywhere.
@@ -28,11 +26,10 @@ import json
 import os
 import re
 import subprocess
-import urllib.request
 
 import pytest
 
-from conftest import VIEWER_DIR, import_trace_server
+from conftest import VIEWER_DIR
 
 SRC = (VIEWER_DIR / 'viewer.html').read_text(encoding='utf-8')
 JSC = ('/System/Library/Frameworks/JavaScriptCore.framework/'
@@ -71,6 +68,7 @@ def _run(tmp_path, body):
 _LOAD_STUBS = r"""
 var gSelNext = null, gAddDir = 'both', gTraces = [], gLoadFailures = [], gStoredDir = {};
 var gRemovedFiles = new Set(), gAutoFit = true, gLoadingKeys = new Set(), gLoadEpoch = 0;
+var gStateLoad = null;
 var gView = null, gPickKey = null, gMarkers = {}, gDragMarker = null;
 var COLORS_USED = new Set();
 var fibers = []; for (var i = 1; i <= 100; i++) fibers.push(i);
@@ -191,87 +189,7 @@ def test_everything_that_replaces_the_chart_starts_a_new_load():
     assert 'if (epoch !== gLoadEpoch) return;' in sel
 
 
-# ── 4: the gates reach a loaded Viewer ───────────────────────────────────
-_GATE_STUBS = r"""
-var gAnalysisMode = 'suite', gTraces = [{ key: 'a-1' }], gThresholds = null;
-var gLaunchA = 0, gSpanDecl = null, gEndRefl = [], gFrameWarn = '';
-var gDropInFlight = false, gModePollBusy = false, gLoadingKeys = new Set();
-var calls = { table: 0, list: 0 };
-var T0 = { reburn: 0.16, single_dir: 0.2 }, T1 = { reburn: 0.1, single_dir: 0.3 };
-var listT = T0, modeT = T0;
-var gInfo = { analysis_mode: 'suite', thresholds: T0, gate_source: 'settings', flags_off: false,
-              dir_a: '/a', dir_b: '/b' };
-function activeGateDb() { return gThresholds ? gThresholds.reburn : 0.16; }
-function pollEndVerdicts() {} function syncGateUI() {} function renderFilesPanel() {}
-function renderBackButton() {} function setReadout() {} function draw() {}
-function applyHubTheme() {} function forgetSide() {} function renderChips() {} function fit() {}
-function frameWarnText() { return ''; }
-function renderEventTable() { calls.table++; }
-function fetch(url) {
-  var body;
-  if (url.indexOf('/api/list') === 0) {
-    calls.list++;
-    body = { analysis_mode: 'suite', thresholds: listT, gate_source: 'settings', flags_off: false,
-             dir_a: '/a', dir_b: '/b', fibers_a: [1], fibers_b: [1] };
-  } else if (url.indexOf('/api/mode') === 0) {
-    body = { analysis_mode: 'suite', dir_a: '/a', dir_b: '/b', theme: 'light',
-             thresholds: modeT, gate_source: 'settings', flags_off: false };
-  } else throw new Error('unexpected fetch ' + url);
-  return Promise.resolve({ ok: true, json: function () { return Promise.resolve(body); } });
-}
-"""
-
-_GATE_CASES = r"""
-(async function () {
-  var out = {};
-  await pollAnalysisMode();
-  out.same = [calls.list, calls.table];
-  // the hub's Settings box moved the gate, but a load is still landing
-  modeT = T1; listT = T1; gLoadingKeys.add('b-1');
-  await pollAnalysisMode();
-  out.loading = [calls.list, calls.table];
-  gLoadingKeys.clear();
-  await pollAnalysisMode();
-  out.moved = [calls.list, calls.table, gThresholds.reburn];
-  await pollAnalysisMode();
-  out.settled = [calls.list, calls.table];
-  // a warning-level or connector gate alone re-grades too
-  modeT = listT = { reburn: 0.1, single_dir: 0.25 };
-  await pollAnalysisMode();
-  out.other = [calls.list, calls.table];
-  print('OUT ' + JSON.stringify(out));
-})().catch(function (e) { print('ERR ' + e + '\n' + e.stack); });
-"""
-
-
-@needs_jsc
-def test_a_settings_change_regrades_a_loaded_viewer(tmp_path):
-    funcs = '\n'.join(_js_func(n) for n in ('gateSig', 'pollAnalysisMode', 'loadInfo'))
-    out = _run(tmp_path, _GATE_STUBS + funcs + '\n' + _GATE_CASES)
-    assert out['same'] == [0, 0]                 # same gates: no re-read
-    assert out['loading'] == [0, 0]              # not while traces are landing
-    assert out['moved'] == [1, 1, 0.1]           # re-read, re-graded at the new gate
-    assert out['settled'] == [1, 1]              # and only once
-    assert out['other'] == [2, 2]                # any gate, not only the loss box's
-
-
-def test_api_mode_carries_the_gates():
-    T = import_trace_server()
-    port = T.start_in_thread(8798)
-    was = T.CONFIG.get('settings')
-    try:
-        T.set_settings({'REBURN_THRESHOLD': 0.1})
-        with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/mode', timeout=4) as r:
-            j = json.loads(r.read())
-        assert j['thresholds'] == T.engine_thresholds()
-        assert j['thresholds']['reburn'] == 0.1
-        assert j['gate_source'] == T.gate_source()
-        assert j['flags_off'] is T.flags_off()
-    finally:
-        T.set_settings(was)
-
-
-# ── 3, 5, 6, 7: the dialogs and the keys ─────────────────────────────────
+# ── 3-6: the dialogs and the keys ─────────────────────────────────
 def test_only_the_latest_summary_report_click_builds_a_dialog():
     f = _js_func('showReportDialog')
     seq, wait, check = (f.index('++gReportDlgSeq'), f.index('await'),

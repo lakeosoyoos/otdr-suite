@@ -2466,6 +2466,15 @@ def _handle_nav():
         st.session_state['nav_radio'] = 'Viewer'   # set BEFORE the radio widget
         st.query_params.clear()
 
+# The software opened (or the page loaded afresh): the Viewer starts empty
+# (Robert 2026-10-02).  Its chart is kept on the trace server for a trip to
+# another tool (viewer_state), and the server outlives the page, so a new
+# session took the last one's traces.  A report link (?nav=) is a page load
+# too, and the chart stays for it: going to a report cell is a trip.
+if '_viewer_fresh' not in st.session_state:
+    st.session_state['_viewer_fresh'] = True
+    if not st.query_params.get('nav'):
+        trace_server.reset_viewer_state()
 _handle_nav()
 # Streamlit's own theme pick (the ⋮ menu's Settings) beats the hub's Theme
 # switch: once a browser has chosen Light or Dark there, Streamlit keeps it
@@ -2660,6 +2669,32 @@ def _panel_ss_folder(dir_a, dir_b):
     return fi.materialize_combined(placed, dest), renamed
 
 
+def _run_folder(folder):
+    """The folder a report runs on: `folder`, or a copy of it without the
+    files the tech removed in the Viewer (Robert 2026-10-01: a Viewer Remove
+    takes them out of the Splice Report, Unidirectional and Duplicate Check
+    too).  Never raises: a copy that cannot be made runs the folder as is."""
+    if not folder:
+        return folder
+    try:
+        return trace_server.without_removed(folder)
+    except Exception as exc:
+        report_error('report folder without removed files', exc, {'folder': folder})
+        return folder
+
+
+def _viewer_removed_note(*folders):
+    """Say on a report page how many files removed in the Viewer it leaves out."""
+    try:
+        n = sum(len(trace_server.removed_names(f)) for f in folders if f)
+    except Exception:
+        return
+    if n:
+        st.caption(f"{n} file{'s' if n != 1 else ''} removed in the Viewer "
+                   f"{'are' if n != 1 else 'is'} left out of this report. "
+                   'Put them back from the Viewer’s Files list (right-click).')
+
+
 def _take_panel_ss_folder(dir_a, dir_b):
     """Build (or find) the left panel's Secret Sauce folder and put it where
     the page, Clear Report and Clear Traces look for it.  Returns what
@@ -2835,8 +2870,10 @@ def _clear_traces():
     # The trace server's folders are process-wide: left set, the next
     # session would seed the boxes from them and the span would be back.
     trace_server.set_dirs(None, None)
-    # ...and the Viewer forgets what it kept for this session (see page_viewer).
-    st.session_state.pop('_viewer_keep', None)
+    # ...and so does the Viewer's chart: kept on the server for a trip to
+    # another tool (viewer_state), it came back when the same folders were
+    # put back after a Clear Traces.
+    trace_server.reset_viewer_state()
 
 
 # The pop-ups' buttons act in click callbacks, which run whether or not the
@@ -3691,14 +3728,7 @@ document.getElementById("vpop2").addEventListener("click", function(){
     else:
         _b = abs(hash(_key)) % 100000
     st.session_state['_viewer_b'] = _b
-    # This session's token (Robert 2026-10-02: the Viewer starts empty when
-    # the software starts, and keeps what it loaded across a trip to another
-    # tool).  The page keeps its traces under it; a new session, or Clear
-    # Traces, brings a new one, so nothing old comes back.
-    if '_viewer_keep' not in st.session_state:
-        import secrets
-        st.session_state['_viewer_keep'] = secrets.token_hex(6)
-    q = {'b': _b, 's': st.session_state['_viewer_keep']}
+    q = {'b': _b}
     if fec:
         q['fec'] = 1
     # PERSISTENT deep-link target (read, NOT consumed).  Keeping the last
@@ -3789,7 +3819,8 @@ def page_duplicate_check():
             # trace swapped on disk since the sidebar built the folder gets a
             # new folder now (see _panel_ss_folder).
             try:
-                folder, _renamed = _take_panel_ss_folder(_pa, _pb)
+                folder, _renamed = _take_panel_ss_folder(_run_folder(_pa),
+                                                         _run_folder(_pb))
             except Exception as _exc:
                 report_error('secret sauce: A and B folder', _exc,
                              {'dir_a': _pa, 'dir_b': _pb})
@@ -3798,10 +3829,11 @@ def page_duplicate_check():
                            'still being copied in, try again when that is done.')
                 return
         else:
-            folder = _pa or _pb
+            folder = _run_folder(_pa or _pb)
+        _viewer_removed_note(_pa, _pb)
         st.caption('Traces: ' + ('the A and B folders' if _pa and _pb
                                  and folder not in (_pa, _pb)
-                                 else f"the {'A' if folder == _pa else 'B'} folder")
+                                 else f"the {'A' if _pa else 'B'} folder")
                    + ' loaded in the left panel.')
         if _renamed:
             st.caption(_renamed_note(_renamed))
@@ -6595,6 +6627,7 @@ def _sr_span_inputs(span):
         mode = None
         if dir_a and dir_b:
             st.caption('Traces: the A and B folders loaded in the left panel.')
+            _viewer_removed_note(dir_a, dir_b)
         else:
             st.caption(f"Traces: only the {'A' if dir_a else 'B'} folder is "
                        f"loaded in the left panel. Load the "
@@ -7074,7 +7107,8 @@ def page_splice_report():
             out_xlsx = _unused_report_path(os.path.join(_sr_dest, _name),
                                            [q['out'] for q in queue])
             queue.append({'span': _n, 'dirs': (_da, _db), 'out': out_xlsx,
-                          'cmd': splicereport_cmd(_da, _db, out_xlsx, _sa, _sb,
+                          'cmd': splicereport_cmd(_run_folder(_da), _run_folder(_db),
+                                                  out_xlsx, _sa, _sb,
                                                   contract=_contract,
                                                   overrides=overrides,
                                                   show=sr_show,
@@ -7729,6 +7763,7 @@ def page_unidirectional():
         _uni_pside = 'a' if folder == _pa else 'b'
         st.caption(f"Traces: the {'A' if folder == _pa else 'B'} folder loaded "
                    'in the left panel.')
+        _viewer_removed_note(folder)
     else:
         c1, c2 = st.columns([1, 2])
         with c1:
@@ -7871,7 +7906,7 @@ def page_unidirectional():
     if _run_uni:
         out_xlsx = _unused_report_path(
             os.path.join(_uni_dest, 'unidirectional_events.xlsx'))
-        st.session_state['uni_pending_cmd'] = uni_cmd(folder, out_xlsx,
+        st.session_state['uni_pending_cmd'] = uni_cmd(_run_folder(folder), out_xlsx,
                                                       direction=dir_choice,
                                                       landmarks=landmarks,
                                                       overrides=uni_overrides,

@@ -234,9 +234,7 @@ def test_only_bootload_and_the_jump_spend_the_link():
     b1 = src.index('\n}', b0)
     m0 = src.index("window.addEventListener('message'")
     m1 = src.index('\n});', m0)
-    # bootLoad spends it twice (a kept Viewer put back after a trip to another
-    # tool, or the link's own load), the jump once.
-    assert len(spends) == 3
+    assert len(spends) == 2
     assert all(b0 < s < b1 or m0 < s < m1 for s in spends), spends
 
 
