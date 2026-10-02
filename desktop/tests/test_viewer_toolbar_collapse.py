@@ -16,9 +16,9 @@ SRC = (VIEWER_DIR / "viewer.html").read_text(encoding="utf-8")
 
 
 def test_the_handle_is_the_bar_right_under_the_toolbar():
-    # The toolbar's last group (Summary Report) closes the bar, and the handle
+    # The toolbar's last group (Summary Report + gear) closes the bar, and the handle
     # follows it at once.  The status line no longer sits in the bar (#34).
-    after = SRC.split('Summary Report…</button>\n  </div>\n</div>', 1)[1]
+    after = SRC.split('Fiber Colors</label>\n    </span>\n  </div>\n</div>', 1)[1]
     assert after.lstrip().startswith('<div id="toolbar-resizer"')
     assert 'btn-toolbar-toggle' not in SRC
 
@@ -43,3 +43,35 @@ def test_drag_up_folds_drag_down_unfolds_double_click_toggles():
     assert "if (dy < -TOOLBAR_DRAG_PX && !toolbarCollapsed()) { setToolbarCollapsed(true)" in blk
     assert "else if (dy > TOOLBAR_DRAG_PX && toolbarCollapsed()) { setToolbarCollapsed(false)" in blk
     assert "bar.addEventListener('dblclick', () => setToolbarCollapsed(!toolbarCollapsed()));" in blk
+
+
+# ─── One row (Robert 2026-10-01) ──────────────────────────────────────
+
+def test_the_bar_never_wraps_to_a_second_row():
+    css = SRC.split("  #toolbar {", 1)[1].split("}", 1)[0]
+    assert "flex-wrap: nowrap;" in css and "flex-wrap: wrap" not in css
+    assert "#toolbar .group { flex-shrink: 0; }" in SRC
+
+
+def test_what_does_not_fit_is_clipped_with_a_more_button():
+    assert "overflow: hidden; }" in SRC.split("#tb-scroll {", 1)[1].split("}", 1)[0] + "}"
+    assert '<button id="tb-more" class="tb-more"' in SRC
+    assert '<button id="tb-more-l" class="tb-more"' in SRC
+    assert "#tb-strip.more-r #tb-scroll" in SRC and "mask-image" in SRC
+    blk = SRC.split("// ─── Toolbar: one row", 1)[1].split("})();", 1)[0]
+    assert "more.hidden = !r;" in blk and "less.hidden = !l;" in blk
+    assert "box.scrollLeft = box.scrollWidth;" in blk
+    assert "addEventListener('wheel'" in blk
+
+
+def test_summary_report_then_the_gear_at_the_right_end():
+    right = SRC.split('<div class="group" id="tb-right">', 1)[1].split("</div>", 1)[0]
+    assert right.index('id="btn-report"') < right.index('id="tb-gear"')
+    menu = right.split('<span id="tb-gear-menu"', 1)[1]
+    for box in ('id="cb-stack"', 'id="num-yspace"', 'id="cb-colors"'):
+        assert box in menu
+    assert "#tb-right { margin-left: auto; }" in SRC
+
+
+def test_the_fibers_box_is_narrower():
+    assert "#toolbar #fiber-input { width: 110px; }" in SRC

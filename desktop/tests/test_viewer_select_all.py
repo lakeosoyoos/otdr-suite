@@ -46,7 +46,7 @@ def test_select_all_loads_through_the_same_two_regimes_a_click_does():
     """applyFileSelection is the shared path: past MAX_DETAIL_TRACES it takes
     the bulk overview, so Ctrl+A on a 1,152-fiber cable is not cut off at 48."""
     ap = SRC.split("async function applyFileSelection(want) {", 1)[1].split("\n}\n", 1)[0]
-    assert "const overview = tasks.length > MAX_DETAIL_TRACES;" in ap
+    assert 'const overview = tasks.length > MAX_DETAIL_TRACES\n    || gTraces.length + tasks.length > MAX_DETAIL_TRACES;' in ap
     assert "await loadOverview(tasks);" in ap
 
 

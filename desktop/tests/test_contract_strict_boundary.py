@@ -1,14 +1,14 @@
-"""SPLICE_STRICT_BOUNDARY — the AWS / IIG MT.1085 splice-loss boundary rule.
+"""SPLICE_STRICT_BOUNDARY — the contract profile splice-loss boundary rule.
 
 The contract reads "0.20 dB or less", so a splice flags only when it is
 strictly OVER 0.20.  The subtlety is WHICH number that test is applied to.
 
-NCT grades the iOLM bidirectional table, where each direction is reported to
+The prime contractor grades the iOLM bidirectional table, where each direction is reported to
 3 decimals; their bidirectional figure is the mean of those two readings.  We
 were averaging the full-precision legs instead, and on a knife-edge cell the
 fraction of a millidecibel that neither instrument reports cast the deciding
 vote.  Both rules agree on six of the seven boundary cells across Spans 17,
-19, 25 and 27 — and disagree on Span 25 fiber 193, which NCT passes:
+19, 25 and 27 — and disagree on Span 25 fiber 193, which the prime contractor passes:
 
     fiber             A       B      full-precision mean   mean of the pair
     Span 19 / 84    0.166   0.235        0.20027 flag         0.2005 flag
@@ -36,10 +36,10 @@ from conftest import SPLICEREPORT_DIR
 sys.path.insert(0, str(SPLICEREPORT_DIR))
 import splicereportmatchexfo as E  # noqa: E402
 
-IIG = "AWS / IIG MT.1085"
+CONTRACT_PROFILE = "AWS / IIG MT.1085"
 GATE = 0.20
 
-# (span, fiber, A, B, NCT's verdict) — read off their acceptance workbooks.
+# (span, fiber, A, B, the prime contractor's verdict) — read off their acceptance workbooks.
 BOUNDARY = [
     (19, 84, 0.166, 0.235, True),
     (19, 408, 0.137, 0.264, True),
@@ -78,7 +78,7 @@ def test_default_leaves_the_value_and_the_gate_alone():
 
 
 def test_reproduces_every_boundary_verdict():
-    """The load-bearing test: 7 of 7 against NCT's own reviews."""
+    """The load-bearing test: 7 of 7 against the prime contractor's own reviews."""
     before = _on(1)
     try:
         for span, fiber, a, b, should_flag in BOUNDARY:
@@ -91,7 +91,7 @@ def test_reproduces_every_boundary_verdict():
 
 def test_the_full_precision_average_would_miss_fiber_193():
     """Pin the reason this rule exists: averaging the raw legs flags a fiber
-    NCT passes.  If this ever stops being true the rule can be simplified."""
+    the prime contractor passes.  If this ever stops being true the rule can be simplified."""
     a, b = 0.32634429463112724, 0.07438605330919046   # Span 25 fiber 193
     assert (a + b) / 2.0 > GATE                        # raw mean: over
     before = _on(1)
@@ -168,10 +168,10 @@ def test_splice_bidir_falls_back_when_a_direction_is_missing():
 def test_profile_carries_the_switch_and_the_whitelist_allows_it():
     app = importlib.import_module('app')  # engine imported first, on purpose
     assert "SPLICE_STRICT_BOUNDARY" in app._PROFILE_ENGINE_KEYS
-    assert app.CUSTOMER_PROFILES[IIG]["engine"]["SPLICE_STRICT_BOUNDARY"] == 1
-    assert app._engine_extras_from_profile(IIG)["SPLICE_STRICT_BOUNDARY"] == 1.0
+    assert app.CUSTOMER_PROFILES[CONTRACT_PROFILE]["engine"]["SPLICE_STRICT_BOUNDARY"] == 1
+    assert app._engine_extras_from_profile(CONTRACT_PROFILE)["SPLICE_STRICT_BOUNDARY"] == 1.0
     for name, prof in app.CUSTOMER_PROFILES.items():
-        if name == IIG:
+        if name == CONTRACT_PROFILE:
             continue
         assert "SPLICE_STRICT_BOUNDARY" not in (prof.get("engine") or {}), name
 

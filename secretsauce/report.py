@@ -553,7 +553,7 @@ def _compute_pair_metrics_batch_multiwl(files, wl_list, min_samples=50,
         # float32 the trace quantization alone (~5.5e-6 dB/sample at 46 dB)
         # puts ~2.6e-4 into the cross term - catastrophic cancellation.  True
         # pair σ 0.0094 collapsed to 0.0000 and the σ-outlier tier confirmed
-        # 67 numerical artifacts as duplicates (Lumen Border LAM/BEY,
+        # 67 numerical artifacts as duplicates (the Border job LAM/BEY,
         # 2026-07-23).  report_sor.py was fixed then; this lineage was not.
         #
         # Both loaders happen to emit float64 TODAY, which is the only reason
@@ -1891,7 +1891,7 @@ def _competence_meta(files, wl_list, meta):
             'what_it_takes': (f'This lineage has no fingerprint detector; it '
                               f'needs a common span of at least '
                               f'{_ALLDUPS_MIN_SPAN_M/1000:.0f} km to tell one '
-                              f'fibre shot N times from N different fibres.')}
+                              f'fiber shot N times from N different fibers.')}
 
 
 def build_json_html(folder, title='Duplicate Classification Report', truth_dups=None, meta=None):

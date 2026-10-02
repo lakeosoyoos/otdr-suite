@@ -2,7 +2,7 @@
 FQA Builder — the shared user interface
 =======================================
 
-Takes a span's ZeroDB production sheet and builds the Lumen FQA Site
+Takes a span's ZeroDB production sheet and builds the FQA Site
 Survey package from it: the cover page, the Fiber Assignment Table, the
 Event Log and the Exception Reporting tab.
 
@@ -157,7 +157,7 @@ def render(default_out_dir: str | None = None,
     of the page down with it.
     """
     st.markdown('#### FQA Builder')
-    st.caption('Lumen Site Survey / Fiber Quality Assurance package, built from '
+    st.caption('Customer Site Survey / Fiber Quality Assurance package, built from '
                'the span’s production sheet.')
 
     upload = st.file_uploader(
@@ -285,7 +285,7 @@ def render(default_out_dir: str | None = None,
 
     st.markdown('##### Measured Distances')
     st.caption('One distance from Site A per splice location, in span order: '
-               f'{len(prod.splices)} of them. Metres, or km if you paste km. '
+               f'{len(prod.splices)} of them. Meters, or km if you paste km. '
                'Leave it empty to fall back on the production sheet’s own '
                'footage marks.')
     c1, c2 = st.columns([3, 1])
@@ -335,8 +335,8 @@ def render(default_out_dir: str | None = None,
         # key= without value=: a widget owning a session-state slot must
         # not also be handed a value, or Streamlit ignores one of them.
         template = st.text_input('FQA Form Template', key='fqa_template',
-                                 help='A blank Lumen Site Survey form. Replace '
-                                      'this when Lumen publishes a new revision.')
+                                 help='A blank customer Site Survey form. Replace '
+                                      'this when the customer publishes a new revision.')
         c1, c2 = st.columns(2)
         entry_offset = c1.number_input(
             'Frame to Entry Splice (m)', min_value=0, step=10,

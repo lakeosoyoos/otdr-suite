@@ -1,7 +1,7 @@
 {
   "name": "OTDR Field Capture",
   "short_name": "Field Capture",
-  "description": "Fills section 1.2 of the Lumen FQA Site Survey from the field, checks the rack, RMU and panel labels in the photos, and emails the workbook.",
+  "description": "Fills section 1.2 of the FQA Site Survey from the field, checks the rack, RMU and panel labels in the photos, and emails the workbook.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

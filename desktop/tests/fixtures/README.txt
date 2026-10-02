@@ -45,7 +45,7 @@ panelspan/      Two Defuniak Springs tie-panel fibers: 31 m of cable between two
                 ILA end columns.  FastReporter's own table for it reads
                 0.000 dB / 0.000 dB/km across the 31 m between the panels.
 
-frspan_long/    Lumen Denver->KC Span 7, Monument -> Grainfield, fiber 183 (9-24-26 shoot,
+frspan_long/    Denver->KC Span 7, Monument -> Grainfield, fiber 183 (9-24-26 shoot,
                 500 ns, 56.72 km, 1.0095 km launch reel).  MONGRA0183_1550.sor as shot;
                 *_fr_span_start.sor = the same file after FastReporter 3 "Spans by
                 Distance", Launch fiber length 1.0095 km, then Save
@@ -53,14 +53,14 @@ frspan_long/    Lumen Denver->KC Span 7, Monument -> Grainfield, fiber 183 (9-24
                 constant (25 ppm long) put the events past 40 km more than 1 m from
                 FR's records and set_span refused every file on the span.
 
-frspan_s7/      Lumen Denver->KC Span 7 fiber 229, both directions (9-24-26 shoot), with
+frspan_s7/      Denver->KC Span 7 fiber 229, both directions (9-24-26 shoot), with
                 the span start set on each launch panel by the Viewer's set_span (MON
                 1.0095 km, GRA 1.0019 km).  A's panel connector reads 4.787 dB.  FR 3
                 loaded this pair 2026-09-25 and printed Splice 1 A -0.013 / avg 0.017,
                 Splice 2 B -0.035 / avg 0.014, Splice 5 A 0.033 / avg 0.117
                 (test_fr_silent_declared_span.py).
 
-launch_noreceive/  Lumen Denver->KC Span 7 fibers 229, 1029 and 183, both directions as
+launch_noreceive/  Denver->KC Span 7 fibers 229, 1029 and 183, both directions as
                 shot 9-24-26 (MONGRA/GRAMON, 500 ns).  Launch reel ~1.0 km at each end
                 and NO receive reel, so neither direction stores the other end's launch
                 connector as an event.  FR 3 on these pairs (2026-09-25): MON 0229 A
@@ -120,3 +120,14 @@ trc/            Two EXFO .trc files (one direction, three wavelengths each), eve
                 TRCDECL0001_155016251310.trc: 1550/1625/1310 nm, 1.04 km, span start
                 declared 1.006 km in, so the file keeps the OTDR port as an extra
                 record upstream (test_trc_reader.py).
+
+olts/           OLTSFX_SAMPLE.olts: five fibers (1, 7, 11, 721, 864) of an 864-fiber
+                EXFO FTB-945 OLTS job, 1550 nm, bidirectional, Loopback reference,
+                93.5 km.  Every identifier scrubbed in place at the same length
+                inside each measurement's gzip (customer, company, job, operators,
+                site code; fiber ids OLTSFX001..), re-packed into a fresh compound
+                file, and the readings left unchanged.  Fiber 721 is past the point
+                where unit B's phase stepped mid-job; 7 and 11 have A->B phases near
+                -pi.  OLTSFX_SAMPLE_exfo.json is EXFO's own library's loss, ORL and
+                length for it at full precision (FastReporter 3.21's Metrino.Oltsx
+                loading this very file), the answer key of test_olts_reader.py.

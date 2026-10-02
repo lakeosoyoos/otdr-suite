@@ -671,7 +671,7 @@ def compute_contract_conformance(records_a: list, records_b: list,
     """Compare the acquisition against the customer contract's own figures.
 
     `contract` is the active customer profile's block, e.g.
-        {"name": "AWS / IIG MT.1085", "ior": 1.467,
+        {"name": "<profile name>", "ior": 1.467,
          "backscatter_db": -81.4, "wavelengths_nm": [1550, 1625]}
     Every key is optional; a missing one simply produces no row.  Returns
     None when there is no contract to check against, so a run with no
@@ -1071,14 +1071,18 @@ def engine_stamp_text() -> str:
 
     Never raises: a missing/broken error_report degrades to 'unknown' rather
     than taking the whole acquisition sheet down (its caller only warns)."""
+    import os
+    # The product's name: "OTDR App" in the App (its launcher sets the
+    # edition), as the sidebar footer prints it.
+    name = os.environ.get("OTDR_SUITE_EDITION") or "OTDR Suite"
     try:
         from error_report import version_labels
         appv, engv = version_labels()
     except Exception:
-        return "OTDR Suite · unknown"
+        return f"{name} · unknown"
     if appv == "dev" and engv == "dev":
-        return "OTDR Suite · dev"
-    return f"OTDR Suite · app {appv} · engine: {engv}"
+        return f"{name} · dev"
+    return f"{name} · app {appv} · engine: {engv}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1206,7 +1210,7 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
     # a reviewer skims for "how big was this run".
     if cov_incomplete:
         _count = (f"{cov['n_loaded']} of {cov['n_candidates']} trace(s) in "
-                  f"folder analysed, {cov['n_dropped']} NOT analysed")
+                  f"folder analyzed, {cov['n_dropped']} NOT analyzed")
         _fnt = fnt_alarm_detail
     else:
         _count = f"{audit['n_files']} trace(s)"

@@ -976,7 +976,7 @@ def _parse_proprietary_stream(stream):
         else:
             # Fewer than three markers to vote -- a single-direction .sor
             # with a handful of events, which is most of them: 689 of the
-            # 864 ZAYO BETA 432 files.  The stated IOR carries the same
+            # 864 432-fiber BETA span files.  The stated IOR carries the same
             # pitch: c x SamplingPeriod / (2 x Ior), with Ior the
             # proprietary block's own 6-dp value.  On every file that has
             # both, the two agree to 5e-14 relative (3,256 files) -- the
@@ -2290,7 +2290,7 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
         # to that event's position and SubCursorB with it (see
         # _fr_exact_silent_loss).  One sample cannot carry a slope, so the
         # after-line is that sample with the BEFORE-window's fitted slope:
-        # verified 0.000000 mdB on all 13 such records in the Zayo 432 .bdr
+        # verified 0.000000 mdB on all 13 such records in the 432-fiber BETA span .bdr
         # set, against FR's own stored float64 loss.  With the evaluation
         # point pulled to CursorB (below) the slope never enters the answer.
         m2 = m1
@@ -2308,7 +2308,7 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
     #
     #     x = clamp(mid,  CursorB - wb,  CursorA + wa)
     #
-    # and BOTH lines are evaluated there.  Read off the Zayo 432 .bdr set,
+    # and BOTH lines are evaluated there.  Read off the 432-fiber BETA span .bdr set,
     # where FR's stored losses on 28 silent-side records with a clamped
     # outer window sat a half-integer number of samples off our midpoint
     # answer, and that number was (mid - CursorA) - wa on every one.  With
@@ -2334,7 +2334,7 @@ def measure_fr_exact_loss(sor_data, cursor_a_m, cursor_b_m, sub_a_m, sub_b_m):
     # whichever way it was clamped, and three probe files with the same
     # geometry and clean 0.05, 0.2 and 1.0 dB/km lines written into the
     # window agreed.  41 of the 46 reproduce to 0.000000 mdB with it; no
-    # Zayo or SEANOR record has conflicting reaches, so nothing there moves.
+    # BETA or SEANOR record has conflicting reaches, so nothing there moves.
     # On flat windows this is what the earlier 'read each line at the
     # other's limit' reading was measuring: the two agree there exactly.
     ext_c = 0.0

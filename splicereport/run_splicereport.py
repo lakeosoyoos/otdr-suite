@@ -184,6 +184,361 @@ def _provenance_warnings(E, fa, fb):
     return warns
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# FEC (facility entrance) mode  --fec
+#
+# FEC shots are short (~5 km) traces from EACH END of a span: launch reel,
+# then the building panel connector at ~1 km, often a pigtail splice a few
+# tens of meters behind it, then the entrance cable.  The two ends never see
+# the same glass, so nothing here pairs A with B: each folder is graded on
+# its own, one trace at a time.
+#
+# The rule is two techs' FEC OOS lists on one span (2026-09 / 10):
+#   * loss  = panel connector + every event within FEC_COMBINE_M behind it
+#             ("COMBINE" on the tech sheet), event-table values, 3 dp,
+#             fails above FEC_LOSS_GATE  (tech C's style, the default since
+#             Robert 2026-10-01: 0.500 passes; tech A fails it);
+#   * refl  = panel connector reflectance, 1 dp, fails above FEC_REFL_GATE.
+# Values come from EXFO's own event list (what FastReporter shows), falling
+# back to the Bellcore KeyEvents when a file has no proprietary block.
+# ═══════════════════════════════════════════════════════════════════════
+FEC_LOSS_GATE = 0.500        # dB, combined loss above this fails
+FEC_REFL_GATE = -50.0        # dB, connector reflectance above this fails
+FEC_COMBINE_M = 150.0        # m behind the panel connector folded into its loss
+FEC_PORT_SKIP_M = 50.0       # events this close to 0 are the OTDR port
+FEC_LOSS_STRICT = 1.0        # 1 = only loss ABOVE the gate fails (tech C:
+                             # .500 passes, the default); 0 = at or above
+                             # (tech A: .500 fails)
+
+FEC_OVERRIDABLE = ('FEC_LOSS_GATE', 'FEC_REFL_GATE', 'FEC_COMBINE_M',
+                   'FEC_LOSS_STRICT')
+
+
+def _fec_round(x, nd):
+    """Round half-up on the printed digits, as the event table shows them
+    (0.4995 prints .500, and .500 fails at a 0.500 gate)."""
+    from decimal import Decimal, ROUND_HALF_UP
+    q = Decimal(1).scaleb(-nd)
+    return float(Decimal(repr(float(x))).quantize(q, rounding=ROUND_HALF_UP))
+
+
+def _fec_origin_m(rec):
+    """Meters to add to a record's event positions to measure them from the
+    OTDR port, the frame the panel-connector rule is written in.
+
+    A file with a declared span start counts from that start: a .sor or .trc
+    re-based by FastReporter (user_offset, e.g. the panel at 1.006 km reads
+    0), and every .json export, which puts SpanStart at 0 with the launch reel
+    at minus its length.  Read raw, the panel connector of such a file sits at
+    0, inside FEC_PORT_SKIP_M, and the rule would grade the wrong event."""
+    first = rec.get('_json_first_pos_m')
+    if first is not None:
+        return -float(first)
+    return float(rec.get('user_offset_km') or 0.0) * 1000.0
+
+
+def _fec_events(rec):
+    """[(pos_m, loss_db, refl_db_or_None, reflective, is_end)] for one parsed
+    trace (.sor, .trc or .json), positions from the OTDR port: EXFO's own
+    event list when present, else the KeyEvents (a .json's own events)."""
+    import math
+
+    def num(v):
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if math.isnan(v) else v
+
+    out, o = [], _fec_origin_m(rec)
+    xs = [e for e in (rec.get('exfo_events') or []) if not e.get('_is_section')]
+    if xs:
+        for e in xs:
+            typ = e.get('Type')
+            out.append(((num(e.get('Position')) or 0.0) + o, num(e.get('Loss')) or 0.0,
+                        num(e.get('Reflectance')), typ == 3, typ == 5))
+        return out
+    for e in rec.get('events') or []:
+        out.append(((e.get('dist_km') or 0.0) * 1000.0 + o, e.get('splice_loss') or 0.0,
+                    num(e.get('reflection')) or None, bool(e.get('is_reflective')),
+                    bool(e.get('is_end'))))
+    return out
+
+
+_FEC_EXTS = ('.sor', '.trc', '.json')    # a .bdr pairs two ends; FEC never does
+
+
+def _fec_parser(path):
+    """The Splice Report's own reader for `path`'s type (a .trc at the
+    graded wavelength)."""
+    from splicereportmatchexfo import _trace_parser
+    return _trace_parser(os.path.splitext(path)[1].lower())
+
+
+def fec_grade(events, loss_gate=None, refl_gate=None, combine_m=None,
+              strict=None):
+    """Grade one FEC trace.  `events` as from _fec_events.  Returns a dict:
+    found, conn_m, conn_loss, conn_refl, combined [(pos_m, loss)], loss,
+    refl, fail_loss, fail_refl.  Pure: no file access (tested directly)."""
+    loss_gate = FEC_LOSS_GATE if loss_gate is None else loss_gate
+    refl_gate = FEC_REFL_GATE if refl_gate is None else refl_gate
+    combine_m = FEC_COMBINE_M if combine_m is None else combine_m
+    strict = bool(FEC_LOSS_STRICT) if strict is None else bool(strict)
+    evs = sorted(events, key=lambda e: e[0])
+    conn = next((e for e in evs if e[3] and not e[4] and e[0] > FEC_PORT_SKIP_M), None)
+    if conn is None:
+        return {'found': False}
+    behind = [e for e in evs
+              if conn[0] < e[0] <= conn[0] + combine_m and not e[4]]
+    # Each event as the table prints it (3 dp), THEN added: the techs add
+    # the printed numbers (.306 + .243 = .549, where the raw sum is .548).
+    loss = _fec_round(_fec_round(conn[1], 3)
+                      + sum(_fec_round(e[1], 3) for e in behind), 3)
+    refl = None if conn[2] is None else _fec_round(conn[2], 1)
+    return {
+        'found': True, 'conn_m': conn[0], 'conn_loss': _fec_round(conn[1], 3),
+        'conn_refl': refl,
+        'combined': [(e[0], _fec_round(e[1], 3)) for e in behind],
+        'loss': loss, 'refl': refl,
+        'fail_loss': (loss > _fec_round(loss_gate, 3) if strict
+                      else loss >= _fec_round(loss_gate, 3)),
+        'fail_refl': refl is not None and refl > _fec_round(refl_gate, 1),
+    }
+
+
+def _fec_fiber_ranges(nums):
+    nums = sorted(set(nums))
+    out, i = [], 0
+    while i < len(nums):
+        j = i
+        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
+            j += 1
+        out.append(f'{nums[i]}' if i == j else f'{nums[i]}-{nums[j]}')
+        i = j + 1
+    return ', '.join(out)
+
+
+def _fec_prefix(stems):
+    """The site code the files share (ABCDEFsh0104 -> ABCDEF): the common
+    leading letters, without a trailing 'sh' (short-shot) tag."""
+    import re
+    heads = [re.match(r'[A-Za-z]*', s).group(0) for s in stems]
+    heads = [h for h in heads if h]
+    if not heads:
+        return ''
+    pre = os.path.commonprefix(heads)
+    return pre[:-2] if pre.lower().endswith('sh') and len(pre) > 2 else pre
+
+
+def _fec_side(folder, side, log=print):
+    """Read one end's folder: every .sor, .trc and .json in it.  A fiber
+    shot in more than one type is read once, from the type the folder holds
+    most of (the Splice Report's own order, _trace_ext_order), so a .sor
+    folder with a few .trc reshoots still grades its .sor."""
+    from splicereportmatchexfo import _extract_fiber_num, _trace_ext_order
+    names = [f for f in os.listdir(folder) if not f.startswith('._')]
+    order, _n = _trace_ext_order(names)
+    order = [e for e in order if e in _FEC_EXTS] + \
+        [e for e in _FEC_EXTS if e not in order]
+    files, seen = [], set()
+    for ext in order:
+        for f in sorted(f for f in names if f.lower().endswith(ext)):
+            key = _extract_fiber_num(f) or os.path.splitext(f)[0]
+            if key in seen:
+                continue
+            seen.add(key)
+            files.append(f)
+    traces, unreadable = [], []
+    for k, fn in enumerate(files):
+        if k % 100 == 0:
+            log(f'FEC {side}: reading {k + 1}-{min(k + 100, len(files))} of {len(files)}')
+        path = os.path.join(folder, fn)
+        try:
+            rec = _fec_parser(path)(path)
+        except Exception as exc:                       # noqa: BLE001
+            rec = None
+            log(f'FEC {side}: {fn}: {type(exc).__name__}: {exc}')
+        if not rec:
+            unreadable.append(fn)
+            continue
+        traces.append({'file': fn, 'stem': os.path.splitext(fn)[0],
+                       'fiber': _extract_fiber_num(fn),
+                       'pulse_ns': rec.get('fxd_pulse_ns') or rec.get('_json_pulse_ns'),
+                       'loc_a': rec.get('gen_loc_a') or '',
+                       'loc_b': rec.get('gen_loc_b') or '',
+                       'events': _fec_events(rec)})
+    return {'side': side, 'folder': folder, 'files': files,
+            'traces': traces, 'unreadable': unreadable,
+            'prefix': _fec_prefix([t['stem'] for t in traces])}
+
+
+def fec_rows(side_data):
+    """Grade every trace of one side -> (fail rows, no-connector stems,
+    pulse groups)."""
+    rows, no_conn, pulses = [], [], {}
+    for t in side_data['traces']:
+        if t['fiber'] is not None and t['pulse_ns']:
+            pulses.setdefault(t['pulse_ns'], []).append(t['fiber'])
+        g = fec_grade(t['events'])
+        if not g['found']:
+            no_conn.append(t['stem'])
+            continue
+        if not (g['fail_loss'] or g['fail_refl']):
+            continue
+        fid = (f"{side_data['prefix']}{t['fiber']:04d}"
+               if side_data['prefix'] and t['fiber'] is not None else t['stem'])
+        base = {'side': side_data['side'], 'fiber': t['fiber'], 'fiber_id': fid,
+                'file': t['file'], 'conn_km': round(g['conn_m'] / 1000.0, 4),
+                'conn_loss': g['conn_loss'], 'conn_refl': g['conn_refl'],
+                'combined': [{'km': round(p / 1000.0, 4), 'loss': l}
+                             for p, l in g['combined']],
+                'pulse_ns': t['pulse_ns']}
+        if g['fail_loss']:
+            rows.append(dict(base, kind='loss', failing_at=f"{g['loss']:.3f}",
+                             distance=('COMBINE' if g['combined']
+                                       else f"{g['conn_m'] / 1000.0:.3f}km")))
+        if g['fail_refl']:
+            rows.append(dict(base, kind='refl', failing_at=f"{g['refl']:.1f}",
+                             distance=f"{g['conn_m'] / 1000.0:.3f}km"))
+    rows.sort(key=lambda r: (r['fiber'] if r['fiber'] is not None else 1e9, r['kind']))
+    pulse_groups = [{'pulse_ns': p, 'n': len(f), 'fibers': _fec_fiber_ranges(f)}
+                    for p, f in sorted(pulses.items(), key=lambda kv: min(kv[1]))]
+    return rows, no_conn, pulse_groups
+
+
+def _fec_write_xlsx(out, sides, gates):
+    import openpyxl
+    from openpyxl.styles import Alignment, Font, PatternFill
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'FEC OOS'
+    bold, hdr_fill = Font(bold=True), PatternFill('solid', fgColor='DDEBF7')
+    center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    ws.append([f"FEC OOS  ·  {' / '.join(s['label'] for s in sides)}"])
+    ws['A1'].font = Font(bold=True, size=13)
+    ws.append([f"Fails: combined connector loss "
+               f"{'>' if gates.get('FEC_LOSS_STRICT') else '>='} "
+               f"{gates['FEC_LOSS_GATE']:.3f} dB "
+               f"(connector + events within {gates['FEC_COMBINE_M']:.0f} m behind it), "
+               f"or connector reflectance > {gates['FEC_REFL_GATE']:.1f} dB"])
+    ws.append([])
+    head = ['Fiber Number', 'FAILING @', 'Distance', 'Side (A or B)', 'Failed On',
+            'Connector (km)', 'Connector Loss', 'Connector Refl.', 'Combined With',
+            'Pulse (ns)']
+    ws.append(head)
+    for c in ws[ws.max_row]:
+        c.font, c.fill, c.alignment = bold, hdr_fill, center
+    any_rows = False
+    for s in sides:
+        for r in s['rows']:
+            any_rows = True
+            comb = '; '.join(f"{c['loss']:.3f} @ {c['km']:.4f} km" for c in r['combined'])
+            ws.append([r['fiber_id'], float(r['failing_at']), r['distance'], r['side'],
+                       'Reflectance' if r['kind'] == 'refl' else 'Loss',
+                       r['conn_km'], r['conn_loss'], r['conn_refl'], comb or '',
+                       r['pulse_ns']])
+            row = ws[ws.max_row]
+            for c in row:
+                c.alignment = center
+            row[1].number_format = '0.0' if r['kind'] == 'refl' else '0.000'
+            row[5].number_format = '0.0000'
+            row[6].number_format = '0.000'
+            row[7].number_format = '0.0'
+    if not any_rows:
+        ws.append(['No fiber fails.'])
+    for col, w in zip('ABCDEFGHIJ', (16, 12, 12, 13, 12, 13, 14, 14, 30, 11)):
+        ws.column_dimensions[col].width = w
+    ws.freeze_panes = 'A5'
+
+    ac = wb.create_sheet('Acquisition')
+    ac.append(['Side', 'Folder', 'Traces', 'Pulse width', 'Fibers'])
+    for c in ac[1]:
+        c.font, c.fill = bold, hdr_fill
+    for s in sides:
+        first = True
+        for g in s['pulse_groups'] or [{'pulse_ns': None, 'n': 0, 'fibers': ''}]:
+            ac.append([s['side'] if first else '', os.path.basename(s['folder'].rstrip('/\\'))
+                       if first else '', s['n_traces'] if first else '',
+                       f"{g['pulse_ns']:g} ns" if g['pulse_ns'] else '?', g['fibers']])
+            first = False
+        if s['no_conn']:
+            ac.append(['', 'No panel connector found (not graded):',
+                       len(s['no_conn']), '', ', '.join(s['no_conn'][:40])])
+        if s['unreadable']:
+            ac.append(['', 'Unreadable files (not graded):', len(s['unreadable']), '',
+                       ', '.join(s['unreadable'][:40])])
+    for col, w in zip('ABCDE', (8, 34, 10, 13, 60)):
+        ac.column_dimensions[col].width = w
+    wb.save(out)
+
+
+def _fec_payload(dirs, out, overrides=None, log=print):
+    gates = _fec_apply_overrides(overrides)
+    sides = []
+    for side, folder in dirs:
+        sd = _fec_side(folder, side, log=log)
+        rows, no_conn, pulse_groups = fec_rows(sd)
+        loc = next((t for t in sd['traces'] if t['loc_a'] or t['loc_b']), None)
+        sides.append({'side': side, 'folder': folder, 'prefix': sd['prefix'],
+                      'label': sd['prefix'] or os.path.basename(folder.rstrip('/\\')),
+                      'loc_a': loc['loc_a'] if loc else '',
+                      'loc_b': loc['loc_b'] if loc else '',
+                      'n_files': len(sd['files']), 'n_traces': len(sd['traces']),
+                      'rows': rows, 'no_conn': no_conn,
+                      'unreadable': sd['unreadable'], 'pulse_groups': pulse_groups,
+                      'n_fail_fibers': len({r['fiber'] for r in rows})})
+    if not any(s['n_traces'] for s in sides):
+        return {'ok': False, 'error': 'No readable .sor, .trc or .json traces '
+                                      'in the FEC folder(s).'}
+    # The page offers a new folder under an existing one, as every report
+    # page does; the Splice Report's own run makes it the same way.
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    _fec_write_xlsx(out, sides, gates)
+    return {'ok': True, 'xlsx': out, 'fec': {'gates': gates, 'sides': sides}}
+
+
+def _fec_apply_overrides(overrides):
+    """Set the FEC_* globals from an --overrides JSON string; returns gates."""
+    g = globals()
+    if overrides:
+        try:
+            ov = json.loads(overrides)
+        except (json.JSONDecodeError, TypeError):
+            ov = {}
+        if isinstance(ov, dict):
+            for k, v in ov.items():
+                if k in FEC_OVERRIDABLE and isinstance(v, (int, float)) \
+                        and not isinstance(v, bool):
+                    g[k] = float(v)
+    return {k: g[k] for k in FEC_OVERRIDABLE}
+
+
+def _fec_table_payload(spec_json, overrides=None):
+    """The Viewer's FEC mode: grade every listed trace (pass or fail).
+    spec: {"A": [[fiber, path], ...], "B": [...]}.  Returns
+    {ok, gates, grades: {"A": {fiber: grade}, "B": {...}}, errors}."""
+    gates = _fec_apply_overrides(overrides)
+    spec = json.loads(spec_json)
+    grades, errors = {}, {}
+    for side, items in (spec or {}).items():
+        out = grades.setdefault(str(side), {})
+        for fiber, path in items or []:
+            try:
+                rec = _fec_parser(path)(path)
+                if not rec:
+                    raise ValueError('unreadable trace')
+                g = fec_grade(_fec_events(rec))
+                if g.get('found'):
+                    g['conn_km'] = round(g.pop('conn_m') / 1000.0, 4)
+                    g['combined'] = [{'km': round(p / 1000.0, 4), 'loss': l}
+                                     for p, l in g['combined']]
+                g['pulse_ns'] = rec.get('fxd_pulse_ns') or rec.get('_json_pulse_ns')
+                out[str(fiber)] = g
+            except Exception as exc:                   # noqa: BLE001 -- one bad
+                errors[f'{side}{fiber}'] = f'{type(exc).__name__}: {exc}'
+    return {'ok': True, 'gates': gates, 'grades': grades, 'errors': errors}
+
+
 def _fr_table_payload(spec_json, analysis='fr'):
     """FastReporter's bidirectional table for each [fiber, path_a, path_b] in
     `spec_json`, from the two files alone (or one .bdr carrying both sides),
@@ -330,6 +685,10 @@ def main():
     ap.add_argument('--uni', action='store_true',
                     help='Unidirectional: single-folder A-only event '
                          'finder → ZK-format ribbon-grid workbook.')
+    ap.add_argument('--fec', action='store_true',
+                    help='FEC: grade the panel connector of each short '
+                         'facility-entrance shot. --dir-a = one end, '
+                         '--dir-b = the other end (optional); never paired.')
     ap.add_argument('--direction', default=None,
                     help='(--uni) GenParams direction signature to select when '
                          'the folder mixes directions; default = most populous.')
@@ -354,7 +713,7 @@ def main():
                          "characters, which a whole cable's pairs pass.")
     ap.add_argument('--viewer-table', default=None,
                     help="Path to write the Viewer's OTDR Suite table to: this "
-                         "report's columns and, for every fibre at every "
+                         "report's columns and, for every fiber at every "
                          "column, the numbers it worked from (flagged or "
                          "not).  The report itself is the same with or "
                          "without it.  Not written in FastReporter mode.")
@@ -363,6 +722,13 @@ def main():
                          "one folder is on the Viewer's screen (A->B or B->A); "
                          "the table's readings sit under that leg, in that "
                          "direction's own frame.")
+    ap.add_argument('--fec-table', default=None,
+                    help='JSON {"A": [[fiber, path], ...], "B": [...]}: print '
+                         'each trace\'s FEC grade as one JSON line and exit '
+                         '(the Viewer\'s FEC mode).')
+    ap.add_argument('--fec-table-file', default=None,
+                    help='--fec-table read from this file (a whole span '
+                         'overflows the Windows command line).')
     ap.add_argument('--site-a', default='A')
     ap.add_argument('--site-b', default='B')
     ap.add_argument('--threshold', type=float, default=None)
@@ -380,6 +746,7 @@ def main():
                          'from the OTDR settings panel.')
     args = ap.parse_args()
     if (not args.fr_table and not args.fr_table_file
+            and not args.fec_table and not args.fec_table_file
             and (not args.dir_a or not args.out)):
         ap.error('--dir-a and --out are required')
 
@@ -389,6 +756,21 @@ def main():
     def emit(payload):
         real_stdout.write(json.dumps(payload) + '\n')
         real_stdout.flush()
+
+    if args.fec_table or args.fec_table_file:
+        spec = args.fec_table
+        if not spec:
+            try:
+                with open(args.fec_table_file, encoding='utf-8') as fh:
+                    spec = fh.read()
+            except (OSError, UnicodeDecodeError) as exc:
+                emit({'ok': False, 'error': f'--fec-table-file: {exc}'})
+                return
+        try:
+            emit(_fec_table_payload(spec, args.overrides))
+        except Exception as exc:                       # noqa: BLE001
+            emit({'ok': False, 'error': f'{type(exc).__name__}: {exc}'})
+        return
 
     if args.fr_table_file and not args.fr_table:
         try:
@@ -408,6 +790,20 @@ def main():
         return
 
     a = args.dir_a.strip().strip('"')
+    if args.fec:
+        b_fec = (args.dir_b or '').strip().strip('"')
+        dirs = [('A', a)] + ([('B', b_fec)] if b_fec else [])
+        bad = [d for _, d in dirs if not os.path.isdir(d)]
+        if bad:
+            emit({'ok': False, 'error': 'FEC folder not found: ' + bad[0]})
+            return
+        try:
+            emit(_fec_payload(dirs, args.out, args.overrides,
+                              log=lambda m: print(m, file=sys.stderr, flush=True)))
+        except Exception as exc:                       # noqa: BLE001
+            report_error('splice report fec', exc)
+            emit({'ok': False, 'error': f'{type(exc).__name__}: {exc}'})
+        return
     b = (args.dir_b or '').strip().strip('"')
     # A .bdr folder is BOTH directions in one place (see bdr_reader.py), so
     # the B box is meaningless for it.  Mirror A into B rather than refusing
@@ -527,7 +923,7 @@ def main():
         #   * silence otherwise — no guess, no half-name, just the defaults
         #     the tech can fill in.
         # The FOLDER is never consulted: on span 27 it names the two ends in
-        # the wrong order (NCT, 2026-09-12).
+        # the wrong order (the prime contractor, 2026-09-12).
         site_src = 'typed'
         if (getattr(E, 'SITE_NAMES_FROM_IDENTIFIERS', 0)
                 and (args.site_a, args.site_b) == ('A', 'B')):
@@ -1123,7 +1519,7 @@ def main():
 
         # ── Per-fiber AVERAGE splice loss (ADDITIVE, own sheet) ────────
         # Only when a profile or the panel sent a positive AVG_SPLICE_LOSS_DB
-        # (AWS / IIG MT.1085: 0.08 dB).  FastReporter's per-fiber "Avg.
+        # (the contract profile: 0.08 dB).  FastReporter's per-fiber "Avg.
         # Splice Loss" over the union of both directions' splices; never
         # touches all_results / cells / n_flagged.  Off = no sheet at all.
         fiber_avgs = None
@@ -1141,7 +1537,7 @@ def main():
 
         # ── Span attenuation / ORL (ADDITIVE, own sheet) ──────────────
         # Only when a positive FIBER_ATTEN_DB_KM or SPAN_ORL_MIN_DB arrived
-        # (AWS / IIG MT.1085: 0.250 dB/km and 30 dB).  EXFO's stored span
+        # (the contract profile: 0.250 dB/km and 30 dB).  EXFO's stored span
         # figures, reported and graded; never touches cells / n_flagged.
         span_stats = None
         n_atten_fail = n_orl_fail = 0

@@ -1,6 +1,6 @@
 """Unidirectional one-shot (uni_* engine section) — regression tests.
 
-Ground truth: LAMBEY 432 (Lumen Border project) vs the Zach-approved
+Ground truth: LAMBEY 432 (the Border job project) vs the Zach-approved
 LAM_BEY_unidir ZK.xlsx.  The three detection deltas vs the old standalone
 tool are each locked here with the LAMBEY numbers that motivated them:
 

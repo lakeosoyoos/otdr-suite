@@ -13,7 +13,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 def _resizer():
     html = open(os.path.join(ROOT, 'viewer', 'viewer.html'), encoding='utf-8').read()
     i = html.index("const KEY   = 'viewer.eventPanelHeight'")
-    return html[i:i + 3000]
+    return html[i:i + 6000]
 
 
 def test_remembered_height_is_capped_on_open():

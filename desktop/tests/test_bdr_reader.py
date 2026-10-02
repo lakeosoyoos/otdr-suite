@@ -627,7 +627,7 @@ def test_the_floor_never_touches_a_healthy_fit():
 
 
 def test_a_reflective_event_still_gets_its_position_and_slope_from_the_block():
-    """FR stores NO loss for a reflective event — 0 of 1,713 in the Zayo
+    """FR stores NO loss for a reflective event — 0 of 1,713 in the BETA
     corpus.  The upgrade used to bail on the whole record when the block's
     Loss was NaN, which silently left every reflective event's distance on the
     quantized time-of-travel.  Loss stays absent; position and slope must not."""

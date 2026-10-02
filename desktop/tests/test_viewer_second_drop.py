@@ -7,7 +7,9 @@ Two holes, both on the hub page around the Viewer frame:
 * Nothing on the hub took a dropped file, so a folder let go of a little off
   the Viewer frame (the sidebar's B box, the settings box above it) went to
   Chrome's Downloads.  The hub page now catches file drops everywhere and
-  passes them on to the Viewer (HUB_DROP_CATCH_JS -> 'otdr-drop' message).
+  refuses them (HUB_DROP_CATCH_JS): only the Viewer's FILES panel takes a
+  drop (Robert 2026-10-01), and a drag over the hub shows the panel as the
+  place to drop ('otdr-drag' message).
 * The first drop reloaded the Viewer frame on the next hub rerun: the frame's
   address carried a hash of the folders, which the drop had just changed, and
   the "Pick an A and/or B folder" note above the frame went away and moved it
@@ -25,7 +27,6 @@ from conftest import run_streamlit, import_trace_server, APP_PATH
 from test_sor_writer import make_sor
 
 TS = import_trace_server()
-VIEWER_HTML = os.path.join(os.path.dirname(TS.__file__), 'viewer.html')
 
 
 @pytest.fixture(autouse=True)
@@ -65,15 +66,14 @@ def _drop(prefix):
 def test_a_then_b_dropped_on_the_viewer_never_reload_its_frame():
     at = run_streamlit().run()
     assert not at.exception, at.exception
-    assert any('Pick an A and/or B folder' in i.value for i in at.info)
+    assert not any('Pick an A and/or B folder' in i.value for i in at.info)   # removed 2026-10-01
     before = _viewer_frame(at)
 
     out = _drop('ROMTUC')
     assert out['a_count'] == 3
     at.run()
     assert not at.exception, at.exception
-    # The note is gone and the boxes show the dropped folder...
-    assert not any('Pick an A and/or B folder' in i.value for i in at.info)
+    # The boxes show the dropped folder...
     shown = f"{TS.drop_name(TS.CONFIG['dir_a'])} (dropped)"
     assert 'otdr_viewer_drop_' not in shown
     assert at.session_state['view_dir_a_input'] == shown
@@ -103,30 +103,26 @@ def test_folders_picked_in_the_boxes_still_reload_the_viewer():
     assert new_path == path and new_src != src
 
 
-def test_the_hub_page_hands_a_stray_drop_to_the_viewer():
+def test_the_hub_page_refuses_a_stray_drop():
     app = open(APP_PATH, encoding='utf-8').read()
     m = re.search(r'HUB_DROP_CATCH_JS = r"""(.*?)"""', app, re.S)
     assert m, 'the hub drop catcher is gone'
     js = m.group(1)
     # Put into the hub page itself, so it outlives the frame that carried it.
     assert "createElement('script')" in js and 'w.document.head.appendChild' in js
-    # Takes every file drop on the page and on the hub's own frames...
+    # Takes every file drop on the page and on the hub's own frames, so
+    # nothing goes to Downloads...
     for need in ("addEventListener('dragover'", "addEventListener('drop'",
-                 'preventDefault()', "'Files'", 'webkitGetAsEntry'):
+                 'preventDefault()', "'Files'"):
         assert need in js, need
-    # ...but never one a file box of a page has taken already.
+    # ...but never one a file box of a page has taken already...
     assert js.count('ev.defaultPrevented') == 2
-    # ...and passes it on to the Viewer frame.
-    assert "postMessage({ type: 'otdr-drop'," in js
-    assert 'files: got.map(function(o){ return o.f; })' in js
-    # ...with the folder each file came from, for the name its side goes by
-    assert 'folders: got.map(function(o){ return o.dir; })' in js
+    # ...and loads nothing: only the Viewer's FILES panel takes a drop.
+    assert "dropEffect = 'none'" in js and 'otdr-drop' not in js
+    # A drag over the hub shows the panel as the place to drop.
+    assert "postMessage({ type: 'otdr-drag' }" in js
     assert re.search(r'^_install_hub_drop_catch\(\)$', app, re.M), 'not installed on every page'
 
-    html = open(VIEWER_HTML, encoding='utf-8').read()
-    assert "d.type === 'otdr-drop' && Array.isArray(d.files)" in html
-    assert 'handleFilesDrop(d.files)' in html
-    assert 'Array.isArray(dt) ? dt.filter(_dropOk) : await _dropCollect(dt)' in html
 
 
 def test_a_viewer_opened_from_a_report_cell_keeps_its_frame_through_both_drops():

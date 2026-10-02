@@ -228,8 +228,10 @@ def test_warning_cells_only_keeps_yellow_and_collapses_like_failing():
     assert "if (cellFilterOn() && !lossKept(c, x, which)) return `<td${attrs}></td>`;" in VIEWER
     assert "|| (gWarnCellsOnly && cls === ' class=\"fr-warn\"');" in VIEWER
     assert "|| (gWarnCellsOnly && cls.includes('fr-warn'));" in VIEWER
-    # all three tables collapse on either filter, around what it keeps
-    assert VIEWER.count("const collapse = cellFilterOn();") == 3
+    # all three tables collapse on either filter, around what it keeps, and
+    # the FEC table too (2026-10-01; it has no warning band, see
+    # test_viewer_fec_mode.py)
+    assert VIEWER.count("const collapse = cellFilterOn();") == 4
     assert "|| (gWarnCellsOnly && warnsGate(v));" in VIEWER
     # in the two A+B tables only the Average row's loss is kept (2026-09-29)
     assert "? (gFailCellsOnly && cellFails(x, which)) || (gWarnCellsOnly && cellWarns(x, which))" in VIEWER
