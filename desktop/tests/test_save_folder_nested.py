@@ -45,7 +45,7 @@ def test_a_folder_that_is_there_is_taken(tmp_path):
 
 def test_a_path_under_a_file_is_refused(tmp_path):
     f = tmp_path / 'notes.txt'
-    f.write_text('x')
+    f.write_text('x', encoding='utf-8')
     problem = _hub()._report_dir_problem(str(f / 'Reports' / 'Job 1'))
     assert problem == f'{f} is a file, not a folder'
     # A file where the folder should be, too.
@@ -141,7 +141,7 @@ def test_uni_report_is_written_into_a_new_folder_two_levels_deep(tmp_path, downl
 
 def test_uni_path_under_a_file_still_warns_and_goes_to_the_default(tmp_path, downloads):
     f = tmp_path / 'notes.txt'
-    f.write_text('x')
+    f.write_text('x', encoding='utf-8')
     dest = f / 'Job 1'
     at = _uni_page(dest)
     assert _save_warnings(at) == [
