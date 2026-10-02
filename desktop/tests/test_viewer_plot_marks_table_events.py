@@ -43,16 +43,17 @@ def test_the_key_matches_the_cells_data_km_rounding():
 
 def test_every_grid_records_what_it_printed_and_redraws_the_chart():
     single = _fn("renderFastReporterGrid")
-    assert "tableMarkReset(traces);" in single
-    assert "tableMark(traces[ti], e.dist_km)" in single
+    # (under an A+B table it adds to that table's marks: !!opts.oneDir)
+    assert "tableMarkReset(traces, !!opts.oneDir);" in single
+    assert "tableMark(traces[ti], e.dist_km, title)" in single
     fr = _fn("paintFrBidiGrid")
     assert "tableMarkReset(have.flatMap(p => [p.ta, p.tb]));" in fr
     assert "!leg.synthetic" in fr                    # no event of its own in the file
-    assert "tableMark(t, Number(leg.pos_m) / 1000)" in fr
+    assert "tableMark(t, Number(leg.pos_m) / 1000, `Event ${i + 1}`)" in fr
     suite = _fn("paintSuiteBidiGrid")
     assert "tableMarkReset(have.flatMap(p => [p.ta, p.tb]));" in suite
-    assert "tableMark(have[fi].ta, x.a.km)" in suite
-    assert "tableMark(have[fi].tb, x.b.km)" in suite
+    assert "tableMark(have[fi].ta, x.a.km, c.title)" in suite
+    assert "tableMark(have[fi].tb, x.b.km, c.title)" in suite
     for body in (single, fr, suite):
         assert "draw();" in body[body.index("tableMarkReset("):]
 

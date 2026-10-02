@@ -228,6 +228,7 @@ var R = {x: 56, y: 12, w: 1100, h: 600};
         _const("DRAWER_DETAIL_MAX"), _const("DRAWER_TICK_MAX"), _const("DRAWER_LANES"),
         _const("DRAWER_COLOR"),
         _fn("lowerBound"), _fn("drawerColumnSummary"), _fn("drawerCellFailed"), _fn("layoutDrawerTags"),
+        "var gReportColumnNames = null;", _fn("chartColumnTitle"),
         _fn("chartLabels"), _fn("drawPairing"),
         body,
     ])

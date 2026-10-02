@@ -142,6 +142,10 @@ def _jsc(tmp_path, body):
         _const("DRAWER_COLOR"),
         _fn("lowerBound"), _fn("niceTicks"), _fn("drawGrid"), _fn("labelHit"),
         _opt_fn("chartLabels"), _opt_fn("eventNumberSpots"), _opt_fn("drawLabelTip"),
+        # the table's column numbers (no table here: each trace counts its own)
+        "var gTableKm = null, gReportColumnNames = null;",
+        _opt_fn("tableKmKey"), _opt_fn("tableColumnNumber"), _opt_fn("tableColumnOf"),
+        _opt_fn("chartColumnTitle"), _opt_fn("chartColumnNumber"),
         _fn("drawEventMarkers"), _fn("drawerColumnSummary"), _fn("drawerCellFailed"),
         _fn("layoutDrawerTags"),
         _fn("drawPairing"),
