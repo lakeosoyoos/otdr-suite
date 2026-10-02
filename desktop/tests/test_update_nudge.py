@@ -61,6 +61,15 @@ def _load_helper(name, **namespace):
     return getattr(mod, name)
 
 
+def _code_only(src):
+    """`src` with its comments left out."""
+    import io
+    import tokenize
+    toks = [t for t in tokenize.generate_tokens(io.StringIO(src).readline)
+            if t.type != tokenize.COMMENT]
+    return tokenize.untokenize(toks)
+
+
 def _fn_source(name):
     """Source text of one top-level function of app.py (for source-locks)."""
     tree = ast.parse(APP_SRC)
@@ -209,15 +218,23 @@ def test_spawn_os_name_beats_the_ambient_platform():
 # ═════════════════════════════════════════════════════════════════════════
 #  4. Source-locks — placement, single restart path, once-per-session
 # ═════════════════════════════════════════════════════════════════════════
-def test_nudge_renders_above_the_page_radio():
-    """It only works if it is the first thing in the sidebar — below the tool
-    radio a tech scrolls past it."""
-    # The App names the product through PRODUCT_NAME ("OTDR App").
-    sidebar = APP_SRC.index("    st.markdown(f'## 🔬 {PRODUCT_NAME}')")
-    # The sidebar's own call (the home screen has another, with no sidebar).
-    call = APP_SRC.index("\n    _render_update_nudge()", sidebar)
-    radio = APP_SRC.index("page = st.radio(")
-    assert sidebar < call < radio, "the nudge belongs at the top of the nav sidebar"
+def test_nudge_sits_in_the_bar_above_every_page():
+    """It only works if the tech sees it before starting work.  It was the
+    first thing in the sidebar, above the tool radio; since the top bar
+    (2026-10-01) the flag and its menu are in the bar, which every screen
+    draws before its page: the Home screen, New Project, a project and
+    Quick Analysis."""
+    assert "_render_update_nudge" not in APP_SRC, "the sidebar banner is gone"
+    assert "_render_update_menu()" in _fn_source("_render_top_nav")
+    home = APP_SRC.index("\n    _render_top_nav(None, [], show_mode=False)\n"
+                         "    _render_update_blocked()\n    _render_home(_home_msg)")
+    assert home < APP_SRC.index("\n_PROJECT_MODE = ")
+    bars = [APP_SRC.index("\n    _render_top_nav(page, _bar_tabs, show_mode=False)\n"),
+            APP_SRC.rindex("\n    _render_top_nav(None, [], show_mode=False)\n"),  # setup
+            APP_SRC.index("\n    _render_top_nav(page)\n")]
+    assert len(set(bars)) == 3 and home not in bars
+    route = APP_SRC.index("\n    _render_crumbs(_crumb_slot, page)\n")
+    assert all(b < route for b in bars), "the bar belongs above the page"
 
 
 def test_nudge_reuses_the_existing_restart_path():
@@ -257,7 +274,9 @@ def test_nudge_fetches_once_per_recheck_window_with_a_short_timeout():
     # The session_state KEY, quoted: no per-session cache of its own.
     assert "'upd_nudge'" not in src, "no second per-session cache of its own"
     # The menu's only fetch of its own is the tech's Check for Updates click.
-    assert src.count("_latest_manifest") == 1
+    # (OTDR App: comments left out; the no-update note names _latest_manifest.)
+    code = _code_only(src)
+    assert code.count("_latest_manifest") == 1
     assert "_latest_manifest_version()" in src
     state = _fn_source("_update_state")
     assert "_latest_manifest(timeout=3)" in state, "3 s cap on the fetch"

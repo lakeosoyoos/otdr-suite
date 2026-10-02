@@ -1,14 +1,25 @@
 """The hub's top bar (Robert 2026-10-01): one bar across the top of every
 page in place of the sidebar.
 
-    tabs         a tab per tool, in a fixed order; the App edition adds FQA
-                 Builder and Field Capture at the end.  A tab writes the page
-                 into session_state['nav_radio'], which every Back button
-                 and report link also writes.  The app opens on the Viewer,
-                 and the logo goes back to it.
-    Traces tab   the A and B folder boxes, drawn on that tab only.  What
-                 they hold must survive every other tab, and the bar's two
-                 switches, which rerun the page before it draws.
+OTDR App: the bar is drawn on every screen, and what it holds follows the
+screen.
+
+    tabs         Quick Analysis: a tab per trace tool, in a fixed order (FQA
+                 Builder and Field Capture are project work, never tabs
+                 here, whatever the edition).  A tab writes the page into
+                 session_state['nav_radio'], which every Back button and
+                 report link also writes.  Quick Analysis opens on the
+                 Viewer.
+    logo         the old Home button (key go_home): it goes to the Home
+                 screen from anywhere.
+    project      the logo, a Project tab (the old Back to Project) and the
+                 tool open from the project screen; no Analysis Mode.
+    Home / New   the logo, Theme and the update menu: no tabs, no Analysis
+    Project      Mode.
+    Traces tab   the A and B folder boxes, From SharePoint under them and
+                 Clear Traces, drawn on that tab only.  What the boxes hold
+                 must survive every other tab, and the bar's two switches,
+                 which rerun the page before it draws.
     Viewer       with no folders loaded it says where they are.
     update menu  far right: 'Dev Build' or 'Version N'.  An orange Update
                  under it when a newer update is published or the machine
@@ -16,6 +27,8 @@ page in place of the sidebar.
                  The menu says what the old banner said: the reinstall or
                  pinned note alone, else "Update N is available" and Update
                  & Restart.
+                 A build that never updates (OTDR_SUITE_NO_UPDATE) says so
+                 in place of the Check button.
     narrow bar   the width the bar folds into a menu at follows the product
                  name and the tab list.
 """
@@ -30,8 +43,8 @@ import urllib.request
 import pytest
 
 from conftest import (REPO_ROOT, run_streamlit, page_of, go_tab, trace_box,
-                      trace_box_value, load_traces, FIXTURE_SPLICE_A_DIR,
-                      FIXTURE_SPLICE_B_DIR)
+                      trace_box_value, load_traces, open_in_project, goto,
+                      FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
 from test_update_nudge import _arm, _fake_manifest
 
 A, B = str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR)
@@ -41,9 +54,8 @@ SUITE_TABS = [('Traces', 'Traces'), ('Splice Report', 'Splice Report'),
               ('Uni', 'Unidirectional'), ('Splice Report FEC', 'Splice Report FEC'),
               ('Secret Sauce', 'Secret Sauce'), ('Viewer', 'Viewer'),
               ('Viewer FEC', 'Viewer FEC')]
-APP_TABS = SUITE_TABS + [('FQA Builder', 'FQA Builder'),
-                         ('Field Capture', 'Field Capture')]
 APP_NAME = 'OTDR Suite App'
+PROJECT_TAB = ('Project', 'Project Status')
 NO_TRACES = 'No traces loaded.'
 PIN_ENV = 'OTDR_SUITE_CACHE_PINNED'
 NEEDS_ENV = 'OTDR_SUITE_NEEDS_INSTALL'
@@ -52,10 +64,10 @@ NEEDS_ENV = 'OTDR_SUITE_NEEDS_INSTALL'
 @pytest.fixture(autouse=True)
 def _own_settings(tmp_path, monkeypatch):
     """The Analysis Mode switch writes settings.json: never the tech's own.
-    And the Suite edition unless a test asks for the App."""
+    And the default product name unless a test asks for the App's."""
     monkeypatch.setenv('OTDR_SETTINGS_DIR', str(tmp_path / 'settings'))
     monkeypatch.delenv('OTDR_SUITE_EDITION', raising=False)
-    for k in (PIN_ENV, NEEDS_ENV, 'OTDR_SUITE_ENGINE_FILES'):
+    for k in (PIN_ENV, NEEDS_ENV, 'OTDR_SUITE_ENGINE_FILES', 'OTDR_SUITE_NO_UPDATE'):
         monkeypatch.delenv(k, raising=False)
 
 
@@ -79,19 +91,37 @@ def _toggle(at, label):
     return next(t for t in at.toggle if t.label == label)
 
 
+def _switches(at):
+    return sorted(t.label for t in at.toggle if t.label in ('Analysis Mode', 'Theme'))
+
+
+def _lit(at):
+    return [b.key for b in at.button if (b.key or '').startswith('nav_tab_')
+            and b.proto.type == 'primary']
+
+
+def _on_home(at):
+    return (at.session_state['app_mode'] if 'app_mode' in at.session_state
+            else None) not in ('traces', 'project', 'setup') and any(
+                b.key == 'home_traces' for b in at.button)
+
+
 # ── the tabs ──────────────────────────────────────────────────────────────
 
-def test_the_suite_has_a_tab_per_tool_in_order():
+def test_quick_analysis_has_a_tab_per_tool_in_order():
     at = _hub()
     assert _tabs(at) == SUITE_TABS
-    assert next(b for b in at.button if b.key == 'nav_logo_btn').label == 'OTDR Suite'
+    assert at.button(key='go_home').label == 'OTDR Suite'
+    assert _switches(at) == ['Analysis Mode', 'Theme']
 
 
-def test_the_app_edition_adds_its_two_tools_at_the_end(monkeypatch):
+def test_the_app_edition_has_the_same_tabs_and_its_own_name(monkeypatch):
+    """FQA Builder and Field Capture are project work (Robert 2026-09-24):
+    no tab for them in Quick Analysis, whatever the edition."""
     monkeypatch.setenv('OTDR_SUITE_EDITION', APP_NAME)
     at = _hub()
-    assert _tabs(at) == APP_TABS
-    assert next(b for b in at.button if b.key == 'nav_logo_btn').label == APP_NAME
+    assert _tabs(at) == SUITE_TABS
+    assert at.button(key='go_home').label == APP_NAME
 
 
 def test_viewer_fec_has_its_own_tab():
@@ -104,9 +134,7 @@ def test_the_app_opens_on_the_viewer():
     at = _hub()
     assert page_of(at) == 'Viewer'
     # the open tab is the lit one
-    lit = [b.key for b in at.button if (b.key or '').startswith('nav_tab_')
-           and b.proto.type == 'primary']
-    assert lit == ['nav_tab_Viewer']
+    assert _lit(at) == ['nav_tab_Viewer']
 
 
 @pytest.mark.parametrize('label,page', SUITE_TABS)
@@ -118,9 +146,7 @@ def test_a_tab_opens_its_page(label, page):
     assert not at.exception, at.exception
     assert page_of(at) == page
     assert at.session_state['nav_radio'] == page
-    lit = [b.key for b in at.button if (b.key or '').startswith('nav_tab_')
-           and b.proto.type == 'primary']
-    assert lit == [f'nav_tab_{page}']
+    assert _lit(at) == [f'nav_tab_{page}']
 
 
 def test_nav_radio_is_no_widget_any_more():
@@ -134,11 +160,86 @@ def test_nav_radio_is_no_widget_any_more():
     assert page_of(at) == 'Secret Sauce'
 
 
-def test_the_logo_goes_to_the_viewer():
+def test_the_logo_goes_home():
+    """The logo is the old Home button (key go_home, read by _mode_actions
+    at the top of the next run)."""
     at = go_tab(_hub(), 'Splice Report')
-    at.button(key='nav_logo_btn').click().run()
+    at.button(key='go_home').click().run()
     assert not at.exception, at.exception
-    assert page_of(at) == 'Viewer'
+    assert _on_home(at)
+
+
+# ── the bar on the other screens ──────────────────────────────────────────
+
+def _home(monkeypatch):
+    monkeypatch.setenv('OTDR_TEST_HOME', '1')
+    at = run_streamlit(default_timeout=180).run()
+    assert not at.exception, at.exception
+    return at
+
+
+def test_the_home_screen_bar_has_no_tabs_and_no_mode_switch(monkeypatch):
+    at = _home(monkeypatch)
+    assert _on_home(at)
+    assert _tabs(at) == []
+    assert _switches(at) == ['Theme']
+    assert at.button(key='go_home').label == 'OTDR Suite'
+    assert _menu_label(at) == 'Dev Build'
+
+
+def test_new_project_bar_has_no_tabs_and_no_mode_switch(monkeypatch):
+    at = _home(monkeypatch)
+    at.button(key='home_new').click().run()
+    assert not at.exception, at.exception
+    assert at.session_state['app_mode'] == 'setup'
+    assert _tabs(at) == []
+    assert _switches(at) == ['Theme']
+    assert _menu_label(at) == 'Dev Build'
+    # and its logo goes Home too
+    at.button(key='go_home').click().run()
+    assert not at.exception, at.exception
+    assert _on_home(at)
+
+
+def test_a_project_bar_is_the_logo_and_its_project_tab(monkeypatch, tmp_path):
+    """No tool list and no Analysis Mode in a project (Robert 2026-09-27):
+    the Project tab is the way back to the project screen."""
+    at = open_in_project(tmp_path / 'Span', monkeypatch)
+    assert not at.exception, at.exception
+    assert at.session_state['app_mode'] == 'project'
+    assert page_of(at) == 'Project Status'
+    assert _tabs(at) == [PROJECT_TAB]
+    assert _lit(at) == ['nav_tab_Project Status']
+    assert _switches(at) == ['Theme']
+    assert _menu_label(at) == 'Dev Build'
+
+
+@pytest.mark.parametrize('label,page', [('Viewer', 'Viewer'),
+                                        ('Splice Report', 'Splice Report'),
+                                        ('Uni', 'Unidirectional'),
+                                        ('FQA Builder', 'FQA Builder')])
+def test_a_project_tool_page_adds_its_own_tab_and_project_goes_back(
+        monkeypatch, tmp_path, label, page):
+    at = goto(open_in_project(tmp_path / 'Span', monkeypatch), page)
+    assert not at.exception, at.exception
+    assert page_of(at) == page
+    assert _tabs(at) == [PROJECT_TAB, (label, page)]
+    assert _lit(at) == [f'nav_tab_{page}']
+    assert _switches(at) == ['Theme']
+    # no Trace Folders in a project, and no Traces tab to reach them
+    assert not [b for b in at.button if b.key == 'side_clear_traces']
+    go_tab(at, 'Project Status')
+    assert not at.exception, at.exception
+    assert page_of(at) == 'Project Status'
+    assert at.session_state['app_mode'] == 'project'
+    assert _tabs(at) == [PROJECT_TAB]
+
+
+def test_the_logo_goes_home_from_a_project(monkeypatch, tmp_path):
+    at = goto(open_in_project(tmp_path / 'Span', monkeypatch), 'Viewer')
+    at.button(key='go_home').click().run()
+    assert not at.exception, at.exception
+    assert _on_home(at)
 
 
 # ── the Traces tab's boxes keep what they hold ─────────────────────────────
@@ -152,6 +253,19 @@ def test_the_boxes_are_drawn_on_the_traces_tab_only():
         assert drawn == (keys if page == 'Traces' else set()), page
         clear = [b for b in at.button if b.key == 'side_clear_traces']
         assert bool(clear) == (page == 'Traces'), page
+        browse = {b.key for b in at.button} & {'side_browse_a', 'side_browse_b'}
+        assert bool(browse) == (page == 'Traces'), page
+        sp = [e for e in at.expander if e.label == '☁️ From SharePoint']
+        assert len(sp) == (1 if page == 'Traces' else 0), page
+
+
+def test_from_sharepoint_sits_under_the_boxes_on_the_traces_tab():
+    """OTDR App: one SharePoint folder, under the A and B boxes (Robert
+    2026-09-30), now on the Traces tab with them."""
+    at = go_tab(_hub(), 'Traces')
+    assert not at.exception, at.exception
+    (sp,) = [e for e in at.main.expander if e.label == '☁️ From SharePoint']
+    assert not sp.proto.expanded
 
 
 def test_the_boxes_keep_their_folders_across_every_tab():
@@ -224,9 +338,16 @@ def _flag(at):
     return any('<p class="nav-update-flag">Update</p>' in m.value for m in at.markdown)
 
 
+def _menu(at):
+    """The bar's update menu (a project screen has popovers of its own)."""
+    (pop,) = [p for p in at.get('popover')
+              if p.proto.popover.label == 'Dev Build'
+              or p.proto.popover.label.startswith('Version ')]
+    return pop
+
+
 def _menu_label(at):
-    (pop,) = at.get('popover')
-    return pop.proto.popover.label
+    return _menu(at).proto.popover.label
 
 
 def _restart_keys(at):
@@ -239,6 +360,20 @@ def test_a_dev_checkout_shows_dev_build_and_no_flag(monkeypatch, tmp_path):
     assert _menu_label(at) == 'Dev Build'
     assert 'OTDR Suite · dev' in [c.value for c in at.caption]
     assert any(b.key == 'upd_check' for b in at.button)
+    assert not _flag(at)
+
+
+@pytest.mark.parametrize('screen', ['quick', 'home'])
+def test_a_build_that_never_updates_says_so_in_place_of_the_check(
+        monkeypatch, screen):
+    """OTDR App: a build that never updates itself (OTDR_SUITE_NO_UPDATE)
+    could only ever say "could not reach the update server" from a Check
+    button: the menu says how it updates instead."""
+    monkeypatch.setenv('OTDR_SUITE_NO_UPDATE', '1')
+    at = _hub() if screen == 'quick' else _home(monkeypatch)
+    pop = _menu(at)
+    assert 'Updates: install a newer build to update.' in [c.value for c in pop.caption]
+    assert not any(b.key == 'upd_check' for b in at.button)
     assert not _flag(at)
 
 
@@ -409,7 +544,7 @@ def test_the_restart_watchdog_is_drawn_on_the_page(monkeypatch, tmp_path):
     assert '_upd_watchdog' not in at.session_state
     assert any('/_stcore/health' in (f.proto.srcdoc or '') for f in at.get('iframe'))
     # and the watchdog is not inside the menu
-    (pop,) = at.get('popover')
+    pop = _menu(at)
     assert not any('/_stcore/health' in (f.proto.srcdoc or '') for f in pop.get('iframe'))
 
 
@@ -432,19 +567,42 @@ def _bar_sizes(product_name, edition):
     return ns['NAV_TABS'], ns['NAV_LOGO_PX'], ns['NAV_MENU_BELOW_PX']
 
 
+def _menu_below_px(product_name, tabs, show_mode=True):
+    """app.py's _nav_menu_below_px for one product name: the width a bar
+    holding `tabs` folds at."""
+    body = ast.parse(APP_SRC).body
+    keep = [n for n in body if (isinstance(n, ast.FunctionDef)
+                                and n.name == '_nav_menu_below_px')
+            or (isinstance(n, ast.Assign) and any(
+                getattr(t, 'id', None) == 'NAV_LOGO_PX' for t in n.targets))]
+    ns = {'PRODUCT_NAME': product_name}
+    exec(compile(ast.Module(body=keep, type_ignores=[]), 'app.py', 'exec'), ns)
+    return ns['_nav_menu_below_px'](tabs, show_mode)
+
+
 def test_the_bar_width_follows_the_name_and_the_tabs():
     tabs_s, logo_s, menu_s = _bar_sizes('OTDR Suite', None)
     tabs_a, logo_a, menu_a = _bar_sizes(APP_NAME, APP_NAME)
-    assert tabs_s == SUITE_TABS and tabs_a == APP_TABS
+    # OTDR App: the edition does not add tabs (FQA Builder and Field
+    # Capture are project work)
+    assert tabs_s == SUITE_TABS and tabs_a == SUITE_TABS
+    assert _bar_sizes('OTDR Suite', 'x')[2] == menu_s
     # the logo is wide enough for the name, and the App's longer name gets more
     assert logo_s >= 9.5 * len('OTDR Suite') and logo_a > logo_s
-    # the App's bar holds more, so it folds into the menu at a wider window
+    # so the App's bar folds into the menu at a wider window
     assert menu_a > menu_s
-    # the Suite's bar comes to about 1,345 px
+    # the Quick Analysis bar comes to about 1,345 px with the default name
     assert 1300 <= menu_s <= 1400, menu_s
     # a longer name alone, or a tab more, moves it
     assert _bar_sizes('OTDR Suite XX', None)[2] > menu_s
-    assert _bar_sizes('OTDR Suite', 'x')[2] > menu_s
+    assert _menu_below_px('OTDR Suite', SUITE_TABS + [('X', 'X')]) > menu_s
+    assert _menu_below_px('OTDR Suite', SUITE_TABS) == menu_s
+    # and a bar with no Analysis Mode switch folds sooner
+    assert _menu_below_px('OTDR Suite', SUITE_TABS, False) < menu_s
+
+
+def _fold_css(at):
+    return next(m.value for m in at.markdown if '.st-key-top_nav{' in m.value)
 
 
 @pytest.mark.parametrize('edition', [None, APP_NAME], ids=['suite', 'app'])
@@ -453,5 +611,15 @@ def test_the_page_folds_the_bar_at_that_width(monkeypatch, edition):
         monkeypatch.setenv('OTDR_SUITE_EDITION', edition)
     _tabs_, _logo, menu = _bar_sizes(edition or 'OTDR Suite', edition)
     at = _hub()
-    css = next(m.value for m in at.markdown if '.st-key-top_nav{' in m.value)
-    assert f'@media (max-width:{menu}px)' in css
+    assert f'@media (max-width:{menu}px)' in _fold_css(at)
+
+
+def test_the_other_screens_fold_at_their_own_width(monkeypatch, tmp_path):
+    """The Home screen's bar and a project's hold less, so they fold at the
+    width of what they hold."""
+    at = _home(monkeypatch)
+    home = _menu_below_px('OTDR Suite', [], False)
+    assert f'@media (max-width:{home}px)' in _fold_css(at)
+    at = goto(open_in_project(tmp_path / 'Span', monkeypatch), 'Viewer')
+    proj = _menu_below_px('OTDR Suite', [PROJECT_TAB, ('Viewer', 'Viewer')], False)
+    assert f'@media (max-width:{proj}px)' in _fold_css(at)

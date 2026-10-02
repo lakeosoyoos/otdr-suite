@@ -327,10 +327,13 @@ class _MenuSt(_FakeSt):
 
 
 @pytest.mark.parametrize("checked", [False, True], ids=["opened", "after-a-check"])
-def test_the_menu_shows_the_pin_notice_and_offers_no_restart(checked):
+def test_the_menu_shows_the_pin_notice_and_offers_no_restart(checked, monkeypatch):
     """A restart lands on the same bundled engine.  While pinned the bar's
     update menu must say what is going on, flag it, and never consult the
     update state at all, nor offer a restart after the tech's own check."""
+    # OTDR App: the menu reads OTDR_SUITE_NO_UPDATE (a build that never
+    # updates has no Check button); this is a build that does.
+    monkeypatch.delenv("OTDR_SUITE_NO_UPDATE", raising=False)
     st = _MenuSt()
     if checked:
         st.session_state.update(upd_checked=True, upd_latest=502)
@@ -340,7 +343,7 @@ def test_the_menu_shows_the_pin_notice_and_offers_no_restart(checked):
         raise AssertionError("update state consulted while pinned")
 
     menu = _load_app_helper(
-        "_render_update_menu", st=st, PRODUCT_NAME="OTDR Suite",
+        "_render_update_menu", st=st, os=os, PRODUCT_NAME="OTDR Suite",
         _app_version=lambda: "build 400 (2026-09-01)",
         _engine_version=lambda: "bundled (cache pinned)",
         _parse_engine_version=lambda appv, engv: 400,

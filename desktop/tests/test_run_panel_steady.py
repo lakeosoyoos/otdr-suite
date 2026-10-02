@@ -139,10 +139,10 @@ def test_the_page_draws_no_report_under_a_run_but_keeps_its_top_bar():
         assert "sr_job" in at.session_state
         labels = [b.label or "" for b in at.main.button]
         assert labels[-1] == "Cancel Run", labels
-        # (OTDR Suite App's pinned sidebar footer says "Check for Updates".)
-        assert any("Check for Updates" in (b.label or "")
-                   for b in at.sidebar.button)
-        assert any("OTDR Suite" in c.value for c in at.sidebar.caption)
+        assert any(b.key == "nav_tab_Splice Report" for b in at.button)
+        (menu,) = at.get("popover")
+        assert any("Check for Updates" in (b.label or "") for b in menu.button)
+        assert any("OTDR Suite" in c.value for c in menu.caption)
     finally:
         _kill(at)
 

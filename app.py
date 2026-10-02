@@ -3483,7 +3483,7 @@ def _mode_actions():
         # Robert, 2026-09-30: Quick Analysis opens straight on the Suite
         # screen (Trace Folders and the tool list in the left panel), with no
         # stop that asks for traces first.
-        if ss.get('nav_radio') not in TOOLS_TRACES:
+        if ss.get('nav_radio') not in TOOLS_TRACES + ['Traces']:
             ss['nav_radio'] = 'Viewer'
         return None
 
@@ -4620,6 +4620,22 @@ def _render_top_nav(page, tabs=None, show_mode=True):
         _render_update_menu()
 
 
+# The A and B boxes are drawn on the Traces tab only, and Streamlit forgets
+# a widget's state on any run that does not draw it.  So each box is written
+# back to itself before anything draws, and a copy no widget owns
+# ({key}_saved, as _seed_box keeps) brings it back if a run was cut short
+# before that: the bar's Analysis Mode and Theme switches rerun mid-run.
+# OTDR Suite App: here, above the Home screen, which stops the run: a
+# trip Home and back into Quick Analysis emptied both boxes when this ran
+# only after it.
+_TRACE_BOXES = ('view_dir_a_input', 'view_dir_b_input')
+for _k in _TRACE_BOXES:
+    if _k in st.session_state:
+        st.session_state[_k] = st.session_state[_k]
+    elif _k + '_saved' in st.session_state:
+        st.session_state[_k] = st.session_state[_k + '_saved']
+
+
 # ─── Home screen / mode gate ──────────────────────────────────────────────
 _home_msg = _mode_actions()
 if st.session_state.get('app_mode') not in ('traces', 'project', 'setup'):
@@ -5588,18 +5604,6 @@ def _after_page(page):
 # (2026-09-27).  The project's own copy puts it back.
 _PANEL_BOXES_DRAWN = False       # set once the Traces tab's A/B boxes are drawn
 _PANEL_DRAWN = _panel_shown()    # Quick Analysis: the Traces tab and its boxes
-
-# The A and B boxes are drawn on the Traces tab only, and Streamlit forgets
-# a widget's state on any run that does not draw it.  So each box is written
-# back to itself before anything draws, and a copy no widget owns
-# ({key}_saved, as _seed_box keeps) brings it back if a run was cut short
-# before that: the bar's Analysis Mode and Theme switches rerun mid-run.
-_TRACE_BOXES = ('view_dir_a_input', 'view_dir_b_input')
-for _k in _TRACE_BOXES:
-    if _k in st.session_state:
-        st.session_state[_k] = st.session_state[_k]
-    elif _k + '_saved' in st.session_state:
-        st.session_state[_k] = st.session_state[_k + '_saved']
 
 st.session_state.setdefault('nav_radio', (st.session_state.get('_project_page') or 'Project Status')
                             if _PROJECT_MODE else

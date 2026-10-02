@@ -195,9 +195,15 @@ def test_a_link_back_with_the_staged_path_shows_the_name():
 def test_the_hub_label_rule():
     """The boxes are labeled on every run, after a drop is picked up and
     before any page (the Traces tab included) draws them."""
+    # OTDR App: in Quick Analysis's trace-folder block (if _PANEL_DRAWN:),
+    # which runs on every Quick Analysis run; a project has no Traces tab.
     app = open(APP_PATH, encoding='utf-8').read()
-    m = re.search(r'^_label_drop_boxes\(\)$', app, re.M)
+    block = app.index('\nif _PANEL_DRAWN:\n')
+    m = re.search(r'^    _label_drop_boxes\(\)$', app, re.M)
     assert m, 'the boxes are not labeled at module level on every run'
+    assert block < m.start()
+    assert not re.search(r'^\S', app[block + 1:m.start()].split('\n', 1)[1], re.M), \
+        'the label call is not inside the trace-folder block'
     assert app.index("_drop_at = trace_server.CONFIG.get('dropped_at')") < m.start()
     assert m.start() < app.index('\ndef page_traces(')
     body = app.split('def _panel_boxes():', 1)[1].split('\ndef ', 1)[0]

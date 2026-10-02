@@ -114,8 +114,8 @@ def test_theme_switch_is_dark_left_light_right_and_keyless():
     assert "where.container(key='theme_box', width=130, horizontal=True" in body
     assert body.index("'Dark'") < body.index('m.toggle(') < body.index("'Light'")
     assert "m.toggle('Theme', value=not dark, label_visibility='collapsed')" in body
-    # OTDR Suite App: the switch sits in the App's pinned sidebar footer.
-    assert '_render_theme_control(_sidebar_footer)' in SRC
+    bar = SRC.split('\ndef _render_top_nav(', 1)[1].split('\ndef ', 1)[0]
+    assert '_render_theme_control(st)' in bar
 
 
 def _get_viewer(monkeypatch, theme):

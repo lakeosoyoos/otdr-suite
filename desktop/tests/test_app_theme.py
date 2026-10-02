@@ -29,12 +29,17 @@ def test_css_vars_cover_the_whole_palette():
     assert set(_palette('light')) == set(_palette('dark'))
 
 
-def test_the_theme_switch_sits_in_the_apps_pinned_sidebar_footer():
-    """OTDR App: the Light / Dark switch is drawn in the sidebar footer
-    the App pins to the bottom of the panel (main draws it in st.sidebar)."""
-    assert "_sidebar_footer = st.sidebar.container(key='sidebar_footer')" in SRC
-    assert '_render_theme_control(_sidebar_footer)' in SRC
+def test_the_theme_switch_sits_in_the_top_bar_on_every_screen():
+    """OTDR App: the Light / Dark switch was in the sidebar footer the App
+    pinned to the bottom of the panel; with the sidebar gone (2026-10-01) it
+    is in the top bar, which every screen draws: the Home screen, New
+    Project, a project and Quick Analysis."""
+    bar = SRC.split('\ndef _render_top_nav(', 1)[1].split('\ndef ', 1)[0]
+    assert '_render_theme_control(st)' in bar
+    assert SRC.count('_render_theme_control(') == 2      # its def and the bar
+    assert 'sidebar_footer' not in SRC
     assert '_render_theme_control(st.sidebar)' not in SRC
+    assert SRC.count('\n    _render_top_nav(') == 4
 
 
 def test_no_app_theme_module_is_left():

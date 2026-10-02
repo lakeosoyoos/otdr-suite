@@ -1107,22 +1107,29 @@ def test_the_tolerance_scales_with_the_segment(compass_sheet):
 
 # ── the hub page ──────────────────────────────────────────────────────────
 
+def _tabs(at):
+    """The pages the hub's top bar has a tab for, left to right."""
+    return [b.key[len('nav_tab_'):] for b in at.button
+            if (b.key or '').startswith('nav_tab_')]
+
+
 def test_the_hub_offers_the_fqa_builder(tmp_path, monkeypatch):
     # In a project; Run Traces is the trace tools only (2026-09-24).
     from conftest import open_in_project, run_streamlit
     at = open_in_project(tmp_path / 'Span', monkeypatch)
     assert not at.exception
-    # No tool list in a project: the Audit FQA tab opens the FQA Builder.
-    assert not [r for r in at.sidebar.radio if r.label == 'Tool']
+    # No tool tabs in a project (the top bar holds its Project tab only):
+    # the Audit FQA tab opens the FQA Builder.
+    assert _tabs(at) == ['Project Status']
     assert any(b.key == 'ps_go_fqa' for b in at.button)
     monkeypatch.delenv('OTDR_TEST_HOME')
     # ...and with OTDR_SUITE_EDITION set, as the App's launcher always
-    # sets it: in the App these two are project work (2026-09-24).
+    # sets it: in the App these two are project work (2026-09-24), not
+    # Quick Analysis tabs.
     monkeypatch.setenv('OTDR_SUITE_EDITION', 'OTDR App')
     at = run_streamlit(default_timeout=180).run()           # Quick Analysis
-    tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    assert tool.options == ['Viewer', 'Splice Report', 'Splice Report FEC', 'Viewer FEC',
-                            'Unidirectional', 'Secret Sauce']
+    assert _tabs(at) == ['Traces', 'Splice Report', 'Unidirectional',
+                         'Splice Report FEC', 'Secret Sauce', 'Viewer', 'Viewer FEC']
 
 
 def test_the_hub_page_renders_the_same_ui_as_the_standalone_app(tmp_path, monkeypatch):

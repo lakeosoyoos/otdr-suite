@@ -17,7 +17,7 @@ import shutil
 import pytest
 
 from conftest import (REPO_ROOT, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
-                      goto, run_streamlit)
+                      goto, go_tab, run_streamlit, TRACE_BOX_KEYS)
 
 SRC = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
 
@@ -52,11 +52,17 @@ def _button(at, label):
     raise AssertionError(f"{label!r} not rendered; saw {[b.label for b in at.button]}")
 
 
+def _tabs(at):
+    """The pages the top bar has a tab for, left to right."""
+    return [b.key[len("nav_tab_"):] for b in at.button
+            if (b.key or "").startswith("nav_tab_")]
+
+
 def _sr_page(**state):
     at = run_streamlit().run()
     for k, v in state.items():
         at.session_state[k] = v
-    at.sidebar.radio[0].set_value("Splice Report").run()
+    go_tab(at, "Splice Report")
     assert not at.exception, list(at.exception)
     return at
 
@@ -161,7 +167,7 @@ def test_home_screen_offers_run_traces_and_start_project(home_on, settings_dir):
     at = run_streamlit().run()
     assert not at.exception, list(at.exception)
     assert {"🔬 Quick Analysis", "📁 Start New Project", "📂 Open Recent Project"} <= set(_labels(at))
-    assert not [r for r in at.sidebar.radio if r.label == "Tool"]
+    assert _tabs(at) == []                    # the Home screen's bar has no tabs
 
 
 def test_run_traces_is_the_suite_as_it_was(home_on, settings_dir):
@@ -169,13 +175,16 @@ def test_run_traces_is_the_suite_as_it_was(home_on, settings_dir):
     _button(at, "🔬 Quick Analysis").click().run()
     assert not at.exception, list(at.exception)
     # Quick Analysis opens straight on the Suite screen (2026-09-30): the
-    # tool list and the Trace Folders in the left panel, no load screen and
-    # no project.
+    # tool tabs and the Traces tab in the top bar (the left panel's tool
+    # list and Trace Folders until 2026-10-01), no load screen and no
+    # project.
     assert "qa_stage" not in at.session_state
-    tool = next(r for r in at.sidebar.radio if r.label == "Tool")
-    assert tool.options == ["Viewer", "Splice Report", "Splice Report FEC", "Viewer FEC",
-                            "Unidirectional", "Secret Sauce"]
-    assert "##### Trace Folders" in [m.value for m in at.sidebar.markdown]
+    assert _tabs(at) == ["Traces", "Splice Report", "Unidirectional",
+                         "Splice Report FEC", "Secret Sauce", "Viewer", "Viewer FEC"]
+    assert not any(b.key == "qa_load" for b in at.button)
+    go_tab(at, "Traces")
+    assert not at.exception, list(at.exception)
+    assert set(TRACE_BOX_KEYS.values()) <= {t.key for t in at.text_input}
     assert not any(b.key == "qa_load" for b in at.button)
     assert "project_path" not in at.session_state
     # Its Home button goes back.
@@ -190,11 +199,12 @@ def test_start_project_makes_the_work_folder_the_project(home_on, settings_dir, 
     proj = work / "SITEA-SITEB.otdrproj"
     assert proj.is_file()
     # No tool list or Analysis switch in a project (Robert, 2026-09-27): the
-    # project screen's tabs open the tools.
-    assert not [r for r in at.sidebar.radio if r.label == "Tool"]
+    # project screen's tabs open the tools; the top bar has its Project tab.
+    assert _tabs(at) == ["Project Status"]
+    assert not [t for t in at.toggle if t.label == "Analysis Mode"]
     assert at.session_state["nav_radio"] == "Project Status"
     # No Load span box in a project: traces come in through section 4.
-    assert not [e for e in at.sidebar.expander if "Load span" in e.label]
+    assert not [e for e in at.expander if "Load span" in e.label]
     # The tools point at the work folder.
     assert at.session_state["view_dir_a_input"] == str(work / "Traces" / "A")
     assert at.session_state["sr_report_dest"] == str(work / "Reports")
@@ -659,8 +669,10 @@ def test_a_tool_opened_from_the_project_has_a_way_back(home_on, settings_dir, sp
     at.session_state["nav_radio"] = "Viewer"
     at.run()
     assert not at.exception, list(at.exception)
-    assert not [r for r in at.sidebar.radio if r.label == "Tool"]
-    at.button(key="go_project").click().run()
+    # No tool list: the bar has the Project tab (the old Back to Project)
+    # and the tool open from it.
+    assert _tabs(at) == ["Project Status", "Viewer"]
+    at.button(key="nav_tab_Project Status").click().run()
     assert at.session_state["nav_radio"] == "Project Status"
     assert [t.label for t in at.tabs][0] == "Events"
     # The audit starts from the Audit FQA tab.

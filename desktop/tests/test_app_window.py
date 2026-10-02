@@ -343,10 +343,14 @@ def test_minimal_hides_the_menu_only_while_the_hub_adds_no_items():
 def test_a_no_update_build_has_no_check_for_updates_button():
     """The App never updates itself, so the button could only ever report
     "could not reach the update server".  It is replaced, not left dead."""
+    # The check sits in the top bar's update menu (2026-10-01).
     src = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
-    guard = src.index("if os.environ.get('OTDR_SUITE_NO_UPDATE'):\n    # This build never")
-    button = src.index("key='upd_check'")
+    menu = src.split("\ndef _render_update_menu(", 1)[1].split("\ndef ", 1)[0]
+    assert "_no_update = bool(os.environ.get('OTDR_SUITE_NO_UPDATE'))" in menu
+    guard = menu.index("if _no_update:\n                # This build never")
+    button = menu.index("key='upd_check'")
     assert guard < button < guard + 400, "the button must sit in the else branch"
+    assert src.count("key='upd_check'") == 1
 
 
 # ── Projects: a double-clicked .zfc/.zdb reaches the open window ────────

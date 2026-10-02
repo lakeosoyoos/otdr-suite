@@ -107,11 +107,13 @@ def test_the_app_says_otdr_app_on_home_and_in_quick_analysis(settings_dir, monke
     assert not at.exception, list(at.exception)
     assert any(f"🔬 {APP}</h2>" in m.value for m in at.markdown)
     assert not [t for t in _seen(at) if "Suite" in t]
+    # The top bar (2026-10-01) is on the Home screen too: its logo is the
+    # product name, and its update menu names the build.
+    assert at.button(key="go_home").label == APP
     at.button(key="home_traces").click().run()
     assert not at.exception, list(at.exception)
-    side = [m.value for m in at.sidebar.markdown] + [c.value for c in at.sidebar.caption]
-    assert f"## 🔬 {APP}" in side
-    assert f"{APP} · dev" in side
+    assert at.button(key="go_home").label == APP
+    assert f"{APP} · dev" in [c.value for c in at.caption]
     assert not [t for t in _seen(at) if "Suite" in t]
 
 

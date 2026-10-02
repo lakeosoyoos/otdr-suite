@@ -14,6 +14,7 @@ import pytest
 
 from conftest import (run_streamlit, import_trace_server, go_tab, page_of,
                       trace_box, trace_box_value, clear_traces, load_traces,
+                      TRACE_BOX_KEYS,
                       FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
 
 A, B = str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR)
@@ -68,9 +69,15 @@ def test_every_page_draws_once_without_a_duplicate_box(page):
 
 # OTDR App (this branch): FQA Builder and Field Capture belong to the
 # App (Robert 2026-09-28) and, inside it, to a project (Robert 2026-09-24).  A
-# project has no tool list and no Trace Folders in the left panel (Robert
-# 2026-09-27): its screen opens the tools, and a shoot's Run In... chooses the
-# traces.  The Trace Folders come with Quick Analysis (Robert 2026-09-28).
+# project has no tool tabs and no Traces tab (Robert 2026-09-27; the top bar
+# 2026-10-01): its screen opens the tools, and a shoot's Run In... chooses the
+# traces.  The Traces tab comes with Quick Analysis (Robert 2026-09-28).
+
+
+def _no_trace_folders(at):
+    return (not [t for t in at.text_input if t.key in TRACE_BOX_KEYS.values()]
+            and not [b for b in at.button if b.key == 'side_clear_traces']
+            and 'Traces' not in _tabs(at))
 
 
 @pytest.mark.parametrize('page', APP_TOOLS)
@@ -79,7 +86,9 @@ def test_the_app_pages_open_in_a_project_without_trace_folders(page, monkeypatch
     monkeypatch.setenv('OTDR_SUITE_EDITION', 'OTDR App')
     at = goto(open_in_project(tmp_path / 'Span', monkeypatch), page)
     assert not at.exception, at.exception
-    assert not [t for t in at.sidebar.text_input if t.label in ('A Folder', 'B Folder')]
+    assert _no_trace_folders(at)
+    # the bar: the Project tab and the tool open from it
+    assert _tabs(at) == ['Project Status', page]
 
 
 def test_quick_analysis_lists_the_trace_tools_only(monkeypatch):
@@ -89,10 +98,11 @@ def test_quick_analysis_lists_the_trace_tools_only(monkeypatch):
     monkeypatch.delenv('OTDR_SUITE_EDITION', raising=False)
     at = run_streamlit().run()
     assert not at.exception
-    assert list(at.sidebar.radio[0].options) == TRACE_TOOLS
+    assert _tabs(at) == TABS
     monkeypatch.setenv('OTDR_SUITE_EDITION', 'OTDR App')
     at = run_streamlit().run()
-    assert list(at.sidebar.radio[0].options) == TRACE_TOOLS
+    assert not at.exception
+    assert _tabs(at) == TABS
 
 
 def test_a_project_has_no_tool_list_and_no_trace_folders(monkeypatch, tmp_path):
@@ -100,10 +110,9 @@ def test_a_project_has_no_tool_list_and_no_trace_folders(monkeypatch, tmp_path):
     monkeypatch.setenv('OTDR_SUITE_EDITION', 'OTDR App')
     at = open_in_project(tmp_path / 'Span', monkeypatch)
     assert not at.exception
-    assert not [r for r in at.sidebar.radio if r.label == 'Tool']
-    md = [m.value for m in at.sidebar.markdown]
-    assert '##### Trace Folders' not in md
-    assert not [b for b in at.sidebar.button if b.label == 'Clear Traces']
+    assert _tabs(at) == ['Project Status']
+    assert _no_trace_folders(at)
+    assert not [b for b in at.button if b.label == 'Clear Traces']
 
 
 def test_the_two_pages_still_ship():

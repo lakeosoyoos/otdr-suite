@@ -19,7 +19,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, run_streamlit
+from conftest import (FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, run_streamlit,
+                      go_tab, trace_box, clear_traces)
 
 
 @pytest.fixture
@@ -506,16 +507,27 @@ def test_a_report_exports_as_a_copy_and_a_run_folder_as_a_zip(hub, tmp_path):
 
 # ── Quick Analysis: straight to the Suite screen (2026-09-30) ────────────
 # Robert: "remove the intermediate screen in Quick Analysis ... take us to
-# the OTDR Suite home screen".  The left panel's Trace Folders hold the
-# traces (the A and B boxes, Clear Traces); the tool list picks the tool.
+# the OTDR Suite home screen".  The Traces tab holds the traces (the A and
+# B boxes, Clear Traces); the top bar's tabs pick the tool (they were the
+# left panel's Trace Folders and tool list until 2026-10-01).
+QA_TABS = ["Traces", "Splice Report", "Unidirectional", "Splice Report FEC",
+           "Secret Sauce", "Viewer", "Viewer FEC"]
+
+
 def _side_box(at, key):
-    return next(t for t in at.sidebar.text_input if t.key == key)
+    """The Traces tab's A or B box (goes to the Traces tab first)."""
+    return trace_box(at, {"view_dir_a_input": "a", "view_dir_b_input": "b"}[key])
 
 
 def _tool(at, name):
-    next(r for r in at.sidebar.radio if r.label == "Tool").set_value(name).run()
+    go_tab(at, name)
     assert not at.exception, list(at.exception)
     return at
+
+
+def _tabs(at):
+    return [b.key[len("nav_tab_"):] for b in at.button
+            if (b.key or "").startswith("nav_tab_")]
 
 
 def _qa_loaded(span_dir):
@@ -533,17 +545,17 @@ def test_quick_analysis_opens_on_the_suite_screen_with_nothing_loaded(settings_d
     at.button(key="home_traces").click().run()
     assert not at.exception, list(at.exception)
     assert "qa_stage" not in at.session_state
-    tool = next(r for r in at.sidebar.radio if r.label == "Tool")
-    assert tool.options == ["Viewer", "Splice Report", "Splice Report FEC", "Viewer FEC",
-                            "Unidirectional", "Secret Sauce"]
-    assert "##### Trace Folders" in [m.value for m in at.sidebar.markdown]
-    assert any(e.label == "☁️ From SharePoint" for e in at.sidebar.expander)
+    assert _tabs(at) == QA_TABS
+    assert not any(b.key in ("qa_load", "qa_reload", "qa_continue") for b in at.button)
+    _tool(at, "Traces")
+    assert "#### Traces" in [m.value for m in at.markdown]
+    assert any(e.label == "☁️ From SharePoint" for e in at.expander)
     assert not any(b.key in ("qa_load", "qa_reload", "qa_continue") for b in at.button)
     for name in ("Splice Report", "Unidirectional", "Secret Sauce"):
         _tool(at, name)                           # a tool page shows with no traces
 
 
-def test_every_tool_runs_on_the_left_panels_traces(settings_dir, span_dir):
+def test_every_tool_runs_on_the_traces_tabs_traces(settings_dir, span_dir):
     at = _qa_loaded(span_dir)
     for name, heading in (("Unidirectional", "Unidirectional"),
                           ("Secret Sauce", "Secret Sauce"),
@@ -551,7 +563,7 @@ def test_every_tool_runs_on_the_left_panels_traces(settings_dir, span_dir):
         _tool(at, name)
         text = " ".join(m.value for m in at.markdown)
         assert heading in text, name
-        assert any("loaded in the left panel" in c.value for c in at.main.caption), name
+        assert any("loaded on the Traces tab" in c.value for c in at.main.caption), name
         # The panel holds the traces: no folder picking on the page.
         labels = {b.label for b in at.main.button}
         assert not {"📁 Browse for Folder", "📁 A-Direction Folder"} & labels, name
@@ -559,7 +571,7 @@ def test_every_tool_runs_on_the_left_panels_traces(settings_dir, span_dir):
                     if t.key in ("uni_folder_input", "ss_folder_input", "view_dir_a_input")]
 
 
-def test_a_direction_changed_in_the_left_panel_is_what_the_tools_run_on(
+def test_a_direction_changed_on_the_traces_tab_is_what_the_tools_run_on(
         settings_dir, span_dir, tmp_path):
     import shutil
     at = _qa_loaded(span_dir)
@@ -577,8 +589,7 @@ def test_a_direction_changed_in_the_left_panel_is_what_the_tools_run_on(
 
 def test_clear_traces_in_quick_analysis_empties_the_panel(settings_dir, span_dir):
     at = _qa_loaded(span_dir)
-    next(b for b in at.sidebar.button if b.label == "Clear Traces").click().run()
-    next(b for b in at.get("dialog")[0].button if b.key == "clear_traces_allow").click().run()
+    clear_traces(at, allow=True)
     assert not at.exception, list(at.exception)
     assert at.session_state["app_mode"] == "traces"   # still the Suite screen
     assert _side_box(at, "view_dir_a_input").value == ""
@@ -592,6 +603,21 @@ def test_quick_analysis_home_and_back_keeps_the_traces(settings_dir, span_dir):
     assert not at.exception, list(at.exception)
     assert _side_box(at, "view_dir_a_input").value == str(span_dir / "A")
     assert _side_box(at, "view_dir_b_input").value == str(span_dir / "B")
+
+
+def test_home_from_the_traces_tab_and_back_opens_the_traces_tab(settings_dir, span_dir):
+    """The Home screen stops the run before the top bar: the A and B boxes
+    are kept above it (a trip Home and back emptied them), and Quick
+    Analysis comes back on the tab it was left on, Traces included."""
+    at = _qa_loaded(span_dir)
+    at.button(key="nav_tab_Traces").click().run()
+    at.button(key="go_home").click().run()
+    assert at.session_state["view_dir_a_input"] == str(span_dir / "A")
+    at.button(key="home_traces").click().run()
+    assert not at.exception, list(at.exception)
+    assert at.session_state["nav_radio"] == "Traces"
+    assert [t.value for t in at.text_input if t.key == "view_dir_a_input"] == [str(span_dir / "A")]
+    assert [t.value for t in at.text_input if t.key == "view_dir_b_input"] == [str(span_dir / "B")]
 
 
 

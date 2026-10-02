@@ -24,7 +24,8 @@ from http.cookies import SimpleCookie
 
 import pytest
 
-from conftest import FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, REPO_ROOT, run_streamlit
+from conftest import (FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, REPO_ROOT, run_streamlit,
+                      go_tab)
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -475,12 +476,14 @@ def test_a_sign_in_popup_stays_in_the_app_not_the_system_browser(monkeypatch):
 
 # ── Quick Analysis: From SharePoint ──────────────────────────────────────
 def _load_screen():
-    """Quick Analysis: From SharePoint sits in the left panel, under the A
-    and B boxes (2026-09-30)."""
+    """Quick Analysis: From SharePoint sits under the A and B boxes
+    (2026-09-30), on the Traces tab (the left panel until 2026-10-01)."""
     at = run_streamlit().run()
     at.button(key='home_traces').click().run()
     assert not at.exception, list(at.exception)
-    assert any(e.label == '☁️ From SharePoint' for e in at.sidebar.expander)
+    go_tab(at, 'Traces')
+    assert not at.exception, list(at.exception)
+    assert any(e.label == '☁️ From SharePoint' for e in at.main.expander)
     return at
 
 
@@ -550,7 +553,7 @@ def test_a_span_loads_straight_from_the_sharepoint_folder(settings_dir, sp):
     assert {'📁 A', '📁 B'} <= {b.label for b in at.button}
     at.button(key='sp_load').click().run()
     assert not at.exception, list(at.exception)
-    # The left panel's A and B boxes take the copied folders.
+    # The Traces tab's A and B boxes take the copied folders.
     ends = at.session_state['span_loaded']
     assert at.session_state['view_dir_a_input'] == ends['dir_a']
     assert at.session_state['view_dir_b_input'] == ends['dir_b']

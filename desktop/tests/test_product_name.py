@@ -18,8 +18,9 @@ APP = "OTDR App"
 
 
 def _logo(at):
-    """The name at the left of the top bar (it was the sidebar's heading)."""
-    return at.button(key="nav_logo_btn").label
+    """The name at the left of the top bar (it was the sidebar's heading).
+    OTDR App: the logo is the Home button (key go_home)."""
+    return at.button(key="go_home").label
 
 
 def _bar(at):

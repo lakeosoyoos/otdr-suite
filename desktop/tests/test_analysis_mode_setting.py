@@ -110,11 +110,13 @@ def _top_nav():
 def test_the_bar_control_sits_right_after_the_tool_tabs():
     # The top bar (2026-10-01) draws the tool tabs, then the switch, on
     # every page: the bar is drawn before the page is.
+    # OTDR App: Quick Analysis's bar only (show_mode); the Home screen, New
+    # Project and a project draw theirs without it.
     bar = _top_nav()
-    i_tool = bar.index("for _label, _target in NAV_TABS:")
-    i_ctl = bar.index("        _render_analysis_mode_control()\n")
+    i_tool = bar.index("for _label, _target in tabs:")
+    i_ctl = bar.index("        if show_mode:\n            _render_analysis_mode_control()\n")
     assert i_tool < i_ctl < i_tool + 400
-    assert SRC.index("\n_render_top_nav(page)\n") < SRC.index("\n    if page == 'Traces':")
+    assert SRC.index("\n    _render_top_nav(page)\n") < SRC.index("\n    elif page == 'Traces':")
     body = SRC.split("def _render_analysis_mode_control():", 1)[1].split("\ndef ", 1)[0]
     assert "load_analysis_mode()" in body and "save_analysis_mode(_mode)" in body
     # FR Mode | switch | OTDR Mode (2026-09-24): knob right = OTDR Mode.
