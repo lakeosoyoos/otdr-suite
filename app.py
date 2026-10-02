@@ -2314,7 +2314,9 @@ _CARRIED_SETTINGS = ('otdr_profile', 'otdr_settings', 'conn_settings',
                      'uni_site_saved', 'uni_site_src',
                      'sr_input_mode_saved', 'sr_one_folder_saved', 'sr_n_spans',
                      'uni_folder_input_saved', 'uni_landmarks_text_saved',
-                     'uni_dir_pick_saved')
+                     'uni_dir_pick_saved',
+                     # Secret Sauce's Output choice (Excel, PDF, Stay in App).
+                     'ss_out_format_saved')
 # Every added span's own kept slots (sr2_dir_a_saved, sr2_site_src, ...).
 _CARRIED_SPAN_RE = re.compile(r'sr\d+_\w+_(saved|src)')
 _CARRY_ID_RE = re.compile(r'[0-9a-f]{12}')
@@ -2396,7 +2398,17 @@ def _handle_nav():
     # (the wrinkle: the viewer resolves fibers by number from its A/B folders).
     if qp.get('nav') == 'viewer' and qp.get('fibers'):
         ssfolder = qp.get('ssfolder')
-        if ssfolder and os.path.isdir(ssfolder):
+        _pa_q, _pb_q = qp.get('pa') or '', qp.get('pb') or ''
+        if qp.get('ssab') and (_pa_q or _pb_q):
+            # A pair of a run on the left panel's A and B folders: the link
+            # says which direction (dir=a, b or both), so the Viewer reads the
+            # tech's own two folders, not the flat copy that holds both
+            # directions under the same numbers (_ss_pair_link).
+            st.session_state['view_dir_a_input'] = _pa_q
+            st.session_state['view_dir_b_input'] = _pb_q
+            if ssfolder and os.path.isdir(ssfolder):
+                st.session_state['ss_folder_input'] = ssfolder
+        elif ssfolder and os.path.isdir(ssfolder):
             st.session_state['view_dir_a_input'] = ssfolder
             # Preserve the Duplicate Check folder so "← Back" restores the pairs
             # list (the URL nav resets session_state; the folder + cached pairs
@@ -2405,6 +2417,11 @@ def _handle_nav():
             # ...and tell the sidebar the A box now holds that folder, so it
             # does not build a second one from it (see the Trace Folders block).
             st.session_state['_ss_nav_folder'] = ssfolder
+            # The B box is the tech's own: a new session seeds it from the
+            # trace server's last folders, so a B folder the tech had emptied
+            # came back in the Viewer (2026-10-02 click audit).
+            if 'pb' in qp:
+                st.session_state['view_dir_b_input'] = _pb_q
         st.session_state['viewer_target'] = {
             'fibers': qp.get('fibers'),
             'dir': qp.get('dir', 'a'),
@@ -2951,6 +2968,74 @@ def _take_panel_ss_folder(dir_a, dir_b):
     # folder box (the left panel is loaded).
     ss['_ss_panel_folder'] = folder
     return folder, renamed
+
+
+def _ss_panel_sides(dir_a, dir_b):
+    """{name stem in the panel's Secret Sauce folder: [side, fiber]} for every
+    file the Viewer can open by its number from the left panel's own folder:
+    side 'a' or 'b', fiber as the Viewer reads it there, and no other file of
+    that folder on the same number.  Every fiber number is in both directions,
+    so the flat folder's numbers never told a pair's two files apart and no
+    pair of an A+B run could be clicked (2026-10-02 click audit).  The names
+    are the ones _panel_ss_folder places (B_<name> for a B file named like an
+    A file).  Never raises: no entry means the pair is not linked."""
+    import folder_intake as fi
+    from collections import Counter
+    out = {}
+    try:
+        files = {'a': fi.find_otdr_files(_run_folder(dir_a)),
+                 'b': fi.find_otdr_files(_run_folder(dir_b))}
+        placed, _renamed = fi.combined_names(files['a'], files['b'])
+        side_of = {f: side for side in ('a', 'b') for f in files[side]}
+        seen = {}
+        for side, d in (('a', dir_a), ('b', dir_b)):
+            listed = trace_server.list_fibers(d)
+            count = Counter(n for n, _fn in listed)
+            seen[side] = {fn: n for n, fn in listed if count[n] == 1}
+        for path, name in placed:
+            side = side_of.get(path)
+            num = seen.get(side, {}).get(os.path.basename(path))
+            if num is not None:
+                out[os.path.splitext(name)[0]] = [side, int(num)]
+    except Exception as exc:
+        report_error('secret sauce: pair directions', exc,
+                     {'dir_a': dir_a, 'dir_b': dir_b})
+        return {}
+    return out
+
+
+def _ss_pair_link(p, res, ssq):
+    """How a pair row of a Secret Sauce report links into the Viewer:
+    (href or None, label, title).  A run on the left panel's A and B folders
+    carries each file's direction (`_sides`): the pair opens in the Viewer on
+    the panel's own folders, in its own direction, or in both directions when
+    its files are one of each.  Otherwise the engine's rule stands (both
+    numbers unique in the one folder the run read)."""
+    fa, fb = p.get('fiberA'), p.get('fiberB')
+    sides = res.get('_sides') or {}
+    sa, sb = sides.get(p.get('fileA')), sides.get(p.get('fileB'))
+    if sa and sb:
+        (da, na), (db, nb) = sa, sb
+        if da == db and na != nb:
+            return (f"?nav=viewer&fibers={na},{nb}&dir={da}&ssfolder={ssq}&ssab=1"
+                    f"{_panel_qs()}",
+                    f"F{na} ↔ F{nb} ({da.upper()})",
+                    f"Overlay {p.get('fileA')} + {p.get('fileB')}")
+        if da != db:
+            if da == 'b':
+                (da, na), (db, nb) = (db, nb), (da, na)
+            fibers = f'{na}' if na == nb else f'{na},{nb}'
+            return (f"?nav=viewer&fibers={fibers}&dir=both&ssfolder={ssq}&ssab=1"
+                    f"{_panel_qs()}",
+                    f"F{na} A ↔ F{nb} B",
+                    f"Overlay {p.get('fileA')} + {p.get('fileB')}: one A file and "
+                    f"one B file, so the Viewer shows both directions of "
+                    + (f'F{na}' if na == nb else f'F{na} and F{nb}'))
+    label = f"F{fa} ↔ F{fb}"
+    if p.get('viewable') and fa is not None and fb is not None:
+        return (f"?nav=viewer&fibers={fa},{fb}&dir=a&ssfolder={ssq}{_panel_qs()}",
+                label, f"Overlay {p.get('fileA')} + {p.get('fileB')}")
+    return None, label, f"not viewable: {p.get('reason', '')}"
 
 
 def _renamed_note(renamed, limit=3):
@@ -4023,7 +4108,8 @@ document.getElementById("vpop2").addEventListener("click", function(){
         q['dir'] = tgt.get('dir', 'a')
         if announce:
             _note.caption(f"Overlaying duplicate-pair fibers {tgt['fibers']} "
-                       f"(direction {q['dir'].upper()})")
+                       + ('(both directions)' if q['dir'] == 'both'
+                          else f"(direction {q['dir'].upper()})"))
     elif tgt and tgt.get('fiber'):
         q['fiber'] = tgt['fiber']
         if tgt.get('km'):
@@ -4070,6 +4156,21 @@ document.getElementById("vpop2").addEventListener("click", function(){
 # ═════════════════════════════════════════════════════════════════════════
 #  PAGE: Duplicate Check (Secret Sauce)
 # ═════════════════════════════════════════════════════════════════════════
+def _ss_forget_other_input(src):
+    """Drop the report on screen when the page's input changed since the
+    last pass: the left panel's boxes, the page's own box, or a drop.  The
+    page went on showing the old folders' report under a line naming the new
+    ones (2026-10-02 click audit: a 48-file A+B report under "the A folder").
+    A report for the folders loaded now still comes back from the disk cache,
+    which is filed per folder.  A Viewer Remove is not a new input: the
+    report stays, with the note that says it predates the Remove."""
+    ss = st.session_state
+    if ss.get('_ss_input_src', src) != src:
+        ss.pop('ss_result', None)
+        ss.pop('ss_pairs_result', None)
+    ss['_ss_input_src'] = src
+
+
 def page_duplicate_check():
     st.markdown('#### Secret Sauce')
     st.session_state.pop('_ss_removed_note', None)     # a slot from an earlier run
@@ -4082,14 +4183,15 @@ def page_duplicate_check():
 
     st.session_state.setdefault('ss_folder_input', '')
 
+    _ab = False
     _pa, _pb = _panel_traces()
-    _dropped = None
+    _dropped, _from_drop = None, False
     if _pa or _pb:
         # Traces loaded in the left panel: the page draws no loader of its
         # own and runs on those (Robert 2026-09-28).  Both directions go in
         # as the one folder the sidebar built from them; after a pair click
         # the A box IS that folder (see _handle_nav).
-        _renamed = []
+        _renamed, _ab = [], False
         if _pa == st.session_state.get('_ss_nav_folder'):
             folder = _pa
         elif _pa and _pb:
@@ -4099,6 +4201,7 @@ def page_duplicate_check():
             try:
                 folder, _renamed = _take_panel_ss_folder(_run_folder(_pa),
                                                          _run_folder(_pb))
+                _ab = True
             except Exception as _exc:
                 report_error('secret sauce: A and B folder', _exc,
                              {'dir_a': _pa, 'dir_b': _pb})
@@ -4138,12 +4241,18 @@ def page_duplicate_check():
         if _sn:
             st.caption(f'📥 {_sn} file(s) staged from the drop, used as the '
                        'input folder.')
-            folder = _sdir
+            folder, _from_drop = _sdir, True
         else:
             st.warning('The drop contained no readable OTDR files.')
         if _sdupes:
             import folder_intake as _fi_d
             st.warning('⚠ ' + _fi_d.duplicate_names_message(_sdupes, kept=False))
+    # What the report on screen must have come from: the left panel's two
+    # boxes, the page's own folder box, or the drop.
+    _src = (('drop', folder) if _from_drop
+            else ('panel', _pa, _pb) if (_pa or _pb)
+            else ('box', folder))
+    _ss_forget_other_input(_src)
     if not folder or not os.path.isdir(folder):
         st.info('👆 Choose the folder that holds your `.sor` / `.trc` / `.json` '
                 'files, or drag & drop them above.')
@@ -4159,8 +4268,14 @@ def page_duplicate_check():
     import folder_intake as _fi
     folder, _foreign = _exclude_foreign_files(folder, _fi.OTDR_EXTS_WITH_TRC)
 
-    out_format = st.radio('Output', ['Excel (xlsx)', 'PDF', 'Stay in App'],
-                          horizontal=True)
+    # Keyed and kept (_seed_box / _keep_box), and the kept copy rides a pair
+    # click (_CARRIED_SETTINGS): unkeyed, PDF or Stay in App went back to
+    # Excel after a trip to another tool or a pair click and Back, and the
+    # next run made an Excel workbook (2026-10-02 click audit).
+    _outputs = ['Excel (xlsx)', 'PDF', 'Stay in App']
+    _seed_box('ss_out_format', _outputs)
+    out_format = st.radio('Output', _outputs, horizontal=True, key='ss_out_format')
+    _keep_box('ss_out_format')
     fmt = {'Excel (xlsx)': 'xlsx', 'PDF': 'pdf'}.get(out_format, 'pairs')
 
     st.caption("⏳ Large folders can take several minutes. After you click you'll see "
@@ -4181,6 +4296,9 @@ def page_duplicate_check():
         # What this run leaves out, for the note over its report.  Only a run
         # on the left panel's folders leaves anything out (_run_folder).
         st.session_state['ss_run_removed'] = _removed_now(_pa, _pb)
+        st.session_state['ss_run_src'] = _src
+        # Each file's direction, for the pair links (_ss_pair_link).
+        st.session_state['ss_run_sides'] = _ss_panel_sides(_pa, _pb) if _ab else {}
         st.session_state.pop('ss_result', None)        # clear any prior result
         st.session_state.pop('ss_pairs_result', None)
         st.rerun()
@@ -4245,15 +4363,24 @@ def page_duplicate_check():
         # Stash the folder so the in-app pair links can point the viewer at it.
         manifest['_folder'] = st.session_state.pop('ss_run_folder', None) or folder
         manifest['_viewer_removed'] = st.session_state.pop('ss_run_removed', None)
-        if manifest.get('mode') == 'pairs':
+        _ran_on = st.session_state.pop('ss_run_src', _src)
+        manifest['_sides'] = st.session_state.pop('ss_run_sides', None) or {}
+        # Filed under the folder it RAN on, which _ss_cache_read checks: filed
+        # under the folder on screen, a run that ended after the folders
+        # changed was never read back.
+        _ss_cache_write('pairs_cache.json' if manifest.get('mode') == 'pairs'
+                        else 'ss_result_cache.json', manifest['_folder'], manifest)
+        if _ran_on != _src:
+            # The folders changed while it ran: its report is not for these.
+            st.info('The analysis finished on the folders loaded when it '
+                    'started, not the ones loaded now. Load those folders '
+                    'again to see its report.')
+        elif manifest.get('mode') == 'pairs':
+            # Cached to disk above, so "← Back" from the Viewer (which reset
+            # session_state via the URL nav) re-shows the pairs list instantly.
             st.session_state['ss_pairs_result'] = manifest
-            # Cache to disk so "← Back" from the Viewer (which reset session_state
-            # via the URL nav) re-shows the pairs list instantly — no re-run.
-            _ss_cache_write('pairs_cache.json', folder, manifest)
         else:
             st.session_state['ss_result'] = manifest
-            # Same round trip, same loss — the Excel/PDF result needs it too.
-            _ss_cache_write('ss_result_cache.json', folder, manifest)
 
     # ── In-app duplicate report (persists across reruns; restore from the
     #    on-disk cache after a pair-click round trip cleared session_state) ──
@@ -4314,7 +4441,13 @@ def page_duplicate_check():
                      f"{w.get('n_pairs','?')} pairs)")
             st.download_button(label, data=data, file_name=os.path.basename(p),
                                key='dl_' + p)
-        st.caption(f'Saved to: {os.path.join(folder, "SecretSauce_reports")}')
+        _where = sorted({os.path.dirname(w['path']) for w in res.get('written', [])
+                         if w.get('path')})
+        if _where:
+            # Where the engine wrote them (the Save Reports To folder).  It
+            # used to name the traces folder, which on a left-panel A+B run
+            # is a temp copy the report was never in (2026-10-02 audit).
+            st.caption('Saved to: ' + '; '.join(_where))
 
 
 # Likelihood-tier colors for the in-app duplicate-pair report.
@@ -4519,15 +4652,15 @@ def _render_mating_top(res):
             + '</tr></thead><tbody>']
     for i, p in enumerate(top, 1):
         fa, fb = p.get('fiberA'), p.get('fiberB')
-        label = (f"F{fa} ↔ F{fb}" if fa is not None and fb is not None
-                 else f"{p.get('fileA')} ↔ {p.get('fileB')}")
-        if p.get('viewable') and fa is not None and fb is not None:
-            href = f"?nav=viewer&fibers={fa},{fb}&dir=a&ssfolder={ssq}{_panel_qs()}"
+        href, label, title = _ss_pair_link(p, res, ssq)
+        if fa is None or fb is None:
+            label = f"{p.get('fileA')} ↔ {p.get('fileB')}"
+        if href:
             cell = (f"<a href='{href}' target='_self' "
-                    f"title='Overlay {p.get('fileA')} + {p.get('fileB')}' "
+                    f"title='{title}' "
                     f"style='color:#1a5fb4;text-decoration:none;font-weight:600'>{label}</a>")
         else:
-            cell = f"<span title='not viewable: {p.get('reason','')}' style='color:#888'>{label}</span>"
+            cell = f"<span title='{title}' style='color:#888'>{label}</span>"
         rows.append(
             "<tr>"
             f"<td style='padding:4px 10px;border:1px solid var(--otdr-line-soft);text-align:center'>{i}</td>"
@@ -4592,17 +4725,14 @@ def _render_pairs_report(res):
             '</tr></thead><tbody>']
     for p in pairs:
         color = _DUP_COLOR.get(p['verdict'], '#000000')
-        fa, fb = p.get('fiberA'), p.get('fiberB')
-        label = f"F{fa} ↔ F{fb}"
-        if p.get('viewable') and fa is not None and fb is not None:
-            href = (f"?nav=viewer&fibers={fa},{fb}&dir=a&ssfolder={ssq}"
-                    f"{_panel_qs()}")
+        href, label, title = _ss_pair_link(p, res, ssq)
+        if href:
             pair_cell = (f"<a href='{href}' target='_self' "
-                         f"title='Overlay {p['fileA']} + {p['fileB']}' "
+                         f"title='{title}' "
                          f"style='color:#1a5fb4;text-decoration:none;font-weight:600'>"
                          f"{label}</a>")
         else:
-            pair_cell = (f"<span title='not viewable: {p.get('reason','')}' "
+            pair_cell = (f"<span title='{title}' "
                          f"style='color:#888'>{label} ⚠</span>")
         pct = f"{p['p_dup']*100:.0f}%"
         r_txt = '-' if p.get('shape_r') is None else f"{p['shape_r']:.3f}"
