@@ -5,6 +5,9 @@ loaded in the left panel).
    left the 48-file A+B report under "Traces: the A folder", and adding B
    back to an A-only report left the 24-file list under "the A and B
    folders".  A pair clicked from that list came Back to a different report.
+2. The Output choice had no key: PDF or Stay in App went back to Excel after
+   a trip to another tool, or a pair click and "← Back", and the next run
+   made an Excel workbook.
 """
 from __future__ import annotations
 
@@ -132,3 +135,55 @@ def test_saved_to_names_the_folder_the_workbook_is_in(tmp_path, monkeypatch):
     assert os.path.isdir(where), line
     assert any(n.endswith('.xlsx') for n in os.listdir(where)), line
     assert 'otdr_span_all_' not in where, line
+
+
+# ── 2. the Output choice is kept ─────────────────────────────────────────
+
+def _on_screen(el):
+    """What the browser shows after this run: the value the run sent, else
+    the element's default (see test_page_state_after_cell_click)."""
+    p = el.proto
+    return el.options[p.value] if p.set_value else el.options[p.default]
+
+
+def _pair_click_and_back(at, a, b, fibers='1,2', side='a'):
+    """A pair link clicked: a new session with the old one's carry id, the
+    Viewer draws, then "← Back to Secret Sauce"."""
+    view = run_streamlit(default_timeout=180)
+    q = {'nav': 'viewer', 'fibers': fibers, 'dir': side, 'ssfolder': a,
+         'pa': a, 'pb': b, 'cs': at.session_state['_carry_id']}
+    for k, v in q.items():
+        view.query_params[k] = v
+    view.run()
+    assert not view.exception, view.exception
+    view.run()
+    next(x for x in view.main.button if 'Back to Secret Sauce' in x.label).click().run()
+    assert not view.exception, view.exception
+    return view
+
+
+def test_output_choice_survives_a_trip_to_another_tool(tmp_path, monkeypatch):
+    a, b = _span(tmp_path)
+    at = _hub(tmp_path, monkeypatch, a, b)
+    _output(at).set_value('PDF').run()
+    at.sidebar.radio[0].set_value('Viewer').run()
+    at.sidebar.radio[0].set_value('Secret Sauce').run()
+    assert not at.exception, at.exception
+    assert _on_screen(_output(at)) == 'PDF'
+    assert _output(at).value == 'PDF'
+
+
+def test_output_choice_survives_a_pair_click_and_back(tmp_path, monkeypatch):
+    a, b = _span(tmp_path)
+    at = _hub(tmp_path, monkeypatch, a)
+    _output(at).set_value('Stay in App').run()
+    back = _pair_click_and_back(at, a, '')
+    assert back.session_state['nav_radio'] == 'Secret Sauce'
+    assert _on_screen(_output(back)) == 'Stay in App'
+    assert _output(back).value == 'Stay in App'
+
+
+def test_output_defaults_to_excel(tmp_path, monkeypatch):
+    a, b = _span(tmp_path)
+    at = _hub(tmp_path, monkeypatch, a, b)
+    assert _output(at).value == 'Excel (xlsx)'

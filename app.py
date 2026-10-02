@@ -2314,7 +2314,9 @@ _CARRIED_SETTINGS = ('otdr_profile', 'otdr_settings', 'conn_settings',
                      'uni_site_saved', 'uni_site_src',
                      'sr_input_mode_saved', 'sr_one_folder_saved', 'sr_n_spans',
                      'uni_folder_input_saved', 'uni_landmarks_text_saved',
-                     'uni_dir_pick_saved')
+                     'uni_dir_pick_saved',
+                     # Secret Sauce's Output choice (Excel, PDF, Stay in App).
+                     'ss_out_format_saved')
 # Every added span's own kept slots (sr2_dir_a_saved, sr2_site_src, ...).
 _CARRIED_SPAN_RE = re.compile(r'sr\d+_\w+_(saved|src)')
 _CARRY_ID_RE = re.compile(r'[0-9a-f]{12}')
@@ -4145,8 +4147,14 @@ def page_duplicate_check():
     import folder_intake as _fi
     folder, _foreign = _exclude_foreign_files(folder, _fi.OTDR_EXTS_WITH_TRC)
 
-    out_format = st.radio('Output', ['Excel (xlsx)', 'PDF', 'Stay in App'],
-                          horizontal=True)
+    # Keyed and kept (_seed_box / _keep_box), and the kept copy rides a pair
+    # click (_CARRIED_SETTINGS): unkeyed, PDF or Stay in App went back to
+    # Excel after a trip to another tool or a pair click and Back, and the
+    # next run made an Excel workbook (2026-10-02 click audit).
+    _outputs = ['Excel (xlsx)', 'PDF', 'Stay in App']
+    _seed_box('ss_out_format', _outputs)
+    out_format = st.radio('Output', _outputs, horizontal=True, key='ss_out_format')
+    _keep_box('ss_out_format')
     fmt = {'Excel (xlsx)': 'xlsx', 'PDF': 'pdf'}.get(out_format, 'pairs')
 
     st.caption("⏳ Large folders can take several minutes. After you click you'll see "
