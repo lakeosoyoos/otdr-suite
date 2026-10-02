@@ -2267,6 +2267,11 @@ def _resolve_bidir_from_single(folder, zip_file):
         key = _sig('drop', zip_uploads + trace_uploads)
     elif folder and os.path.isdir(folder):
         key = f"dir:{os.path.abspath(folder)}"
+    elif folder:
+        # Typed, but not a folder: say so, not "choose a folder" (audit
+        # 2026-10-02).  The left panel names its own the same way.
+        st.warning(f'Folder not found: {folder}')
+        return ('', '')
     else:
         st.info('👆 Choose a folder that contains **both** directions, or '
                 'drop it here: its traces, a .zip, or .bdr files, which '
@@ -7256,6 +7261,40 @@ def _sr_span_inputs(span):
     return dir_a, dir_b, tech_xlsx
 
 
+def _sr_span_problems(span, dir_a, dir_b):
+    """Why an added span cannot run yet, as the lines to show, or [] when
+    both its folders are there.  Every such span used to get "needs both an
+    A and a B folder", also one whose boxes were both filled in with a
+    folder that is not there (audit 2026-10-02).  A box with a path in it
+    is named the way the left panel names its own ("B folder not found:
+    <path>"); only an empty box is asked for."""
+    if dir_a and os.path.isdir(dir_a) and dir_b and os.path.isdir(dir_b):
+        return []
+    _k = f'sr{span}'
+    ss = st.session_state
+
+    def typed(key):
+        return (ss.get(key) or '').strip().strip('"')
+
+    needs_both = (f'Span {span} needs **both** an A and a B folder too, or '
+                  'remove it to run without it.')
+    if ss.get(f'{_k}_input_mode') == 'One folder / zip (both directions)':
+        one = typed(f'{_k}_one_folder')
+        if one and not os.path.exists(one) and not ss.get(f'{_k}_zip'):
+            return [f'Span {span}: folder not found: {one}']
+        return [needs_both]
+    lines, empty = [], False
+    for side, d in (('A', dir_a), ('B', dir_b)):
+        t = typed(f'{_k}_dir_{side.lower()}')
+        if not t:
+            empty = True
+        elif not d:                         # a .zip that would not open
+            lines.append(f'Span {span}: the {side} folder could not be read.')
+        elif not os.path.isdir(d):
+            lines.append(f'Span {span}: {side} folder not found: {t}')
+    return lines + [needs_both] if empty or not lines else lines
+
+
 def _typed_trace_dir(raw, label):
     """A folder box on a report page, read the way the Viewer reads its own
     boxes: a .zip, or a folder of zips, becomes its extracted copy.  A zip
@@ -7612,11 +7651,10 @@ def page_splice_report():
         return
     _remove_legacy_caches(dir_a)
     _remove_legacy_caches(dir_b)
-    _not_ready = [n for n, (a, b, *_r) in extra.items()
-                  if not (a and os.path.isdir(a) and b and os.path.isdir(b))]
-    if _not_ready:
-        st.info('Span ' + ', '.join(str(n) for n in _not_ready) + ' needs **both** an '
-                'A and a B folder too, or remove it to run without it.')
+    _problems = {n: _sr_span_problems(n, a, b) for n, (a, b, *_r) in extra.items()}
+    _not_ready = [n for n, p in _problems.items() if p]
+    for _n in _not_ready:
+        st.info('  \n'.join(_problems[_n]))
     _seen = {(dir_a, dir_b): 1}
     for _n, (_da, _db, *_r) in extra.items():
         if _n in _not_ready:
