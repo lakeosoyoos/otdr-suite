@@ -465,21 +465,32 @@ def _norm_dir(p):
     return os.path.normcase(os.path.normpath(p)) if p else ''
 
 
+def removed_keys():
+    """The files removed in the Viewer ('a-354', 'b-354'): none unless the
+    shared state was made on the folders loaded now.  The hub reads it to
+    leave a removed fiber's report cells unlinked (2026-10-02)."""
+    st = viewer_state()
+    if not st['removed']:
+        return set()
+    cur = (_norm_dir(CONFIG.get('dir_a')), _norm_dir(CONFIG.get('dir_b')))
+    if (_norm_dir(st['dir_a']), _norm_dir(st['dir_b'])) != cur:
+        return set()
+    return set(st['removed'])
+
+
 def removed_names(folder):
     """File names in `folder` the tech removed in the Viewer: none unless the
     shared state was made on the folders loaded now and `folder` is one."""
-    st = viewer_state()
-    if not st['removed'] or not folder:
+    keys = removed_keys()
+    if not keys or not folder:
         return []
     cur = (_norm_dir(CONFIG.get('dir_a')), _norm_dir(CONFIG.get('dir_b')))
-    if (_norm_dir(st['dir_a']), _norm_dir(st['dir_b'])) != cur:
-        return []
     f = _norm_dir(folder)
     out = set()
     for side, d in (('a', cur[0]), ('b', cur[1])):
         if not d or d != f:
             continue
-        want = {int(k[2:]) for k in st['removed'] if k[0] == side}
+        want = {int(k[2:]) for k in keys if k[0] == side}
         out.update(os.path.basename(p) for n, p in list_fibers(folder) if n in want)
     return sorted(out)
 

@@ -2848,16 +2848,92 @@ def _run_folder(folder):
         return folder
 
 
-def _viewer_removed_note(*folders):
-    """Say on a report page how many files removed in the Viewer it leaves out."""
+def _removed_now(*folders):
+    """The files of each folder removed in the Viewer now, one sorted list per
+    folder.  A report records it when its run starts (`_viewer_removed` on
+    the result) and the page compares it with the set now."""
     try:
-        n = sum(len(trace_server.removed_names(f)) for f in folders if f)
+        return [sorted(trace_server.removed_names(f)) if f else [] for f in folders]
     except Exception:
-        return
-    if n:
-        st.caption(f"{n} file{'s' if n != 1 else ''} removed in the Viewer "
-                   f"{'are' if n != 1 else 'is'} left out of this report. "
-                   'Put them back from the Viewer’s Files list (right-click).')
+        return [[] for _f in folders]
+
+
+def _removed_note_text(now, ran, again='Run the report again'):
+    """('caption' | 'warning', text) for a report page, or None.
+
+    `now` is _removed_now for the report's folders, `ran` what the report on
+    screen was run with (None: no report on screen).  The note used to read
+    the set now only, so after a Remove the page said the files were left
+    out of a report that still had them (2026-10-02 click audit: F354 still
+    in the grid under the note)."""
+    def files(n):
+        return f"{n} file{'s' if n != 1 else ''}"
+    have = {(i, f) for i, names in enumerate(now or []) for f in names}
+    if ran is not None:
+        had = {(i, f) for i, names in enumerate(ran or []) for f in names}
+        gone, back = have - had, had - have
+        if gone and back:
+            return ('warning', 'The files removed in the Viewer changed after '
+                    f'this report was made. {again} to match the Viewer.')
+        if gone:
+            return ('warning', f'This report was made before {files(len(gone))} '
+                    f"{'were' if len(gone) != 1 else 'was'} removed in the "
+                    f'Viewer, so it still has them. {again} to leave them out.')
+        if back:
+            return ('warning', f'This report leaves out {files(len(back))} that '
+                    f"{'were' if len(back) != 1 else 'was'} put back in the "
+                    f'Viewer since. {again} to include them.')
+    if have:
+        n = len(have)
+        return ('caption', f"{files(n)} removed in the Viewer "
+                f"{'are' if n != 1 else 'is'} left out of this report. "
+                'Put them back from the Viewer’s Files list (right-click).')
+    return None
+
+
+def _show_removed_note(slot, note):
+    if note is None:
+        slot.empty()
+    elif note[0] == 'warning':
+        slot.warning(note[1])
+    else:
+        slot.caption(note[1])
+
+
+def _viewer_removed_note(*folders, page=None):
+    """Say on a report page how many files removed in the Viewer it leaves
+    out.  Drawn in a slot that the page's report fills in again once it is
+    drawn (_viewer_removed_report_note), so the line speaks for the report
+    on screen and not only for the next run."""
+    slot = st.empty()
+    _show_removed_note(slot, _removed_note_text(_removed_now(*folders), None))
+    if page:
+        st.session_state[f'_{page}_removed_note'] = slot
+
+
+def _viewer_removed_report_note(page, res, *folders, again='Run the report again'):
+    """The note again, for the report on screen: `res['_viewer_removed']` is
+    the set it was run with (a report from before it was recorded counts as
+    run with none).  Fills the slot the page drew at the top, or draws here."""
+    slot = st.session_state.pop(f'_{page}_removed_note', None) or st.empty()
+    ran = (res or {}).get('_viewer_removed')
+    if not isinstance(ran, list) or len(ran) != len(folders):
+        ran = [[] for _f in folders]
+    _show_removed_note(slot, _removed_note_text(_removed_now(*folders), ran, again))
+
+
+def _removed_fibers(dirs):
+    """Fibers removed in the Viewer in every direction of `dirs` ('a', 'b'):
+    a report cell for one opened a blank Viewer (2026-10-02)."""
+    try:
+        keys = trace_server.removed_keys()
+    except Exception:
+        return set()
+    out = None
+    for d in dirs:
+        got = {int(k[2:]) for k in keys if k[0] == d}
+        out = got if out is None else out & got
+    return out or set()
 
 
 def _take_panel_ss_folder(dir_a, dir_b):
@@ -3961,6 +4037,7 @@ document.getElementById("vpop2").addEventListener("click", function(){
 # ═════════════════════════════════════════════════════════════════════════
 def page_duplicate_check():
     st.markdown('#### Secret Sauce')
+    st.session_state.pop('_ss_removed_note', None)     # a slot from an earlier run
     # The line that tells the tech to pick a folder is for the page's own
     # loader, which is not drawn when the left panel holds the traces.
     st.caption(('' if any(_panel_traces()) else
@@ -3996,7 +4073,7 @@ def page_duplicate_check():
                 return
         else:
             folder = _run_folder(_pa or _pb)
-        _viewer_removed_note(_pa, _pb)
+        _viewer_removed_note(_pa, _pb, page='ss')
         st.caption('Traces: ' + ('the A and B folders' if _pa and _pb
                                  and folder not in (_pa, _pb)
                                  else f"the {'A' if _pa else 'B'} folder")
@@ -4066,6 +4143,9 @@ def page_duplicate_check():
         # The report is saved under the folder it RAN on: the page may build
         # a new one from the panel's folders while the run is going.
         st.session_state['ss_run_folder'] = folder
+        # What this run leaves out, for the note over its report.  Only a run
+        # on the left panel's folders leaves anything out (_run_folder).
+        st.session_state['ss_run_removed'] = _removed_now(_pa, _pb)
         st.session_state.pop('ss_result', None)        # clear any prior result
         st.session_state.pop('ss_pairs_result', None)
         st.rerun()
@@ -4129,6 +4209,7 @@ def page_duplicate_check():
 
         # Stash the folder so the in-app pair links can point the viewer at it.
         manifest['_folder'] = st.session_state.pop('ss_run_folder', None) or folder
+        manifest['_viewer_removed'] = st.session_state.pop('ss_run_removed', None)
         if manifest.get('mode') == 'pairs':
             st.session_state['ss_pairs_result'] = manifest
             # Cache to disk so "← Back" from the Viewer (which reset session_state
@@ -4148,6 +4229,7 @@ def page_duplicate_check():
             pres = cached
             st.session_state['ss_pairs_result'] = cached
     if pres and pres.get('ok') and pres.get('mode') == 'pairs':
+        _viewer_removed_report_note('ss', pres, _pa, _pb, again='Run the analysis again')
         _clear_report_button('ss')
         _render_pairs_report(pres)
         return
@@ -4161,6 +4243,7 @@ def page_duplicate_check():
             res = cached
             st.session_state['ss_result'] = cached
     if res and res.get('ok'):
+        _viewer_removed_report_note('ss', res, _pa, _pb, again='Run the analysis again')
         _clear_report_button('ss')
         c = res.get('counts', {})
         st.success(f"Done: {c.get('sor',0)} SOR · {c.get('trc',0)} TRC · "
@@ -5939,9 +6022,17 @@ def _viewer_click_target(page_key):
     return choice == 'Separate window'
 
 
-def _cell_markup(popout, fiber, km, direction, color, label, text, href):
+def _cell_markup(popout, fiber, km, direction, color, label, text, href,
+                 gone=False):
     """One flagged-cell's markup, in whichever click mode is active — so the
-    Splice Report / FR / Uni grids stay identical to each other."""
+    Splice Report / FR / Uni grids stay identical to each other.
+
+    `gone`: the fiber was removed in the Viewer after this report was made.
+    Its value stays, with no link: the click opened a blank Viewer and the
+    hub said it had jumped there (2026-10-02).  The hover says why."""
+    if gone:
+        return (f"<span title='Removed in the Viewer' "
+                f"style='color:{color};font-weight:600;opacity:0.5'>{text}</span>")
     if popout:
         return (f"<span class='vc' data-fiber='{fiber}' data-km='{km}' "
                 f"data-dir='{direction}' title='{label}' "
@@ -6793,7 +6884,7 @@ def _sr_span_inputs(span):
         mode = None
         if dir_a and dir_b:
             st.caption('Traces: the A and B folders loaded in the left panel.')
-            _viewer_removed_note(dir_a, dir_b)
+            _viewer_removed_note(dir_a, dir_b, page='sr')
         else:
             st.caption(f"Traces: only the {'A' if dir_a else 'B'} folder is "
                        f"loaded in the left panel. Load the "
@@ -7069,6 +7160,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     if _sd[1] and os.path.isdir(_sd[1]):
         _dirs_qs += f"&srb={_q(_sd[1])}"
     _dirs_qs += _panel_qs()
+    _gone = _removed_fibers([d for d, p in zip('ab', _sd) if p])
     for ri in ribbon_rows:
         f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
         html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
@@ -7085,7 +7177,8 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
                     popout, c['fiber'], _vkm(c['km']), 'both', color,
                     c['label'], f"F{c['fiber']}{loss}",
                     href=(f"?nav=viewer&fiber={c['fiber']}&km={_vkm(c['km'])}"
-                          f"&dir=both{_dirs_qs}&src={_p}")))
+                          f"&dir=both{_dirs_qs}&src={_p}"),
+                    gone=c['fiber'] in _gone))
             html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;white-space:nowrap'>"
                         + "<br>".join(links) + "</td>")
         html.append('</tr>')
@@ -7142,6 +7235,7 @@ def _render_show_hide_box(prefix, rows=_SHOW_ROWS):
 def page_splice_report():
     _p = 'sr'
     _cache_name = '.sr_grid_cache.json'
+    st.session_state.pop('_sr_removed_note', None)     # a slot from an earlier run
     st.markdown('#### Bidirectional Splice Report')
     st.caption('Generates the Excel report (saved to your **Downloads**) and a '
                'clickable grid: click any flagged cell to jump to that fiber and '
@@ -7302,7 +7396,10 @@ def page_splice_report():
                                                   contract=_contract,
                                                   overrides=overrides,
                                                   show=sr_show,
-                                                  viewer_table=_viewer_table_path(_da, _db))})
+                                                  viewer_table=_viewer_table_path(_da, _db)),
+                          # The files removed in the Viewer this run leaves
+                          # out, for the note over its report.
+                          'removed': _removed_now(_da, _db)})
         st.session_state[f'{_p}_queue'] = queue
         for _n in range(1, SR_MAX_SPANS + 1):
             _rk, _dk = _sr_result_slot(_p, _n)
@@ -7351,6 +7448,7 @@ def page_splice_report():
                              log=proc.stderr)
             else:
                 _rk, _dk = _sr_result_slot(_p, _run['span'])
+                manifest['_viewer_removed'] = _run.get('removed')
                 st.session_state[_rk] = manifest
                 # Disk cache (same idea as Secret Sauce's pairs_cache.json):
                 # a cell-click into the Viewer is a URL nav that WIPES
@@ -7428,6 +7526,11 @@ def page_splice_report():
     trace_server.set_panel_span(res.get('panel_span'))
     trace_server.set_suite_table(res.get('viewer_table'))
 
+    # Span 1's report against what is removed in the Viewer now: a Remove
+    # made after it ran does not change the report on screen.
+    if _follow[0] == 1:
+        _viewer_removed_report_note(_p, res, *(_sd or (None, None)),
+                                    again='Generate the report again')
     _clear_report_button(_p)
     for _n, _r, _d, _t in shown:
         _render_sr_result(_p, _r, span=_n, n_spans=len(shown), dirs=_d,
@@ -7922,6 +8025,7 @@ def _uni_end_cell(entries, ribbon_fibers):
 
 def page_unidirectional():
     st.markdown('#### Unidirectional')
+    st.session_state.pop('_uni_removed_note', None)    # a slot from an earlier run
 
     # The OTDR Settings, same box as the Splice Report's and sharing its
     # values (Robert 2026-09-28).  Three of its rows drive the Uni engine:
@@ -7968,7 +8072,7 @@ def page_unidirectional():
         _uni_pside = 'a' if folder == _pa else 'b'
         st.caption(f"Traces: the {'A' if folder == _pa else 'B'} folder loaded "
                    'in the left panel.')
-        _viewer_removed_note(folder)
+        _viewer_removed_note(folder, page='uni')
     else:
         # A folder an upload was staged in shows as what was uploaded
         # ('Uploaded Files: B Direction (12 files)'), never its temporary
@@ -8153,6 +8257,8 @@ def page_unidirectional():
                                                       site_a=uni_site_a,
                                                       site_b=uni_site_b)
         st.session_state['uni_out_xlsx'] = out_xlsx
+        # What this run leaves out, for the note over its report.
+        st.session_state['uni_run_removed'] = _removed_now(folder)
         st.session_state.pop('uni_result', None)
         st.rerun()
 
@@ -8187,6 +8293,7 @@ def page_unidirectional():
                          {"folder": os.path.basename(folder)}, log=proc.stderr)
             return
         manifest['_folder'] = folder
+        manifest['_viewer_removed'] = st.session_state.pop('uni_run_removed', None)
         st.session_state['uni_result'] = manifest
         # Disk cache: a grid-cell click into the Viewer is a URL nav that
         # wipes session_state — this is how "← Back" re-shows the report
@@ -8212,6 +8319,7 @@ def page_unidirectional():
             pass
     if not (res and res.get('ok') and res.get('_folder') == folder):
         return
+    _viewer_removed_report_note('uni', res, folder)
     _clear_report_button('uni')
     u = res.get('uni') or {}
     # The fiber count NEVER appears without its denominator: a 480-fiber
@@ -8356,6 +8464,7 @@ def page_unidirectional():
         # ...and which of the panel's folders the report ran on, so the
         # Viewer keeps both and opens the fibre on that side (_handle_nav).
         _uni_pq = _panel_qs() + (f'&pside={_uni_pside}' if _uni_pside else '')
+        _uni_gone = _removed_fibers([_uni_dir])
         html = ['<div style="overflow:auto;max-height:62vh;border:1px solid #c9d5e1;'
                 'border-radius:4px;color:#000000;background:#ffffff">',
                 '<table style="border-collapse:collapse;font-size:11px;'
@@ -8386,9 +8495,11 @@ def page_unidirectional():
                     # Cable End: the workbook's one cell for the ribbon, not
                     # a line per fiber (432 lines made every row ~150 px
                     # tall).  It opens the fiber with the strongest end
-                    # reflectance, or the ribbon's first fiber at the end.
-                    _top = min(cell, key=lambda c: (c['loss'] is None,
-                                                    -(c['loss'] or 0), c['fiber']))
+                    # reflectance, or the ribbon's first fiber at the end;
+                    # one not removed in the Viewer while there is one.
+                    _top = min([c for c in cell if c['fiber'] not in _uni_gone] or cell,
+                               key=lambda c: (c['loss'] is None,
+                                              -(c['loss'] or 0), c['fiber']))
                     shown = [(_top, _uni_end_cell(
                         [(c['fiber'], c['loss']) for c in cell],
                         range(f0, min(f0 + rs, max_f + 1))))]
@@ -8403,7 +8514,8 @@ def page_unidirectional():
                     links.append(_cell_markup(
                         _uni_popout, c['fiber'], _km, _uni_dir, color, '', text,
                         href=(f"?nav=viewer&fiber={c['fiber']}&km={_km}"
-                              f"&dir={_uni_dir}&{_fq}&src=uni{_uni_pq}")))
+                              f"&dir={_uni_dir}&{_fq}&src=uni{_uni_pq}"),
+                        gone=c['fiber'] in _uni_gone))
                 html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;"
                             "white-space:nowrap'>" + "<br>".join(links) + "</td>")
             html.append('</tr>')
