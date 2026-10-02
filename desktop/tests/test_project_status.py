@@ -7,7 +7,7 @@ form."  Option 2: the field's emailed files are dropped on the page and kept
 in <project folder>/Field/.
 
 The fixtures are built the way the real files are: the FQA workbook is the
-blank Lumen form with cells filled and photos anchored under a per-location
+blank customer form with cells filled and photos anchored under a per-location
 caption on the Pictures tab (fieldcapture/web/fqa.js), the capture sheet has
 Field Capture's 'Submissions' columns (fieldcapture/web/app.js buildWorkbook).
 """
@@ -127,10 +127,10 @@ def production_sheet(path):
     return str(path)
 
 
-# ── the list mirrors Lumen's form ────────────────────────────────────────
+# ── the list mirrors the customer's form ────────────────────────────────
 def test_checklist_cells_match_the_forms_own_submittal_checklist(hub):
     """Every "Entered?" row of the Submittal Checklist tests one Site Survey
-    cell.  If Lumen moves a cell in a form revision, this fails."""
+    cell.  If the customer moves a cell in a form revision, this fails."""
     import openpyxl
     wb = openpyxl.load_workbook(TEMPLATE, read_only=True)
     ws = wb["Submittal Checklist"]
@@ -235,7 +235,7 @@ def _events(path, rows, length=42000):
 
 
 def test_every_event_is_checked_not_just_the_first_two(hub, tmp_path, span_dir):
-    """Lumen's checklist reads D18:D19 only; event 3 blank passes it."""
+    """The customer's checklist reads D18:D19 only; event 3 blank passes it."""
     field = tmp_path / "Field"
     field.mkdir()
     ok = ("39 21 21.13 N 102 22 18.70 W", "New Field Splice", "SMF 28")
@@ -295,7 +295,7 @@ def test_missing_fibers_and_the_forms_fiber_count(hub, tmp_path, span_dir):
     assert str(gone[0]) in both["detail"]
     cnt = s4["4.01  48 fibers, as the form says were tested"]
     assert not cnt["ok"] and cnt["detail"] == "22 have both directions"
-    # F97 is date-formatted on Lumen's form; the tech typed 48.
+    # F97 is date-formatted on the customer's form; the tech typed 48.
     assert _sec(items, 1)["1.09  Number of fibers tested"]["detail"] == "48"
 
 

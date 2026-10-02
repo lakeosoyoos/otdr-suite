@@ -294,7 +294,7 @@ def test_projects_send_every_report_tool_to_reports(settings_dir, span_dir, tmp_
         assert at.session_state[key] == str(work / "Reports")
 
 
-# ── building the Lumen FQA package from the project ──────────────────────
+# ── building the customer's FQA package from the project ────────────────
 def test_the_fqa_package_takes_the_projects_gps(hub, tmp_path):
     import openpyxl
     from test_project_status import production_sheet
