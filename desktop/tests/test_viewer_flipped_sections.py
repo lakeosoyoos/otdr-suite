@@ -471,7 +471,7 @@ def test_only_the_average_row_is_gate_highlighted():
     three red cells on screen where one belongs.
     """
     src = _viewer_src()
-    fn = src[src.index('const aggRow = (label, fn, gated)'):][:2000]
+    fn = src[src.index('const aggRow = (label, fn, gated)'):][:3500]
     assert 'gated ? lossCell(' in fn, 'the Average cell no longer goes through lossCell'
 
     rows = src[src.index('const aggRows = ['):][:400]
@@ -502,7 +502,9 @@ def test_the_aggregate_highlight_uses_the_reports_gate():
     # `lossCell` gained an `attrs` argument when grid cells started carrying
     # the data-km the span menu reads; the gate it applies is unchanged.
     fn = src[src.index('const lossCell = (v, isBreak'):][:400]
-    assert 'clearsGate(v)' in fn
+    assert 'overGate(v)' in fn
+    # ... which is clearsGate itself, bar the one-way fibres of a mixed load
+    assert 'const overGate = opts.oneDir ? (v => clearsAt(v, gateFor(false, true))) : clearsGate;' in src
 
 
 # ─── D2: a connector is never the same event as a splice ─────────────────

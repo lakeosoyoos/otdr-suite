@@ -18,9 +18,9 @@ import sys
 from conftest import FIXTURE_A_DIR, FIXTURE_B_DIR, REPO_ROOT, SECRETSAUCE_DIR
 
 CONTINUOUS = REPO_ROOT / "desktop" / "tests" / "fixtures" / "continuous"
-NEAR_HDR = ["File", "Meter", "Shot At", "Splice Loss (dB)", "Next Fibre", "Time Gap (s)",
+NEAR_HDR = ["File", "Meter", "Shot At", "Splice Loss (dB)", "Next Fiber", "Time Gap (s)",
             "Difference (dB)", "Difference (sd)",
-            "Shots of One Fibre That Differ This Much (%)"]
+            "Shots of One Fiber That Differ This Much (%)"]
 
 _SCRIPT = r"""
 import sys, json
@@ -84,7 +84,7 @@ def test_near_splice_sheet_on_a_span_that_has_the_splice(tmp_path):
 def test_shot_out_of_order_sheet_renders(tmp_path):
     r = _build(tmp_path, sorted(CONTINUOUS.glob("*.sor")), plant=True)
     assert "Shot out of order" in r["sheets"]
-    assert r["summary_order"].startswith("1 fibre(s) shot after both neighbouring fibres")
+    assert r["summary_order"].startswith("1 fiber(s) shot after both neighboring fibers")
     row = r["order_row"]
     assert row[0] == "WSC_SUIsh_0018" and row[2] == "WSC_SUIsh_0017" and row[4] == "WSC_SUIsh_0019"
     assert row[6] == 119.6

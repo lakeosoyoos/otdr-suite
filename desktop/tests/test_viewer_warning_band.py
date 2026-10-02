@@ -171,7 +171,8 @@ def _fn(name):
 
 def test_warn_for_follows_the_gate_it_sits_under():
     body = _fn('warnFor')
-    assert "if (gSourceReport === 'uni') return null;" in body   # uni: none
+    # uni, and a one-direction load graded as uni: none
+    assert "if (gSourceReport === 'uni' || oneDirOnly()) return null;" in body
     assert 'gGateOverride != null) return null;' in body         # loss box
     assert 'return (w > 0 && w < g && g < GATE_OFF) ? w : null;' in body
     for key in ('reburn_warn', 'single_dir_warn',
@@ -182,9 +183,13 @@ def test_warn_for_follows_the_gate_it_sits_under():
 def test_both_tables_colour_the_band_yellow_and_never_as_a_failure():
     assert re.search(r'td\.fr-warn\s*\{\s*background:\s*#ffeb00', VIEWER)
     # single-fibre table: fail first, then warning
-    assert ("else if (clearsGate(v)) cls = ' class=\"fr-hi\"';   // the REPORT's verdict\n"
-            "      else if (clearsAt(v, warnFor(false, false))) cls = ' class=\"fr-warn\"';"
+    assert ("else if (overGate(v)) cls = ' class=\"fr-hi\"';   // the REPORT's verdict\n"
+            "      else if (clearsAt(v, warnGate)) cls = ' class=\"fr-warn\"';"
             ) in VIEWER
+    # the report's gate and its Warning; a mixed load's one-way fibres at
+    # the single-direction ones
+    assert "const overGate = opts.oneDir ? (v => clearsAt(v, gateFor(false, true))) : clearsGate;" in VIEWER
+    assert "const warnGate = warnFor(false, !!opts.oneDir);" in VIEWER
     # A+B table: every loss cell gets its own row's Warning
     assert "else if (!synthetic && clearsAt(v, warn)) cls.push('fr-warn');" in VIEWER
     assert 'gateFor(isRefl(x), false),\n' in VIEWER and 'warnFor(isRefl(x), false))' in VIEWER
@@ -203,10 +208,10 @@ def test_both_tables_colour_the_band_yellow_and_never_as_a_failure():
 # ── 5. "Show warning cells only" (Robert 2026-09-26) ───────────────────────
 def test_warning_cells_only_is_a_box_and_a_menu_item():
     title = VIEWER.split('<div id="evt-title">', 1)[1].split("</div>", 1)[0]
-    assert 'id="set-warncells"' in title and 'Show warning cells only' in title
+    assert 'id="set-warncells"' in title and 'Show Warning Cells Only' in title
     assert "let gWarnCellsOnly = false;" in VIEWER
     item = VIEWER.split("function viewItems() {", 1)[1].split("\n}", 1)[0]
-    assert "${gWarnCellsOnly ? '✓ ' : ''}Show only warning cells" in item
+    assert "${gWarnCellsOnly ? '✓ ' : ''}Show Only Warning Cells" in item
     assert 'data-view="warncells"' in item
     tog = VIEWER.split("function toggleView(which) {", 1)[1].split("\n}", 1)[0]
     assert "else if (which === 'warncells') gWarnCellsOnly = !gWarnCellsOnly;" in tog
@@ -231,11 +236,11 @@ def test_warning_cells_only_keeps_yellow_and_collapses_like_failing():
     assert "? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))" in VIEWER
     # a reflectance failure is not a warning, so warning-only blanks it
     assert "if (cellFilterOn() && !(gFailCellsOnly && bad)) return '<td></td>';" in VIEWER
-    # the hint says which filter is on, in each of the three tables (the
-    # Suite table's caption is only the filter words since 2026-09-29)
-    assert VIEWER.count("' · warning cells only'") == 2
-    suite = VIEWER.split("function paintSuiteBidiGrid(", 1)[1].split("\n}\n", 1)[0]
-    assert "'warning cells only'" in suite
+    # the hint says which filter is on, in each of the three tables (every
+    # caption is only the filter words since 2026-09-30)
+    for painter in ("paintSuiteBidiGrid", "renderFastReporterGrid", "paintFrBidiGrid"):
+        body = VIEWER.split("function " + painter + "(", 1)[1].split("\n}\n", 1)[0]
+        assert "'warning cells only'" in body, painter
 
 
 def test_a_failure_outranks_the_yellow_beside_it():

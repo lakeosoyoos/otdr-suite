@@ -27,7 +27,6 @@ import time
 
 import streamlit as st
 
-import app_theme
 from streamlit.components.v1 import iframe as st_iframe
 from streamlit.components.v1 import html as st_components_html
 
@@ -57,7 +56,12 @@ FROZEN = bool(getattr(sys, 'frozen', False))
 # FastReporter rules land behind it one column at a time, each gated on the
 # .bdr answer keys.  Robert, 2026-09-21.
 ANALYSIS_MODES = ('suite', 'fr')
-ANALYSIS_MODE_LABELS = {'suite': 'OTDR Suite', 'fr': 'FastReporter'}
+# The product's name where a person reads it.  The App's launcher sets
+# OTDR_SUITE_EDITION to "OTDR App" (Robert, 2026-10-01: no "Suite" anyone
+# sees in the App); the regular exe leaves it unset.  Stored values, file
+# formats and identifiers keep the old spelling.
+PRODUCT_NAME = os.environ.get('OTDR_SUITE_EDITION') or 'OTDR Suite'
+ANALYSIS_MODE_LABELS = {'suite': PRODUCT_NAME, 'fr': 'FastReporter'}
 ANALYSIS_MODE_DEFAULT = 'suite'
 
 
@@ -116,9 +120,179 @@ def analysis_mode():
     return mode if mode in ANALYSIS_MODES else load_analysis_mode()
 
 
+# The Analysis Mode switch (Robert, 2026-09-30): the name of the mode in use
+# wears a green halo, and the switch is always drawn "on" (the theme's
+# primary colour); only the knob moves, left for FR Mode, right for OTDR
+# Mode.  Scoped to the switch's own box so no other toggle changes.
+# ─── Light / Dark theme ─────────────────────────────────────────────────
+# Robert, 2026-09-29: the boss asked for a dark look, after a dark dashboard
+# he liked (warm near-black page, dark grey panels, off-white lettering, a
+# blue accent).  Light is the palette the hub has always had.  The
+# Viewer's trace plot and event panel stay light (a very light grey) in
+# Dark, so the FastReporter trace colours read as always.
+#
+# Lives here, not in a module of its own: a new engine file would make every
+# installed exe refuse the next signed update (the launcher only takes a
+# manifest whose file set matches its own ENGINE_FILES).
+#
+# Every start is Dark, fully: the first frame included (Robert, 2026-10-01:
+# "start up in dark mode ... it needs to start fully in dark").  Light lasts
+# until the hub is closed or the page reloads, and nothing is saved.  The
+# server starts in Dark too (desktop/launcher.py's STREAMLIT_THEME_* and
+# .streamlit/config.toml = THEME_STREAMLIT['dark']), so a new page is not
+# painted Light first and switched after.  Streamlit reads its theme from
+# config, so apply_streamlit_theme() writes the palette into the running
+# server's config; the browser takes it on the next run.  What
+# the hub draws itself uses the --otdr-* CSS variables (theme_css_vars());
+# HTML inside a components.html iframe cannot see them and goes through
+# theme_recolor().  The Viewer learns the theme from trace_server.CONFIG,
+# when it loads and again on every /api/mode ask, so an open Viewer follows
+# the switch.
+THEMES = ('light', 'dark')
+THEME_DEFAULT = 'dark'
+
+# What Streamlit itself draws: pages, sidebar, widgets, st.dataframe.
+THEME_STREAMLIT = {
+    'light': {
+        'base': 'light',
+        'primaryColor': '#2c5b8a',
+        'backgroundColor': '#ffffff',
+        'secondaryBackgroundColor': '#eef3f8',
+        'textColor': '#000000',
+        'borderColor': '#d5dde6',
+        'dataframeBorderColor': '#dbe4ee',
+        'dataframeHeaderBackgroundColor': '#eef3f8',
+    },
+    'dark': {
+        'base': 'dark',
+        'primaryColor': '#3b82f6',
+        'backgroundColor': '#0c0a09',
+        'secondaryBackgroundColor': '#1c1917',
+        'textColor': '#fafaf9',
+        'borderColor': '#292524',
+        'dataframeBorderColor': '#292524',
+        'dataframeHeaderBackgroundColor': '#1c1917',
+    },
+}
+
+# What the hub draws in its own HTML.  Light = the exact colours those pages
+# used before the switch existed.
+THEME_VARS = {
+    'light': {
+        'text': '#000000',        # lettering
+        'text-sec': '#6b7480',    # quieter labels
+        'bg': '#ffffff',          # table / card body
+        'panel': '#eef3f8',       # headers, buttons, sidebar footer
+        'panel-2': '#f7fafc',     # sticky first column
+        'hover': '#dde7f1',
+        'soft': '#f5f8fb',        # hovered card
+        'line': '#dbe4ee',        # header cell borders
+        'line-soft': '#eef2f6',   # body cell borders
+        'line-row': '#e3e9f0',    # sticky column borders
+        'edge': '#c9d5e1',        # box outlines
+        'edge-2': '#b9c9da',      # tab / button outlines
+        'rule': '#d5dde6',        # dividers
+        'accent': '#2c5b8a',
+        'accent-2': '#16324f',    # the dark "OK" button
+        'accent-3': '#0b1c2e',    # ...hovered
+        'on-accent': '#ffffff',
+        'ok-bg': '#eaf6ec',       # the Final shoot row
+        'ok-bg-2': '#e7f5ea',     # "carried over" note
+        'ok-edge': '#9fd3aa',
+        'ok-text': '#14532d',
+    },
+    'dark': {
+        'text': '#fafaf9',
+        'text-sec': '#a8a29e',
+        'bg': '#0c0a09',
+        'panel': '#1c1917',
+        'panel-2': '#171412',
+        'hover': '#292524',
+        'soft': '#1c1917',
+        'line': '#292524',
+        'line-soft': '#1f1b19',
+        'line-row': '#292524',
+        'edge': '#44403c',
+        'edge-2': '#44403c',
+        'rule': '#292524',
+        'accent': '#3b82f6',
+        'accent-2': '#2563eb',
+        'accent-3': '#1d4ed8',
+        'on-accent': '#ffffff',
+        'ok-bg': '#0f2a1a',
+        'ok-bg-2': '#0f2a1a',
+        'ok-edge': '#166534',
+        'ok-text': '#86efac',
+    },
+}
+
+_theme_current = THEME_DEFAULT
+
+
+def theme_current():
+    return _theme_current
+
+
+def apply_streamlit_theme(name):
+    """Point the running server's theme config at `name`.  True when the
+    config changed, which means the page on screen still shows the old theme
+    until the next run.  Uses Streamlit's internal config setter (theme
+    options cannot be set with st.set_option); if that ever goes away the
+    App keeps config.toml's Light and nothing breaks."""
+    global _theme_current
+    if name not in THEMES:
+        name = THEME_DEFAULT
+    _theme_current = name
+    try:
+        from streamlit import config as _cfg
+    except Exception:
+        return False
+    changed = False
+    for key, val in THEME_STREAMLIT[name].items():
+        opt = f'theme.{key}'
+        try:
+            if _cfg.get_option(opt) != val:
+                _cfg.set_option(opt, val)
+                changed = True
+        except Exception:
+            pass
+    return changed
+
+
+def theme_color(key, name=None):
+    """A palette colour as hex, for HTML inside a components.html iframe."""
+    return THEME_VARS[name or _theme_current][key]
+
+
+def theme_css_vars(name=None):
+    """The --otdr-* variables for the page, as a <style> block."""
+    pal = THEME_VARS[name or _theme_current]
+    body = ';'.join(f'--otdr-{k}:{v}' for k, v in pal.items())
+    return f'<style>:root{{{body}}}</style>'
+
+
+def theme_recolor(html, name=None):
+    """HTML written in the Light colours, in the current theme's.  For pages
+    inside a components.html iframe, which cannot see the --otdr-* variables.
+    Only the palette's own colours move; flag colours are left alone."""
+    name = name or _theme_current
+    if name == 'light':
+        return html
+    swap = {}
+    for k, light in THEME_VARS['light'].items():
+        if k != 'on-accent':
+            swap.setdefault(light.lower(), THEME_VARS[name][k])
+    pat = re.compile('(?:' + '|'.join(re.escape(h) for h in sorted(swap, key=len, reverse=True))
+                     + r')(?![0-9a-fA-F])', re.I)
+    return pat.sub(lambda m: swap[m.group(0).lower()], html)
+
+
+# ─── end Light / Dark theme ─────────────────────────────────────────────
+
+
 # The two sidebar switches (Analysis Mode, Theme): title, then
 # "left label | switch | right label", every piece centred.
-_SWITCH_BOX_CSS = (
+_MODE_SWITCH_CSS = (
     '<style>'
     '.st-key-analysis_mode_box p,.st-key-theme_box p{text-align:center}'
     '.st-key-analysis_mode_box [data-testid="stMarkdownContainer"],'
@@ -156,7 +330,7 @@ def _render_theme_control(where):
     same shape as the Analysis Mode switch.  ui_theme holds the theme; the
     knob is read every run (no on_change).  Knob right = Light."""
     box = where.container(key='theme_box')
-    box.markdown(_SWITCH_BOX_CSS, unsafe_allow_html=True)
+    box.markdown(_MODE_SWITCH_CSS, unsafe_allow_html=True)
     box.markdown('**Theme**')
     dark = st.session_state.get('ui_theme') == 'dark'
     # No key: the knob's start is the theme itself (value=), and a keyless
@@ -172,7 +346,6 @@ def _render_theme_control(where):
     name = 'light' if _right else 'dark'
     if name != st.session_state.get('ui_theme'):
         st.session_state['ui_theme'] = name
-        app_theme.save_theme(name)
         st.rerun()
 
 
@@ -180,16 +353,14 @@ def _render_analysis_mode_control():
     """The OTDR Suite / FastReporter switch, right under the Tool list so
     it is visible on every page.  Seeded from settings.json on the first run of a
     session and written back on every change, so a tech's choice survives a
-    restart.  Same key= discipline as the profile picker: the toggle's own
-    key holds the switch position, session_state.analysis_mode holds the mode."""
+    restart.  session_state.analysis_mode holds the mode; the toggle has no
+    key and starts at the mode (value=)."""
     if 'analysis_mode' not in st.session_state:
         st.session_state['analysis_mode'] = load_analysis_mode()
     _on = st.session_state['analysis_mode'] == 'fr'
     # A toggle, not a radio (Robert, 2026-09-22): the setting is one of two
     # states and reads as a switch -- off is OTDR Suite, on is FastReporter.
-    # The widget's own key holds the switch position; session_state.
-    # analysis_mode holds the mode, and a stale key from an older build is
-    # dropped before the widget is drawn so value= never fights key=.
+    # session_state.analysis_mode holds the mode.
     # Robert, 2026-09-24: both modes on show, FR Mode on the left and OTDR
     # Mode on the right, the switch between them; the knob points at the
     # mode in use and that name is bold.  Knob right = OTDR Mode.  A new key
@@ -198,18 +369,18 @@ def _render_analysis_mode_control():
     # Centred in the sidebar (Robert, 2026-09-29), the Theme switch below it
     # laid out the same way.
     box = st.container(key='analysis_mode_box')
-    box.markdown(_SWITCH_BOX_CSS, unsafe_allow_html=True)
+    box.markdown(_MODE_SWITCH_CSS, unsafe_allow_html=True)
     box.markdown('**Analysis Mode**')
-    # No key (2026-09-29): with key='analysis_switch', going Home (no
-    # sidebar) and back redrew the knob in its old position while the mode
-    # stayed put, and the next page change silently switched OTDR Mode to FR
-    # Mode.  Keyless, the knob starts at the mode itself (value=) and is a new
-    # widget after every change.
+    # No key (2026-09-30): with key='analysis_switch', the App's home screen
+    # (no sidebar) and back redrew the knob in its old position while the
+    # mode stayed put, and the next page change silently switched OTDR Mode
+    # to FR Mode.  Keyless, the knob starts at the mode itself (value=) and
+    # is a new widget after every change.
     l, m, r = box.columns([5, 3, 5], vertical_alignment='center')
     l.markdown(_mode_name('FR Mode', _on), unsafe_allow_html=True,
                help=("FR Mode: reproduce EXFO FastReporter's analysis from the same "
                      "files, to the digit, with only your pass/fail thresholds on top."))
-    _right = m.toggle('Analysis mode', value=not _on, label_visibility='collapsed')
+    _right = m.toggle('Analysis Mode', value=not _on, label_visibility='collapsed')
     r.markdown(_mode_name('OTDR Mode', not _on), unsafe_allow_html=True,
                help=("OTDR Mode: our own analysis, the numbers and columns we can "
                      "defend from the trace."))
@@ -222,6 +393,24 @@ def _render_analysis_mode_control():
             trace_server.CONFIG['analysis_mode'] = _mode
         except Exception:
             pass
+        st.rerun()
+
+
+# The Viewer moves the trace server's folders from inside its own page: a
+# drop points it at the staged files, and Remove taking the last file off a
+# side lets go of that side's folder (trace_server.unload_sides).  Both stamp
+# CONFIG['dropped_at'], and the Trace Folders block puts the new folders in
+# the A/B boxes on the hub's next run.  Nothing made that run happen, so the
+# boxes kept the old path until the tech clicked something (Robert,
+# 2026-10-01: removing the files must clear the boxes).  This fragment looks
+# every VIEWER_FOLDERS_TICK_S and asks for a whole-page run only when a stamp
+# is newer than the one this session last took.
+VIEWER_FOLDERS_TICK_S = 1.5
+
+
+@st.fragment(run_every=VIEWER_FOLDERS_TICK_S)
+def _follow_viewer_folders():
+    if (trace_server.CONFIG.get('dropped_at') or 0) > st.session_state.get('view_drop_seen', 0):
         st.rerun()
 
 
@@ -523,7 +712,7 @@ def _engine_live_panel(prefix, running_title, timeout_s):
     tail = _engine_tail(job, 1)
     if tail:
         st.caption(f'current step · {tail[0][:140]}')
-    st.button('Cancel run', key=f'{prefix}_cancel_btn',
+    st.button('Cancel Run', key=f'{prefix}_cancel_btn',
               on_click=_flag_cancel, args=(cancel_key,))
     if on_page_pass:
         return          # a redraw of this panel alone cannot be asked for from a page pass
@@ -564,7 +753,7 @@ def run_engine_live(prefix, *, running_title, timeout_s=None):
         _engine_cancel(job)
         _engine_cleanup(job)
         st.session_state.pop(job_key, None)
-        st.info('Run cancelled.')
+        st.info('Run canceled.')
         return None
 
     state = _engine_poll(job, timeout_s)
@@ -843,11 +1032,12 @@ def _fmt_clock(ts):
 def _deadline_note(running):
     """The sentence the sidebar adds while reports still run, or '' once the
     hour has passed.  Leading space: it follows another sentence."""
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
     due, deadline = _update_due(running)
     if due:
         return ''
     return (f' Reports keep working until {_fmt_clock(deadline)}, then pause '
-            'until OTDR Suite is updated.')
+            'until ' + _pn + ' is updated.')
 
 
 # Shown on a report page while this copy is behind but the hour has not come.
@@ -876,12 +1066,18 @@ INSTALL_BLOCK_MSG = (
     '🔒 **Report generation is paused: OTDR Suite needs a fresh install.**\n\n'
     'This session is running **engine {running}**, but **engine {latest}** '
     'has been published, and it adds files this copy of OTDR Suite cannot '
-    'download on its own, so Update & restart will not apply it. Different '
+    'download on its own, so Update & Restart will not apply it. Different '
     'engines can print different numbers for the same traces, so reports are '
     'held until this copy is up to date.\n\n'
     '**Nothing is lost.** Finish what you are doing, close OTDR Suite '
     'completely, then download and run the installer: {url}'
 )
+# The product's name where the tech reads it (the App: "OTDR App").  A second
+# assignment, as INSTALLER_URL's below, so the literals stay readable to the
+# tests that lift them.
+UPDATE_HEADS_UP_MSG, STALE_BLOCK_MSG, INSTALL_BLOCK_MSG = (
+    m.replace('OTDR Suite', PRODUCT_NAME)
+    for m in (UPDATE_HEADS_UP_MSG, STALE_BLOCK_MSG, INSTALL_BLOCK_MSG))
 
 
 def _report_gate(key):
@@ -903,6 +1099,7 @@ def _report_gate(key):
     returns None and the report runs.  A tech in a truck with no signal must
     still be able to work; blocking on a FAILED CHECK would be an outage of
     our own making."""
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
     try:
         stale = _update_state()
     except Exception:
@@ -924,12 +1121,12 @@ def _report_gate(key):
         return stale
     st.error(STALE_BLOCK_MSG.format(latest=latest, running=running))
     if getattr(sys, 'frozen', False):
-        if st.button('⬇ Update & restart now', key=f'{key}_stale_restart',
+        if st.button('⬇ Update & Restart Now', key=f'{key}_stale_restart',
                      type='primary'):
             if _relaunch_and_exit():
                 _render_restart_watchdog()
             else:
-                st.error('Couldn\'t start the restart. Close OTDR Suite '
+                st.error(f'Couldn\'t start the restart. Close {_pn} '
                          'completely and open it again to pick up the update.')
     else:
         st.caption('Restart the app to apply. Updates install at launch.')
@@ -1069,6 +1266,7 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
     If the parent is ever unreachable, `say` still writes the in-iframe
     caption, which is what the strip is for.
     """
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
     return """
 <div id="wd" style="font-family:sans-serif;font-size:13px;color:#000000"></div>
 <script>
@@ -1126,7 +1324,7 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
       + 'opacity:.55">Leave this window open \u2014 closing OTDR Suite now '
       + 'just means starting the update over.</div>'
       + '<button id="otdr-restart-esc" style="display:none;margin-top:22px;'
-      + 'padding:8px 18px;font-size:14px;cursor:pointer">Reload this page</button>';
+      + 'padding:8px 18px;font-size:14px;cursor:pointer">Reload This Page</button>';
     d.body.appendChild(el);
     msg  = d.getElementById("otdr-restart-msg");
     spin = d.getElementById("otdr-restart-spin");
@@ -1177,6 +1375,7 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
 })();
 </script>
 """.replace('__HEALTH__', RESTART_HEALTH_PATH) \
+   .replace('OTDR Suite', _pn) \
    .replace('__TIMEOUT_MS__', str(int(timeout_s) * 1000))
 
 
@@ -1184,9 +1383,9 @@ def _render_restart_watchdog(sidebar=False):
     """Render the watchdog after a restart has been kicked off."""
     if sidebar:
         with st.sidebar:                  # `st` itself is not a context manager
-            st_components_html(app_theme.recolor(_restart_watchdog_html()), height=40)
+            st_components_html(theme_recolor(_restart_watchdog_html()), height=40)
     else:
-        st_components_html(app_theme.recolor(_restart_watchdog_html()), height=40)
+        st_components_html(theme_recolor(_restart_watchdog_html()), height=40)
 
 
 # Permanent link: CI rewrites this asset on every successful build, so it is
@@ -1214,10 +1413,11 @@ def _cache_pinned():
 
 
 def _render_cache_pinned_notice(sidebar=False):
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
     target = st.sidebar if sidebar else st
     target.warning(
         'Updates cannot be kept on this computer. Files this app downloads '
-        'keep disappearing, so OTDR Suite is running the copy that came with '
+        f'keep disappearing, so {_pn} is running the copy that came with '
         'its installer. To get the newest version, download and run the '
         f'installer again: {INSTALLER_URL}')
 
@@ -1261,11 +1461,12 @@ def _needs_install():
 
 
 def _render_install_notice(latest, running, sidebar=False):
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
     target = st.sidebar if sidebar else st
     target.warning(
         f'Update {latest} needs a fresh install (running {running}). It adds '
-        'files this copy of OTDR Suite cannot download on its own, so Update '
-        '& restart will not apply it. Close OTDR Suite completely, then '
+        f'files this copy of {_pn} cannot download on its own, so Update '
+        f'& restart will not apply it. Close {_pn} completely, then '
         f'download and run the installer: {INSTALLER_URL}')
 
 
@@ -1279,6 +1480,7 @@ def _render_update_nudge():
     only ONE manifest fetch happens per recheck window (3 s cap).  Every
     failure is swallowed by _nudge_check: equal, older or unreachable renders
     nothing at all."""
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
     if 'upd_restart_blocked' not in st.session_state:
         blocked = os.path.exists(_restart_marker_path())
         if blocked:
@@ -1288,9 +1490,9 @@ def _render_update_nudge():
                 pass
         st.session_state['upd_restart_blocked'] = blocked
     if st.session_state['upd_restart_blocked']:
-        st.error('The update didn\'t start: the previous OTDR Suite is still '
-                 'running. Close it completely (or reboot), then start OTDR '
-                 'Suite again.')
+        st.error(f'The update didn\'t start: the previous {_pn} is still '
+                 'running. Close it completely (or reboot), then start '
+                 f'{_pn} again.')
 
     if _cache_pinned():
         _render_cache_pinned_notice()
@@ -1311,12 +1513,12 @@ def _render_update_nudge():
         return
     st.warning(f'Update {latest} is available (running {running}).{note}')
     if getattr(sys, 'frozen', False):
-        if st.button('⬇ Update & restart now', key='upd_nudge_restart',
+        if st.button('⬇ Update & Restart Now', key='upd_nudge_restart',
                      type='primary', use_container_width=True):
             if _relaunch_and_exit():
                 _render_restart_watchdog()
             else:
-                st.error('Couldn\'t start the restart. Close OTDR Suite and '
+                st.error(f'Couldn\'t start the restart. Close {_pn} and '
                          'open it again to pick up the update.')
     else:
         st.caption('Restart the app to apply. Updates install at launch.')
@@ -1389,6 +1591,11 @@ _POLICY_FOR_IT = (
     '    Microsoft > Windows > CodeIntegrity > Operational\n\n'
     'That entry names the exact file and the policy that stopped it. Please '
     'allow OTDR Suite, published by Robert Colbert, to run.')
+# The product's name (the App: "OTDR App"); globals().get, because a test
+# runs these _POLICY lines on their own.
+_POLICY_BODY, _POLICY_STEPS, _POLICY_FOR_IT = (
+    m.replace('OTDR Suite', globals().get('PRODUCT_NAME', 'OTDR Suite'))
+    for m in (_POLICY_BODY, _POLICY_STEPS, _POLICY_FOR_IT))
 
 
 def _policy_block_caption(exc):
@@ -1405,7 +1612,8 @@ def _policy_block_caption(exc):
 def _engine_policy_block_page(exc):
     """The boot-time version: Windows blocked a file, so say that, and do NOT
     offer the repair — it rewrites engine files, and the blocked one is not."""
-    st.set_page_config(page_title='OTDR Suite', layout='centered')
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
+    st.set_page_config(page_title=_pn, layout='centered')
     st.title('Windows Blocked Part of This App')
     st.error(_POLICY_HEADLINE)
     st.write(_POLICY_BODY)
@@ -1428,8 +1636,9 @@ def _engine_file_missing_page(exc):
     button.  The button schedules the repair and restarts; the launcher does
     the work at boot, where nothing is holding the files open.
     """
-    st.set_page_config(page_title='OTDR Suite', layout='centered')
-    st.title('OTDR Suite Needs to Repair Itself')
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
+    st.set_page_config(page_title=_pn, layout='centered')
+    st.title(f'{_pn} Needs to Repair Itself')
     st.error('A file this app needs is missing from this computer.')
     st.write(
         'The app checks its own files at every start, and one of them is no '
@@ -1447,12 +1656,12 @@ def _engine_file_missing_page(exc):
     # hourly in-process dedup keeps reruns of this page from repeating it.
     report_error('engine file missing', exc,
                  {'engine': HERE, 'source': os.environ.get('OTDR_SUITE_SOURCE', '?')})
-    if st.button('Repair and restart', type='primary'):
+    if st.button('Repair and Restart', type='primary'):
         _request_repair()
         if _relaunch_and_exit():
             _render_restart_watchdog()
         else:
-            st.error('Close OTDR Suite and open it again to finish the repair.')
+            st.error(f'Close {_pn} and open it again to finish the repair.')
     with st.expander('Details'):
         st.code(f'{type(exc).__name__}: {exc}\n\nengine: {HERE}')
     st.stop()
@@ -1467,6 +1676,7 @@ def _engine_damaged_notice(stderr, key):
     from under a run that had already started.  What the tech would otherwise
     read is "Secret Sauce did not return a result" over a Python traceback in
     an expander, which tells them nothing they can act on."""
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
     text = stderr or ''
     if 'ModuleNotFoundError' not in text and 'ImportError' not in text:
         return False
@@ -1486,12 +1696,12 @@ def _engine_damaged_notice(stderr, key):
         'Security software removing a file after the app downloaded it is the '
         'usual reason. Repair and restart, then run this again. Nothing you '
         'have saved is affected.')
-    if st.button('Repair and restart', type='primary', key=f'repair_{key}'):
+    if st.button('Repair and Restart', type='primary', key=f'repair_{key}'):
         _request_repair()
         if _relaunch_and_exit():
             _render_restart_watchdog()
         else:
-            st.error('Close OTDR Suite and open it again to finish the repair.')
+            st.error(f'Close {_pn} and open it again to finish the repair.')
     with st.expander('Details'):
         st.code(text[-4000:] or '(no output)')
     return True
@@ -1508,17 +1718,32 @@ except ImportError as _engine_exc:
 
 TRACE_PORT_BASE = 8771
 
-st.set_page_config(page_title='OTDR Suite', layout='wide',
+st.set_page_config(page_title=PRODUCT_NAME, layout='wide',
                    initial_sidebar_state='expanded')
-# Light / Dark (the boss, 2026-09-29), modelled on a dark dashboard the boss liked.
-# The saved choice is applied before anything draws.  Streamlit sends the
-# theme at the START of a run, so when this run changed it the page on screen
-# still has the old one: rerun once to paint the right one.
+# Light / Dark: every new session starts Dark, and the session's choice is
+# applied before anything draws.  Streamlit sends the theme at the START of a
+# run, so when this run changed it the page on screen still has the old one:
+# rerun once to paint the right one.  Fail-safe (boss, 2026-10-01): at most
+# one such rerun per theme change, so a Streamlit that does not keep the
+# setting draws the page in whatever theme it has instead of rerunning for
+# ever; and a theme error leaves Streamlit's own look rather than no page.
 if 'ui_theme' not in st.session_state:
-    st.session_state['ui_theme'] = app_theme.load_theme()
-if app_theme.apply_streamlit_theme(st.session_state['ui_theme']):
+    st.session_state['ui_theme'] = THEME_DEFAULT
+try:
+    _theme_changed = apply_streamlit_theme(st.session_state['ui_theme'])
+except Exception:
+    _theme_changed = False
+if _theme_changed and st.session_state.get('_theme_rerun_for') != st.session_state['ui_theme']:
+    st.session_state['_theme_rerun_for'] = st.session_state['ui_theme']
     st.rerun()
-st.markdown(app_theme.css_vars(), unsafe_allow_html=True)
+try:
+    st.markdown(theme_css_vars(), unsafe_allow_html=True)
+except Exception:
+    pass
+try:
+    trace_server.CONFIG['theme'] = st.session_state['ui_theme']
+except Exception:
+    pass
 # No Streamlit chrome, top right, on any screen (Robert, 2026-09-27): the
 # Deploy button, the ⋮ menu and the running / "File change · Rerun" status.
 # The sidebar's own open/close arrow, top left, stays.
@@ -1533,6 +1758,56 @@ st.markdown('<style>[data-testid="stToolbarActions"],'
             'transform-origin:left top}'
             '[data-testid="stExpandSidebarButton"] *{color:var(--otdr-accent)!important}'
             '</style>', unsafe_allow_html=True)
+
+# Streamlit's own theme pick (the ⋮ menu's Settings) beats the hub's Theme
+# switch: once a browser has chosen Light or Dark there, Streamlit keeps it
+# and ignores the theme the hub sends, so the switch does nothing.  ("Use
+# system setting" removes Streamlit's entry instead, so it never blocks.)  The menu is hidden above; this clears a pick already made, once,
+# and reloads so the hub's theme takes.  Only that pick is removed: an
+# entry {"name": "Light"} or {"name": "Dark"}.  Everything else is left
+# alone, above all what Streamlit writes by itself on every page load
+# ("Custom Theme" up to 1.50, a bare "System"/"Light"/"Dark" from 1.6x on,
+# which the hub's theme beats anyway).  Removing that one reloaded the page
+# for ever on the 1.64 build (boss, 2026-10-01, run 1416), so the reload
+# also happens at most once per window.
+THEME_PICK_CLEAR_JS = """
+<script>
+(function () {
+  var w; try { w = window.parent; void w.document; } catch (e) { return; }
+  try {
+    var ss = null; try { ss = w.sessionStorage; } catch (e) {}
+    if (ss && ss.getItem('otdrThemePickCleared')) return;
+    var ls = w.localStorage, gone = false;
+    for (var i = ls.length - 1; i >= 0; i--) {
+      var k = ls.key(i);
+      if (!k || k.indexOf('stActiveTheme') !== 0) continue;
+      var v = null; try { v = JSON.parse(ls.getItem(k)); } catch (e) {}
+      if (v && typeof v === 'object' && (v.name === 'Light' || v.name === 'Dark')) {
+        ls.removeItem(k); gone = true;
+      }
+    }
+    if (gone && ss) { ss.setItem('otdrThemePickCleared', '1'); w.location.reload(); }
+  } catch (e) { /* no storage: nothing was picked */ }
+})();
+</script>
+"""
+
+
+def _install_theme_pick_clear():
+    """Render the script above out of the page's flow: a zero-height frame
+    still takes a gap between elements, which moved every page down."""
+    try:
+        box = st.container(key='theme_pick_clear')
+        box.markdown('<style>[data-testid="stLayoutWrapper"]:has(> .st-key-theme_pick_clear)'
+                     '{position:absolute;width:0;height:0;overflow:hidden}</style>',
+                     unsafe_allow_html=True)
+        with box:
+            st_components_html(THEME_PICK_CLEAR_JS, height=0)
+    except Exception:
+        pass
+
+
+_install_theme_pick_clear()
 
 
 # ─── Sidebar drag-to-widen must not close the sidebar ────────────────────
@@ -1573,6 +1848,93 @@ def _install_sidebar_drag_fix():
     """Render the zero-height script above (best effort, never fatal)."""
     try:
         st_components_html(SIDEBAR_DRAG_FIX_JS, height=0)
+    except Exception:
+        pass
+
+
+# Trace files dropped on the hub page itself, not on the Viewer.  Nothing on
+# the hub took a dropped file, so Chrome did what it does with one: it saved it
+# to Downloads.  The boss (2026-09-30, on a 432-fiber job): the A folder loaded on the
+# Viewer and the B folder "goes straight to downloads and isn't populating".
+# The Viewer frame is a box in the middle of the hub page; a second folder let
+# go of a little off it (the sidebar's B box, the settings box above, the
+# header) was a download.  So the hub page catches every file drop and refuses
+# it: the cursor says no and nothing loads or downloads.  Only the Viewer's
+# FILES panel takes a drop, where it lights up (Robert 2026-10-01); on the
+# Viewer page a drag over the hub tells the Viewer, which shows the panel as
+# the place to drop.  A file box of a page (st.file_uploader) still takes its
+# own drops.
+#
+# The page's frames are covered too: the settings box and the other boxes
+# drawn by the hub are frames of the hub's own address, and a drop on one of
+# them was a download in the same way.  The Viewer frame is another address
+# and takes its own drops.
+#
+# The code runs in the hub page itself, put there as a <script>: a listener
+# left behind by this zero-height frame would stop working once Streamlit
+# removed the frame.
+HUB_DROP_CATCH_JS = r"""
+<script>
+(function(){
+  var w; try { w = window.parent; void w.document; } catch (e) { return; }
+  if (!w || w.__otdrDropCatch) return;
+  w.__otdrDropCatch = true;
+  var s = w.document.createElement('script');
+  s.textContent = '(' + function(){
+    function isFiles(ev) {
+      var t = ev.dataTransfer && ev.dataTransfer.types;
+      return !!t && Array.prototype.indexOf.call(t, 'Files') >= 0;
+    }
+    function viewerFrame() {
+      var fs = document.querySelectorAll('iframe');
+      for (var i = 0; i < fs.length; i++) {
+        var src = fs[i].getAttribute('src') || '';
+        if (/^https?:\/\/(127\.0\.0\.1|localhost):\d+\/\?(.*&)?b=\d+/.test(src)) return fs[i];
+      }
+      return null;
+    }
+    var lastHint = 0;
+    function onOver(ev) {
+      if (ev.defaultPrevented || !isFiles(ev)) return;   // a file box's own
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = 'none';
+      // Show the Viewer's FILES panel as the place to drop.
+      var fr = viewerFrame(), now = Date.now();
+      if (fr && fr.contentWindow && now - lastHint > 200) {
+        lastHint = now;
+        fr.contentWindow.postMessage({ type: 'otdr-drag' }, new URL(fr.getAttribute('src')).origin);
+      }
+    }
+    function onDrop(ev) {
+      if (ev.defaultPrevented || !isFiles(ev)) return;
+      ev.preventDefault();
+    }
+    function hook(win) {
+      try {
+        var doc = win.document;
+        if (!doc || doc.__otdrDropHooked) return;
+        doc.__otdrDropHooked = true;
+        win.addEventListener('dragover', onOver);
+        win.addEventListener('drop', onDrop);
+      } catch (e) { /* another address: the Viewer, which takes its own */ }
+    }
+    hook(window);
+    // Frames come and go with every rerun, so look again now and then.
+    setInterval(function(){
+      var fs = document.querySelectorAll('iframe');
+      for (var i = 0; i < fs.length; i++) if (fs[i].contentWindow) hook(fs[i].contentWindow);
+    }, 1000);
+  } + ')();';
+  w.document.head.appendChild(s);
+})();
+</script>
+"""
+
+
+def _install_hub_drop_catch():
+    """Render the zero-height script above (best effort, never fatal)."""
+    try:
+        st_components_html(HUB_DROP_CATCH_JS, height=0)
     except Exception:
         pass
 
@@ -1824,14 +2186,14 @@ def _report_dest_row(key, default_dir):
         st.session_state[key] = st.session_state.get(saved, '')
     c1, c2 = st.columns([1, 2])
     with c1:
-        if st.button('📁 Save reports to…', use_container_width=True, key=key + '_browse'):
+        if st.button('📁 Save Reports To…', use_container_width=True, key=key + '_browse'):
             p = pick_folder('Choose where to save the reports')
             if p:
                 st.session_state[key] = p
             elif p is None:
                 st.info('No folder picker on this machine. Paste the path instead.')
     with c2:
-        st.text_input('Save reports to', key=key, placeholder=default_dir,
+        st.text_input('Save Reports To', key=key, placeholder=default_dir,
                       help='Leave blank to use the folder shown.')
     st.session_state[saved] = st.session_state.get(key) or ''
     chosen = (st.session_state.get(key) or '').strip().strip('"')
@@ -1898,7 +2260,7 @@ def _sor_locations(path):
 
 def _derive_ila(folder):
     """Best-effort (origin, far) ILA/site names for the direction whose .sor
-    files live in `folder`.  GenParams carries both cable endpoints; which one
+    (or .trc) files live in `folder`.  GenParams carries both cable endpoints; which one
     this direction was shot FROM comes from the filename prefix (SEANOR* →
     Seattle, NORSEA* → North Bend; HOWLAN* → How, LANHOW* → Lan).  Returns
     ('', '') when nothing is readable."""
@@ -1906,8 +2268,17 @@ def _derive_ila(folder):
     sors = sorted(glob.glob(os.path.join(folder, '*.sor')) +
                   glob.glob(os.path.join(folder, '*.SOR')))
     if not sors:
-        return ('', '')
-    loc_a, loc_b = _sor_locations(sors[0])
+        # A .trc stores the same two endpoints (LocationA/LocationB, in the
+        # order GenParams carries them on a .sor of the same shot).
+        sors = sorted(glob.glob(os.path.join(folder, '*.trc')) +
+                      glob.glob(os.path.join(folder, '*.TRC')))
+        if not sors:
+            return ('', '')
+        import folder_intake as fi
+        loc_a, loc_b = fi.trc_header(sors[0], _first_chunk_only=True).get(
+            'loc_stored') or ('', '')
+    else:
+        loc_a, loc_b = _sor_locations(sors[0])
     if loc_a and not loc_b:
         return (loc_a, '')
     if loc_b and not loc_a:
@@ -1942,9 +2313,9 @@ def _resolve_bidir_from_single(folder, zip_file):
 
     bdr_uploads = [u for u in uploads if _ext(u, '.bdr')]
     zip_uploads = [u for u in uploads if _ext(u, '.zip')]
-    trace_uploads = [u for u in uploads if _ext(u, '.sor', '.json')]
+    trace_uploads = [u for u in uploads if _ext(u, '.sor', '.json', '.trc')]
     if bdr_uploads and (zip_uploads or trace_uploads):
-        st.error('Drop either the .bdr files or the .sor/.json/.zip span, '
+        st.error('Drop either the .bdr files or the .sor/.json/.trc/.zip span, '
                  'not both.')
         return ('', '')
 
@@ -1995,7 +2366,7 @@ def _resolve_bidir_from_single(folder, zip_file):
             else:
                 files = fi.find_otdr_files(folder, fi.OTDR_EXTS_WITH_BDR)
             if not files:
-                st.error('No .sor / .json / .bdr files found in that folder/zip.')
+                st.error('No .sor / .json / .trc / .bdr files found in that folder/zip.')
                 return ('', '')
             info_dupes = list(dropped_dupes)
             if fi.is_bdr_set(files):
@@ -2051,7 +2422,7 @@ def _load_span(folder, zip_file, out=None, dirs=None):
     out = out or st.sidebar
     import folder_intake as fi
     # zip_file may be a single uploaded file, a LIST of them (multi-upload —
-    # per-direction zips like HOWLAN.zip + LANHOW.zip, loose .sor/.json
+    # per-direction zips like SITEA.zip + SITEB.zip, loose .sor/.json/.trc
     # traces, a dropped folder's contents, or any mix), or None.
     uploads = ((list(zip_file) if isinstance(zip_file, (list, tuple)) else [zip_file])
                if zip_file else [])
@@ -2094,7 +2465,7 @@ def _load_span(folder, zip_file, out=None, dirs=None):
             # are often delivered that way), so descend into any zips found.
             files = fi.find_otdr_files_with_zips(folder, os.path.join(work, 'zips'))
         if not files:
-            out.error('No .sor / .json files found in that folder/zip '
+            out.error('No .sor / .json / .trc files found in that folder/zip '
                              '(if the span is split into per-direction zips, '
                              'select the folder that holds them, or upload them).')
             return False
@@ -2358,9 +2729,9 @@ def project_from_file_data(data, project_path):
     """(snapshot, span-1 markers) from a project file's JSON.  Raises
     ValueError on something that is not an OTDR Suite project."""
     if not isinstance(data, dict) or data.get('format') != PROJECT_FORMAT:
-        raise ValueError('not an OTDR Suite project file')
+        raise ValueError(f'not an {PRODUCT_NAME} project file')
     if int(data.get('version') or 0) > PROJECT_VERSION:
-        raise ValueError('this project was saved by a newer OTDR Suite -- '
+        raise ValueError(f'this project was saved by a newer {PRODUCT_NAME} -- '
                          'update the app to open it')
     pdir = os.path.dirname(os.path.abspath(project_path))
     spans, markers = [], None
@@ -2396,7 +2767,7 @@ def project_from_file_data(data, project_path):
                 if isinstance(data.get('gps'), dict) else {}),
         'owner': ({k: str(data['owner'].get(k) or '') for k in ('name', 'email')}
                   if isinstance(data.get('owner'), dict) else {}),
-        'sharepoint': ({k: str(data['sharepoint'].get(k) or '') for k in ('link', 'path')
+        'sharepoint': ({k: str(data['sharepoint'].get(k) or '') for k in ('link', 'path', 'save')
                         if data['sharepoint'].get(k)}
                        if isinstance(data.get('sharepoint'), dict) else {}),
     }
@@ -2495,7 +2866,7 @@ def project_apply(snap, ss, only_missing=False):
     ss['project_sp'] = dict(snap.get('sharepoint') or {})
     # Browsing starts in the project's folder, not the last one looked at.
     ss.pop('sp_edit', None)
-    for key in ('sp_path', '_sp_cache', '_sp_confirm'):
+    for key in ('sp_path', '_sp_cache', '_sp_confirm', 'spx_path'):
         ss.pop(key, None)
     if ss['project_sp'].get('path'):
         ss['sp_path'] = ss['project_sp']['path']
@@ -2710,16 +3081,26 @@ def _sor_date_cached(folder, _mtime):
         import sor_reader324802a as _sr          # the Viewer's copy, as the hub uses
     except Exception:
         return ''
+    import calendar as _cal
     best = None
     try:
-        names = sorted(n for n in os.listdir(folder) if n.lower().rstrip().endswith('.sor'))[:3]
+        names = sorted(n for n in os.listdir(folder)
+                       if n.lower().rstrip().endswith(('.sor', '.trc')))[:3]
     except OSError:
         return ''
     for n in names:
         try:
             with open(os.path.join(folder, n), 'rb') as fh:
                 data = fh.read()
-            ts = _sr._parse_fxd_params(data, _sr._parse_block_directory(data)).get('date_time') or 0
+            if n.lower().rstrip().endswith('.trc'):
+                # A .trc stores its shot time as an ISO string (UTC), not
+                # FxdParams' epoch; folder_intake reads it with no reader copy.
+                import folder_intake as _fi
+                iso = _fi.trc_header(os.path.join(folder, n)).get('date_utc')
+                ts = _cal.timegm(_dt.datetime.strptime(iso, '%Y-%m-%dT%H:%M:%S')
+                                 .timetuple()) if iso else 0
+            else:
+                ts = _sr._parse_fxd_params(data, _sr._parse_block_directory(data)).get('date_time') or 0
             if ts > 0:
                 best = min(best, ts) if best else ts
         except Exception:
@@ -2729,7 +3110,7 @@ def _sor_date_cached(folder, _mtime):
 
 def sor_shot_date(folder):
     """'YYYY-MM-DD' the traces in `folder` were shot (the .sor header's
-    date), or '' when there is no .sor to read."""
+    date, or a .trc's), or '' when there is no .sor or .trc to read."""
     try:
         return _sor_date_cached(os.path.abspath(folder), os.path.getmtime(folder))
     except OSError:
@@ -3381,10 +3762,11 @@ def demo_project(root=None):
 
 def _render_home(msg):
     """The two-choice start screen.  No sidebar: nothing in it applies yet."""
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
     st.markdown('<style>[data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"]'
                 '{display:none}</style>', unsafe_allow_html=True)
     _render_update_nudge()
-    st.markdown("<h2 style='text-align:center'>🔬 OTDR Suite</h2>", unsafe_allow_html=True)
+    st.markdown(f"<h2 style='text-align:center'>🔬 {_pn}</h2>", unsafe_allow_html=True)
     # One column, three choices stacked, all the same blue (Robert, 2026-09-24).
     _l, mid, _r = st.columns([1, 2, 1])
     with mid:
@@ -3431,7 +3813,7 @@ def _render_sample_photos_box():
     a closed box takes the .zip of them that was sent privately.  The App's
     installer is on a public link, so the photos never ride in it (Robert,
     2026-09-29).  Gone once they are in."""
-    if os.environ.get('OTDR_SUITE_EDITION') != 'OTDR Suite App':
+    if os.environ.get('OTDR_SUITE_EDITION') != 'OTDR App':
         return
     try:
         if sample_photos_real():
@@ -3647,6 +4029,15 @@ def _handle_nav():
                 st.session_state['uni_folder_input'] = _sra
         if _srb and os.path.isdir(_srb):
             st.session_state['view_dir_b_input'] = _srb
+        # A Unidirectional report run on the panel's B folder comes back on
+        # the B folder: the popped Viewer holds both of the panel's folders
+        # and says which side the report ran on (`pside`).
+        _pside = qp.get('pside')
+        if qp.get('nav') == 'uni' and _pside in ('a', 'b'):
+            st.session_state['uni_panel_side'] = 'A folder' if _pside == 'a' else 'B folder'
+            _run = _srb if _pside == 'b' else _sra
+            if _run and os.path.isdir(_run):
+                st.session_state['uni_folder_input'] = _run
         st.session_state['nav_radio'] = _back_pages[qp.get('nav')]
         st.query_params.clear()
         return
@@ -3765,6 +4156,11 @@ if st.session_state.get('app_mode') not in ('traces', 'project', 'setup'):
         st.session_state['app_mode'] = 'traces'
 if st.session_state.get('app_mode') not in ('traces', 'project', 'setup'):
     _render_home(_home_msg)
+    # OTDR Suite App: a file dropped on the home screen is refused, not saved
+    # to Downloads (Robert, 2026-10-01).  There is no Viewer frame here, so
+    # the hub's drop catcher only refuses it; Quick Analysis and a project
+    # install it again below (it runs once per page).
+    _install_hub_drop_catch()
     try:
         maybe_report_update()
     except Exception:
@@ -3775,13 +4171,17 @@ _PROJECT_MODE = (st.session_state.get('app_mode') == 'project'
 if _PROJECT_MODE:
     _project_seed_tools()
 _install_sidebar_drag_fix()
+_install_hub_drop_catch()
 
 # No "Deploy" button in the header (Robert, 2026-09-29): it is Streamlit's
 # developer menu and means nothing to a tech.  New builds turn the whole
 # developer toolbar off (client.toolbarMode = viewer, see desktop/launcher.py
 # and .streamlit/config.toml); this hides the button on builds already out
 # in the field, which pick up app.py on update but keep their old launcher.
-st.markdown('<style>[data-testid="stAppDeployButton"]{display:none}</style>',
+# Nor the ⋮ menu (Robert, 2026-10-01): its Settings has a theme picker of its
+# own that overrides the hub's Theme switch (see THEME_PICK_CLEAR_JS).
+st.markdown('<style>[data-testid="stAppDeployButton"],[data-testid="stMainMenu"],'
+            '#MainMenu{display:none}</style>',
             unsafe_allow_html=True)
 
 
@@ -3803,9 +4203,46 @@ def _panel_shown():
 
 
 def _panel_boxes():
-    """What the left panel's two Trace Folders boxes hold, as typed."""
-    return tuple((st.session_state.get(_k) or '').strip().strip('"')
-                 for _k in ('view_dir_a_input', 'view_dir_b_input'))
+    """The folders the left panel's two Trace Folders boxes stand for: what
+    was typed, or, for a box showing a Viewer drop's name, the folder the drop
+    was staged in (see _label_drop_boxes)."""
+    out = []
+    for side in ('a', 'b'):
+        v = (st.session_state.get(f'view_dir_{side}_input') or '').strip().strip('"')
+        shown = st.session_state.get(f'_drop_box_{side}')
+        if shown and v == shown[0]:
+            v = shown[1]
+        out.append(v)
+    return tuple(out)
+
+
+def _drop_box_label(path):
+    """What a Trace Folders box shows for a folder a drop on the Viewer
+    staged: the folder or file the tech dropped, never the staging folder
+    (/var/folders/.../T/otdr_viewer_drop_jnwvux7o/A, demo list #31).
+    None for any other folder."""
+    try:
+        name = trace_server.drop_name(path)
+    except Exception:
+        return None
+    if not name:
+        return None
+    return name if name.startswith('Dropped files') else f'{name} (dropped)'
+
+
+def _label_drop_boxes():
+    """Put the drop's name in each box that holds a staged drop folder, and
+    remember which folder that name stands for (_panel_boxes reads it back).
+    Run before the boxes are drawn, on every run: a drop, a link back from the
+    Viewer and a new session seeded from the trace server all bring the
+    staged path in."""
+    for side in ('a', 'b'):
+        key = f'view_dir_{side}_input'
+        v = (st.session_state.get(key) or '').strip().strip('"')
+        label = _drop_box_label(v) if v else None
+        if label:
+            st.session_state[f'_drop_box_{side}'] = (label, v)
+            st.session_state[key] = label
 
 
 def _panel_traces():
@@ -3848,23 +4285,75 @@ def _panel_qs():
             f"&cs={st.session_state.get('_carry_id', '')}")
 
 
+def _files_sig(paths):
+    """What a staged copy was built from: every file's path, size, mtime and
+    inode.  A count plus the newest mtime missed a file swapped for an older
+    one (an Explorer zip extraction keeps the archive's timestamps)."""
+    out = []
+    for f in paths:
+        st_ = os.stat(f)
+        out.append((f, st_.st_size, st_.st_mtime_ns, st_.st_ino))
+    return tuple(out)
+
+
 def _panel_ss_folder(dir_a, dir_b):
     """The ONE folder Secret Sauce reads for the left panel's A and B folders:
-    every trace of both, flat.  The same two folders holding the same files
+    every trace of both, flat.  Returns (folder, renamed): `renamed` is
+    [(name, new_name)] for the B files that went in under a name of their
+    own because an A file has their name (folder_intake.combined_names).
+
+    The folder is named after exactly what it holds: the two folders and
+    every trace's path, size, time and inode (_files_sig).  The same traces
     always give the SAME folder, because a report is saved under the folder
     it ran on.  A new session is started by every click into the Viewer tab;
     a folder built fresh each time would cost the report on the way back, and
-    a copy of the whole span where the traces cannot be hard-linked."""
+    a copy of the whole span where the traces cannot be hard-linked.  Any
+    change gives a NEW folder, built whole, and the report saved for the old
+    traces stays with the old one.  The name used to come from the file count
+    and the newest time, and a name already in the folder was never placed
+    again: a trace swapped for another of the same size with an older time
+    (as an Explorer zip extraction leaves it) kept Secret Sauce on the old
+    trace, in every session."""
     import hashlib
     import folder_intake as fi
-    files = fi.find_otdr_files(dir_a) + fi.find_otdr_files(dir_b)
-    sig = '|'.join([os.path.normcase(os.path.abspath(dir_a)),
-                    os.path.normcase(os.path.abspath(dir_b)), str(len(files)),
-                    repr(max((os.path.getmtime(f) for f in files), default=0))])
+    files_a, files_b = fi.find_otdr_files(dir_a), fi.find_otdr_files(dir_b)
+    placed, renamed = fi.combined_names(files_a, files_b)
+    sig = repr((os.path.normcase(os.path.abspath(dir_a)),
+                os.path.normcase(os.path.abspath(dir_b)),
+                _files_sig(files_a), _files_sig(files_b),
+                [_n for _f, _n in placed]))
     dest = os.path.join(
         tempfile.gettempdir(),
         'otdr_span_all_' + hashlib.sha1(sig.encode('utf-8')).hexdigest()[:16])
-    return fi.materialize_all(files, dest)
+    return fi.materialize_combined(placed, dest), renamed
+
+
+def _take_panel_ss_folder(dir_a, dir_b):
+    """Build (or find) the left panel's Secret Sauce folder and put it where
+    the page, Clear Report and Clear Traces look for it.  Returns what
+    _panel_ss_folder returns."""
+    folder, renamed = _panel_ss_folder(dir_a, dir_b)
+    ss = st.session_state
+    ss['_ss_from_ab'] = (dir_a, dir_b)
+    ss['ss_folder_input'] = folder
+    # ...and in a slot no widget owns, for the page to read when it draws no
+    # folder box (the left panel is loaded).
+    ss['_ss_panel_folder'] = folder
+    return folder, renamed
+
+
+def _renamed_note(renamed, limit=3):
+    """One line for the page: which B files went in under a new name."""
+    n = len(renamed)
+    shown = [f'{_old} as {_new}' for _old, _new in renamed[:limit]]
+    more = f' and {n - limit} more' if n > limit else ''
+    if n == 1:
+        return (f'1 B-direction file has the same name as an A-direction '
+                f'file. It goes in as {renamed[0][1]}, so both directions '
+                f'are checked.')
+    return (f'{n} B-direction files have the same name as an A-direction '
+            f'file. Each goes in under a new name, so both directions are '
+            f'checked: {", ".join(shown)}{more}.')
 
 
 _SAVED_REPORTS = {'sr': ('.sr_grid_cache.json',),
@@ -3880,7 +4369,7 @@ def _report_folders(which):
     draws no box."""
     ss = st.session_state
     if which == 'sr':
-        cands = [(ss.get('sr_dirs') or (None,))[0], ss.get('view_dir_a_input')]
+        cands = [(ss.get('sr_dirs') or (None,))[0], _panel_boxes()[0]]
     elif which == 'uni':
         cands = [(ss.get('uni_result') or {}).get('_folder'),
                  ss.get('uni_folder_input'), *_panel_boxes()]
@@ -3996,6 +4485,11 @@ def _clear_traces():
     for _k in ('view_dir_a_input', 'view_dir_b_input', 'ss_folder_input',
                'uni_folder_input', 'sr_one_folder'):
         st.session_state[_k] = ''
+    st.session_state.pop('_drop_box_a', None)
+    st.session_state.pop('_drop_box_b', None)
+    # Unidirectional's own upload is kept in a slot, not in its uploader.
+    st.session_state.pop('uni_upload', None)
+    st.session_state.pop('uni_both_side', None)
     # What the pages' own boxes kept goes too (_seed_box): Streamlit drops
     # the writes above on a page that is not drawn, and the old folders
     # would come back from the kept copy.  Unidirectional's landmarks and
@@ -4161,6 +4655,16 @@ _CARRY_OK_CSS = (
     '</style>')
 
 
+# The two built-in profiles' names in Title Case, for the screen only: the
+# stored names are the keys of CUSTOMER_PROFILES (saved projects carry them).
+_PROFILE_SHOWN = {'Default (engine baseline)': 'Default (Engine Baseline)',
+                  'Custom (edit table below)': 'Custom (Edit Table Below)'}
+
+
+def _profile_label(name):
+    return _PROFILE_SHOWN.get(name, name)
+
+
 _CARRY_PROFILE_BOX = (
     '<div style="background:var(--otdr-ok-bg-2);border:1px solid var(--otdr-ok-edge);'
     'border-radius:6px;padding:8px 12px;font-size:1rem;color:var(--otdr-ok-text)">'
@@ -4191,7 +4695,7 @@ def _thresholds_carried_dialog(info):
     # option C of the mock-ups).  Escaped: a profile name can hold an '&'.
     import html
     _prof = st.session_state.get('otdr_profile') or next(iter(CUSTOMER_PROFILES))
-    st.markdown(_CARRY_PROFILE_BOX.format(name=html.escape(_prof)),
+    st.markdown(_CARRY_PROFILE_BOX.format(name=html.escape(_profile_label(_prof))),
                 unsafe_allow_html=True)
     st.markdown(_CARRY_OK_CSS, unsafe_allow_html=True)
     _c1, _c2 = st.columns(2)
@@ -4212,8 +4716,14 @@ def _note_tool_change(page):
     ss['_last_tool'] = page
     if _prev is None or _prev == page:
         return
-    if page in SETTINGS_TOOLS:
-        ss['_carry_popup'] = {'to': page, 'from': ss.get('_last_settings_tool')}
+    # Only when the settings actually come over from ANOTHER Settings tool
+    # (Robert 2026-10-01: "thresholds carried over on every tool switch if we
+    # are actually carrying them over").  Back on the tool they were last set
+    # on (Viewer -> Secret Sauce -> Viewer), or with no Settings tool before
+    # it, nothing is carried and the pop-up stays away.
+    _from = ss.get('_last_settings_tool')
+    if page in SETTINGS_TOOLS and _from and _from != page:
+        ss['_carry_popup'] = {'to': page, 'from': _from}
     else:
         ss.pop('_carry_popup', None)
 
@@ -4286,7 +4796,7 @@ st.session_state.setdefault('nav_radio', (st.session_state.get('_project_page') 
 with st.sidebar:
     # Home at the very top of the sidebar, in a project and in Run Traces.
     st.button('🏠 Home', key='go_home', use_container_width=True)
-    st.markdown('## 🔬 OTDR Suite')
+    st.markdown(f'## 🔬 {PRODUCT_NAME}')
     # Where we are, filled in once the page is known (see _render_crumbs).
     _crumb_slot = st.empty()
 
@@ -4363,6 +4873,14 @@ with st.sidebar:
             st.session_state['view_drop_seen'] = _drop_at
             st.session_state['view_dir_a_input'] = trace_server.CONFIG.get('dir_a') or ''
             st.session_state['view_dir_b_input'] = trace_server.CONFIG.get('dir_b') or ''
+            # The Viewer that took the drop already shows these folders: its
+            # frame must not reload for them (see page_viewer).
+            st.session_state['_viewer_drop_dirs'] = (
+                trace_server.CONFIG.get('dir_a') or '', trace_server.CONFIG.get('dir_b') or '')
+            # Nor for the report link it was opened on, which goes below (see
+            # page_viewer): the frame keeps the whole address it had.
+            if '_viewer_q' in st.session_state:
+                st.session_state['_viewer_drop_q'] = st.session_state['_viewer_q']
             st.session_state.pop('_panel_restore', None)
             st.session_state.pop('_ss_nav_folder', None)
             _trace_folders_changed()
@@ -4374,10 +4892,12 @@ with st.sidebar:
             (st.session_state['view_dir_a_input'],
              st.session_state['view_dir_b_input']) = st.session_state.pop('_panel_restore')
             st.session_state.pop('_ss_nav_folder', None)
+        # A drop's staged folder shows as what was dropped (demo list #31).
+        _label_drop_boxes()
 
         for _side, _lbl in (('a', 'A'), ('b', 'B')):
             _key = f'view_dir_{_side}_input'
-            if st.button(f'📁 {_lbl}-direction folder', use_container_width=True,
+            if st.button(f'📁 {_lbl}-Direction Folder', use_container_width=True,
                          key=f'side_browse_{_side}'):
                 _p = pick_folder(f'Choose the {_lbl}-direction folder')
                 if _p:
@@ -4385,8 +4905,8 @@ with st.sidebar:
                     _trace_folders_changed()
                 elif _p is None:
                     st.session_state['_picker_unavailable'] = True
-            st.text_input(f'{_lbl} folder', key=_key, label_visibility='collapsed',
-                          placeholder=f'{_lbl}-direction folder path',
+            st.text_input(f'{_lbl} Folder', key=_key, label_visibility='collapsed',
+                          placeholder=f'{_lbl}-Direction Folder Path',
                           on_change=_trace_folders_changed)
         if st.session_state.get('_picker_unavailable'):
             st.caption('⚠ The folder picker isn\'t available in this build. '
@@ -4403,11 +4923,11 @@ with st.sidebar:
         # nothing until the tech presses Allow.
         _ask_clear_traces = st.button('Clear Traces', key='side_clear_traces',
                                       use_container_width=True)
+        _follow_viewer_folders()          # the Viewer's own folder changes reach the boxes
 
         # Secret Sauce takes ONE folder holding both directions: build it from the
         # A and B folders whenever that pair changes, as the span loader did.
-        _pa = (st.session_state.get('view_dir_a_input') or '').strip().strip('"')
-        _pb = (st.session_state.get('view_dir_b_input') or '').strip().strip('"')
+        _pa, _pb = _panel_boxes()
         if _pa and _pa == st.session_state.get('_ss_nav_folder'):
             # A pair click put the Secret Sauce folder itself in the A box (the
             # Viewer reads the pair from it; see _handle_nav).  It IS the folder
@@ -4418,10 +4938,7 @@ with st.sidebar:
                 and st.session_state.get('_ss_from_ab') != (_pa, _pb)):
             st.session_state['_ss_from_ab'] = (_pa, _pb)
             try:
-                st.session_state['ss_folder_input'] = _panel_ss_folder(_pa, _pb)
-                # ...and in a slot no widget owns, for the page to read when it
-                # draws no folder box (the left panel is loaded).
-                st.session_state['_ss_panel_folder'] = st.session_state['ss_folder_input']
+                _take_panel_ss_folder(_pa, _pb)
             except Exception as _exc:
                 report_error('sidebar trace folders: Secret Sauce folder', _exc)
         st.divider()
@@ -4461,13 +4978,69 @@ if _ask_clear_traces:
 # ═════════════════════════════════════════════════════════════════════════
 #  PAGE: Viewer
 # ═════════════════════════════════════════════════════════════════════════
-# Per-session cache: a Viewer folder input that is a .zip (or a folder holding
-# zips) is extracted ONCE to a temp dir, keyed on the source path, so the Viewer
-# doesn't re-unzip on every Streamlit rerun.
-_VIEWER_DIR_CACHE = {}
+@st.cache_resource(show_spinner=False)
+def _rerun_caches():
+    """Dicts that must outlive a rerun.  Streamlit runs this script in a fresh
+    module on every rerun, so a plain module-level {} was empty again on the
+    next pass: every click re-read every trace header of a one-folder tool
+    (165 MB on a 1,728-file folder), re-copied a folder holding foreign files,
+    and re-unzipped a zipped Viewer input (which also reloaded the Viewer).
+    Process-wide, so every browser tab shares them: each key and signature
+    names exactly what its entry was built from."""
+    return {'viewer_dir': {}, 'foreign': {}, 'drop': {}}
 
 
-_FOREIGN_STAGE_CACHE = {}
+_RERUN_CACHE_KEPT = 50
+
+
+def _remember(cache, key, value):
+    """Store an entry and keep only the newest _RERUN_CACHE_KEPT, so a hub
+    left open for days does not collect one entry per folder ever opened.
+    A dropped entry only costs a re-read the next time that input is used;
+    its temp copy is left where it is (an engine may be reading it)."""
+    cache.pop(key, None)                  # re-insert as the newest
+    cache[key] = value
+    for old in list(cache)[:-_RERUN_CACHE_KEPT]:
+        cache.pop(old, None)
+
+
+# A Viewer folder input that is a .zip (or a folder holding zips) is extracted
+# ONCE to a temp dir, keyed on the source path and a signature of the zip(s),
+# so the Viewer doesn't re-unzip on every Streamlit rerun.
+_VIEWER_DIR_CACHE = _rerun_caches()['viewer_dir']
+
+
+_FOREIGN_STAGE_CACHE = _rerun_caches()['foreign']
+
+
+def _stable_dir(prefix, source, *version):
+    """<temp>/<prefix><hash>/all for one input and one version of it, so the
+    same input always stages to the same folder (in every session and after
+    a restart) and a changed input gets a new one.  '' when the version is
+    unknown: then nothing may be reused."""
+    import hashlib
+    if any(v is None for v in version):
+        return ''
+    tag = '|'.join([os.path.normcase(os.path.abspath(source))]
+                   + [repr(v) for v in version])
+    return os.path.join(tempfile.gettempdir(), prefix + hashlib.sha1(
+        tag.encode('utf-8')).hexdigest()[:16], 'all')
+
+
+def _settle(built, final):
+    """Move a freshly built folder to its stable name, whole or not at all
+    (a rename).  Keeps the built folder where it is when there is no stable
+    name or the name is taken (another session got there first, or an older
+    copy that failed its check): a folder we did not just build is never
+    handed out from here."""
+    if not final:
+        return built
+    try:
+        os.makedirs(os.path.dirname(final), exist_ok=True)
+        os.rename(built, final)
+        return final
+    except OSError:
+        return built
 
 
 def _exclude_foreign_files(folder, exts=None):
@@ -4479,18 +5052,31 @@ def _exclude_foreign_files(folder, exts=None):
     any failure returns the folder untouched."""
     import folder_intake as fi
     try:
-        files = fi.find_otdr_files(folder, exts or fi.OTDR_EXTS)
-        sig = (len(files), max((os.path.getmtime(f) for f in files), default=0))
-        cached = _FOREIGN_STAGE_CACHE.get(folder)
+        exts = tuple(exts or fi.OTDR_EXTS)
+        files = fi.find_otdr_files(folder, exts)
+        sig = _files_sig(files)
+        # Keyed on the file types too: Secret Sauce also reads .trc, so the
+        # same folder is a different input there than in Unidirectional.
+        key = (folder, exts)
+        cached = _FOREIGN_STAGE_CACHE.get(key)
         if cached and cached[0] == sig and (cached[1] == folder or os.path.isdir(cached[1])):
             staged, foreign = cached[1], cached[2]
         else:
             kept, foreign = fi.audit_foreign_files(files)
             staged = folder
             if foreign:
-                staged = fi.materialize_all(
-                    kept, os.path.join(tempfile.mkdtemp(prefix='otdr_clean_'), 'all'))
-            _FOREIGN_STAGE_CACHE[folder] = (sig, staged, foreign)
+                # A stable name for this folder, these file types and these
+                # files: the Uni report and its saved copy are keyed on the
+                # folder a run used, so a restarted hub must find it again.
+                final = _stable_dir('otdr_clean_', folder, exts, sig)
+                if (final and os.path.isdir(final)
+                        and len(fi.find_otdr_files(final, exts)) == len(kept)):
+                    staged = final
+                else:
+                    staged = _settle(fi.materialize_all(
+                        kept, os.path.join(tempfile.mkdtemp(prefix='otdr_clean_'), 'all')),
+                        final)
+            _remember(_FOREIGN_STAGE_CACHE, key, (sig, staged, foreign))
     except Exception as exc:
         report_error('foreign-file audit', exc, {'folder': folder})
         return folder, []
@@ -4524,32 +5110,28 @@ def _resolve_viewer_dir(raw_path):
         has_inner_zip = False
     if not (is_zip or has_inner_zip):
         return p, None            # nothing to extract; page_viewer validates/warns
+    # What the extraction was built from: the zip itself, or, for a folder,
+    # every zip and trace file in it, each by path, size, mtime and inode, so
+    # a zip replaced or overwritten in place is extracted again.
     try:
-        _zsig = os.path.getmtime(p) if is_zip else None
+        if is_zip:
+            _zsig = _files_sig([p])
+        else:
+            _zsig = _files_sig(fi.zip_paths(p) + fi.find_otdr_files(p))
     except OSError:
         _zsig = None
-    cached = _VIEWER_DIR_CACHE.get(p)
-    if isinstance(cached, tuple):
-        _csig, cached_dir = cached
-    else:                                   # legacy entry
-        _csig, cached_dir = None, cached
-    if (cached_dir and os.path.isdir(cached_dir)
-            and trace_server.list_fibers(cached_dir)
-            and _csig == _zsig):
+    cached_sig, cached_dir = _VIEWER_DIR_CACHE.get(p) or (None, None)
+    if (_zsig is not None and cached_sig == _zsig
+            and cached_dir and os.path.isdir(cached_dir)
+            and trace_server.list_fibers(cached_dir)):
         return cached_dir, 'viewing from .zip'
-    # One folder per zip (and per version of it), named after both: the
-    # dict above starts empty on every Streamlit rerun (app.py is run afresh
-    # each time), so a folder made fresh each time re-extracted the zip on
-    # every click and handed every tool a different folder.  The report pages
-    # read these boxes too now (_panel_dirs), and a report is saved under the
-    # folders it ran on.
-    import hashlib
-    _ver = _zsig if is_zip else trace_server._folder_sig(p)
-    final = os.path.join(tempfile.gettempdir(), 'viewer_zip_' + hashlib.sha1(
-        f'{os.path.normcase(os.path.abspath(p))}|{_ver}'.encode('utf-8')).hexdigest()[:16],
-        'all')
-    if os.path.isdir(final) and trace_server.list_fibers(final):
-        _VIEWER_DIR_CACHE[p] = (_zsig, final)
+    # One folder per zip (and per version of it), named after both, so every
+    # tool, every session and a restarted hub get the same folder for the same
+    # zip: the report pages read these boxes too (_panel_dirs), and a report
+    # is saved under the folders it ran on.
+    final = _stable_dir('viewer_zip_', p, _zsig)
+    if final and os.path.isdir(final) and trace_server.list_fibers(final):
+        _remember(_VIEWER_DIR_CACHE, p, (_zsig, final))
         return final, 'viewing from .zip'
     try:
         dest = tempfile.mkdtemp(prefix='viewer_zip_')
@@ -4559,14 +5141,8 @@ def _resolve_viewer_dir(raw_path):
             return p, None        # nothing extractable; fall through to the folder
         # Flatten everything discoverable into one dir the trace server can list
         # (extract_zip / find_otdr_files_with_zips may leave files in subfolders).
-        flat = fi.materialize_all(files, os.path.join(dest, 'all'))
-        try:                      # whole, or not at all: a rename
-            os.makedirs(os.path.dirname(final), exist_ok=True)
-            os.rename(flat, final)
-            flat = final
-        except OSError:           # already there (another session), or no rename
-            pass
-        _VIEWER_DIR_CACHE[p] = (_zsig, flat)
+        flat = _settle(fi.materialize_all(files, os.path.join(dest, 'all')), final)
+        _remember(_VIEWER_DIR_CACHE, p, (_zsig, flat))
         return flat, 'viewing from .zip'
     except Exception as exc:                           # bad zip / IO
         return '', f'could not read that .zip ({exc})'
@@ -4767,6 +5343,14 @@ def page_viewer():
                 st.session_state['view_drop_seen'] = _drop_at
                 st.session_state['view_dir_a_input'] = trace_server.CONFIG['dir_a'] or ''
                 st.session_state['view_dir_b_input'] = trace_server.CONFIG['dir_b'] or ''
+                # The Viewer that took the drop already shows these folders: its
+                # frame must not reload for them (the b= below).
+                st.session_state['_viewer_drop_dirs'] = (
+                    trace_server.CONFIG.get('dir_a') or '', trace_server.CONFIG.get('dir_b') or '')
+                # Nor for the report link it was opened on: the frame below keeps
+                # the whole address it had.
+                if '_viewer_q' in st.session_state:
+                    st.session_state['_viewer_drop_q'] = st.session_state['_viewer_q']
 
         if not _PANEL_DRAWN:
             # In a project there is no left-panel Trace Folders: the Viewer
@@ -4779,19 +5363,19 @@ def page_viewer():
                 st.session_state['view_dir_b_input'] = _ct['b']
                 st.caption('✅ ' + _ct['name'])
             else:
-                if st.button('📁 A-direction folder', use_container_width=True):
+                if st.button('📁 A-Direction Folder', use_container_width=True):
                     p = pick_folder('Choose the A-direction folder')
                     if p:
                         st.session_state['view_dir_a_input'] = p
-                st.text_input('A folder', key='view_dir_a_input',
-                              label_visibility='collapsed', placeholder='A-direction folder path')
+                st.text_input('A Folder', key='view_dir_a_input',
+                              label_visibility='collapsed', placeholder='A-Direction Folder Path')
 
-                if st.button('📁 B-direction folder', use_container_width=True):
+                if st.button('📁 B-Direction Folder', use_container_width=True):
                     p = pick_folder('Choose the B-direction folder')
                     if p:
                         st.session_state['view_dir_b_input'] = p
-                st.text_input('B folder', key='view_dir_b_input',
-                              label_visibility='collapsed', placeholder='B-direction folder path')
+                st.text_input('B Folder', key='view_dir_b_input',
+                              label_visibility='collapsed', placeholder='B-Direction Folder Path')
 
         # Resolve each input (a folder, a .zip, or a folder holding zip(s)) to a
         # directory the trace server can list — so a zipped SOR span views
@@ -4880,7 +5464,7 @@ def page_viewer():
     _pop_doc = """
 <button id="vpop2" style="padding:4px 10px;border:1px solid #c9d5e1;border-radius:4px;
     background:#eef3f8;cursor:pointer;font-weight:600;color:#000000;
-    font-family:sans-serif;font-size:13px">&#8862; Open Viewer in its own window</button>
+    font-family:sans-serif;font-size:13px">&#8862; Open Viewer in Its Own Window</button>
 <span style="margin-left:8px;font-size:11px;color:#000000;font-family:sans-serif">
     keeps this page free for the report &middot; report cell clicks drive the same window</span>
 <script>
@@ -4891,16 +5475,33 @@ document.getElementById("vpop2").addEventListener("click", function(){
 });
 </script>
 """.replace('__ORIGIN__', f'http://127.0.0.1:{port}')
-    st_components_html(app_theme.recolor(_pop_doc), height=42)
+    st_components_html(theme_recolor(_pop_doc), height=42)
+    # The note above the frame keeps ONE slot whether it shows or not:
+    # Streamlit places the frame by its position on the page, so this note
+    # going away after the first drop moved the frame up a place and rebuilt
+    # it, and the Viewer lost the traces it had just loaded.
+    _note = st.empty()
     if not dir_a and not dir_b:
-        st.info('Pick an A and/or B folder of OTDR `.sor` / `.json` files in the '
+        _note.info('Pick an A and/or B folder of OTDR `.sor` / `.json` / `.trc` files in the '
                 'sidebar, then type fiber numbers in the viewer to plot them.')
     # Embed the canvas viewer.  Cache-bust on folder change so the iframe
     # re-reads /api/list.  A deep-link target is appended so the viewer
     # auto-loads:  a single fiber + km (Splice Report cell), OR a pair of
     # fibers overlaid (Duplicate Check "Stay in app").
     from urllib.parse import urlencode
-    q = {'b': abs(hash((dir_a, dir_b))) % 100000}
+    # Not after a drop on the Viewer, though: the Viewer pointed the server at
+    # the dropped folders itself and shows them, and a reload on the next
+    # rerun threw away every trace it had loaded, while a second folder
+    # dropped as the frame came back went to Chrome's Downloads (the boss,
+    # 2026-09-30: A loaded, then B went to Downloads).
+    _key = ((dir_a or ''), (dir_b or ''))
+    if (_key == st.session_state.get('_viewer_drop_dirs')
+            and '_viewer_b' in st.session_state):
+        _b = st.session_state['_viewer_b']
+    else:
+        _b = abs(hash(_key)) % 100000
+    st.session_state['_viewer_b'] = _b
+    q = {'b': _b}
     # PERSISTENT deep-link target (read, NOT consumed).  Keeping the last
     # clicked/loaded fiber in the iframe URL makes the src STABLE across
     # Streamlit reruns.  Consuming it with .pop made the very next rerun rebuild
@@ -4915,7 +5516,7 @@ document.getElementById("vpop2").addEventListener("click", function(){
         q['fibers'] = tgt['fibers']
         q['dir'] = tgt.get('dir', 'a')
         if announce:
-            st.caption(f"Overlaying duplicate-pair fibers {tgt['fibers']} "
+            _note.caption(f"Overlaying duplicate-pair fibers {tgt['fibers']} "
                        f"(direction {q['dir'].upper()})")
     elif tgt and tgt.get('fiber'):
         q['fiber'] = tgt['fiber']
@@ -4925,8 +5526,19 @@ document.getElementById("vpop2").addEventListener("click", function(){
         if tgt.get('src'):
             q['src'] = tgt['src']
         if announce:
-            st.caption(f"Jumped to fiber {tgt['fiber']}"
+            _note.caption(f"Jumped to fiber {tgt['fiber']}"
                        + (f" @ {tgt['km']} km" if tgt.get('km') else ''))
+    # A drop on a Viewer opened from a report cell: the drop is a new span,
+    # so the cell's link goes (_trace_folders_changed), and the address
+    # without it reloaded the frame.  The hub reruns by itself just after a
+    # drop (_follow_viewer_folders), so the Viewer lost the A set it had just
+    # loaded, and the B set dropped while it came back went to Chrome's
+    # Downloads (the boss, 2026-10-01, after #466).  Until the next cell
+    # click the frame keeps the address it had.
+    _frozen = st.session_state.get('_viewer_drop_q')
+    if _key == st.session_state.get('_viewer_drop_dirs') and _frozen and not tgt:
+        q = dict(_frozen)
+    st.session_state['_viewer_q'] = q
     # Use the whole window (Robert, 2026-09-29: blank space at every edge).
     # Streamlit's wide layout keeps ~5rem each side and 6rem / 10rem above and
     # below the page, and the Viewer was a fixed 760 px tall, so a big screen
@@ -4973,35 +5585,46 @@ def page_duplicate_check():
         # own and runs on those (Robert 2026-09-28).  Both directions go in
         # as the one folder the sidebar built from them; after a pair click
         # the A box IS that folder (see _handle_nav).
+        _renamed = []
         if _pa == st.session_state.get('_ss_nav_folder'):
             folder = _pa
         elif _pa and _pb:
-            folder = st.session_state.get('_ss_panel_folder') or ''
-            if st.session_state.get('_ss_from_ab') != (_pa, _pb) or not os.path.isdir(folder):
-                folder = _panel_ss_folder(_pa, _pb)
-                st.session_state['_ss_panel_folder'] = folder
+            # Signed again on every pass, not only when the pair changes: a
+            # trace swapped on disk since the sidebar built the folder gets a
+            # new folder now (see _panel_ss_folder).
+            try:
+                folder, _renamed = _take_panel_ss_folder(_pa, _pb)
+            except Exception as _exc:
+                report_error('secret sauce: A and B folder', _exc,
+                             {'dir_a': _pa, 'dir_b': _pb})
+                st.warning('The A and B folders could not be read just now '
+                           f'({type(_exc).__name__}: {_exc}). If files are '
+                           'still being copied in, try again when that is done.')
+                return
         else:
             folder = _pa or _pb
         st.caption('Traces: ' + ('the A and B folders' if _pa and _pb
                                  and folder not in (_pa, _pb)
                                  else f"the {'A' if folder == _pa else 'B'} folder")
                    + ' loaded in the left panel.')
+        if _renamed:
+            st.caption(_renamed_note(_renamed))
     else:
         c1, c2 = st.columns([1, 2])
         with c1:
-            if st.button('📁 Browse for folder', type='primary', use_container_width=True):
+            if st.button('📁 Browse for Folder', type='primary', use_container_width=True):
                 p = pick_folder('Choose a folder of OTDR files')
                 if p:
                     st.session_state['ss_folder_input'] = p
         with c2:
-            st.text_input('…or paste a folder path',
+            st.text_input('…or Paste a Folder Path',
                           key='ss_folder_input',
                           placeholder=r'C:\Users\you\Desktop\fiber files')
 
         folder = (st.session_state.get('ss_folder_input') or '').strip().strip('"')
         _dropped = st.file_uploader(
-            '…or drag & drop the files here (.sor / .trc / .json, a whole '
-            'folder, or a .zip)',
+            '…or Drag & Drop the Files Here (.sor / .trc / .json, a Whole '
+            'Folder, or a .zip)',
             type=['sor', 'trc', 'json', 'zip'], accept_multiple_files=True,
             key='ss_drop')
     if _dropped:
@@ -5030,7 +5653,7 @@ def page_duplicate_check():
     import folder_intake as _fi
     folder, _foreign = _exclude_foreign_files(folder, _fi.OTDR_EXTS_WITH_TRC)
 
-    out_format = st.radio('Output', ['Excel (xlsx)', 'PDF', 'Stay in app'],
+    out_format = st.radio('Output', ['Excel (xlsx)', 'PDF', 'Stay in App'],
                           horizontal=True)
     fmt = {'Excel (xlsx)': 'xlsx', 'PDF': 'pdf'}.get(out_format, 'pairs')
 
@@ -5042,12 +5665,15 @@ def page_duplicate_check():
     _ss_dest = _report_dest_row(
         'ss_report_dest', os.path.join(_fi_dest.default_report_dir(), 'SecretSauce_reports'))
     _stale = _report_gate('ss')
-    if st.button('Run analysis', type='primary', disabled=bool(_stale)):
+    if st.button('Run Analysis', type='primary', disabled=bool(_stale)):
         out_dir = _ss_dest
         if _project_run_path(out_dir, 'x') != os.path.join(out_dir, 'x'):
             out_dir = _project_run_path(out_dir, 'Secret Sauce', traces=(src_folder,))
         st.session_state['ss_pending_cmd'] = secretsauce_cmd(folder, out_dir, fmt)
         st.session_state['ss_out_dir'] = out_dir
+        # The report is saved under the folder it RAN on: the page may build
+        # a new one from the panel's folders while the run is going.
+        st.session_state['ss_run_folder'] = folder
         st.session_state.pop('ss_result', None)        # clear any prior result
         st.session_state.pop('ss_pairs_result', None)
         st.rerun()
@@ -5110,7 +5736,7 @@ def page_duplicate_check():
             return
 
         # Stash the folder so the in-app pair links can point the viewer at it.
-        manifest['_folder'] = folder
+        manifest['_folder'] = st.session_state.pop('ss_run_folder', None) or folder
         if manifest.get('mode') == 'pairs':
             st.session_state['ss_pairs_result'] = manifest
             # Cache to disk so "← Back" from the Viewer (which reset session_state
@@ -5190,7 +5816,7 @@ _DUP_COLOR = {'CONFIRMED duplicate': '#c0392b', 'Likely duplicate': '#e67e22',
 # result for the tech (a port-log check): the notice leads with it and is a
 # warning, not an error.  A red box on a tie panel read as "the tool failed"
 # while the ranking sat unseen on the workbook's last sheet.
-_MATING_LEAD = ('**The fibre fingerprint cannot be measured here; the mating '
+_MATING_LEAD = ('**The fiber fingerprint cannot be measured here; the mating '
                 'ranking below is the result to check against the port log.** ')
 
 
@@ -5250,11 +5876,11 @@ def _near_splice_lookup(ns, token):
         stem = ((ns or {}).get('fibres') or {}).get(str(int(token)))
         if stem and stem in loss:
             return stem, loss[stem]
-        return None, f'Fibre {int(token)} has no splice reading in this folder.'
+        return None, f'Fiber {int(token)} has no splice reading in this folder.'
     hits = [n for n in loss if token.lower() in n.lower()]
     if len(hits) == 1:
         return hits[0], loss[hits[0]]
-    return None, f'"{token}" matches {len(hits)} files; type the fibre number or the full name.'
+    return None, f'"{token}" matches {len(hits)} files; type the fiber number or the full name.'
 
 
 def _pct_text(pct):
@@ -5268,7 +5894,7 @@ def _near_splice_check(ns, a, b):
     fa, la = _near_splice_lookup(ns, a)
     fb, lb = _near_splice_lookup(ns, b)
     if fa is None or fb is None:
-        why = (la if fa is None else lb) or 'Enter two fibres.'
+        why = (la if fa is None else lb) or 'Enter two fibers.'
         return {'ok': False, 'cleared': False, 'sd': None, 'text': why}
     if fa == fb:
         return {'ok': False, 'cleared': False, 'sd': None,
@@ -5281,15 +5907,15 @@ def _near_splice_check(ns, a, b):
             f'{d:.3f} dB, {sd:.1f}x the wobble')
     if sd > clear:
         return {'ok': True, 'cleared': True, 'sd': sd,
-                'text': (f'**Different fibres.** {head}. Two shots of one fibre differ '
+                'text': (f'**Different fibers.** {head}. Two shots of one fiber differ '
                          f'this much {_pct_text(pct)} of the time.')}
     # Always give the rate.  At 3.9x "the splices match" is not what the number
     # says: shots of one fibre differ that much about 1 time in 400 on Goodland.
     return {'ok': True, 'cleared': False, 'sd': sd,
-            'text': (f'**Not cleared.** {head}. Two shots of one fibre differ this much '
+            'text': (f'**Not cleared.** {head}. Two shots of one fiber differ this much '
                      f'{_pct_text(pct)} of the time; the line for calling them different '
-                     f'fibres is {clear:g}x. A close reading would not make them '
-                     f'duplicates either: many different fibres have similar splices.')}
+                     f'fibers is {clear:g}x. A close reading would not make them '
+                     f'duplicates either: many different fibers have similar splices.')}
 
 
 def _render_near_splice(res):
@@ -5301,13 +5927,13 @@ def _render_near_splice(res):
         clear = ns.get('clear_sd') or _NEAR_SPLICE_CLEAR_SD_DEFAULT
         st.info(f"This span has a splice {ns['offset_m']:.0f} m behind the panel. It is "
                 f"glass, so unplugging and re-plugging cannot change it: two shots of one "
-                f"fibre read it within {ns['sd_pair_db']:.3f} dB. Two files that read it "
-                f"more than {clear:g}x that far apart are different fibres.")
-        st.markdown('**Check Two Fibres**')
+                f"fiber read it within {ns['sd_pair_db']:.3f} dB. Two files that read it "
+                f"more than {clear:g}x that far apart are different fibers.")
+        st.markdown('**Check Two Fibers**')
         key = f"ns_check_{ns.get('group', 'report')}"
         c1, c2 = st.columns(2)
-        a = c1.text_input('Fibre', key=key + '_a', placeholder='e.g. 350')
-        b = c2.text_input('Other fibre', key=key + '_b', placeholder='e.g. 351')
+        a = c1.text_input('Fiber', key=key + '_a', placeholder='e.g. 350')
+        b = c2.text_input('Other Fiber', key=key + '_b', placeholder='e.g. 351')
         if a and b:
             r = _near_splice_check(ns, a, b)
             if not r['ok']:
@@ -5329,8 +5955,8 @@ def _render_fill_ins(res):
 
     def _t(x):
         return datetime.fromtimestamp(float(x), timezone.utc).strftime('%m-%d %H:%M')
-    with st.expander(f'Shot Out of Order: {n} Fibre(s) Skipped and Shot Later'):
-        st.caption('Each was shot long after both neighbouring fibres, which were shot '
+    with st.expander(f'Shot Out of Order: {n} Fiber(s) Skipped and Shot Later'):
+        st.caption('Each was shot long after both neighboring fibers, which were shot '
                    'back to back, so its port had to be found again. Worth checking '
                    'against the port log. Not a duplicate finding.')
         for r in runs:
@@ -5347,7 +5973,7 @@ def _splice_cell(p, clear_sd):
         return f"<td style='{style}'></td>"
     if sd > clear_sd:
         return (f"<td style='{style};color:#1e7b34;font-weight:600'>"
-                f"different fibres ({sd:.1f}x)</td>")
+                f"different fibers ({sd:.1f}x)</td>")
     return f"<td style='{style};color:var(--otdr-text)'>{sd:.1f}x</td>"
 
 
@@ -5514,19 +6140,19 @@ def _parse_manifest(stdout):
 #  _overrides_from_settings + splicereport_cmd + run_splicereport.py).
 OTDR_ROWS = [
     # (key,                       label,                       fail_default,  unit,    supported)
-    ("unidir_splice_loss",        "Unidir. splice loss",        0.200,        "dB",    True),
-    ("bidir_splice_loss",         "Bidir splice loss",          0.160,        "dB",    True),
-    ("unidir_connector_loss",     "Connector loss (1 direction)", 0.649,      "dB",    True),
-    ("bidir_connector_loss",      "Bidir connector loss",       0.500,        "dB",    True),
+    ("unidir_splice_loss",        "Unidir. Splice Loss",        0.200,        "dB",    True),
+    ("bidir_splice_loss",         "Bidir Splice Loss",          0.160,        "dB",    True),
+    ("unidir_connector_loss",     "Connector Loss (1 Direction)", 0.649,      "dB",    True),
+    ("bidir_connector_loss",      "Bidir Connector Loss",       0.500,        "dB",    True),
     ("splitter_loss",             "Splitter Loss",              4.500,        "dB",    False),
     ("reflectance",               "Reflectance",                -50.0,        "dB",    True),
-    ("reflectance_ceiling",       "Reflectance ceiling",        0.0,          "dB",    True),
-    ("midspan_reflectance",       "Mid-span reflectance band",  -50.0,        "dB",    True),
+    ("reflectance_ceiling",       "Reflectance Ceiling",        0.0,          "dB",    True),
+    ("midspan_reflectance",       "Mid-Span Reflectance Band",  -50.0,        "dB",    True),
     # Optional BAND ceiling for the row above: tick it to flag ONLY the
     # band [warn floor, ceiling] — e.g. -80..-40 isolates faint fusion
     # glints while connector-grade reflections stay with the connector
     # rules.  Unticked (default) = no ceiling, shipped behavior.
-    ("midspan_refl_ceiling",      "Mid-span refl ceiling",      -40.0,        "dB",    True),
+    ("midspan_refl_ceiling",      "Mid-Span Refl Ceiling",      -40.0,        "dB",    True),
     # NOTE: the launch-connector loss gates used to live here as two rows.
     # They moved to the 'Connector & launch' knobs panel below, which carries
     # per-knob help text and holds the REST of the connector path beside them
@@ -5535,25 +6161,25 @@ OTDR_ROWS = [
     # Per-FIBER span attenuation: EXFO's stored span loss (the number FR
     # prints as Span Loss) over the stored span length, both directions
     # averaged.  Off by default (0 = off in the engine); IIG sets 0.250.
-    ("fiber_section_atten",       "Fiber attenuation",          0.400,        "dB/km", True),
-    ("span_loss",                 "Span loss",                  20.000,       "dB",    False),
-    ("span_length",               "Span length",                0.0000,       "km",    False),
+    ("fiber_section_atten",       "Fiber Attenuation",          0.400,        "dB/km", True),
+    ("span_loss",                 "Span Loss",                  20.000,       "dB",    False),
+    ("span_length",               "Span Length",                0.0000,       "km",    False),
     # ORL FLOOR: the OTDR's own total ORL per direction, from the file; a
     # reading below the value fails.  Not the OLTS ORL a contract names, and
     # the sheet says so.  Off by default; IIG sets 30.
-    ("span_orl",                  "Span ORL (floor)",           15.00,        "dB",    True),
+    ("span_orl",                  "Span ORL (Floor)",           15.00,        "dB",    True),
     # Bend/damage clusters within this distance of a validated splice column
     # stay IN that splice column (cells keep their bend labels); farther out
     # they get their own "Bends @ X km" column.  Unchecking reverts to the
     # legacy 75 m gate (Platteville-Cheyenne: short-lay fibers put splice
     # events 107-128 m before the column and grew phantom bend columns).
-    ("bend_fold_distance",        "Bend fold distance",         0.200,        "km",    True),
+    ("bend_fold_distance",        "Bend Fold Distance",         0.200,        "km",    True),
     # Per-FIBER average splice loss, FastReporter's "Avg. Splice Loss": the
     # signed mean of (A->B + B->A)/2 over every splice either direction
     # recorded.  A per-span statistic, not a per-cell gate, so it grades on
     # its own sheet and never colours the grid.  Off by default (0 = off in
     # the engine); the AWS / IIG contract sets it at 0.08 dB.
-    ("avg_splice_loss",           "Avg. splice loss (per fiber)", 0.080,      "dB",    True),
+    ("avg_splice_loss",           "Avg. Splice Loss (per Fiber)", 0.080,      "dB",    True),
 ]
 # Pre-checked rows (match what the splice report flags out of the box):
 OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
@@ -5575,7 +6201,7 @@ _OTDR_WARN_DEFAULT = {"midspan_reflectance": -80.0}
 # comment above) and how the unidirectional panel renders its own bands.
 #   ("weak end label", "strong end label")
 _OTDR_BAND_ROWS = {
-    "midspan_reflectance": ("band low", "band high"),
+    "midspan_reflectance": ("Band Low", "Band High"),
     # Launch/tailbox reflectance reads as a band for the same reason: a
     # connector has an acceptable WINDOW, not a single edge.  -49.9 was
     # calibrated for a fusion-spliced launch pigtail (Tulsa measures -51.8
@@ -5585,7 +6211,7 @@ _OTDR_BAND_ROWS = {
     # inside 0.15 dB) and every one of them trips a fusion-splice threshold.
     # With a band the panel job sets the low end to -40 and only genuinely bad
     # mates flag; FTH's -39.2 outliers still stand out at 12x the floor.
-    "reflectance": ("band low", "band high"),
+    "reflectance": ("Band Low", "Band High"),
 }
 
 # ── Customer threshold profiles ──────────────────────────────────────
@@ -6055,7 +6681,7 @@ _OTDR_KEY_DISABLE_VALUE = {
 #     Splitting a dedicated connector-search constant out of it is its own
 #     change.
 _CONN_ROWS = [
-    {'key': 'conn_bidi', 'label': 'Connector loss (bidirectional)', 'unit': 'dB',
+    {'key': 'conn_bidi', 'label': 'Connector Loss (Bidirectional)', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_LOSS_MIN_DB'},
      'defaults': {'value': 0.650}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
      'int': False,
@@ -6068,9 +6694,9 @@ _CONN_ROWS = [
               '/ 0.690 / 0.645, the next fiber at 0.587). 0 turns this gate '
               'off.')},
 
-    {'key': 'conn_avg', 'label': 'Connector loss (bidirectional average)', 'unit': 'dB',
+    {'key': 'conn_avg', 'label': 'Connector Loss (Bidirectional Average)', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_AVG_MIN_DB'},
-     'defaults': {'value': 0.0}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
+     'defaults': {'value': 0.500}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
      'int': False,
      'help': ('Flag on the connector’s actual loss, (A + B) / 2: the number '
               'the report prints, the number FastReporter reports, and the '
@@ -6078,14 +6704,13 @@ _CONN_ROWS = [
               'above rather than replacing them, so their calibration does not '
               'move. Sacramento↔Suisun F1013 is why it exists: near 0.318 / '
               'far 1.088 averages 0.703, exactly the value the field sheet '
-              'carries, but min = 0.318 never reached 0.62. Ships OFF: across '
-              'that whole 1152-fiber span it adds no fiber the other two gates '
-              'miss, and the sheet records the worst cells as one-way values '
-              'anyway. Turn it on for a span you want judged on the pair’s own '
-              'loss. Cells that fire only here print the average, without the '
-              'side marker.')},
+              'carries, but min = 0.318 never reached 0.62. On at 0.50, the '
+              'Bidir Connector Loss value, so a connector is flagged when '
+              'either direction or its average is over its limit. Cells that '
+              'fire only here print the average, without the side marker. '
+              '0 turns this gate off.')},
 
-    {'key': 'conn_confirm', 'label': 'Connector re-measure tolerance', 'unit': 'dB',
+    {'key': 'conn_confirm', 'label': 'Connector Re-measure Tolerance', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_CONFIRM_TOL_DB'},
      'defaults': {'value': 0.050}, 'min': 0.001, 'max': 1.0, 'step': 0.005,
      'int': False,
@@ -6098,7 +6723,7 @@ _CONN_ROWS = [
               'all the flag stands. A defect is never hidden because the '
               'check could not run.')},
 
-    {'key': 'tailbox_outlier', 'label': 'Tailbox reflectance outlier margin', 'unit': 'dB',
+    {'key': 'tailbox_outlier', 'label': 'Tailbox Reflectance Outlier Margin', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'TAILBOX_OUTLIER_DB'},
      'defaults': {'value': 7.5}, 'min': 0.0, 'max': 30.0, 'step': 0.5,
      'int': False,
@@ -6115,7 +6740,7 @@ _CONN_ROWS = [
               'fiber on that span reaches the absolute threshold at all. '
               '0 drops the population test and judges on the threshold alone.')},
 
-    {'key': 'conn_far_window', 'label': 'Far-end connector search window', 'unit': 'km',
+    {'key': 'conn_far_window', 'label': 'Far-End Connector Search Window', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_FAR_WINDOW_KM'},
      'defaults': {'value': 2.0}, 'min': 0.1, 'max': 10.0, 'step': 0.1,
      'int': False,
@@ -6126,7 +6751,7 @@ _CONN_ROWS = [
               'it starts pulling real plant near the tail into a connector '
               'rule.')},
 
-    {'key': 'conn_reel_slack', 'label': 'Reel-length match slack', 'unit': 'km',
+    {'key': 'conn_reel_slack', 'label': 'Reel-Length Match Slack', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_CONN_REEL_SLACK_KM'},
      'defaults': {'value': 0.3}, 'min': 0.01, 'max': 2.0, 'step': 0.01,
      'int': False,
@@ -6137,7 +6762,7 @@ _CONN_ROWS = [
               'formed, so nothing is bidirectional; too loose and a nearby '
               'splice can be mistaken for the far view of the connector.')},
 
-    {'key': 'launch_step_guard', 'label': 'Launch step guard', 'unit': 'km',
+    {'key': 'launch_step_guard', 'label': 'Launch Step Guard', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_STEP_GUARD_KM'},
      'defaults': {'value': 0.150}, 'min': 0.0, 'max': 2.0, 'step': 0.005,
      'int': False,
@@ -6152,7 +6777,7 @@ _CONN_ROWS = [
               'guard buys the missing cells at the price of connector skirt '
               'reported as plant.')},
 
-    {'key': 'launch_high_loss', 'label': 'Launch event loss rule', 'unit': 'dB',
+    {'key': 'launch_high_loss', 'label': 'Launch Event Loss Rule', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'LAUNCH_HIGH_LOSS_DB'},
      'defaults': {'value': 0.0}, 'min': 0.0, 'max': 5.0, 'step': 0.01,
      'int': False,
@@ -6162,7 +6787,7 @@ _CONN_ROWS = [
               'a bare loss reading, because a launch event’s stored loss '
               'includes the backscatter step between two different fibers and '
               'reads high on healthy launches. Set a value only if you want '
-              'the old HIGH_LAUNCH_LOSS behaviour back.')},
+              'the old HIGH_LAUNCH_LOSS behavior back.')},
 ]
 
 _CONN_DEFAULTS = {g: row['defaults'][slot]
@@ -6488,6 +7113,7 @@ def _render_customer_profile_picker():
     _picked = _c_sel.selectbox(
         'Customer', _profile_names,
         index=_profile_names.index(_cur),
+        format_func=_profile_label,
         label_visibility='collapsed',
         key='otdr_profile_select',
         width=_profile_w,
@@ -6800,7 +7426,7 @@ def _render_settings_box(where, blocks_report=False):
                          'turned off until it does. (Details sent to support.)')
             else:
                 st.warning('OTDR settings table could not load. Until it '
-                           'does, the Viewer flags only breaks (a fibre that '
+                           'does, the Viewer flags only breaks (a fiber that '
                            'stops short of the span); every other event and '
                            'value still shows, unflagged. (Details sent to '
                            'support.)')
@@ -6820,7 +7446,7 @@ def _render_settings_box(where, blocks_report=False):
             else:
                 st.warning('Connector & Launch settings could not load. '
                            'Until they do, the Viewer flags only breaks (a '
-                           'fibre that stops short of the span); every other '
+                           'fiber that stops short of the span); every other '
                            'event and value still shows, unflagged. (Details '
                            'sent to support.)')
             _policy_block_caption(_exc)
@@ -6843,7 +7469,7 @@ def _settings_block_notice(exc, button):
     if _blocked_by_policy(exc):
         _policy_block_caption(exc)
     else:
-        st.caption('Close OTDR Suite completely and open it again.')
+        st.caption(f'Close {PRODUCT_NAME} completely and open it again.')
 
 
 def _share_settings_with_viewer(failed=False):
@@ -6898,7 +7524,7 @@ def _render_cable_type_select():
 
     _cur = st.session_state['cable_type']
     _picked = st.selectbox(
-        'Cable type', options,
+        'Cable Type', options,
         index=options.index(_cur),
         format_func=_fmt,
         label_visibility='collapsed',
@@ -6936,11 +7562,13 @@ def _viewer_click_target(page_key):
     if k not in st.session_state:
         st.session_state[k] = st.session_state.get(saved, 'Separate window')
     choice = st.radio(
-        'Cell clicks open in', ['Separate window', 'This tab (Viewer page)'],
+        'Cell Clicks Open In', ['Separate window', 'This tab (Viewer page)'],
         key=k, horizontal=True,
-        help='Separate window: one Viewer window stays open beside the report '
+        format_func={'Separate window': 'Separate Window',
+                     'This tab (Viewer page)': 'This Tab (Viewer Page)'}.get,
+        help='Separate Window: one Viewer window stays open beside the report '
              'and re-plots as you click cells (shift-click adds a fiber). '
-             'This tab: cells load the in-app Viewer page with a Back button.')
+             'This Tab: cells load the in-app Viewer page with a Back button.')
     st.session_state[saved] = choice
     return choice == 'Separate window'
 
@@ -6975,7 +7603,7 @@ def _render_clickable_grid(table_html, port, height=560, src=''):
 <div style="font-family:Consolas,monospace">
   <button id="vpop" style="margin:0 0 6px;padding:4px 10px;border:1px solid #c9d5e1;
       border-radius:4px;background:#eef3f8;cursor:pointer;font-weight:600;color:#000000">
-      &#8862; Open / focus Viewer window</button>
+      &#8862; Open / Focus Viewer Window</button>
   <span style="margin-left:8px;font-size:11px;color:#000000">click any cell &rarr;
       it plots in the Viewer window (stays open, updates in place) &middot;
       <b>shift-click</b> to add a fiber instead of replacing</span>
@@ -7035,7 +7663,7 @@ def _render_clickable_grid(table_html, port, height=560, src=''):
     # Report" button.  The table goes in last so nothing in the report's own
     # text is ever taken for a placeholder.
     src_js = json.dumps(str(src or ''))[1:-1].replace('<', '\\u003c')
-    doc = (app_theme.recolor(doc).replace("__ORIGIN__", origin).replace("__SRC__", src_js)
+    doc = (theme_recolor(doc).replace("__ORIGIN__", origin).replace("__SRC__", src_js)
               .replace("__TABLE__", table_html))
     st_components_html(doc, height=height, scrolling=True)
 
@@ -7624,7 +8252,7 @@ def tc_write_comparison(ours: TcGrid, tech: TcGrid, diffs, colmap, frame, out_pa
         wsum.cell(r, 2, v)
         r += 1
     r += 1
-    wsum.cell(r, 1, 'Colour key').font = Font(bold=True)
+    wsum.cell(r, 1, 'Color key').font = Font(bold=True)
     r += 1
     for k in TC_KIND_ORDER:
         c = wsum.cell(r, 1, k)
@@ -7636,7 +8264,7 @@ def tc_write_comparison(ours: TcGrid, tech: TcGrid, diffs, colmap, frame, out_pa
             TC_KIND_TYPE: 'both flagged it; a loss on one side and a word (broke, bend, DZ …) on the other',
         }[k])
         r += 1
-    c = wsum.cell(r, 1, 'Grey column header')
+    c = wsum.cell(r, 1, 'Gray column header')
     c.fill = PatternFill(start_color=_TC_UNMATCHED_HDR, end_color=_TC_UNMATCHED_HDR, fill_type='solid')
     wsum.cell(r, 2, f'a column only one report has (no column within {TC_COLUMN_MATCH_KM * 1000:.0f} m in the other)')
     r += 2
@@ -7748,12 +8376,12 @@ def _render_tech_comparison(page, our_xlsx, upload, dest_dir, site_a, site_b):
                      f"columns lined up ({cached['frame']} frame)")
     if cached['columns_matched'] < min(cached['columns_ours'], cached['columns_tech']):
         st.caption("Columns that didn't line up (no column within 250 m in the "
-                   "other report) are shown with grey headers; everything in "
+                   "other report) are shown with gray headers; everything in "
                    "them counts as a difference.")
     st.caption(f"Saved to `{cached['xlsx']}`")
     try:
         with open(cached['xlsx'], 'rb') as fh:
-            st.download_button('⬇ Differences vs tech (Excel)', data=fh.read(),
+            st.download_button('⬇ Differences vs Tech (Excel)', data=fh.read(),
                                file_name=os.path.basename(cached['xlsx']),
                                key=f'{page}_techcmp_dl')
     except OSError:
@@ -7804,7 +8432,9 @@ def _sr_span_inputs(span):
         # they show across a trip to another tool (_seed_box).  A dropped
         # file does not: Streamlit does not let code fill an uploader.
         _seed_box(k_mode, [two, one])
-        mode = st.radio('Select Traces', [two, one], horizontal=True, key=k_mode)
+        mode = st.radio('Select Traces', [two, one], horizontal=True, key=k_mode,
+                        format_func={two: 'Two Folders (A + B)',
+                                     one: 'One Folder / Zip (Both Directions)'}.get)
         _keep_box(k_mode)
 
     if mode is None:
@@ -7815,12 +8445,11 @@ def _sr_span_inputs(span):
         # page shows what is loaded instead of a second pair of boxes.
         # (OTDR Suite App: in a project there is no left panel, so the page
         # draws its own pair, below.)
-        dir_a = (st.session_state.get(k_a) or '').strip().strip('"')
-        dir_b = (st.session_state.get(k_b) or '').strip().strip('"')
+        dir_a, dir_b = _panel_boxes()
         # Plain text, not a disabled box: a keyed widget would keep its first
         # value= forever (the key + value footgun).
         c1, c2 = st.columns(2)
-        for _c, _lbl, _d in ((c1, 'A folder', dir_a), (c2, 'B folder', dir_b)):
+        for _c, _lbl, _d in ((c1, 'A Folder', dir_a), (c2, 'B Folder', dir_b)):
             with _c:
                 st.markdown(f'**{_lbl}**')
                 if _d:
@@ -7832,17 +8461,17 @@ def _sr_span_inputs(span):
         _seed_box(k_b)
         c1, c2 = st.columns(2)
         with c1:
-            if st.button('📁 A-direction folder', use_container_width=True, key=k_ba):
+            if st.button('📁 A-Direction Folder', use_container_width=True, key=k_ba):
                 p = pick_folder('Choose the A-direction folder')
                 if p:
                     st.session_state[k_a] = p
-            st.text_input('A folder', key=k_a, placeholder='A-direction folder')
+            st.text_input('A Folder', key=k_a, placeholder='A-Direction Folder')
         with c2:
-            if st.button('📁 B-direction folder', use_container_width=True, key=k_bb):
+            if st.button('📁 B-Direction Folder', use_container_width=True, key=k_bb):
                 p = pick_folder('Choose the B-direction folder')
                 if p:
                     st.session_state[k_b] = p
-            st.text_input('B folder', key=k_b, placeholder='B-direction folder')
+            st.text_input('B Folder', key=k_b, placeholder='B-Direction Folder')
         _keep_box(k_a)
         _keep_box(k_b)
         dir_a = _typed_trace_dir(st.session_state.get(k_a), 'A')
@@ -7851,20 +8480,20 @@ def _sr_span_inputs(span):
         _seed_box(k_one)
         c1, c2 = st.columns(2)
         with c1:
-            if st.button('📁 Folder with BOTH directions', use_container_width=True,
+            if st.button('📁 Folder with BOTH Directions', use_container_width=True,
                          key=k_bone):
                 p = pick_folder('Choose a folder containing both directions')
                 if p:
                     st.session_state[k_one] = p
-            st.text_input('Folder (both directions)', key=k_one,
-                          placeholder='one folder with both directions '
-                                      '(.sor / .json, or .bdr)')
+            st.text_input('Folder (Both Directions)', key=k_one,
+                          placeholder='One Folder with Both Directions '
+                                      '(.sor / .json / .trc, or .bdr)')
             _keep_box(k_one)
         with c2:
-            zf = st.file_uploader('…or drop the span here: its traces '
-                                  '(a whole folder works), a .zip, or the '
-                                  '.bdr files themselves',
-                                  type=['zip', 'bdr', 'sor', 'json'],
+            zf = st.file_uploader('…or Drop the Span Here: Its Traces '
+                                  '(a Whole Folder Works), a .zip, or the '
+                                  '.bdr Files Themselves',
+                                  type=['zip', 'bdr', 'sor', 'json', 'trc'],
                                   key=k_zip, accept_multiple_files=True)
         dir_a, dir_b = _resolve_bidir_from_single(
             _typed_trace_dir(st.session_state.get(k_one), 'That'), zf)
@@ -7874,7 +8503,7 @@ def _sr_span_inputs(span):
     # that highlights every cell where the two disagree — the tech_compare block.
     # Sits under the A/B inputs on both input modes (the boss's placement).
     tech_xlsx = st.file_uploader(
-        "Tech's splice report to compare against (.xlsx, optional)",
+        "Tech's Splice Report to Compare Against (.xlsx, Optional)",
         type=['xlsx', 'xlsm'], key=k_tech,
         help='Upload the splice report the tech built. After the report runs, '
              'a second workbook highlighting every difference is saved next '
@@ -7939,13 +8568,18 @@ def _sr_site_inputs(span, dir_a, dir_b):
     st.session_state.setdefault(k_b, 'B')
 
     s1, s2 = st.columns(2)
-    site_a = s1.text_input('A-direction ILA / site', key=k_a)
-    site_b = s2.text_input('B-direction ILA / site', key=k_b)
+    site_a = s1.text_input('A-Direction ILA / Site', key=k_a)
+    site_b = s2.text_input('B-Direction ILA / Site', key=k_b)
     st.session_state[k_saved] = ((dir_a, dir_b), (site_a, site_b))
     if site_a and site_b and (site_a, site_b) != ('A', 'B'):
         st.caption(f"📍 **A direction:** {site_a} → {site_b}  ·  "
                    f"**B direction:** {site_b} → {site_a}")
     return site_a, site_b
+
+
+def _count(n, word):
+    """'1 fiber', '12 fibers': a count with its noun, singular for one."""
+    return f"{n} {word}" + ('' if n == 1 else 's')
 
 
 def _sr_result_slot(_p, span):
@@ -7990,13 +8624,14 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     if n_spans > 1:
         st.markdown(f"##### Span {span}: {res['site_a']} → {res['site_b']}")
     # Summary + Excel download
-    st.success(f"{res['site_a']} → {res['site_b']}  ·  {res['n_fibers']} fibers  ·  "
-               f"{res['n_splices']} splices  ·  span {res['span_km']} km  ·  "
-               f"{res['n_flagged']} flagged events")
+    st.success(f"{res['site_a']} → {res['site_b']}  ·  "
+               f"{_count(res['n_fibers'], 'fiber')}  ·  "
+               f"{_count(res['n_splices'], 'splice')}  ·  span {res['span_km']} km  ·  "
+               f"{_count(res['n_flagged'], 'flagged event')}")
     xp = res.get('xlsx')
     if xp and os.path.exists(xp):
         with open(xp, 'rb') as fh:
-            st.download_button('⬇ Excel report', data=fh.read(),
+            st.download_button('⬇ Excel Report', data=fh.read(),
                                file_name=os.path.basename(xp), key=f'{_p}_dl{sfx}')
         if tech_xlsx is not None:
             _render_tech_comparison(f'{_p}{sfx}', xp, tech_xlsx, dest,
@@ -8010,8 +8645,15 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     # link to ?nav=viewer&fiber=&km= which the hub turns into a viewer deep-link.
     cols = res['columns']
     ribbon_size = res['ribbon_size']
-    n_fibers = res['n_fibers']
+    # max_fiber lays the grid out; n_fibers is how many were loaded (a
+    # manifest from before max_fiber carried the highest fiber there).
+    n_fibers = res.get('max_fiber') or res['n_fibers']
     n_ribbons = (n_fibers + ribbon_size - 1) // ribbon_size
+    # Rows from the first ribbon holding a loaded fiber to the last; an empty
+    # ribbon between them keeps its row (a gap the tech should see).
+    _rl = res.get('ribbons') or []
+    ribbon_rows = (list(range(min(_rl), max(_rl) + 1)) if _rl
+                   else list(range(n_ribbons)))
     # group flagged cells by (ribbon, column index)
     by_rc = {}
     for c in res['cells']:
@@ -8041,7 +8683,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     if _sd[1] and os.path.isdir(_sd[1]):
         _dirs_qs += f"&srb={_q(_sd[1])}"
     _dirs_qs += _panel_qs()
-    for ri in range(n_ribbons):
+    for ri in ribbon_rows:
         f0, f1 = ri * ribbon_size + 1, min((ri + 1) * ribbon_size, n_fibers)
         html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;padding:3px 8px;border:1px solid #e3e9f0;white-space:nowrap'>F{f0}–{f1}</td>")
         for ci, col in enumerate(cols):
@@ -8072,7 +8714,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
 # Its own box, apart from the threshold settings: these switches never
 # change what the engine finds, only which findings the report prints.
 # Anything switched off is listed on the workbook's Display sheet.
-_SHOW_ROWS = [('loss', 'Splice loss'), ('bend', 'Bend/Damage'),
+_SHOW_ROWS = [('loss', 'Splice Loss'), ('bend', 'Bend/Damage'),
               ('break', 'Breaks')]
 
 
@@ -8166,7 +8808,7 @@ def page_splice_report():
         h1, h2 = st.columns([3, 1])
         h1.markdown(f'**Span {_n}**: its own A/B folders; runs after span {_n - 1} '
                     'and saves to the same folder.')
-        if _n == n_spans and h2.button(f'✖ Remove span {_n}', key=f'sr_del_span{_n}',
+        if _n == n_spans and h2.button(f'✖ Remove Span {_n}', key=f'sr_del_span{_n}',
                                        use_container_width=True):
             st.session_state['sr_n_spans'] = _n - 1
             # Drop its finished result too — a report block for a span the
@@ -8183,7 +8825,7 @@ def page_splice_report():
         _sa, _sb = _sr_site_inputs(_n, _da, _db)
         extra[_n] = (_da, _db, _sa, _sb, _tech)
     if n_spans < SR_MAX_SPANS and not _shoot:
-        if st.button('➕ Add span…', key='sr_add_span',
+        if st.button('➕ Add Span…', key='sr_add_span',
                      help='Run another span in the same click: its own A/B '
                           'folders and its own report, saved to the same folder.'):
             st.session_state['sr_n_spans'] = n_spans + 1
@@ -8371,9 +9013,7 @@ def page_splice_report():
         # Back from the Viewer (or any session reset): restore the last grid
         # from the disk cache.  Candidate dirs: this page's own sr_dirs if it
         # survived, else the viewer slots the deep link seeded (sra/srb).
-        for _cand in (st.session_state.get(f'{_p}_dirs'),
-                      (st.session_state.get('view_dir_a_input'),
-                       st.session_state.get('view_dir_b_input'))):
+        for _cand in (st.session_state.get(f'{_p}_dirs'), _panel_boxes()):
             if not (_cand and _cand[0] and os.path.isdir(_cand[0])):
                 continue
             try:
@@ -8437,12 +9077,17 @@ def page_splice_report():
 #  PAGE: Unidirectional (A-only one-shot)  — splice report engine, --uni mode
 # ═════════════════════════════════════════════════════════════════════════
 def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None,
-            show=None):
+            show=None, site_a=None, site_b=None):
     """Argv for the unidirectional one-shot — the splice report engine's
     --uni mode (same subprocess, same sor_reader isolation, ZK-format
-    workbook out)."""
+    workbook out).  `site_a` / `site_b` are the names in the page's A-End /
+    B-End boxes; the engine prints them in the direction of the shot."""
     common = ['--uni', '--dir-a', folder, '--out', out_xlsx,
               '--analysis', analysis_mode()]
+    if site_a:
+        common += ['--site-a', site_a]
+    if site_b:
+        common += ['--site-b', site_b]
     if direction:
         common += ['--direction', direction]
     if landmarks:
@@ -8478,18 +9123,19 @@ def uni_cmd(folder, out_xlsx, direction=None, overrides=None, landmarks=None,
 #  The return value is still {GLOBAL_NAME: number}, exactly what uni_cmd
 #  feeds to --overrides, so nothing downstream changed.
 _UNI_ROWS = [
-    {'key': 'flag_threshold', 'label': 'Flag threshold', 'unit': 'dB',
+    {'key': 'flag_threshold', 'label': 'Flag Threshold', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'UNI_BEND_THRESHOLD'},
      'defaults': {'value': 0.250}, 'min': 0.005, 'max': 2.0, 'step': 0.005,
      'int': False,
      'help': 'A-side event this far off a validated closure is flagged.'},
 
-    {'key': 'min_pop', 'label': 'Min fibers for a splice column', 'unit': 'fibers',
+    {'key': 'min_pop', 'label': 'Min Fibers for a Splice Column', 'unit': 'fibers',
      'kind': 'scalar', 'globals': {'value': 'UNI_MIN_POP_SPLICE'},
      'defaults': {'value': 20}, 'min': 2, 'max': 500, 'step': 1, 'int': True,
-     'help': 'Population in a 1 km bin needed to call a candidate closure.'},
+     'help': 'Population in a 1 km bin needed to call a candidate closure. '
+             'A job of 50 fibers or fewer lists its events instead.'},
 
-    {'key': 'closure_radius', 'label': 'At-splice radius', 'unit': 'km',
+    {'key': 'closure_radius', 'label': 'At-Splice Radius', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'UNI_CLOSURE_MATCH_KM'},
      'defaults': {'value': 0.075}, 'min': 0.005, 'max': 1.0, 'step': 0.005,
      'int': False,
@@ -8505,37 +9151,37 @@ _UNI_ROWS = [
     # because one direction cannot separate the backscatter step between the
     # fibers it joins.
 
-    {'key': 'break_floor', 'label': 'Break floor: min EOF', 'unit': 'km',
+    {'key': 'break_floor', 'label': 'Break Floor: Min EOF', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'UNI_BREAK_MIN_KM'},
      'defaults': {'value': 0.3}, 'min': 0.05, 'max': 10.0, 'step': 0.05,
      'int': False,
      'help': 'A fiber ending below this is too short to count as a break.'},
 
-    {'key': 'break_short_by', 'label': 'Break: EOF short of span by', 'unit': 'km',
+    {'key': 'break_short_by', 'label': 'Break: EOF Short of Span By', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'UNI_BREAK_PREMATURE_KM'},
      'defaults': {'value': 3.0}, 'min': 0.1, 'max': 50.0, 'step': 0.1,
      'int': False,
      'help': 'A fiber ending this far short of the cable end is a break.'},
 
-    {'key': 'end_region', 'label': 'End exclusion, full-span fibers', 'unit': 'km',
+    {'key': 'end_region', 'label': 'End Exclusion, Full-Span Fibers', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'UNI_END_REGION_KM'},
      'defaults': {'value': 0.5}, 'min': 0.0, 'max': 10.0, 'step': 0.1,
      'int': False,
      'help': 'Tail of a fiber that reaches the far end, excluded from flags.'},
 
-    {'key': 'zone_certify', 'label': 'Damage-zone certify radius', 'unit': 'km',
+    {'key': 'zone_certify', 'label': 'Damage-Zone Certify Radius', 'unit': 'km',
      'kind': 'scalar', 'globals': {'value': 'UNI_DAMAGE_ZONE_BREAK_KM'},
      'defaults': {'value': 0.5}, 'min': 0.05, 'max': 5.0, 'step': 0.05,
      'int': False,
      'help': 'A damage anchor this close to a break column certifies the zone.'},
 
-    {'key': 'zone_anchor', 'label': 'Damage-zone anchor confirm', 'unit': 'dB',
+    {'key': 'zone_anchor', 'label': 'Damage-Zone Anchor Confirm', 'unit': 'dB',
      'kind': 'scalar', 'globals': {'value': 'UNI_PREBREAK_CONFIRM_DB'},
      'defaults': {'value': 0.03}, 'min': 0.005, 'max': 1.0, 'step': 0.005,
      'int': False,
      'help': 'Step a stored zone event must show in the trace to anchor a zone.'},
 
-    {'key': 'zone_member', 'label': 'Zone membership floor (stored / sweep)',
+    {'key': 'zone_member', 'label': 'Zone Membership Floor (Stored / Sweep)',
      'unit': 'dB',
      'kind': 'range', 'globals': {'low': 'UNI_PREBREAK_STORED_DB',
                                   'high': 'UNI_PREBREAK_MEMBER_DB'},
@@ -8546,7 +9192,7 @@ _UNI_ROWS = [
               'membership, where the bar is higher because nothing '
               'corroborates it (control noise tops out near 0.026 dB).')},
 
-    {'key': 'landmark_radius', 'label': 'Landmark radius (demote / label)',
+    {'key': 'landmark_radius', 'label': 'Landmark Radius (Demote / Label)',
      'unit': 'km',
      'kind': 'range', 'globals': {'low': 'UNI_LANDMARK_DEMOTE_KM',
                                   'high': 'UNI_LANDMARK_MATCH_KM'},
@@ -8556,7 +9202,7 @@ _UNI_ROWS = [
               'Handholes row; within the tighter low radius a NON-closure '
               'landmark also demotes a splice column to Bend/Damage.')},
 
-    {'key': 'ribbon_size', 'label': 'Ribbon size', 'unit': 'fibers',
+    {'key': 'ribbon_size', 'label': 'Ribbon Size', 'unit': 'fibers',
      'kind': 'scalar', 'globals': {'value': 'RIBBON_SIZE'},
      'defaults': {'value': 12}, 'min': 1, 'max': 48, 'step': 1, 'int': True,
      'help': 'Fibers per grid row.'},
@@ -8658,10 +9304,12 @@ def _render_uni_settings_panel():
     return dict(cur)
 
 
-# Per-session staging dirs for drag-and-dropped inputs, keyed on the drop's
-# (name, size) signature so Streamlit reruns reuse the dir instead of
-# re-writing hundreds of files every rerun.
-_DROP_STAGE_CACHE = {}
+# Staging dirs for drag-and-dropped inputs, keyed on the drop's upload ids
+# (name and size only when a file has no id) so Streamlit reruns reuse the
+# dir instead of re-writing hundreds of files every rerun.  An upload id is
+# new for every drop, so dropping different files that share names and sizes
+# never gets an older drop's staging back.
+_DROP_STAGE_CACHE = _rerun_caches()['drop']
 
 
 def _stage_dropped(files):
@@ -8680,7 +9328,8 @@ def _stage_dropped(files):
     (staging_dir, n_trace_files, dupes)."""
     import tempfile
     import folder_intake as fi
-    sig = tuple(sorted((f.name, getattr(f, 'size', 0)) for f in files))
+    sig = tuple(sorted((getattr(f, 'file_id', '') or '', f.name,
+                        getattr(f, 'size', 0)) for f in files))
     hit = _DROP_STAGE_CACHE.get(sig)
     if hit and os.path.isdir(hit[0]):
         return hit
@@ -8698,14 +9347,8 @@ def _stage_dropped(files):
         _written, dupes = fi.stage_uploads(loose, td, nest_duplicates=False)
     except Exception as exc:
         print(f'drop staging: {exc}')
-    # Count staged trace files ourselves — folder_intake.find_otdr_files
-    # deliberately excludes .trc, but Secret Sauce accepts it.
-    n = 0
-    for _root, _dirs, _files in os.walk(td):
-        n += sum(1 for x in _files
-                 if not x.startswith('.')
-                 and x.lower().endswith(('.sor', '.trc', '.json')))
-    _DROP_STAGE_CACHE[sig] = (td, n, dupes)
+    n = len(fi.find_otdr_files(td))
+    _remember(_DROP_STAGE_CACHE, sig, (td, n, dupes))
     return td, n, dupes
 
 
@@ -8734,6 +9377,173 @@ def _parse_landmarks_text(text):
     return landmarks, bad
 
 
+def _uni_site_inputs(folder):
+    """The Unidirectional page's two site boxes, the Splice Report's pair:
+    the cable's A-end and B-end names.  Filled with the names the traces
+    store (GenParams, exactly as stored) when the folder changes; a
+    presenter can type over them (WEST / EAST).  The engine prints them in
+    the direction of the shot, so a B folder reads "EAST → WEST".
+
+    What the boxes show is kept in a slot no widget owns, with the folder it
+    was shown for, so a trip to another tool does not put them back (the
+    same keyed-state pattern as _sr_site_inputs; never value= and key= on
+    one widget).  Returns (site_a, site_b)."""
+    k_a, k_b, k_src, k_saved = ('uni_site_a', 'uni_site_b', 'uni_site_src',
+                                'uni_site_saved')
+    _saved = st.session_state.get(k_saved)
+    if _saved and _saved[0] == folder:
+        for _k, _v in zip((k_a, k_b), _saved[1]):
+            if _k not in st.session_state:
+                st.session_state[_k] = _v
+    if st.session_state.get(k_src) != folder:
+        import glob
+        sors = sorted(glob.glob(os.path.join(folder, '*.sor')) +
+                      glob.glob(os.path.join(folder, '*.SOR')))
+        loc_a, loc_b = _sor_locations(sors[0]) if sors else ('', '')
+        st.session_state[k_a] = loc_a
+        st.session_state[k_b] = loc_b
+        st.session_state[k_src] = folder
+    st.session_state.setdefault(k_a, '')
+    st.session_state.setdefault(k_b, '')
+    s1, s2 = st.columns(2)
+    site_a = s1.text_input('A-End Site', key=k_a,
+                           help='The site at the A end of the cable. Prints in '
+                                'the report in the direction of the shot.')
+    site_b = s2.text_input('B-End Site', key=k_b,
+                           help='The site at the B end of the cable.')
+    st.session_state[k_saved] = (folder, (site_a, site_b))
+    return site_a.strip(), site_b.strip()
+
+
+def _flat_upload(sdir, n, dupes):
+    """(folder, n, dupes): the staged upload with every trace at the top level.
+    A zip keeps its own folders (A side/, B side/), and the engine reads
+    only the folder it is given, so a zip of two direction folders ran on
+    no files at all.  A name that two of the zip's folders both hold is
+    placed once and listed in `dupes`, never dropped in silence."""
+    import folder_intake as fi
+    files = fi.find_otdr_files(sdir)
+    if all(os.path.dirname(f) == sdir for f in files):
+        return sdir, n, dupes
+    flat = sdir.rstrip(os.sep) + '_flat'
+    seen, dupes = set(), list(dupes or [])
+    for f in files:
+        name = os.path.basename(f).lower()
+        if name in seen:
+            dupes.append(os.path.basename(f))
+        seen.add(name)
+    fi.materialize_all(files, flat)
+    return flat, len(fi.find_otdr_files(flat)), dupes
+
+
+def _uni_upload_box(box_folder):
+    """The Unidirectional page's drop zone.  Returns the upload in use,
+    {'dir', 'n', 'dupes', 'box'}, or None.
+
+    Each upload REPLACES the one before (Robert 2026-10-01).  A Streamlit
+    uploader adds every new drop to the files it already holds, so a second
+    set of traces ran together with the first.  So the upload is staged and
+    kept in a slot no widget owns, and the uploader is drawn again under a
+    new key, empty, for the next drop.  Typing or browsing to another folder
+    forgets the upload, as does Clear upload."""
+    gen = int(st.session_state.get('uni_drop_gen', 0))
+    dropped = st.file_uploader(
+        '…or Drag & Drop the Shots Here (.sor / .json / .trc Files, a Whole '
+        'Folder, or a .zip)',
+        type=['sor', 'json', 'trc', 'zip'], accept_multiple_files=True,
+        key=f'uni_drop_{gen}')
+    if dropped:
+        sdir, n, dupes = _stage_dropped(dropped)
+        sdir, n, dupes = _flat_upload(sdir, n, dupes)
+        st.session_state['uni_upload'] = {'dir': sdir, 'n': n, 'dupes': dupes,
+                                          'box': box_folder}
+        st.session_state['uni_drop_gen'] = gen + 1
+        st.rerun()
+    up = st.session_state.get('uni_upload')
+    if up and (up.get('box') != box_folder or not os.path.isdir(up.get('dir') or '')):
+        st.session_state.pop('uni_upload', None)
+        up = None
+    return up
+
+
+def _shot_sites(folder):
+    """(origin, far) for the traces in `folder`, in the order the shot ran:
+    the stored GenParams pair, turned round when the file's own direction
+    stamp says B to A (the engine's uni_shot_direction, read off the first
+    trace).  ('', '') when nothing is readable."""
+    import folder_intake as fi
+    files = fi.find_otdr_files(folder)
+    sor = [p for p in files if p.lower().endswith('.sor')]
+    trc = [p for p in files if p.lower().endswith('.trc')]
+    if sor:
+        loc_a, loc_b = _sor_locations(sor[0])
+        first = sor[0]
+    elif trc:
+        loc_a, loc_b = fi.trc_header(trc[0], _first_chunk_only=True).get(
+            'loc_stored') or ('', '')
+        first = trc[0]
+    else:
+        return ('', '')
+    try:
+        with open(first, 'rb') as fh:
+            stamp = trace_server.read_direction(fh.read())
+    except Exception:
+        stamp = None
+    return (loc_b, loc_a) if stamp == 'b' else (loc_a, loc_b)
+
+
+def _uni_pick_direction(folder):
+    """The folder this report runs on, for the page's own upload.  An
+    upload that holds both directions (the A and B shots together, loose or
+    in one zip) is split the way the left panel splits such a folder
+    (_split_panel_folder: the files' own direction stamps say which side is
+    A), and the tech picks the direction: A by default.  Only the picked
+    direction is analysed, so the other side is not reported as missing.  A
+    one-direction upload comes back as it is.  A folder typed into the box
+    is not split here: it keeps the Direction pick it always had."""
+    split = _split_panel_folder(folder)
+    if not split:
+        return folder
+    labels = {}
+    for side in ('a', 'b'):
+        origin, far = _shot_sites(split[side])
+        sites = f'{origin} → {far}, ' if origin and far else ''
+        labels[side] = (f"{side.upper()} Direction ({sites}"
+                        f"{_count(split[side + '_count'], 'file')})")
+    # Kept in a slot no widget owns, with the folder it was picked for.
+    _was = st.session_state.get('uni_both_side')
+    side = _was[1] if isinstance(_was, tuple) and _was[0] == folder else 'a'
+    opts = [labels['a'], labels['b']]
+    pick = st.radio('Run On', opts, horizontal=True,
+                    index=0 if side == 'a' else 1)
+    side = 'b' if pick == labels['b'] else 'a'
+    st.session_state['uni_both_side'] = (folder, side)
+    st.caption('These traces hold both directions. This report reads one '
+               'direction at a time: pick the one to run.'
+               + (f" Not read: {', '.join(split['ignored'])}."
+                  if split.get('ignored') else ''))
+    return split[side]
+
+
+def _uni_end_cell(entries, ribbon_fibers):
+    """The Cable End cell of one ribbon, exactly as the workbook prints it
+    (uni_format_end_cell in splicereportmatchexfo, which the hub cannot
+    import: it would load an engine's reader into the hub).  `entries` are
+    (fiber, end reflectance or None) for the ribbon's fibers that reach the
+    end.  Every fiber of the ribbon there: the strongest reflectance
+    ('REFL-45.8dB', or 'end' when none is stored).  Some broke upstream:
+    the fibers that do reach it, then that tag.  test_uni_end_cells holds
+    the two copies to the same text."""
+    if not entries:
+        return ''
+    members = sorted(f for f, _ in entries)
+    refls = [v for _, v in entries if v is not None]
+    tag = f"REFL{max(refls):.1f}dB" if refls else "end"
+    if set(members) >= set(ribbon_fibers):
+        return tag
+    return ','.join(f"F{f}" for f in members) + " " + tag
+
+
 def page_unidirectional():
     st.markdown('#### Unidirectional')
 
@@ -8747,8 +9557,8 @@ def page_unidirectional():
     # tech never saw is worse than no report.  Uni's own settings panel,
     # further down, blocks the same way.
     _settings_exc = _render_settings_box('unidirectional', blocks_report=True)
-    st.caption('Unidirectional reads three of these settings: Connector loss '
-               '(1 direction), the Mid-span reflectance band and its ceiling. '
+    st.caption('Unidirectional reads three of these settings: Connector Loss '
+               '(1 Direction), Mid-Span Reflectance Band and Mid-Span Refl Ceiling. '
                'The others grade the bidirectional report.')
 
     # The page's own boxes keep what they show across a trip to another
@@ -8777,6 +9587,7 @@ def page_unidirectional():
             _sides = ['A folder', 'B folder']
             _was = st.session_state.get('uni_panel_side', 'A folder')
             _side = st.radio('Run On', _sides, horizontal=True,
+                             format_func=lambda o: o.replace('folder', 'Folder'),
                              index=_sides.index(_was) if _was in _sides else 0)
             st.session_state['uni_panel_side'] = _side
             folder = _pa if _side == 'A folder' else _pb
@@ -8789,12 +9600,12 @@ def page_unidirectional():
     else:
         c1, c2 = st.columns([1, 2])
         with c1:
-            if st.button('📁 Browse for folder', type='primary', use_container_width=True):
+            if st.button('📁 Browse for Folder', type='primary', use_container_width=True):
                 p = pick_folder('Choose a folder of OTDR files')
                 if p:
                     st.session_state['uni_folder_input'] = p
         with c2:
-            st.text_input('…or paste a folder path',
+            st.text_input('…or Paste a Folder Path',
                           key='uni_folder_input',
                           placeholder=r'C:\Users\you\Desktop\uni shots')
             _keep_box('uni_folder_input')
@@ -8812,20 +9623,21 @@ def page_unidirectional():
                 st.caption(f'📦 Reading the traces from the .zip: {_typed}')
             elif not os.path.exists(_typed):
                 st.warning(f'Not found: {_typed}. Paste a folder of `.sor` / '
-                           '`.json` shots, or a .zip of them.')
-        _dropped = st.file_uploader(
-            '…or drag & drop the shots here (.sor / .json files, a whole '
-            'folder, or a .zip)',
-            type=['sor', 'json', 'zip'], accept_multiple_files=True,
-            key='uni_drop')
+                           '`.json` / `.trc` shots, or a .zip of them.')
+        _dropped = _uni_upload_box(
+            (st.session_state.get('uni_folder_input') or '').strip())
+    _from_upload = False
     if _dropped:
-        _sdir, _sn, _sdupes = _stage_dropped(_dropped)
+        _sdir, _sn, _sdupes = _dropped['dir'], _dropped['n'], _dropped['dupes']
         if _sn:
-            st.caption(f'📥 {_sn} trace file(s) staged from the drop, used as '
-                       'the input.')
+            _from_upload = True
+            st.caption(f'📥 {_sn} trace file(s) from the upload, used as the '
+                       'input. A new upload replaces them.')
             folder = _sdir
+            st.button('Clear Upload', key='uni_upload_clear',
+                      on_click=lambda: st.session_state.pop('uni_upload', None))
         else:
-            st.warning('The drop contained no readable `.sor` / `.json` files.')
+            st.warning('The drop contained no readable `.sor` / `.json` / `.trc` files.')
         if _sdupes:
             import folder_intake as _fi_d
             st.warning('⚠ ' + _fi_d.duplicate_names_message(_sdupes, kept=False))
@@ -8868,6 +9680,11 @@ def page_unidirectional():
     _remove_legacy_caches(folder)
     src_folder = folder
     folder, _foreign = _exclude_foreign_files(folder)
+    if _from_upload:
+        # Both directions in one upload, loose or zipped: the tech picks one.
+        # After the foreign-file audit, so a stray from another job is not
+        # taken for a second direction.
+        folder = _uni_pick_direction(folder)
 
     # If a prior run reported multiple GenParams directions in this folder,
     # offer the pick list (default stays "most populous").
@@ -8880,10 +9697,13 @@ def page_unidirectional():
                                           for sig, n in sorted(counts.items(),
                                                                key=lambda kv: -kv[1])]
             _seed_box('uni_dir_pick', opts)
-            pick = st.selectbox('Direction', opts, key='uni_dir_pick')
+            pick = st.selectbox('Direction', opts, key='uni_dir_pick',
+                                format_func=lambda o: '(Most Populous)' if o == '(most populous)' else o)
             _keep_box('uni_dir_pick')
             if pick != '(most populous)':
                 dir_choice = pick.rsplit('  (', 1)[0]
+
+    uni_site_a, uni_site_b = _uni_site_inputs(folder)
 
     with st.expander('Job Landmarks (Optional: Closure Map / Handholes)'):
         st.caption('One per line: `km, label`, or `km, label, splice` for a '
@@ -8911,7 +9731,7 @@ def page_unidirectional():
         # Checked twice, as on the Splice Report: a click made while the
         # settings were up still arrives on the run where they failed.
         _no_settings = _settings_exc is not None
-        _run_uni = st.button('Run unidirectional report', type='primary',
+        _run_uni = st.button('Run Unidirectional Report', type='primary',
                              disabled=bool(_stale) or _no_settings) \
             and not _no_settings
         st.caption('⏳ Large folders can take a few minutes. Leave this '
@@ -8923,7 +9743,9 @@ def page_unidirectional():
                                                       direction=dir_choice,
                                                       landmarks=landmarks,
                                                       overrides=uni_overrides,
-                                                      show=uni_show)
+                                                      show=uni_show,
+                                                      site_a=uni_site_a,
+                                                      site_b=uni_site_b)
         st.session_state['uni_out_xlsx'] = out_xlsx
         st.session_state.pop('uni_result', None)
         st.rerun()
@@ -8991,8 +9813,12 @@ def page_unidirectional():
     _n_folder = u.get('n_files_in_folder')
     _n_drop = u.get('n_files_not_analysed') or 0
     _covered = (f"{u.get('n_fibers', '?')} of {_n_folder} files"
-                if _n_folder and _n_drop else f"{u.get('n_fibers', '?')} fibers")
-    _line = (f"{_covered} · direction {u.get('direction', '?')} · "
+                if _n_folder and _n_drop else _count(u.get('n_fibers', '?'), 'fiber'))
+    # The shot's own direction, site names in full and in the order the
+    # distances run (the engine reads it from the files' LocationsDirection);
+    # the GenParams signature reads the same for both ends of a span.
+    _line = (f"{_covered} · direction "
+             f"{u.get('direction_label') or u.get('direction', '?')} · "
              f"span ≈ {u.get('span_km', '?')} km")
     if _n_drop:
         st.error(f"⚠️ PARTIAL COVERAGE: {_line}")
@@ -9016,7 +9842,7 @@ def page_unidirectional():
             f"This folder mixes {len(counts) - len(merged)} directions: the "
             f"report covers ONLY '{u.get('direction', '?')}'. "
             + ' '.join(
-                f"{n} file(s) shot as '{sig}' were NOT analysed."
+                f"{n} file(s) shot as '{sig}' were NOT analyzed."
                 for sig, n in sorted(counts.items(), key=lambda kv: -kv[1])
                 if sig != u.get('direction')
                 and sig not in {m.get('signature') for m in merged})
@@ -9074,16 +9900,31 @@ def page_unidirectional():
         rs = int(u.get('ribbon_size') or 12)
         max_f = int(u.get('max_fiber') or u.get('n_fibers') or 0)
         n_ribbons = (max_f + rs - 1) // rs if max_f else 0
+        # Rows from the first ribbon holding a loaded fiber to the last; an
+        # empty ribbon between them keeps its row.
+        _url = u.get('ribbons') or []
+        uni_ribbon_rows = (list(range(min(_url), max(_url) + 1)) if _url
+                           else list(range(n_ribbons)))
         off = float(u.get('launch_offset_km') or 0.0)
         by_rc = {}
         for c in u['cells']:
             by_rc.setdefault(((c['fiber'] - 1) // rs, c['col']), []).append(c)
-        _KIND_COLOR = {'splice': '#1f4e79', 'bend_damage': '#8a6d00',
-                       'break': '#c00000', 'reflective': '#6c3483',
-                       'connector': '#0e6655', 'end': '#595959'}
+        # The workbook's colors (UNI_LEGEND), as text on white: each kind's
+        # header shade, dark enough to read.  The Cable End readings are
+        # plain black, as their cells are unfilled in the workbook.
+        _KIND_COLOR = {'splice': '#c2185b', 'bend_damage': '#8a6d00',
+                       'break': '#c00000', 'reflective': '#a6340f',
+                       'connector': '#8c5300', 'end': '#000000'}
         _uni_port = ensure_trace_server()
-        if folder and os.path.isdir(folder):
+        if _uni_pside and (_pa or _pb):
+            # Run on one of the left panel's folders: the popped Viewer keeps
+            # BOTH of them and opens the fibre on the side the report ran on,
+            # as a click into the Viewer tab does (_handle_nav).  Pointing A at
+            # the report's folder loaded a B-folder run's files as A->B.
+            trace_server.set_dirs(_pa or None, _pb or None)
+        elif folder and os.path.isdir(folder):
             trace_server.set_dirs(folder, None)   # popped Viewer reads this span
+        _uni_dir = _uni_pside or 'a'              # the side its links open on
         # Same as the Splice Report grid: the Viewer judges by THIS run's gates.
         # The uni settings panel moves UNI_BEND_THRESHOLD off its 0.250 default
         # and that never reached the Viewer either.
@@ -9113,7 +9954,7 @@ def page_unidirectional():
                         f"<div style='font-size:10px;color:#000000'>{gc['km']:.2f} km</div>"
                         f"{lm}</th>")
         html.append('</tr></thead><tbody>')
-        for ri in range(n_ribbons):
+        for ri in uni_ribbon_rows:
             f0, f1 = ri * rs + 1, min((ri + 1) * rs, max_f)
             html.append(f"<tr><td style='position:sticky;left:0;background:#f7fafc;"
                         f"padding:3px 8px;border:1px solid #e3e9f0;"
@@ -9123,22 +9964,28 @@ def page_unidirectional():
                 if not cell:
                     html.append("<td style='padding:3px 6px;border:1px solid #eef2f6'></td>")
                     continue
+                if gc.get('kind') == 'end':
+                    # Cable End: the workbook's one cell for the ribbon, not
+                    # a line per fiber (432 lines made every row ~150 px
+                    # tall).  It opens the fiber with the strongest end
+                    # reflectance, or the ribbon's first fiber at the end.
+                    _top = min(cell, key=lambda c: (c['loss'] is None,
+                                                    -(c['loss'] or 0), c['fiber']))
+                    shown = [(_top, _uni_end_cell(
+                        [(c['fiber'], c['loss']) for c in cell],
+                        range(f0, min(f0 + rs, max_f + 1))))]
+                else:
+                    shown = [(c, f"F{c['fiber']}" + (' ✕ broke' if c['loss'] is None
+                                                     else f" {c['loss']:.3f}"))
+                             for c in sorted(cell, key=lambda x: x['fiber'])]
                 links = []
-                for c in sorted(cell, key=lambda x: x['fiber']):
+                for c, text in shown:
                     color = _KIND_COLOR.get(c['kind'], '#000000')
-                    if c['kind'] == 'end':
-                        # Cable End cell: the fiber's stored end reflectance.
-                        loss = (' end' if c['loss'] is None
-                                else f" REFL{c['loss']:.1f}dB")
-                    else:
-                        loss = (' ✕ broke' if c['loss'] is None
-                                else f" {c['loss']:.3f}")
                     _km = round(c['km'] + off, 4)
                     links.append(_cell_markup(
-                        _uni_popout, c['fiber'], _km, 'a', color, '',
-                        f"F{c['fiber']}{loss}",
+                        _uni_popout, c['fiber'], _km, _uni_dir, color, '', text,
                         href=(f"?nav=viewer&fiber={c['fiber']}&km={_km}"
-                              f"&dir=a&sra={_fq}&src=uni{_uni_pq}")))
+                              f"&dir={_uni_dir}&sra={_fq}&src=uni{_uni_pq}")))
                 html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;"
                             "white-space:nowrap'>" + "<br>".join(links) + "</td>")
             html.append('</tr>')
@@ -10083,7 +10930,7 @@ def job_qr_png(link):
         import qrcode
         from qrcode.exceptions import DataOverflowError
     except Exception:
-        return None, ('this OTDR Suite build has no QR library yet (it comes with the '
+        return None, (f'this {PRODUCT_NAME} build has no QR library yet (it comes with the '
                       'next installer); send the link below to the phone instead')
     try:
         q = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=2, box_size=6)
@@ -10902,9 +11749,9 @@ def owner_email_message(work, ev, owner, sender):
         f"Something happened in the project {name}.\n\n"
         f"What happened: {ev.get('text')}\n"
         f"When: {_when_text(ev.get('when'))}\n"
-        f"Done by: {who} ({ev.get('how') or 'OTDR Suite'})\n"
+        f"Done by: {who} ({_how_shown(ev.get('how'))})\n"
         f"Project folder: {os.path.abspath(work)}\n\n"
-        'You get these because you are the project owner in OTDR Suite.\n')
+        f'You get these because you are the project owner in {PRODUCT_NAME}.\n')
     return msg
 
 
@@ -11062,6 +11909,13 @@ def file_users(work, data=None):
             for r in e.get('files') or ():
                 out[r] = e['user']
     return out
+
+
+def _how_shown(how, blank='OTDR Suite'):
+    """An event's How as a person reads it.  The log stores 'OTDR Suite' for
+    what the app did (older logs too); it is shown as the product's name."""
+    how = how or blank
+    return PRODUCT_NAME if how == 'OTDR Suite' else how
 
 
 def project_log(work, kind, text, paths=(), when=None, how='OTDR Suite'):
@@ -11495,8 +12349,11 @@ def page_project_status():
     with tabs['Export Project']:
         st.markdown('**Export Project**')
         st.caption('Pack the project folder into one .zdb file to share or email. It opens '
-                   'in OTDR Suite: Home, Open Recent Project, Open this file.')
+                   f'in {PRODUCT_NAME}: Home, Open Recent Project, Open this file.')
         _render_export(work)
+        with st.container(border=True):
+            st.markdown('**☁️ Save to SharePoint**')
+            _render_sp_save(work)
     with overview:
         _project_overview(work, items)
 
@@ -11731,7 +12588,7 @@ def _project_overview(work, items):
     if st.session_state.pop('_start_tour', False) and os.path.basename(work) == DEMO_NAME:
         st_components_html('<script>const d=window.parent.document;'
                            'const s=d.createElement("script");'
-                           f's.textContent={json.dumps(DEMO_TOUR_JS)};'
+                           f"s.textContent={json.dumps(DEMO_TOUR_JS.replace('OTDR Suite', PRODUCT_NAME))};"
                            'd.head.appendChild(s);</script>', height=0)
     c1, c2, c3, c4 = st.columns(4)
     with c1.container(border=True):
@@ -11936,13 +12793,13 @@ def _project_tab_events(work):
         if len(users) > 1 else []
     rows = [{'When': _when_text(e.get('when')), 'User': e.get('user') or '',
              'Type': e.get('kind') or '', 'What Happened': e.get('text') or '',
-             'How': e.get('how') or ''}
+             'How': _how_shown(e.get('how'), '')}
             for e in ev if (not pick or e.get('kind') in pick)
             and (not who or e.get('user') in who)]
     st.dataframe(rows, hide_index=True, use_container_width=True,
                  column_config={'What Happened': st.column_config.TextColumn(width='large')})
     st.caption(f'{len(rows)} of {len(ev)} events. "Found in folder" is a file saved into '
-               'the project folder outside OTDR Suite, such as a .zfc saved from an email. '
+               f'the project folder outside {PRODUCT_NAME}, such as a .zfc saved from an email. '
                'User is the Windows login that did it; for a file found in the folder, '
                'the login that owns the file, blank when that can\'t be told (a synced '
                'OneDrive or SharePoint folder, or events from before users were kept).')
@@ -12854,7 +13711,7 @@ def import_project(package, projects_root):
     with zipfile.ZipFile(package) as z:
         meta = json.loads(z.read('otdrproject.json').decode('utf-8'))
         if meta.get('format') != LEGACY_PACKAGE_FORMAT:
-            raise ValueError('not an OTDR Suite project package')
+            raise ValueError(f'not an {PRODUCT_NAME} project package')
         root = _unique_project_dest(projects_root, meta.get('name'))
         return _unpack_project(z, [i for i in z.infolist()
                                    if i.filename != 'otdrproject.json' and not i.is_dir()], root)
@@ -12945,48 +13802,6 @@ if _share_pending:
     st.session_state['_share_open_msg'] = open_share_file(_share_pending)
     st.rerun()
 
-def sharepoint_libraries():
-    """[(label, folder)] for the SharePoint libraries this PC syncs.
-
-    Robert, 2026-09-24: SharePoint through Windows' built-in sync ("option
-    1"), and the synced libraries listed by name wherever a folder is picked.
-    The sync app records each library it syncs under HKCU\\Software\\
-    SyncEngines\\Providers\\OneDrive\\<id>: MountPoint is the folder,
-    UrlNamespace the SharePoint address.  A personal OneDrive is left out
-    (its address is a /personal/ one): only SharePoint libraries are wanted.
-    Not Windows, or nothing synced: []."""
-    out = []
-    try:
-        import winreg
-    except ImportError:
-        return out
-    base = r'Software\SyncEngines\Providers\OneDrive'
-    try:
-        root = winreg.OpenKey(winreg.HKEY_CURRENT_USER, base)
-    except OSError:
-        return out
-    i = 0
-    while True:
-        try:
-            sub = winreg.EnumKey(root, i)
-        except OSError:
-            break
-        i += 1
-        try:
-            k = winreg.OpenKey(root, sub)
-            mount = winreg.QueryValueEx(k, 'MountPoint')[0]
-            try:
-                url = winreg.QueryValueEx(k, 'UrlNamespace')[0] or ''
-            except OSError:
-                url = ''
-        except OSError:
-            continue
-        if not mount or not os.path.isdir(mount) or '/personal/' in url.lower():
-            continue
-        out.append((f'SharePoint · {os.path.basename(mount.rstrip(chr(92) + "/"))}', mount))
-    return sorted(out)
-
-
 EXPORT_DESTS_KEY = 'export_dests'
 EXPORT_OTHER = '__other__'
 
@@ -13007,8 +13822,6 @@ def export_destinations(work):
     add('Downloads', os.path.join(home, 'Downloads'))
     add('Desktop', os.path.join(home, 'Desktop'))
     add("This project's folder", work)
-    for label, path in sharepoint_libraries():
-        add(label, path)
     for p in _settings_read().get(EXPORT_DESTS_KEY) or []:
         if isinstance(p, str):
             add(p, p)
@@ -13065,8 +13878,8 @@ def _render_export(work):
             if st.button('✉️ Email it', key='ps_export_email'):
                 try:
                     from fieldcapture.email_draft import write_draft, open_with_default_app
-                    eml = write_draft(out, '', f'OTDR Suite project: {os.path.basename(work)}',
-                                      'The project is attached. In OTDR Suite: Home, '
+                    eml = write_draft(out, '', f'{PRODUCT_NAME} project: {os.path.basename(work)}',
+                                      f'The project is attached. In {PRODUCT_NAME}: Home, '
                                       'Open Recent Project, Open this package.\n')
                     opened, err = open_with_default_app(eml)
                     st.success('An email with the project attached is open in your mail '
@@ -13108,7 +13921,7 @@ def _render_open_project():
                    'Capture (.zfc) for the open project.')
         c1, c2 = st.columns([1, 2])
         if c1.button('📦 Choose the file', key='open_pkg_pick', use_container_width=True):
-            p = pick_file('Choose the file', [('OTDR Suite file',
+            p = pick_file('Choose the file', [(f'{PRODUCT_NAME} file',
                                                ' '.join('*' + e for e in OPEN_FILE_EXTS))])
             if p:
                 ss['open_pkg_path'] = p
@@ -13129,6 +13942,9 @@ def _render_open_project():
                 st.rerun()
             else:
                 st.success(msg)
+    with st.container(border=True):
+        st.markdown('**☁️ From SharePoint**')
+        _render_sp_open()
     with st.container(border=True):
         st.markdown('**Another Project Folder**')
         c1, c2 = st.columns([1, 2])
@@ -13287,7 +14103,7 @@ def _sp_load(spl, client, path, msg, target=None):
     with st.spinner('Looking through the folder…'):
         files = client.walk(path)
     if not files:
-        msg.warning('No .sor, .json, .bdr or .zip files in this folder or the folders inside it.')
+        msg.warning('No .sor, .json, .trc, .bdr or .zip files in this folder or the folders inside it.')
         return False
     total = sum(f['size'] for f in files)
     big = total > spl.BIG_BYTES or len(files) > spl.BIG_FILES
@@ -13427,8 +14243,12 @@ def _sp_remember(link, path=None):
     if not key:
         return
     ss = st.session_state
-    new = {'link': link, 'path': path} if path else {'link': link}
-    if ss.get(key) != new:
+    old = dict(ss.get(key) or {})
+    # Another folder link: the folders noted under the old one go.
+    new = dict(old if old.get('link') == link else {}, link=link, **({'path': path} if path else {}))
+    if not path:
+        new.pop('path', None)
+    if old != new:
         ss[key] = new
 
 
@@ -13463,6 +14283,187 @@ def _render_sharepoint_box(target=None):
                 st.rerun()
             return
         _render_sp_browser(spl, sess, target)
+
+
+# ── Saving to and opening from SharePoint (Robert, 2026-09-30: "I don't
+# want to use OneDrive. I want to use the Microsoft login") ───────────────
+# A project goes up as its .zdb into the one folder (or a folder inside it),
+# and a .zdb there opens straight from Open a Project.  Their own widget keys
+# (kp), since the Export tab draws in the same run as the Traces tab's box.
+def _sp_ready(kp):
+    """The sign-in for these boxes, or None after drawing what is missing
+    (the folder link, or the Sign In button)."""
+    import sharepoint_link as spl
+    ss = st.session_state
+    note = ss.pop(f'_{kp}_msg', None)
+    if note:
+        getattr(st, note[0])(note[1])
+    link = _sp_link()
+    if not link:
+        st.caption('No SharePoint folder yet. Set it once in From SharePoint (the left '
+                   'panel in Quick Analysis, or the Traces tab in a project).')
+        return None
+    sess = spl.load_session()
+    if not sess or sess.get('link') != link:
+        st.caption('Sign in with your work Microsoft account. A window opens, and it '
+                   'closes by itself once you are in.')
+        if st.button('Sign In to SharePoint', key=f'{kp}_signin', type='primary'):
+            with st.spinner('Waiting for the sign-in window…'):
+                ss[f'_{kp}_msg'] = _sp_sign_in(link)
+            ss.pop('_sp_cache', None)
+            st.rerun()
+        return None
+    return sess
+
+
+def _sp_pick_folder(spl, sess, kp, start=None):
+    """Walk the one folder's folders (never above it).  (client, listing) of
+    the folder shown, or None when SharePoint refused (said here)."""
+    import hashlib
+    ss = st.session_state
+    client = spl.Client(sess)
+    root = client.root
+    path = ss.get(f'{kp}_path') or start or root
+    if not spl.inside(path, root):
+        path = root
+    try:
+        listing = _sp_listing(client, path)
+    except spl.NeedsSignIn as exc:
+        spl.clear_session()
+        ss.pop('_sp_cache', None)
+        ss[f'_{kp}_msg'] = ('warning', str(exc))
+        st.rerun()
+    except spl.SharePointError as exc:
+        st.error(str(exc))
+        if path != root and st.button('Back to the Top Folder', key=f'{kp}_top'):
+            ss[f'{kp}_path'] = root
+            st.rerun()
+        return None
+    ss[f'{kp}_path'] = path
+    trail = spl.crumbs(path, root)
+    st.markdown('📂 ' + ' › '.join(f'**{n}**' if p == path else n for n, p in trail))
+    c1, c2 = st.columns(2)
+    if c1.button('⬆ Up', key=f'{kp}_up', disabled=len(trail) < 2, use_container_width=True):
+        ss[f'{kp}_path'] = trail[-2][1]
+        st.rerun()
+    if c2.button('🔄 Refresh', key=f'{kp}_refresh', use_container_width=True):
+        ss.pop('_sp_cache', None)
+        st.rerun()
+    for d in listing['folders']:
+        key = f'{kp}_dir_' + hashlib.sha1(d['path'].lower().encode('utf-8')).hexdigest()[:10]
+        if st.button(f"📁 {d['name']}", key=key, use_container_width=True):
+            ss[f'{kp}_path'] = d['path']
+            st.rerun()
+    return client, listing
+
+
+def save_project_to_sharepoint(client, work, mode, folder, progress=None):
+    """Pack the project (export_project) and put the .zdb into `folder` on
+    SharePoint under a name not taken there.  Returns its SharePoint path."""
+    import shutil
+    tmp = tempfile.mkdtemp(prefix='otdr-sp-save-')
+    try:
+        local = export_project(work, mode, tmp)
+        name = client.free_name(folder, os.path.basename(local))
+        return client.upload(local, folder, name, progress)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _render_sp_save(work):
+    """The Export tab's Save to SharePoint: the same .zdb as Export, put in
+    the SharePoint folder picked here (first the one it was saved to last,
+    else the project's traces folder)."""
+    import sharepoint_link as spl
+    ss = st.session_state
+    sess = _sp_ready('spx')
+    if not sess:
+        return
+    mine = ss.get('project_sp') or {}
+    got = _sp_pick_folder(spl, sess, 'spx', mine.get('save') or mine.get('path'))
+    if not got:
+        return
+    client, listing = got
+    mode = ss.get('ps_export_mode') or 'none'
+    st.caption(f'Saves the project {EXPORT_MODES[mode].lower()} (the choice above) into the '
+               'folder shown, as a new .zdb file. Nothing already there is replaced.')
+    if st.button('☁️ Save to SharePoint Here', key='spx_save', type='primary'):
+        bar = st.progress(0.0, text='Packing the project…')
+        whole = max(1, export_size(work, mode))
+        done = [0]
+
+        def progress(n):
+            done[0] += n
+            bar.progress(min(1.0, done[0] / whole),
+                         text=f'Uploading · {_fmt_size(done[0])}')
+        try:
+            path = save_project_to_sharepoint(client, work, mode, listing['path'], progress)
+        except spl.NeedsSignIn as exc:
+            spl.clear_session()
+            ss['_spx_msg'] = ('warning', str(exc))
+            st.rerun()
+        except spl.SharePointError as exc:
+            bar.empty()
+            st.error(str(exc))
+            return
+        except Exception as exc:
+            bar.empty()
+            report_error('project: save to SharePoint', exc, {'mode': mode})
+            st.error(f'Could not save to SharePoint: {exc}')
+            return
+        bar.empty()
+        ss.get('_sp_cache', {}).pop(listing['path'], None)
+        ss['project_sp'] = dict(mine, link=mine.get('link') or _sp_link(),
+                                save=listing['path'])
+        where = ' › '.join(n for n, _p in spl.crumbs(listing['path'], client.root))
+        project_log(work, 'Project', f"Saved {path.rsplit('/', 1)[-1]} "
+                    f"({EXPORT_MODES[mode].lower()}) to SharePoint: {where}")
+        ss['_spx_msg'] = ('success', f"Saved **{path.rsplit('/', 1)[-1]}** to SharePoint "
+                          f"({where}).")
+        st.rerun()
+    who = sess.get('user') or sess.get('login') or 'you'
+    st.caption(f'Signed in as {who}.')
+
+
+def _render_sp_open():
+    """Open a Project: a .zdb (or .zfc) straight from the SharePoint folder."""
+    import sharepoint_link as spl
+    ss = st.session_state
+    sess = _sp_ready('spo')
+    if not sess:
+        return
+    got = _sp_pick_folder(spl, sess, 'spo')
+    if not got:
+        return
+    client, listing = got
+    files = [f for f in listing['files'] if f['name'].lower().endswith(OPEN_FILE_EXTS)]
+    if not files:
+        st.caption('No .zdb or .zfc files in this folder.')
+    for i, f in enumerate(files):
+        when = time.strftime('%Y-%m-%d %H:%M', time.localtime(f['modified'])) \
+            if f.get('modified') else ''
+        if st.button(f"📦 {f['name']} · {_fmt_size(f['size'])}"
+                     + (f' · {when}' if when else ''), key=f'spo_file_{i}',
+                     use_container_width=True):
+            dest = os.path.join(spl.local_folder(listing['path']), spl._safe_name(f['name']))
+            try:
+                with st.spinner(f"Downloading {f['name']}…"):
+                    client.download(f, dest)
+            except spl.NeedsSignIn as exc:
+                spl.clear_session()
+                ss['_spo_msg'] = ('warning', str(exc))
+                st.rerun()
+            except spl.SharePointError as exc:
+                st.error(str(exc))
+                return
+            with st.spinner('Opening…'):
+                level, msg = open_share_file(dest)
+            if level == 'error':
+                st.error(msg)
+            elif ss.get('_setup_open'):
+                st.rerun()
+            else:
+                st.success(msg)
 
 
 def page_project_setup():
@@ -13616,15 +14617,8 @@ def page_project_setup():
         n1, n2 = st.columns([1, 1])
         n1.text_input('Project name', key='setup_name', placeholder='e.g. Flagler to Bethune')
         with n2:
-            libs = sharepoint_libraries()
-            if libs:
-                opts = [''] + [p for _l, p in libs]
-                names = dict((p, l) for l, p in libs)
-                sp = st.selectbox('Save projects in', opts, key='setup_parent_sp',
-                                  format_func=lambda p: names.get(p, 'SharePoint library…'))
-                if sp and ss.get('_setup_parent_sp_last') != sp:
-                    ss['setup_parent'] = sp
-                ss['_setup_parent_sp_last'] = sp
+            # Robert, 2026-09-30: no OneDrive-synced libraries here; a project
+            # goes to SharePoint through the sign-in (Export Project tab).
             if st.button('📁 Save projects in…', key='setup_parent_pick'):
                 p = pick_folder('Where new projects are kept')
                 if p:
@@ -13664,6 +14658,10 @@ def page_project_setup():
 # Global catch-all: any unhandled error during a page render/action posts to
 # Slack, then re-raises so Streamlit still shows the tech its red error box.
 _note_tool_change(page)
+if page != 'Viewer':
+    # The Viewer frame goes with the page, so the address it kept through a
+    # drop (see page_viewer) has nothing left to keep.
+    st.session_state.pop('_viewer_drop_q', None)
 try:
     if _sp_section is not None and st.session_state.get('app_mode') != 'setup':
         # (New Project draws the box itself, in its Traces step.)
@@ -13739,9 +14737,10 @@ _sidebar_footer = st.sidebar.container(key='sidebar_footer')
 _render_theme_control(_sidebar_footer)
 _appv, _engv = _app_version(), _engine_version()
 if _appv == 'dev' and _engv == 'dev':
-    _sidebar_footer.caption('OTDR Suite · dev')
+    _sidebar_footer.caption('OTDR Suite · dev'.replace('OTDR Suite', PRODUCT_NAME))
 else:
-    _sidebar_footer.caption(f'OTDR Suite · app {_appv} · engine: {_engv}')
+    _sidebar_footer.caption(f'OTDR Suite · app {_appv} · engine: {_engv}'
+                            .replace('OTDR Suite', PRODUCT_NAME))
 
 
 if os.environ.get('OTDR_SUITE_NO_UPDATE'):
@@ -13770,7 +14769,7 @@ if st.session_state.get('upd_checked'):
         elif _needs_install():
             _render_install_notice(_latest, _cur, sidebar=True)
         elif getattr(sys, 'frozen', False):
-            if st.sidebar.button('⬇ Update & restart now', key='upd_restart',
+            if st.sidebar.button('⬇ Update & Restart Now', key='upd_restart',
                                  type='primary', use_container_width=True):
                 if _relaunch_and_exit():
                     _render_restart_watchdog(sidebar=True)

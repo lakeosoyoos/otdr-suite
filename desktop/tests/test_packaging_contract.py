@@ -37,7 +37,7 @@ SPLICE_REPORT_PORT = 8503   # Splice Report app
 UNIDIRECTIONAL_PORT = 8505  # Unidirectional app
 KNOWN_TAKEN_PORTS  = {SECRET_SAUCE_PORT, SPLICE_REPORT_PORT, UNIDIRECTIONAL_PORT}
 
-HUB_PORT           = 8520   # the hub's reserved port -- OTDR Suite App edition
+HUB_PORT           = 8520   # the hub's reserved port -- OTDR App edition
 REGULAR_HUB_PORT   = 8510   # the regular OTDR Suite, which this edition sits beside
 # The regular edition's installer identity: the App edition must share none of it.
 REGULAR_APP_ID     = "B7E5B0E2-3C4A-4F1D-9A6E-7C2D9F0A1B23"
@@ -207,8 +207,9 @@ def test_specs_bundle_engine_dirs_as_data():
 #  6. TOOLCHAIN PIN — setuptools must be pinned EXACTLY
 # ═════════════════════════════════════════════════════════════════════════
 def test_setuptools_pinned_exactly():
-    """requirements-desktop.txt must pin setuptools==65.5.1 — the version
-    whose pkg_resources keeps the frozen exe from crashing at launch."""
+    """requirements-desktop.txt must pin setuptools==65.5.1, the version the
+    build venv is proven with (its pkg_resources kept the frozen exe from
+    crashing at launch while the exe still bundled pkg_resources)."""
     text = _read(REQS_DESKTOP)
     assert "setuptools==65.5.1" in text, (
         "requirements-desktop.txt must pin setuptools==65.5.1 exactly"
@@ -248,27 +249,26 @@ def test_ci_invokes_pyinstaller():
     )
 
 
-# TODO(parent): CI currently runs `python test_ui.py` (a smoke script) before
-# the PyInstaller build, NOT a literal `pytest` invocation.  The desired state
-# is a `pytest` step gating the build so this whole contract suite runs in CI
-# BEFORE the (expensive) frozen build.  Wire `pytest` into build-windows.yml
-# ahead of the "PyInstaller build" step, then flip this to a normal passing
-# test.  Until then it is a strict xfail documenting the gap.
 import pytest  # noqa: E402  (stdlib-adjacent test dep; no engine import)
 
 
-def test_ci_runs_pytest_before_pyinstaller():
-    """DESIRED: a literal `pytest` invocation must precede the pyinstaller
-    build step so this contract suite gates the build."""
+def test_ci_tests_gate_the_publish():
+    """pytest runs in CI, and nothing is published until it has passed.  The
+    suite runs in its own job (split over several runners, alongside the
+    build), so it no longer comes before the bundle step in time; it gates
+    the publish job instead, which needs both the tests and the build."""
     text = _read(CI_WORKFLOW)
     lower = text.lower()
     idx_pytest = lower.find("pytest")
     idx_pyinstaller = lower.find("pyinstaller")
     assert idx_pytest != -1, "CI must invoke pytest"
     assert idx_pyinstaller != -1, "CI must invoke pyinstaller"
-    assert idx_pytest < idx_pyinstaller, (
-        "pytest must run BEFORE pyinstaller so a failing contract blocks the build"
-    )
+    assert idx_pytest < idx_pyinstaller, "the tests job comes first in the workflow"
+    publish = text[text.index("\n  publish:\n"):]
+    assert "needs: [tests, build]" in publish
+    for step in ("Generate + sign update manifest", "Publish signed manifest to main",
+                 "Publish to permanent Release"):
+        assert f"- name: {step}" in publish, step
 
 
 def test_webhook_cfg_is_gitignored():
@@ -550,10 +550,10 @@ def test_inno_setup_script_present_and_sane():
     assert "[InstallDelete]" in iss and re.search(r'Name:\s*"\{app\}\\\*"', iss), (
         "installer must clear {app}\\* on upgrade so removed files don't linger"
     )
-    assert "OTDRSuite.exe" in iss, "installer must reference the launcher exe"
-    assert "OutputBaseFilename=OTDRSuiteApp-Setup" in iss, "installer output must be OTDRSuiteApp-Setup.exe"
-    assert re.search(r'Source:\s*"dist\\OTDRSuite\\\*"', iss), (
-        "installer must bundle the PyInstaller one-folder output dist\\OTDRSuite\\*"
+    assert "OTDRApp.exe" in iss, "installer must reference the launcher exe"
+    assert "OutputBaseFilename=OTDRApp-Setup" in iss, "installer output must be OTDRApp-Setup.exe"
+    assert re.search(r'Source:\s*"dist\\OTDRApp\\\*"', iss), (
+        "installer must bundle the PyInstaller one-folder output dist\\OTDRApp\\*"
     )
 
 
@@ -570,7 +570,7 @@ def test_ci_builds_and_publishes_installer():
         "the installer must be built AFTER the boot self-test"
     )
     # Setup.exe is published to the permanent release.
-    assert "OTDRSuiteApp-Setup.exe" in ci, "CI must publish OTDRSuiteApp-Setup.exe"
+    assert "OTDRApp-Setup.exe" in ci, "CI must publish OTDRApp-Setup.exe"
 
 
 def test_the_app_edition_shares_nothing_with_the_regular_one():
@@ -579,7 +579,7 @@ def test_the_app_edition_shares_nothing_with_the_regular_one():
     share its app folder or port."""
     iss = _read(INNO_ISS)
     assert REGULAR_APP_ID not in iss, "same AppId = one installer removes the other"
-    assert '#define AppName     "OTDR Suite App"' in iss
+    assert '#define AppName     "OTDR App"' in iss
     assert "DefaultDirName={autopf}\\{#AppName}" in iss
     assert "DefaultGroupName={#AppName}" in iss
     text = _read(LAUNCHER_PY)
@@ -604,7 +604,7 @@ def test_the_app_edition_updates_only_from_its_own_feed():
     assert L.MANIFEST_SIG_URL == L.MANIFEST_URL + ".sig"
     assert "/main/" not in L.MANIFEST_URL
     assert L.INSTALLER_URL == ("https://github.com/lakeosoyoos/otdr-suite/"
-                               "releases/download/app-build/OTDRSuiteApp-Setup.exe")
+                               "releases/download/app-build/OTDRApp-Setup.exe")
 
 
 def test_ci_publish_is_guarded_to_main():
@@ -899,7 +899,7 @@ def test_ci_signs_bundle_binaries_on_main_only():
     cond = m.group(1)
     assert "steps.signing.outputs.enabled == 'true'" in cond
     assert "github.ref == 'refs/heads/main'" in cond, "bundle signing must be gated to main (quota)"
-    # ...plus app-release, whose build becomes OTDR Suite App's release;
+    # ...plus app-release, whose build becomes OTDR App's release;
     # no other branch spends quota.
     assert "refs/heads/app-release" in cond
     assert cond.count("refs/heads/") == 2, cond

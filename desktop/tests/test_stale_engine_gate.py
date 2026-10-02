@@ -284,10 +284,10 @@ def test_every_report_control_is_gated():
     """All three report-producing buttons must consult the gate AND honour it.
     A gate that renders a message but leaves the button live is the exact
     failure being fixed (a tech in a hurry clicks anyway)."""
-    for anchor in ("st.button('Run analysis'",          # Secret Sauce
+    for anchor in ("st.button('Run Analysis'",          # Secret Sauce
                    "st.button(_gen_label,",             # Splice Report (+ FR):
                                                         # label says 1 or 2 spans
-                   "st.button('Run unidirectional report'"):   # Unidirectional
+                   "st.button('Run Unidirectional Report'"):   # Unidirectional
         label = anchor
         i = APP_SRC.index(anchor)
         window = APP_SRC[i - 400:i + 220]
@@ -584,10 +584,11 @@ def test_engine_files_list_is_unchanged():
     block = launcher.split("ENGINE_FILES = [", 1)[1].split("]", 1)[0]
     assert '"app.py",' in block
     assert '"splicereport/acquisition_audit.py",' in block
-    # 45 since the App's app_theme.py (2026-09-30, the Light / Dark switch);
-    # 44 since the App's sharepoint_link.py (2026-09-29, added on purpose
-    # before the App's first update ships); still nothing added here.
-    assert len([l for l in block.splitlines() if l.strip().startswith('"')]) == 45
+    # 44 = main + 1, the App's sharepoint_link.py (2026-09-29, added on
+    # purpose before the App's first update ships).  app_theme.py was here
+    # from 2026-09-30 until the App took main's theme (#448), which lives in
+    # app.py; still nothing added here.
+    assert len([l for l in block.splitlines() if l.strip().startswith('"')]) == 44
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -668,14 +669,14 @@ def test_stale_engine_disables_secret_sauce(monkeypatch, tmp_path):
     _arm(monkeypatch, tmp_path, APPLIED_238, _fake_manifest(239))
     at = _page("Secret Sauce", ss_folder_input=str(FIXTURE_SPLICE_A_DIR))
     assert not at.exception, f"page raised: {list(at.exception)}"
-    assert _find_button(at, "Run analysis").disabled is True
+    assert _find_button(at, "Run Analysis").disabled is True
 
 
 def test_stale_engine_disables_unidirectional(monkeypatch, tmp_path):
     _arm(monkeypatch, tmp_path, APPLIED_238, _fake_manifest(239))
     at = _page("Unidirectional", uni_folder_input=str(FIXTURE_SPLICE_A_DIR))
     assert not at.exception, f"page raised: {list(at.exception)}"
-    assert _find_button(at, "Run unidirectional report").disabled is True
+    assert _find_button(at, "Run Unidirectional Report").disabled is True
 
 
 def test_the_tech_is_told_why_and_given_a_way_forward(monkeypatch, tmp_path):

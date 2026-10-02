@@ -4,8 +4,8 @@ OTDR Suite — Windows desktop build
 WHAT THIS PRODUCES
   A self-contained Windows app a tech can run on a clean machine with NO
   Python installed:
-      dist\OTDRSuite\OTDRSuite.exe        (double-click to launch)
-      dist\OTDRSuite-Windows.zip          (what you hand to the tech)
+      dist\OTDRApp\OTDRApp.exe        (double-click to launch)
+      dist\OTDRApp-Windows.zip          (what you hand to the tech)
   Double-clicking the exe starts a local server and opens the default
   browser to http://127.0.0.1:8510 — the OTDR Suite hub (Viewer +
   Duplicate Check).  Nothing leaves the machine; no internet needed.
@@ -13,11 +13,11 @@ WHAT THIS PRODUCES
 HOW TO BUILD  (must be done ON Windows — PyInstaller can't cross-build
               from macOS/Linux)
   1. Install Python 3.11 from python.org.  NOT 3.12+ (see the toolchain
-     note in OTDRSuite.spec — 3.12 removed pkgutil.ImpImporter and the exe
-     crashes at launch).
+     note in OTDRSuite.spec: the build is only proven on 3.11).
   2. Open a Command Prompt in this desktop\ folder.
   3. Run:  build.bat
-     It makes a fresh venv, installs requirements-desktop.txt, re-pins
+     It makes a fresh venv, installs requirements-desktop.txt at the exact
+     versions in constraints-desktop.txt, re-pins
      setuptools==65.5.1 LAST, runs PyInstaller, then BOOT-TESTS the exe
      (launches it and waits for /_stcore/health = ok).  A build that
      compiles but won't launch FAILS here — it will not produce a zip.

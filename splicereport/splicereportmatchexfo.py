@@ -110,7 +110,7 @@ except ImportError:
 # for each side.  They live in sor_reader324802a because a new engine MODULE
 # would freeze fleet hot-updates; see the .bdr banner in that file.
 from sor_reader324802a import (parse_sor_full, measure_fr_exact_loss,
-                               parse_bdr, is_bdr,
+                               parse_bdr, is_bdr, parse_trc_wavelength,
                                measure_grey_loss_from_sor,
                                measure_grey_loss_from_sor_event,
                                measure_silent_grey_from_sor,
@@ -324,6 +324,12 @@ MIN_POP_FRACTION = 0.25    # fractional floor: minimum % of fibers that must
                            # (some low-loss splices don't generate detectable
                            # events).  Phantom one-fiber bends show <10%.
                            # 25% gives plenty of margin to separate the two.
+SMALL_JOB_EITHER_END_FRAC = 0.5  # a bidir job under 80 fibres calls a
+                           # closure when this share of the fibres loaded
+                           # stored it from EITHER end (capped at the usual
+                           # MIN_POP_SPLICE).  20 was every fibre of a
+                           # 20-fibre job; real closures are stored from one
+                           # end or the other by 75-95% of the fibres.
 CLOSURE_CLUSTER_GAP_KM = 0.25  # km — discover_splices splits the cable-wide
                            # event stream into closures wherever consecutive
                            # event positions are farther apart than this.
@@ -1297,8 +1303,18 @@ LAUNCH_CONN_CONFIRM_TOL_DB   = 0.05   # dB — stored-vs-trace agreement the
 # It is a THIRD independent gate rather than a min→average swap because the min
 # gate's 0.62 is calibrated against the adjudicated BKF↔DEL set (see above) and
 # that calibration must not move.  0.0 = OFF.
-LAUNCH_CONN_AVG_MIN_DB       = 0.0    # dB — flag when (A + B) / 2 >= this.
-                                      #   SHIPS OFF (0.0).  Measured on the
+#
+# ON by default since 2026-09-29, at the "Bidir connector loss" value (0.500):
+# the boss wants a connector's two directions seen apart AND its bidirectional
+# average, each flagged when over its own limit, and Robert chose the Bidir
+# connector loss row for the average.  Every customer profile already set this
+# gate to its bidir connector loss; the Default profile now does too.  The
+# printed number is unchanged by it wherever the one-direction gate also fires
+# (that label wins, below), which is how the one-way cells named in the note
+# that follows keep the value the field sheet carries.
+LAUNCH_CONN_AVG_MIN_DB       = 0.500  # dB — flag when (A + B) / 2 >= this.
+                                      #   0.0 = OFF.  History: it shipped OFF
+                                      #   (0.0) until 2026-09-29.  Measured on the
                                       #   full job R 1152: at 0.62
                                       #   it adds NO fiber the other two gates
                                       #   miss, and it would rewrite five
@@ -2703,6 +2719,38 @@ def _filenames_collapse(nums):
     return None
 
 
+def _trace_ext_order(names):
+    """The trace file types to read a direction folder as, best first.
+
+    .json when it has at least as many fiber-numbered files as .sor (the
+    richer export wins a tie, a stray .json cannot outvote a folder of .sor),
+    otherwise .sor; .trc only when it outnumbers that choice, so a .sor span
+    holding a few .trc reshoots still reads its .sor.  The Viewer's listing
+    uses the same rule.  The rest follow in the order a loader that read
+    nothing should fall back to them."""
+    def _n(ext):
+        return sum(1 for f in names if not f.startswith('._')
+                   and f.lower().endswith(ext) and _extract_fiber_num(f))
+    n = {e: _n(e) for e in ('.json', '.sor', '.trc')}
+    first = '.json' if n['.json'] > 0 and n['.json'] >= n['.sor'] else '.sor'
+    if n['.trc'] > n[first]:
+        first = '.trc'
+    rest = sorted((e for e in n if e != first and n[e]), key=lambda e: -n[e])
+    return [first] + rest, n
+
+
+def _trace_parser(ext):
+    """parse_sor_full(trim=False)'s record for one file of type `ext`.  A
+    .trc holds every wavelength the unit shot; the one GRADED is taken
+    (GRADE_WAVELENGTH_NM, else 1550 nm, else the file's first)."""
+    if ext == '.json':
+        return parse_otdr_json
+    if ext == '.trc':
+        return lambda p: parse_trc_wavelength(p, GRADE_WAVELENGTH_NM or None,
+                                              trim=False)
+    return lambda p: parse_sor_full(p, trim=False)
+
+
 def _dir_has_json(d):
     """True if directory contains any .json files."""
     if not d or not os.path.isdir(d):
@@ -2941,12 +2989,8 @@ def load_all(dir_a, dir_b):
             names = os.listdir(d)
         except OSError:
             return
-        _n_json = sum(1 for f in names if not f.startswith('._')
-                      and f.lower().endswith('.json') and _extract_fiber_num(f))
-        _n_sor = sum(1 for f in names if not f.startswith('._')
-                     and f.lower().endswith('.sor') and _extract_fiber_num(f))
-        use_json = _n_json > 0 and _n_json >= _n_sor
-        # ...and if that choice loads NOTHING, take the other one.  An iOLM
+        order, _counts = _trace_ext_order(names)
+        # ...and if that choice loads NOTHING, take the next one.  An iOLM
         # job uploaded through EXFO Exchange puts a sidecar beside every
         # trace -- identifiers, the element list, thresholds, but no
         # OtdrMeasurements block -- so a folder staged with one wavelength
@@ -2956,22 +3000,19 @@ def load_all(dir_a, dir_b):
         # Counting cannot tell a sidecar from an export without opening it;
         # trying and falling back can, and costs nothing when the first
         # choice was right.
-        for _attempt, _use_json in ((0, use_json), (1, not use_json)):
-            ext = '.json' if _use_json else '.sor'
-            if _attempt and not (len(out) == 0
-                                 and (_n_sor if _use_json is False else _n_json)):
+        for _attempt, ext in enumerate(order):
+            if _attempt and out:
                 break
             if _attempt:
                 print("  INFO: no fibers loaded from the %s files in this "
                       "folder -- reading the %s files instead."
-                      % ('.json' if not _use_json else '.sor', ext))
+                      % (order[_attempt - 1], ext))
             _load_one_ext(d, out, ext, names)
         return
 
     def _load_one_ext(d, out, ext, names):
         use_json = (ext == '.json')
-        parser = (parse_otdr_json if use_json
-                  else (lambda p: parse_sor_full(p, trim=False)))
+        parser = _trace_parser(ext)
         # Tally so we can WARN if the filename pattern is ambiguous
         # enough that two real files map to the same fiber number — a
         # silent overwrite used to be how multi-cable ribbon-pair zips
@@ -4858,8 +4899,19 @@ def discover_splices(fibers_a, return_subgate=False, fibers_b=None):
             # by 2 from one end and 3 from the other; neither clears 3 alone
             # (4-fibre tie-panel job, 21.8 / 29.8 / 61.2 km).  Large jobs never
             # reach this branch, so their discovery is untouched.
+            # The bar is half the fibres loaded, never above min_count: 20
+            # of 20 (every fibre, from one end or the other) found no
+            # closure at all on a 20-fibre job of a 55 km route and 19 of
+            # 24 printed a 44 km closure as Bends.  A 79-fibre job keeps
+            # the 20 it had (Robert 2026-09-30: the Viewer must pair A and
+            # B however many traces are dropped in).
+            _bar = max(int(round(n_reaching * MIN_POP_FRACTION)),
+                       min(min_count,
+                           max(UNI_MIN_POP_SPLICE_FLOOR,
+                               int(math.ceil(SMALL_JOB_EITHER_END_FRAC
+                                             * len(fibers_a))))))
             _both = {p[1] for p in cl} | _b_fibers_at_mirror(avg_pos)
-            if len(_both) >= min_count:
+            if len(_both) >= _bar:
                 entry['count_both_ends'] = len(_both)
                 splices.append(entry)
                 continue
@@ -4897,9 +4949,54 @@ def discover_splices(fibers_a, return_subgate=False, fibers_b=None):
 # a splice, a bend or damage.  Panel-to-panel spans keep their own layout
 # (discover_span_structure); the runner decides which applies.
 
+EVENT_JOB_MAX_FIBERS = 79   # a bidir job of at most this many fibres LOADED
+                            # shows its events, not closures (Robert
+                            # 2026-10-01: "under 80 we don't try to determine
+                            # bend or splice").  MIN_POP_SPLICE stays 20: the
+                            # population rules that use it are not this one.
+
+EVENT_KIND_REFL = 'Reflective'
+EVENT_KIND_NONREFL = 'Non-reflective'
+EVENT_KIND_MIXED = 'Mixed'
+
+
+def _event_is_reflective(e):
+    """A stored event FastReporter calls Reflective: SR-4731 type code first
+    character 1 or 2 (the engine's is_reflective)."""
+    return bool(e.get('is_reflective') or _is_reflective_type(e.get('type') or ''))
+
+
+def event_kind(per_fibre):
+    """An event column's FastReporter word from {fibre: reflective?}, where a
+    fibre is reflective when either direction's stored event there is (FR's
+    bidirectional merge).  Returns (kind, tip): "Reflective" when every fibre
+    is, "Non-reflective" when none is, else "Mixed" with `tip` naming each
+    fibre's type (the hover text); `tip` is '' unless Mixed."""
+    vals = set(per_fibre.values())
+    if vals == {True}:
+        return EVENT_KIND_REFL, ''
+    if vals != {True, False}:
+        return EVENT_KIND_NONREFL, ''
+    tip = ', '.join(f"F{f} {EVENT_KIND_REFL if per_fibre[f] else EVENT_KIND_NONREFL}"
+                    for f in sorted(per_fibre))
+    return EVENT_KIND_MIXED, tip
+
+
+def _split_repeats(cluster, key):
+    """Split a chain of events at its widest gap until no `key` (a fibre, or
+    a fibre and direction) occurs twice: a column holds one reading per
+    fibre per direction.  With 79 fibres loaded, scattered small events chain
+    across kilometres at the closure gap."""
+    if len(cluster) < 2 or len({key(p) for p in cluster}) == len(cluster):
+        return [cluster]
+    k = max(range(1, len(cluster)), key=lambda i: cluster[i][0] - cluster[i - 1][0])
+    return _split_repeats(cluster[:k], key) + _split_repeats(cluster[k:], key)
+
+
 def event_job(fibers_a):
-    """True when the job has too few fibres LOADED to call closures from."""
-    return 0 < len(fibers_a or {}) < MIN_POP_SPLICE
+    """True when the job has too few fibres LOADED to call closures from:
+    under 80 (EVENT_JOB_MAX_FIBERS)."""
+    return 0 < len(fibers_a or {}) <= EVENT_JOB_MAX_FIBERS
 
 
 def discover_event_columns(fibers_a, fibers_b=None):
@@ -4922,12 +5019,12 @@ def discover_event_columns(fibers_a, fibers_b=None):
                 continue
             if not _is_inspan_event_type(e['type']):
                 continue
-            yield d
+            yield d, e
 
     pairs = []
     for fnum, r in fibers_a.items():
-        for d in inspan(r):
-            pairs.append((d, fnum, 'a'))
+        for d, e in inspan(r):
+            pairs.append((d, fnum, 'a', _event_is_reflective(e)))
     if fibers_b:
         eofs = sorted(next((e['dist_km'] for e in r.get('events', [])
                             if e.get('is_end')), None) or 0.0
@@ -4936,10 +5033,10 @@ def discover_event_columns(fibers_a, fibers_b=None):
         if eofs:
             b_span = float(np.median(eofs[int(len(eofs) * 0.75):]))
             for fnum, r in fibers_b.items():
-                for d in inspan(r):
+                for d, e in inspan(r):
                     pos = b_span - d
                     if pos >= LAUNCH_SKIP_KM:
-                        pairs.append((pos, fnum, 'b'))
+                        pairs.append((pos, fnum, 'b', _event_is_reflective(e)))
     if not pairs:
         return []
     pairs.sort(key=lambda p: p[0])
@@ -4950,6 +5047,8 @@ def discover_event_columns(fibers_a, fibers_b=None):
             clusters.append([p])
         else:
             clusters[-1].append(p)
+    clusters = [part for cl in clusters
+                for part in _split_repeats(cl, lambda p: (p[1], p[2]))]
     cols = []
     for cl in clusters:
         kms = [p[0] for p in cl]
@@ -4957,12 +5056,39 @@ def discover_event_columns(fibers_a, fibers_b=None):
         # report's, B's mirror carries the span estimate's error.
         a_kms = [p[0] for p in cl if p[2] == 'a'] or kms
         pos = round(float(np.median(a_kms)), 4)
+        refl = {}
+        for p in cl:
+            refl[p[1]] = refl.get(p[1], False) or p[3]
+        kind, tip = event_kind(refl)
         cols.append({'bin': int(round(pos)), 'position_km': pos,
                      'position_km_refined': pos,
                      'count': len({p[1] for p in cl}),
                      'reach_count': len(fibers_a),
-                     'column_kind': 'splice', 'is_event_column': True})
+                     'column_kind': 'splice', 'is_event_column': True,
+                     'event_kind': kind, 'event_kind_tip': tip})
     return cols
+
+
+def structure_is_panel_span(structure, event_columns):
+    """On a job under MIN_POP_SPLICE fibres whose discovery found no closure,
+    True when discover_span_structure's columns describe the span: every
+    event column sits on one of its connectors (CLOSURE_MATCH_KM).
+
+    A panel tie has no events but its panels (a 12-fibre tie: one event
+    column at 1.02 km, on the panel connector).  One or two fibres of a
+    route also find no closure, since no population can reach the floor, and
+    the structure pass then publishes the launch reel and the far end as
+    "connector / section / connector"; the route's splices are event columns
+    away from any connector, and the report must show them."""
+    conns = [sp.get('position_km_refined', sp['position_km'])
+             for sp in structure or [] if sp.get('column_kind') == 'connector']
+    if not conns:
+        return False
+    for ev in event_columns or []:
+        km = ev.get('position_km_refined', ev['position_km'])
+        if not any(abs(km - c) <= CLOSURE_MATCH_KM for c in conns):
+            return False
+    return True
 
 
 def neutralize_event_job(results, splices, threshold):
@@ -4997,6 +5123,69 @@ def neutralize_event_job(results, splices, threshold):
             res['is_flagged'] = True
         out[(fnum, si)] = res
     return out, cols
+
+
+def _type_is_reflective(e):
+    """SR-4731 type code first character 1 or 2: reflective, for an end or
+    launch event as for an in-span one ('1E' a reflective end, '0E' not)."""
+    return str(e.get('type') or '')[:1] in ('1', '2')
+
+
+def end_event_kinds(fibers_a, fibers_b=None):
+    """FR's word for the two cable-end columns, {'A': (kind, tip), 'B': ...}
+    (Robert 2026-10-01: the ends read "Reflective" too).  Per fibre, an end
+    is reflective when either direction's stored event there is: at the A
+    end, A's first event (its start, the A panel) or B's end-of-fibre event;
+    at the B end, A's end-of-fibre event or B's first event."""
+    def first(r):
+        evs = [e for e in (r or {}).get('events') or [] if not e.get('is_end')]
+        return min(evs, key=lambda e: e['dist_km']) if evs else None
+
+    def eof(r):
+        return next((e for e in (r or {}).get('events') or [] if e.get('is_end')), None)
+
+    out = {}
+    for end in ('A', 'B'):
+        refl = {}
+        for fnum in set(fibers_a or {}) | set(fibers_b or {}):
+            ra, rb = (fibers_a or {}).get(fnum), (fibers_b or {}).get(fnum)
+            evs = ([first(ra), eof(rb)] if end == 'A' else [eof(ra), first(rb)])
+            evs = [e for e in evs if e is not None]
+            if evs:
+                refl[fnum] = any(_type_is_reflective(e) for e in evs)
+        out[end] = event_kind(refl)
+    return out
+
+
+def stamp_event_kinds(splices, fibers_a, fibers_b=None):
+    """Give every event column without one its FastReporter word
+    ('event_kind', and 'event_kind_tip' when Mixed): the columns
+    neutralize_event_job turned into events from the passes' bend, damage
+    and REFL columns.  A fibre's stored events within the fold radius of the
+    column (B mirrored on its own end) decide it, as discover_event_columns'
+    clusters do.  The sheet and the Viewer both read this one field."""
+    fold = _fold_km()
+    for sp in splices:
+        if not sp.get('is_event_column') or sp.get('event_kind'):
+            continue
+        pos = sp.get('position_km_refined', sp['position_km'])
+        refl = {}
+        for fnum, r in (fibers_a or {}).items():
+            for e in r.get('events') or []:
+                if (not e.get('is_end') and _is_inspan_event_type(e.get('type'))
+                        and abs(e['dist_km'] - pos) <= fold):
+                    refl[fnum] = refl.get(fnum, False) or _event_is_reflective(e)
+        for fnum, r in (fibers_b or {}).items():
+            end = next((e['dist_km'] for e in r.get('events') or []
+                        if e.get('is_end')), None)
+            if not end:
+                continue
+            for e in r.get('events') or []:
+                if (not e.get('is_end') and _is_inspan_event_type(e.get('type'))
+                        and abs(end - e['dist_km'] - pos) <= fold):
+                    refl[fnum] = refl.get(fnum, False) or _event_is_reflective(e)
+        sp['event_kind'], sp['event_kind_tip'] = event_kind(refl)
+    return splices
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -6691,18 +6880,35 @@ def _is_borderline_loss(bidir_loss, threshold):
     return False
 
 
-def apply_connector_loss_rule(all_results, threshold=None):
+def apply_connector_loss_rule(all_results, threshold=None, uni_threshold=None,
+                              panel_span=False):
     """Flag any reflective (1F) event whose bidir loss reaches the
-    connector-loss threshold (default BIDIR_CONNECTOR_LOSS = 0.500 dB).
+    connector-loss threshold (default BIDIR_CONNECTOR_LOSS = 0.500 dB),
+    or whose loss in EITHER direction reaches the one-direction connector
+    threshold (default LAUNCH_CONN_UNI_MIN_DB = 0.649 dB).
 
     Connectors and mechanical splices normally lose 0.1–0.3 dB.  A
     bidir reading at or above the connector threshold indicates a
     degraded / dirty / damaged connector worth surfacing separately
     from a normal reburn (which fires at REBURN_THRESHOLD = 0.160 dB).
 
+    The one-direction check (the boss, 2026-09-29: "we can't average
+    connector losses A and B, we have to see them separately, flag them if
+    over their threshold, but then we also give a bidi average") is the one
+    the two cable ends already have (detect_launch_issues), now at every
+    connector: an average can pass while one direction fails badly (0.90 /
+    -0.10 averages 0.40).  It needs both directions' readings, is one-sided
+    (a gainer is not a bad connector), compares the printed value, and
+    stands down on a panel span, where a tie between reels is graded on the
+    pair.  A direction that fired is named in the label with its own
+    number, e.g. "⚠ conn .900 A side", so the cell shows the average it
+    always printed and the reading that failed.
+
     Adds:
       r['is_high_connector_loss'] = True
-      label suffix '⚠ conn' appended (no duplicate if already present)
+      r['conn_fail_sides'] = ['A'] / ['B'] / ['A', 'B'] when a direction fired
+      label suffix '⚠ conn' appended (no duplicate if already present),
+      then each failing side's reading
 
     Existing colour / classification (reburn / ref / etc.) is preserved;
     this just decorates the cell so the tech can see at a glance which
@@ -6711,6 +6917,9 @@ def apply_connector_loss_rule(all_results, threshold=None):
     Returns the count of events flagged."""
     if threshold is None:
         threshold = BIDIR_CONNECTOR_LOSS
+    if uni_threshold is None:
+        uni_threshold = LAUNCH_CONN_UNI_MIN_DB
+    uni_on = bool(uni_threshold) and uni_threshold > 0 and not panel_span
     flagged = 0
     for key, r in list(all_results.items()):
         if not isinstance(r, dict):
@@ -6723,15 +6932,24 @@ def apply_connector_loss_rule(all_results, threshold=None):
         if loss is None:
             loss = (r.get('a_loss') if r.get('a_loss') is not None
                     else r.get('b_loss'))
-        if loss is None:
-            continue
-        if abs(loss) < threshold:
+        a, b = r.get('a_loss'), r.get('b_loss')
+        sides = []
+        if uni_on and a is not None and b is not None:
+            sides = [(s, v) for s, v in (('A', a), ('B', b))
+                     if _printed_loss(v) >= uni_threshold - 1e-9]
+        avg_fires = loss is not None and abs(loss) >= threshold
+        if not (avg_fires or sides):
             continue
         r['is_high_connector_loss'] = True
         # Append suffix to the label (idempotent)
         lbl = r.get('label') or ''
         if '⚠ conn' not in lbl:
-            r['label'] = f"{lbl} ⚠ conn".strip()
+            lbl = f"{lbl} ⚠ conn".strip()
+            for s, v in sides:
+                lbl += f" {_format_loss(float(v))} {s} side"
+            r['label'] = lbl
+        if sides:
+            r['conn_fail_sides'] = [s for s, _v in sides]
         r['is_flagged'] = True
         flagged += 1
     return flagged
@@ -6827,7 +7045,7 @@ def _connector_positions(fibers_a):
         # An anchored role is a physical object the whole cable shares; an
         # unanchored one is not a connector until a population says so.
         if role not in ('launch', 'far', 'end') and len(fibers) < floor:
-            print("  span structure: %d-fibre reflective cluster at %.3f km "
+            print("  span structure: %d-fiber reflective cluster at %.3f km "
                   "not treated as a connector (floor %d)"
                   % (len(fibers), float(np.median([h[0] for h in hits])), floor),
                   file=sys.stderr)
@@ -7666,6 +7884,12 @@ def suite_viewer_table(fibers_a, fibers_b, splices, all_results,
         columns.append({'title': _viewer_column_title(sp, si),
                         'kind': sp.get('column_kind', 'splice'),
                         'km': round(float(km), 4)})
+        # an event column's FastReporter word, read from the one field the
+        # sheet reads too (and the Mixed hover text)
+        if sp.get('is_event_column') and sp.get('event_kind'):
+            columns[-1]['event_kind'] = sp['event_kind']
+            if sp.get('event_kind_tip'):
+                columns[-1]['event_kind_tip'] = sp['event_kind_tip']
     if 'B' not in fold:
         columns.append({'title': 'B-End ILA' + (f": {site_b}" if site_b else ''),
                         'kind': 'end', 'end': 'B', 'km': round(span, 4)})
@@ -7673,6 +7897,14 @@ def suite_viewer_table(fibers_a, fibers_b, splices, all_results,
                'B': fold['B'] + lead if 'B' in fold else len(columns) - 1}
     for _e, _ci in end_col.items():
         columns[_ci]['end'] = _e
+    # on an event job the ends carry FR's word as the event columns do
+    # (the same end_event_kinds the sheet prints)
+    if any(sp.get('is_event_column') for sp in splices):
+        _ek = end_event_kinds(fibers_a, fibers_b)
+        for _e, _ci in end_col.items():
+            columns[_ci]['event_kind'] = _ek[_e][0]
+            if _ek[_e][1]:
+                columns[_ci]['event_kind_tip'] = _ek[_e][1]
 
     def _b_mirror(rb):
         end = next((e['dist_km'] for e in (rb or {}).get('events') or []
@@ -8247,6 +8479,14 @@ def _b_launch_conn_mirror(r, a_launch_off_km):
         if back_km > LAUNCH_CONN_FAR_WINDOW_KM:   # near-EOL hunt window
             break
         if not (e.get('is_reflective') or str(e.get('type', '')).startswith('1F')):
+            continue
+        # B's own port is at the other end of the cable, never A's connector.
+        # A B shot that stops AT A's panel (no receive reel) puts its EOF one
+        # B-launch-reel from that port, and with reels of about the same
+        # length the window below takes it: a 2 s B shot stopped at the A
+        # panel (1.0615 km), A's reel 1.0383 km, and the 0 km port row
+        # became A-end's B leg (0.000), averaged with A's -0.495.
+        if e is raw[0] and (e.get('dist_km') or 0.0) <= 0.01:
             continue
         # Must sit one A-launch-reel back from B's EOF (A and B derive the
         # distance with their own IOR, so allow the reel-slack tolerance).
@@ -8884,9 +9124,9 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         # one-sided failure (see the constants' comment).  Both directions
         # must still be PRESENT and trace-confirm, so a phantom reading
         # cannot fire either gate.
-        # Reported in the A-end ILA column as the FastReporter-style
-        # truncated bidirectional average, e.g. "118 .73 LAUNCH" — the number
-        # the reviewer hand-types, whichever gate fired.
+        # Reported in the A-end ILA column as the bidirectional average to
+        # three decimals, e.g. "118 .740 LAUNCH" (it was FastReporter's
+        # two-decimal truncation, "118 .73 LAUNCH", until 2026-09-30).
         # Both cable ends get the SAME gate.  `near`/`far` are the two views
         # of ONE connector: the direction whose launch reel holds it, and the
         # other direction seeing it one reel length back from its own EOF.
@@ -8974,8 +9214,8 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                                and a_loss >= LAUNCH_CONN_AVG_MIN_DB)
                 if _near_fires and (near_conn.get('_direct_panel')
                                     or _launch_conn_confirmed(_near_rec, near_conn)):
-                    conn_tag = (('%.2f' % (math.floor(float(a_loss) * 100) / 100.0))
-                                .lstrip('0') + ' LAUNCH ' + _near_side + ' side')
+                    conn_tag = (('%.3f' % float(a_loss)).lstrip('0')
+                                + ' LAUNCH ' + _near_side + ' side')
                     _end_tags.append(conn_tag)
                     conn_fired = True
                 continue
@@ -9021,9 +9261,19 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             if _believed:
                 # THE PRINTED NUMBER MUST BE THE ONE THAT FIRED.
                 #
-                # When the bidirectional gate fires, that is the truncated
-                # bidirectional average — FastReporter's convention and what
-                # the reviewer hand-types ("118 .73 LAUNCH").  Unchanged.
+                # When the bidirectional gate fires, that is the
+                # bidirectional average ("118 .740 LAUNCH").
+                #
+                # THREE DECIMALS, whichever gate fired (Robert, 2026-09-30:
+                # "we should always do three").  This used to be the average
+                # TRUNCATED to two, FastReporter's display convention and the
+                # number the reviewer hand-typed ("118 .73 LAUNCH"); but the
+                # boss wants anything over the limit seen and judged for a
+                # reshoot ("let's print at .500, anything over that we need
+                # to see"), and two decimals print a .505 as ".50", as if it
+                # sat ON the limit.  Rounded to three like every other loss
+                # the report prints (_format_loss).  These cells no longer
+                # match a two-decimal tech sheet; Robert accepted that.
                 #
                 # When only the SINGLE-DIRECTION gate fires, the average has
                 # by definition PASSED, so printing it produces a flag whose
@@ -9044,7 +9294,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                     worst = max(a_loss, b_loss)
                     side = _near_side if a_loss >= b_loss else _far_side
                     shown, suffix = float(worst), ' LAUNCH ' + side + ' side'
-                conn_tag = ('%.2f' % (math.floor(shown * 100) / 100.0)).lstrip('0') + suffix
+                conn_tag = ('%.3f' % shown).lstrip('0') + suffix
                 _end_tags.append(conn_tag)
                 conn_fired = True
 
@@ -9137,6 +9387,188 @@ def _note_passing(population, fnum, si, km, a_loss, b_loss, loss,
     }
 
 
+def _b_event_is_anothers(r, ea, b_km_in_a):
+    """True when a B event (at `b_km_in_a`, mirrored into A's frame) is not
+    `ea`'s twin because the same fibre stored ANOTHER A event nearer to it.
+
+    A closure column's window is POSITION_TOL (1.5 km) wide when no other
+    column is near, so a closure the job has too few fibres to discover
+    left its B reading free to pair with the next closure's A reading:
+    two splices 1.2 km apart (20.66 and 21.85 km on a 55 km route) became
+    one cell averaging A at 21.85 with B at 20.69.  Pairs closer than a
+    closure cluster gap are one event read by two ends (helix drift, B's
+    span estimate) and are never split."""
+    ea_km = ea['dist_km']
+    d = abs(b_km_in_a - ea_km)
+    if d <= CLOSURE_CLUSTER_GAP_KM:
+        return False
+    for e in r['events']:
+        if e is ea or e.get('is_end') or e['dist_km'] < LAUNCH_SKIP_KM:
+            continue
+        if abs(e['dist_km'] - b_km_in_a) < d:
+            return True
+    return False
+
+
+PAIR_CONFIDENT_KM = 0.030   # km — an A and a B event this close are one event
+                            # beyond doubt; their offsets measure the fibre's
+                            # own A-to-B frame offset (_fiber_ab_offset)
+
+
+def _fiber_ab_offset(ra, rb, b_mirror):
+    """This fibre's own A-to-B frame offset, km (B's mirrored position minus
+    A's, at one event): the median over the events the two ends read within
+    PAIR_CONFIDENT_KM of each other, each the other's nearest.  0.0 when
+    fewer than two such pairs.  Nothing but this fibre's two traces."""
+    if not ra or not rb or not b_mirror:
+        return 0.0
+    a_kms = [e['dist_km'] for e in ra['events']
+             if not e.get('is_end') and e['dist_km'] > LAUNCH_SKIP_KM]
+    b_kms = [b_mirror - e['dist_km'] for e in rb['events']
+             if not e.get('is_end') and e['dist_km'] >= LAUNCH_SKIP_KM]
+    if not a_kms or not b_kms:
+        return 0.0
+    offs = []
+    for a in a_kms:
+        b = min(b_kms, key=lambda k: abs(k - a))
+        if abs(b - a) > PAIR_CONFIDENT_KM:
+            continue
+        if min(a_kms, key=lambda k: abs(k - b)) != a:
+            continue
+        offs.append(b - a)
+    return float(np.median(offs)) if len(offs) >= 2 else 0.0
+
+
+def _fiber_pair_tol_km(r):
+    """How far apart (after the fibre's own frame offset) an A and a B
+    reading may sit and still be one event: a closure cluster gap, floored at
+    THIS fibre's pulse smear."""
+    p = _nominal_pulse_ns(r)
+    smear = (p * _PULSE_SMEAR_M_PER_NS / 1000.0) if p else 0.0
+    return max(CLOSURE_CLUSTER_GAP_KM, smear)
+
+
+def _fiber_pair_frame(ra, rb, b_mirror):
+    """The span this fibre's B events are mirrored on for PAIRING and for
+    the silent-side measurement: B's own end-of-fibre, as FastReporter
+    mirrors each trace on its own length.  The population's span cap
+    (_mirror_span) re-anchored a fibre whose end overran the job's other
+    fibres, so a job mixing two cable lengths (a 50-fibre subset of the
+    432-fibre route spans both its groups) moved one fibre's B events 220 m.
+    Only a B trace that reads short of the fibre's own A trace (damage, not
+    the cable end) keeps `b_mirror`."""
+    if not rb:
+        return b_mirror
+    b_end = next((e['dist_km'] for e in rb.get('events') or [] if e.get('is_end')), None)
+    a_end = next((e['dist_km'] for e in (ra or {}).get('events') or [] if e.get('is_end')), None)
+    if not b_end or b_end <= 0:
+        return b_mirror
+    if a_end and b_end < a_end - END_REGION_KM:
+        return b_mirror
+    return b_end
+
+
+def _fiber_twins(ra, rb, b_mirror, offset_km, tol_km):
+    """This fibre's A/B event matching, from its two traces alone: every
+    (A, B) pair the per-fibre rule accepts (_b_pairs_with_a), taken nearest
+    first, each event used once.  Returns {id(B event): A event}.  A B
+    reading is never the twin of two A readings, so a fibre's pairs are the
+    same whichever columns the job's population draws (a B reading 5 m from
+    one A event and 230 m from another went to the second one on a small
+    job, whose event columns split the two A events apart)."""
+    if not ra or not rb or not b_mirror:
+        return {}
+    a_ev = [e for e in ra['events']
+            if not e.get('is_end') and e['dist_km'] > LAUNCH_SKIP_KM]
+    cands = []
+    for eb in rb['events']:
+        if eb.get('is_end') or eb['dist_km'] < LAUNCH_SKIP_KM:
+            continue
+        b_in_a = b_mirror - eb['dist_km']
+        for ea in a_ev:
+            if _b_pairs_with_a(ea, b_in_a, offset_km, tol_km):
+                cands.append((abs((b_in_a - ea['dist_km']) - offset_km),
+                              ea['dist_km'], eb['dist_km'], ea, eb))
+    twin, used_a = {}, set()
+    for _d, _ak, _bk, ea, eb in sorted(cands, key=lambda c: c[:3]):
+        if id(eb) in twin or id(ea) in used_a:
+            continue
+        twin[id(eb)] = ea
+        used_a.add(id(ea))
+    return twin
+
+
+def _b_pairs_with_a(ea, b_km_in_a, offset_km, tol_km):
+    """Robert 2026-09-30: a fibre's pairing is the same however many fibres
+    are loaded, so it reads only that fibre.  A B reading is the twin of A's
+    reading when, after the fibre's own A-to-B offset, they sit within
+    `tol_km` (a closure apart: 115 m on the motivating fibre stays one
+    event).  Anything farther is another feature; A's leg then takes B's
+    measured (grey) value, as FastReporter does."""
+    return abs((b_km_in_a - ea['dist_km']) - offset_km) <= tol_km
+
+
+def _b_side_cell(results, population, ra, rb, eb, a_frame_km, fnum, si, sp,
+                 threshold, closure_kms_all, veto_splice_kms, column_kind,
+                 is_phantom_column, recip_quiet, col_dist):
+    """A closure column's cell for a fibre whose event there was stored by B
+    alone: B's stored leg, A measured (grey) at B's place, the average; the
+    cell or its passing reading goes where analyze_all puts its own (same
+    gates, bend test and wording as scan_b_events' grey-A cell).  Returns
+    False when A cannot be measured there, so the caller falls back to A's
+    reading as before."""
+    a_grey = _grey_loss(ra, a_frame_km, mirror=_mirror_anchor(rb, eb),
+                        twin=(rb, eb))
+    if a_grey is None:
+        return False
+    b_loss_signed = eb['splice_loss']
+    _b_leg = _phase2_loss(rb, eb)
+    # the exact mean of the two legs: rounding it to 4 places first prints
+    # the wrong third digit on a half (0.0175 -> .018 where FR prints .017)
+    bidir = _splice_bidir(a_grey, _b_leg, (a_grey + _b_leg) / 2.0)
+    closure_center_km = _closure_km_for_fiber(sp, fnum)
+    bend_ref_km = closure_center_km
+    pf = _per_fiber_splice_km(ra['events'], closure_center_km,
+                              exclude_pos_km=a_frame_km)
+    if pf is not None:
+        bend_ref_km = pf
+    is_bend = _is_bend_event(a_frame_km, bend_ref_km, bidir,
+                             fiber_events=ra['events'],
+                             a_loss=a_grey, b_loss=b_loss_signed,
+                             closure_kms=closure_kms_all, fiber_data=ra,
+                             veto_splice_kms=veto_splice_kms) or \
+        _phantom_member_is_bend(column_kind, bidir)
+    if not _clears_splice_threshold(bidir, threshold) and not (
+            is_bend and not recip_quiet):
+        _note_passing(population, fnum, si, a_frame_km, a_grey, b_loss_signed,
+                      bidir, eb=eb, a_grey=True, col_dist=col_dist, rank=1)
+        return True
+    loss_str = _format_loss(bidir)
+    if is_bend and not is_phantom_column:
+        offset_m = round((a_frame_km - bend_ref_km) * 1000, 0)
+        label = f"{fnum} BEND {loss_str} bidi ({offset_m:+.0f}m)"
+    else:
+        label = f"{fnum} {loss_str}"
+    results[(fnum, si)] = {
+        'fiber': fnum, 'splice_idx': si,
+        'bidir_loss': bidir,
+        'a_loss': a_grey, 'b_loss': b_loss_signed,
+        'bidir_dist': a_frame_km,
+        'is_break': False, 'is_broke': False, 'is_bend': is_bend,
+        'is_bfill': False, 'is_a_only': False, 'is_b_only': False,
+        'is_flagged': True,
+        'event_source': 'bend' if is_bend else 'bidir_grey_a',
+        'bend_severity': _bend_severity(bidir) if is_bend else None,
+        'closure_offset_m': (round((a_frame_km - bend_ref_km) * 1000, 1)
+                             if is_bend else None),
+        'event_type': eb['type'],
+        'label': label,
+        '_a_is_grey': not is_bend,
+        '_eb': eb,
+    }
+    return True
+
+
 def analyze_all(fibers_a, fibers_b, splices, threshold,
                 bend_threshold=None, closure_match_km=None,
                 population=None, **_ignored):
@@ -9219,6 +9651,14 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             b_mirror, _ = _mirror_span(b_span, _pop_b_span_aa, _b_span_cap_aa,
                                        total_span_a)
             b_mirror = b_mirror or b_span
+        # This fibre's own A-to-B frame offset and pairing window: the
+        # pairing below reads nothing but this fibre's two traces, B
+        # mirrored on its OWN end (_fiber_pair_frame), never on a span the
+        # job's other fibres set.
+        _pframe = _fiber_pair_frame(r, rb, b_mirror)
+        _ab_offset = _fiber_ab_offset(r, rb, _pframe)
+        _pair_tol = _fiber_pair_tol_km(r)
+        _twin_of = _fiber_twins(r, rb, _pframe, _ab_offset, _pair_tol)
 
         # ── Per-fiber B-fill coverage / dead-zone pre-compute ──
         # If this fiber is A-broken and B also has a premature end/break,
@@ -9486,15 +9926,47 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             b_loss = None
             b_from_a = None
             if rb and b_mirror:
+                # A's twin is the fibre's own A/B matching (_fiber_twins):
+                # the per-fibre rule, nearest pairs first, one partner each.
+                # No column window takes part, so a pair is the same at any
+                # job size (a column's neighbours used to narrow the window
+                # and split a 0.30 km pair on one job and not another).
                 for e in rb['events']:
-                    if e['dist_km'] < LAUNCH_SKIP_KM or e['is_end']: continue
-                    ef_from_a = b_mirror - e['dist_km']
-                    if abs(ef_from_a - ea['dist_km']) >= local_tol:
-                        continue
-                    if eb is None or abs(ef_from_a - ea['dist_km']) < abs((b_mirror - eb['dist_km']) - ea['dist_km']):
+                    if _twin_of.get(id(e)) is ea:
                         eb = e
                         b_loss = e['splice_loss']
-                        b_from_a = ef_from_a
+                        b_from_a = b_mirror - e['dist_km']
+                        break
+
+            # ── B's own reading nearer the closure than A's ──
+            # The per-fibre rule refused every B event as A's twin.  When B
+            # stored one nearer this column than A's reading, THAT is the
+            # fibre's event here (FastReporter's row): B's stored leg, A
+            # measured at B's place, and their average.  A's far reading is
+            # not this closure's; it stays an off-closure event.  Without
+            # this, the B event at the closure was orphaned and the column
+            # printed A's reading 300 m to 1.1 km away (the 432-fibre route,
+            # fibres 16, 116, 131, 147, 159, 167, 174, 190, 223, 227).
+            if b_loss is None and rb and b_mirror:
+                eb_c, eb_c_km = None, None
+                for e in rb['events']:
+                    if e['dist_km'] < LAUNCH_SKIP_KM or e['is_end']:
+                        continue
+                    km_a = _pframe - e['dist_km'] - _ab_offset
+                    if abs(km_a - search_km_a) >= local_tol_a:
+                        continue
+                    if id(e) in _twin_of:
+                        continue        # that reading has its A partner
+                    if eb_c is None or abs(km_a - search_km_a) < abs(eb_c_km - search_km_a):
+                        eb_c, eb_c_km = e, km_a
+                if (eb_c is not None
+                        and abs(eb_c_km - search_km_a) < abs(ea['dist_km'] - search_km_a)
+                        and _b_side_cell(results, population, r, rb, eb_c, eb_c_km,
+                                         fnum, si, sp, threshold, closure_kms_all,
+                                         veto_splice_kms, _column_kind,
+                                         _is_phantom_column, _recip_quiet,
+                                         abs(eb_c_km - search_km_a))):
+                    continue
 
             # ── A event but no B event in table ──
             # Try to measure the B-direction loss directly from the B trace
@@ -9514,7 +9986,9 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 _b_unreachable = (_b_fill_reach_km is not None
                                   and sp_km < _b_fill_reach_km)
                 if rb is not None and b_mirror and not _b_unreachable:
-                    b_frame_km = b_mirror - sp_km
+                    # at A's reading, not the column: the column is placed by
+                    # the population, the reading is this fibre's own
+                    b_frame_km = _pframe - ea['dist_km']
                     if not _no_end_leg_is_noise(rb, b_frame_km):
                         # `ea` is the loud side here — the end-zone
                         # reconstruction anchors EXFO's cursors on it.
@@ -9911,6 +10385,13 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             continue
         b_span, b_reads_short = _mirror_span(b_eof_own, _pop_b_span,
                                              _b_span_cap, total_span_a)
+        _twins_b = None
+        if ra:
+            # the same frame analyze_all pairs this fibre in
+            _bm = _fiber_pair_frame(ra, rb, _mirror_span(
+                b_eof_own, _pop_b_span, _b_span_cap, total_span_a)[0] or b_eof_own)
+            _off = _fiber_ab_offset(ra, rb, _bm)
+            _twins_b = _fiber_twins(ra, rb, _bm, _off, _fiber_pair_tol_km(ra))
 
         # A-direction EOL (to know if this fiber is broken)
         ra_end_km = total_span_a
@@ -10030,6 +10511,11 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
                     if abs(ae['dist_km'] - a_frame_km) < _twin_tol:
                         if a_evt is None or abs(ae['dist_km'] - a_frame_km) < abs(a_evt['dist_km'] - a_frame_km):
                             a_evt = ae
+                # The twin is the fibre's own A/B matching (_fiber_twins),
+                # the one analyze_all pairs on, so a reading's partner never
+                # depends on which pass or which columns met it first.
+                if _twins_b is not None:
+                    a_evt = _twins_b.get(id(e))
 
             # BIT-ROT FIX (wiring, 2026-07): the splice list now carries
             # phantom bend/damage columns (column_kind, added after this
@@ -12205,8 +12691,11 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
             # The label-based branches already include it via the
             # apply_connector_loss_rule append; the reconstructed
             # branches (A-only / B-only / B-fill / generic reburn) need
-            # the suffix added explicitly here.
-            conn_tag = ('  ⚠ conn'
+            # the suffix added explicitly here, with each direction that
+            # failed on its own (conn_fail_sides) and its reading.
+            conn_tag = ('  ⚠ conn' + ''.join(
+                            f" {_format_loss(float(g['res'][s.lower() + '_loss']))} {s} side"
+                            for s in (g['res'].get('conn_fail_sides') or []))
                         if g['res'].get('is_high_connector_loss')
                         else '')
             # FR prints Loss AND Refl. on every connector event; this is the
@@ -12334,11 +12823,34 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
     if launch_issues:
         per_ribbon_a = {}   # ri → list of (fnum, severity, tag)
         per_ribbon_b = {}
+
+        def _with_direction(info, end, tags):
+            """An end's tags, each reflectance named for the direction that
+            read it.  Both directions read the connector at each end -- one
+            at its launch, the other at its far end -- and both print the
+            same bare 'REFL-48.3dB', so a fiber failing both ways printed
+            '180 REFL-48.3dB 180 REFL-48.7dB' with nothing to tell the two
+            apart (a 432-fiber span: F180, 190, 192, 226, 233, 242).  refl_rules runs
+            parallel to the REFL tags: 'launch' is the shot taken FROM this
+            end, anything else the shot from the other end.  The arrows are
+            the ones the header rows use; every other tag is unchanged."""
+            rules = list((info.get('refl_rules') or {}).get(end) or [])
+            near, far = ('A→B', 'B→A') if end == 'A' else ('B→A', 'A→B')
+            out, k = [], 0
+            for tag in tags:
+                if str(tag).startswith('REFL') and k < len(rules):
+                    tag = f"{near if rules[k] == 'launch' else far} {tag}"
+                    k += 1
+                elif str(tag).startswith('REFL'):
+                    k += 1
+                out.append(tag)
+            return out
+
         for fnum, info in launch_issues.items():
             ri = (fnum - 1) // ribbon_size
-            for tag in info.get('a_tags', []):
+            for tag in _with_direction(info, 'A', info.get('a_tags', [])):
                 per_ribbon_a.setdefault(ri, []).append((fnum, info['severity'], tag))
-            for tag in info.get('b_tags', []):
+            for tag in _with_direction(info, 'B', info.get('b_tags', [])):
                 per_ribbon_b.setdefault(ri, []).append((fnum, info['severity'], tag))
 
         def _sev_order(s):
@@ -12379,6 +12891,16 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
 # ═══════════════════════════════════════════════════════════════════════
 #  STEP 6 — Generate Excel
 # ═══════════════════════════════════════════════════════════════════════
+
+def ribbon_rows_between(ribbons, n_ribbons):
+    """The ribbon rows a grid draws (0-based): every ribbon from the first
+    one holding a loaded fiber to the last, so a ribbon missing between
+    them still shows as an empty row.  `ribbons` are the loaded ribbons;
+    none given, every ribbon below `n_ribbons`."""
+    if not ribbons:
+        return list(range(n_ribbons))
+    return list(range(min(ribbons), max(ribbons) + 1))
+
 
 def ribbon_label(ri, ribbon_size, n_fibers):
     first = ri * ribbon_size + 1
@@ -12569,10 +13091,55 @@ def km_ft_label(km):
     return f"{km:.2f}km, {km * FT_PER_KM:,.0f}'"
 
 
+# The Splice Report sheet's colors, in Legend order: (fill, color name,
+# text color, flag name).  Color = flag type, the flag's name and nothing
+# else (Robert 2026-09-29), in plain words: no engine tag.
+SR_LEGEND = [
+    ("FFC7CE", "Pink", "000000", "Reburn (A and B average)"),
+    ("FF4444", "Red", "FFFFFF", "Break"),
+    ("E64A19", "Deep Orange", "FFFFFF", "REFL"),
+    ("FFEB3B", "Yellow", "000000", "Bend"),
+    ("FFF2CC", "Light Yellow", "000000", "Read A→B only"),
+    ("FF7043", "Coral", "FFFFFF", "Read A→B only, high"),
+    ("E8D5F5", "Lavender", "4B0082", "Read B→A only"),
+    ("C084FC", "Purple", "1A0033", "Read B→A only, high"),
+    ("BDD7EE", "Light Blue", "1F4E79", "Read B→A past a break"),
+    ("4A90D9", "Blue", "FFFFFF", "Read B→A past a break, high"),
+    ("BFBFBF", "Gray", "3F3F3F", "Not seen from either end"),
+    ("A5D6A7", "Mint Green", "1B5E20", "Gainer"),
+    ("FFE0B2", "Light Orange", "000000", "Near the limit"),
+    ("FFA500", "Orange", "5D2E00", None),       # the cable ends: sr_legend_rows
+]
+
+
+def sr_legend_rows(painted, end_texts=()):
+    """The Legend's rows for the colors a Splice Report sheet actually
+    paints (`painted`: six-digit fills), in SR_LEGEND order.  A span lists
+    the colors it uses, not all fourteen.
+
+    The orange A-End / B-End cells are named for what they hold
+    (`end_texts`).  The Legend used to call them "Launch / RESHOOT_DEAD_TRACE
+    / BREAK_AT_PANEL", two engine tags and a word that is wrong for the B
+    end; on a 432-fiber span every one of them is an end connector's reflectance."""
+    blob = ' '.join(end_texts or ())
+    conn = [w for w, keys in (('reflectance', ('REFL',)),
+                              ('loss', ('LAUNCH', 'PIGTAIL')))
+            if any(k in blob for k in keys)]
+    names = []
+    if conn:
+        names.append('End connector ' + ' / '.join(conn))
+    if any(t in blob for t in ('RESHOOT', 'BREAK_AT_PANEL', 'SHORT SHOT',
+                               'FILE_MISSING', 'NO_EVENTS', 'DURATION')):
+        names.append('Trace to check or reshoot')
+    end_name = ', '.join(names) or 'End connector'
+    return [(name, fc, tc, desc if desc is not None else end_name)
+            for fc, name, tc, desc in SR_LEGEND if fc in painted]
+
+
 def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_b, span_km,
                launch_cells_a=None, launch_cells_b=None,
                fibers_a=None, fibers_b=None, all_results=None,
-               fiber_avgs=None, span_stats=None):
+               fiber_avgs=None, span_stats=None, ribbons=None):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Splice Report"
@@ -12707,8 +13274,11 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         km = sp.get('position_km_display',
                     sp.get('position_km_refined', sp['position_km']))
         # B→A is the cable span minus the A-side display value, also
-        # truncated to 10 m so the two headers stay self-consistent.
-        b_km = math.floor((span_km - km) * 100) / 100.0
+        # truncated to 10 m so the two headers stay self-consistent, and
+        # never below zero: a column past the span's own end (a far
+        # connector at 55.003 km on a 55.00 km span, read alone) printed
+        # "-0.01km, -33'".  That connector is B's own launch, 0.00 km from B.
+        b_km = max(0.0, math.floor((span_km - km) * 100) / 100.0)
         for row, value, font in ((1, km_ft_label(b_km), b_km_font),
                                  (2, km_ft_label(km),   a_km_font)):
             c = ws.cell(row=row, column=_km_col(si), value=value)
@@ -12784,20 +13354,50 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
         else:
             disp_n = sp.get('splice_display_num', si + 1)
             _word = 'Event' if sp.get('is_event_column') else 'Splice'
-            cell = ws.cell(row=3, column=km_c, value=f"{_word} {disp_n}")
+            _hdr = f"{_word} {disp_n}"
+            # An event column says what FR calls it on a second line
+            # ("Event 3" / "Non-reflective"); a Mixed one names each fibre's
+            # type in the cell's hover note.
+            if sp.get('is_event_column') and sp.get('event_kind'):
+                _hdr += f"\n{sp['event_kind']}"
+            cell = ws.cell(row=3, column=km_c, value=_hdr)
             cell.fill = hdr_fill
+            if sp.get('is_event_column') and sp.get('event_kind_tip'):
+                from openpyxl.comments import Comment
+                cell.comment = Comment(sp['event_kind_tip'], 'OTDR Suite')
         cell.font = header_font
-        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.alignment = Alignment(horizontal='center', vertical='center',
+                                   wrap_text=bool(sp.get('is_event_column')))
     ws.cell(row=3, column=end_col, value=f"B-End ILA: {site_b}").font = hdr_font
     ws.cell(row=3, column=end_col).fill = hdr_fill
+    if any(sp.get('is_event_column') and sp.get('event_kind') for sp in splices):
+        ws.row_dimensions[3].height = 30      # room for the event kind line
+        # The two ends read FR's word too (Robert 2026-10-01), on an event
+        # job only: a closure layout's headers stay as they are.
+        from openpyxl.comments import Comment
+        _ek = end_event_kinds(fibers_a or {}, fibers_b or {})
+        for _col, _end, _site in ((2, 'A', site_a), (end_col, 'B', site_b)):
+            _kind, _tip = _ek[_end]
+            _c = ws.cell(row=3, column=_col)
+            _c.value = f"{_end}-End ILA: {_site}\n{_kind}"
+            _c.alignment = Alignment(horizontal='center', vertical='center',
+                                     wrap_text=True)
+            if _tip:
+                _c.comment = Comment(_tip, 'OTDR Suite')
 
     # ── Data rows ──
     def _launch_fill(sev):
         # Single light-pink tier for all launch issues (severity ignored)
         return launch_fill, launch_font
 
-    for ri in range(n_ribbons):
-        row = ri + 4
+    # Rows run from the first ribbon holding a loaded fiber to the last
+    # (`ribbons`, 0-based): ribbon 30 loaded alone drew 29 empty rows above
+    # it.  An empty ribbon between two loaded ones keeps its row, so a
+    # ribbon missing mid-span still shows as a gap.  Omitted, every ribbon
+    # up to the highest fiber gets one, as before.
+    ribbon_rows = ribbon_rows_between(ribbons, n_ribbons)
+    for _row_i, ri in enumerate(ribbon_rows):
+        row = _row_i + 4
         ws.cell(row=row, column=1, value=ribbon_label(ri, ribbon_size, n_fibers)).font = ribbon_font
 
         # ── ILA:A column (col 2) — issues AT THE PHYSICAL A END ──
@@ -12892,25 +13492,24 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
 
     # ── Legend sheet ──
     # Colour = flag type, nothing else (Robert 2026-09-29).  The report no
-    # longer prints the thresholds it graded on.
+    # longer prints the thresholds it graded on.  Only the colors this
+    # sheet actually paints are listed (sr_legend_rows), in plain words.
     ws_leg = wb.create_sheet("Legend")
     ws_leg.column_dimensions['A'].width = 16
     ws_leg.column_dimensions['B'].width = 44
-    legend_items = [
-        ("Pink",       "FFC7CE", "000000", "A+B reburn"),
-        ("Red",        "FF4444", "FFFFFF", "Break"),
-        ("Red (broke)","FF4444", "FFFFFF", "Broke"),
-        ("Deep Orange","E64A19", "FFFFFF", "REFL (in-line reflective)"),
-        ("Lt. Blue",   "BDD7EE", "1F4E79", "B-fill"),
-        ("Gray",       "BFBFBF", "3F3F3F", "Dead zone"),
-        ("Lt. Yellow", "FFF2CC", "000000", "A-only"),
-        ("Lavender",   "E8D5F5", "4B0082", "B-only"),
-        ("Yellow",     "FFEB3B", "000000", "Bend"),
-        ("Orange",     "FFA500", "5D2E00", "Launch / RESHOOT_DEAD_TRACE / BREAK_AT_PANEL"),
-        ("Mint Green", "A5D6A7", "1B5E20", "Field gainer"),
-    ]
+    _painted = {ws.cell(row=r, column=c).fill.start_color.rgb[-6:]
+                for r in range(4, ws.max_row + 1)
+                for c in range(2, end_col + 1)
+                if ws.cell(row=r, column=c).fill.fill_type == 'solid'}
+    _end_texts = [lc['text'] for lcs in (launch_cells_a or {}, launch_cells_b or {})
+                  for lc in lcs.values()]
+    legend_items = sr_legend_rows(_painted, _end_texts)
     ws_leg.cell(row=1, column=1, value="Color").font = Font(name=FONT_NAME, bold=True, size=FSIZE)
-    ws_leg.cell(row=1, column=2, value="Flag").font = Font(name=FONT_NAME, bold=True, size=FSIZE)
+    ws_leg.cell(row=1, column=2, value="Meaning").font = Font(name=FONT_NAME, bold=True, size=FSIZE)
+    if not legend_items:
+        ws_leg.cell(row=2, column=1,
+                    value="No cell in this report is shaded.").font = \
+            Font(name=FONT_NAME, italic=True, size=FSIZE)
     for i, (name, fc, tc, desc) in enumerate(legend_items, 2):
         c = ws_leg.cell(row=i, column=1, value=name)
         c.fill = PatternFill(start_color=fc, end_color=fc, fill_type="solid")
@@ -12991,84 +13590,69 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # off leaves its verdict column reading "not graded".
     if span_stats is not None:
         ws_sp = wb.create_sheet("Span attenuation and ORL")
-        for _c, _w in (('A', 9), ('B', 14), ('C', 14), ('D', 12), ('E', 14),
-                       ('F', 14), ('G', 14), ('H', 12), ('I', 12), ('J', 12),
-                       ('K', 12)):
+        for _c, _w in (('A', 9), ('B', 14), ('C', 14), ('D', 14), ('E', 12),
+                       ('F', 14), ('G', 14), ('H', 14), ('I', 12), ('J', 12),
+                       ('K', 12), ('L', 12)):
             ws_sp.column_dimensions[_c].width = _w
-        _gates = []
-        if (FIBER_ATTEN_DB_KM or 0) > 0:
-            _gates.append("attenuation %.3f dB/km" % FIBER_ATTEN_DB_KM)
-        if (SPAN_ORL_MIN_DB or 0) > 0:
-            _gates.append("ORL floor %.2f dB" % SPAN_ORL_MIN_DB)
-        ws_sp.cell(row=1, column=1,
-                   value="Span Attenuation and ORL: one row per fiber, "
-                         "graded at " + ", ".join(_gates)).font = \
-            Font(name=FONT_NAME, bold=True, size=FSIZE)
-        ws_sp.cell(row=2, column=1,
-                   value=("Span loss and span length are the figures the OTDR "
-                          "stored in each file; the span loss is the number "
-                          "FastReporter prints. Attenuation is span loss over "
-                          "span length, each direction, then averaged; a fiber "
-                          "FAILS when the average is above the gate. ORL is "
-                          "the OTDR's own total ORL per direction, not the "
-                          "OLTS measurement; a fiber FAILS when either "
-                          "direction reads below the floor. A blank means the "
-                          "file did not carry that figure.")).font = \
-            Font(name=FONT_NAME, size=FSIZE, italic=True)
         _shdr = ["Fiber", "Span Loss A->B (dB)", "Span Loss B->A (dB)",
+                 "Span Loss Avg (dB)",
                  "Length (km)", "Atten. A->B (dB/km)", "Atten. B->A (dB/km)",
                  "Atten. Avg (dB/km)", "Atten. Verdict", "ORL A->B (dB)",
                  "ORL B->A (dB)", "ORL Verdict"]
         for _ci, _h in enumerate(_shdr, 1):
-            _hc = ws_sp.cell(row=4, column=_ci, value=_h)
+            _hc = ws_sp.cell(row=1, column=_ci, value=_h)
             _hc.font = hdr_font
             _hc.fill = hdr_fill
-        _sr = 5
+        _sr = 2
         _n_att_fail = _n_orl_fail = 0
         for _fn in sorted(span_stats):
             _s = span_stats[_fn]
             _lens = [v for v in (_s.get('len_a_km'), _s.get('len_b_km')) if v]
             _len = (sum(_lens) / len(_lens)) if _lens else None
+            # average of the directions present, same rule as Atten. Avg
+            _losses = [v for v in (_s.get('loss_a'), _s.get('loss_b'))
+                       if v is not None]
+            _loss_avg = (sum(_losses) / len(_losses)) if _losses else None
             _av = atten_verdict(_s.get('att_avg'))
             _ov = orl_verdict(_s.get('orl_a'), _s.get('orl_b'))
             if _s.get('short_shot'):
                 # a trace that stops short of the far end measures part of
                 # the fiber: nothing here describes the span
                 _av = _ov = 'SHORT SHOT'
-            _vals = [_fn, _s.get('loss_a'), _s.get('loss_b'), _len,
+            _vals = [_fn, _s.get('loss_a'), _s.get('loss_b'), _loss_avg, _len,
                      _s.get('att_a'), _s.get('att_b'), _s.get('att_avg'),
                      _av if _av else "not graded",
                      _s.get('orl_a'), _s.get('orl_b'),
                      _ov if _ov else "not graded"]
             for _ci, _v in enumerate(_vals, 1):
                 if isinstance(_v, float):
-                    _v = round(_v, 4 if _ci == 4 else (2 if _ci in (9, 10) else 3))
+                    _v = round(_v, 4 if _ci == 5 else (2 if _ci in (10, 11) else 3))
                 _cell = ws_sp.cell(row=_sr, column=_ci, value=_v)
                 _cell.font = Font(name=FONT_NAME, size=FSIZE,
-                                  bold=(_ci in (8, 11) and _v == 'FAIL'))
-                if _ci in (2, 3, 5, 6, 7):
+                                  bold=(_ci in (9, 12) and _v == 'FAIL'))
+                if _ci in (2, 3, 4, 6, 7, 8):
                     _cell.number_format = '0.000'
-                elif _ci == 4:
+                elif _ci == 5:
                     _cell.number_format = '0.0000'
-                elif _ci in (9, 10):
+                elif _ci in (10, 11):
                     _cell.number_format = '0.00'
             _n_att_fail += (_av == 'FAIL')
             _n_orl_fail += (_ov == 'FAIL')
             _sr += 1
-        if _sr == 5:
-            ws_sp.cell(row=5, column=1, value="(no fibers)").font = \
+        if _sr == 2:
+            ws_sp.cell(row=2, column=1, value="(no fibers)").font = \
                 Font(name=FONT_NAME, size=FSIZE, italic=True)
         else:
             _sum = []
             if (FIBER_ATTEN_DB_KM or 0) > 0:
                 _sum.append("%d of %d fibers FAIL the %.3f dB/km attenuation gate"
-                            % (_n_att_fail, _sr - 5, FIBER_ATTEN_DB_KM))
+                            % (_n_att_fail, _sr - 2, FIBER_ATTEN_DB_KM))
             if (SPAN_ORL_MIN_DB or 0) > 0:
                 _sum.append("%d of %d fibers FAIL the %.2f dB ORL floor"
-                            % (_n_orl_fail, _sr - 5, SPAN_ORL_MIN_DB))
+                            % (_n_orl_fail, _sr - 2, SPAN_ORL_MIN_DB))
             ws_sp.cell(row=_sr + 1, column=1, value="; ".join(_sum)).font = \
                 Font(name=FONT_NAME, bold=True, size=FSIZE)
-        ws_sp.freeze_panes = "A5"
+        ws_sp.freeze_panes = "A2"
 
     # ── Column widths — TRUE minimum-fit (no column wider than its content) ──
     # Calibri 12 is ~1.1–1.2 Excel-width-units/char; keep a hair of margin so
@@ -13171,10 +13755,12 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
             from reburn_summary import compute_reburn_summary, \
                 render_xlsx_sheet as _render_reburn
             _reburn = compute_reburn_summary(all_results, splices,
-                                              n_fibers, ribbon_size)
+                                              n_fibers, ribbon_size,
+                                              ribbons=ribbons)
             _render_reburn(wb, _reburn,
                            insert_at=0,                # before any audit
-                           font_name=FONT_NAME, font_size=FSIZE)
+                           font_name=FONT_NAME, font_size=FSIZE,
+                           span_label=f"Span: {site_a} → {site_b}")
             print(f"  Reburn summary: {_reburn['reburn_cells']} of "
                   f"{_reburn['total_cells']} cells "
                   f"({_reburn['reburn_percentage']:.2f}%)")
@@ -13555,9 +14141,11 @@ def main():
     # whose bidir loss reaches BIDIR_CONNECTOR_LOSS.  Decorates the
     # cell label with '⚠ conn' so the tech can spot connector-loss
     # issues separately from normal splice-loss reburns.
-    n_high_conn = apply_connector_loss_rule(all_results, BIDIR_CONNECTOR_LOSS)
+    n_high_conn = apply_connector_loss_rule(all_results, BIDIR_CONNECTOR_LOSS,
+                                            panel_span=_is_panel_span(fibers_a))
     print(f"  High connector loss: {n_high_conn} (1F events with "
-          f"bidir >= {BIDIR_CONNECTOR_LOSS} dB)")
+          f"bidir >= {BIDIR_CONNECTOR_LOSS} dB, or one direction >= "
+          f"{LAUNCH_CONN_UNI_MIN_DB} dB)")
 
     # Off-splice bend / break / broke columns: any such event sitting
     # more than CLOSURE_MATCH_KM (150 m) from a real splice gets pulled
@@ -13730,6 +14318,10 @@ UNI_MIN_POP_SPLICE       = 20      # min fibers in a 1 km bin → candidate clos
 # docstring warns about.  The floor now scales DOWN with the job and never up.
 UNI_MIN_POP_SPLICE_FRAC  = 0.25    # fraction of loaded fibers, jobs under 20 only
 UNI_MIN_POP_SPLICE_FLOOR = 3       # never nominate a closure on fewer than this
+UNI_EVENT_JOB_MAX        = 79      # uni job of at most this many fibres LOADED shows
+                                   #   events, not closures (Robert 2026-10-01:
+                                   #   "under 80 we don't try to determine bend
+                                   #   or splice"; was 50)
 UNI_LAUNCH_FIBER_MAX     = 3.0     # km — launch exclusion WITH a launch box
 UNI_NO_LAUNCH_DEAD_KM    = 0.3     # km — front-end dead zone WITHOUT a launch box
 UNI_LAUNCH_BOX_MIN_FRAC  = 0.25    # population frac with a launch reflection → box present
@@ -14030,10 +14622,10 @@ def uni_coverage_headline(cov):
     if not t:
         return 'No trace files found in this folder.'
     if cov.get('complete'):
-        return f"{t} trace(s) in folder; all {t} analysed."
+        return f"{t} trace(s) in folder; all {t} analyzed."
     return (f"INCOMPLETE COVERAGE: only {n} of the {t} trace file(s) in this "
-            f"folder were analysed ({100.0 * n / t:.1f}%). "
-            f"{cov['n_dropped']} file(s) were NOT analysed and do NOT appear "
+            f"folder were analyzed ({100.0 * n / t:.1f}%). "
+            f"{cov['n_dropped']} file(s) were NOT analyzed and do NOT appear "
             f"anywhere in this report.")
 
 
@@ -14047,7 +14639,7 @@ def uni_coverage_lines(cov):
     for ds in cov.get('dropped_signatures') or ():
         out.append(
             f"{ds['n_files']} file(s) were shot as direction "
-            f"'{ds['signature']}', not the analysed '{chosen}' (fibers "
+            f"'{ds['signature']}', not the analyzed '{chosen}' (fibers "
             f"{ds['fiber_ranges']}).  A report covers ONE direction, so these "
             f"were set aside.  If '{ds['signature']}' is a mistyped site code "
             f"for the same shoot, the GenParams on those files need fixing (or "
@@ -14061,14 +14653,14 @@ def uni_coverage_lines(cov):
                    f"{shown}{more}.")
     if cov.get('n_other_format'):
         out.append(
-            f"NOTE: {cov['n_other_format']} file(s) of the other supported "
+            f"NOTE: {cov['n_other_format']} file(s) of another supported "
             f"format are also in this folder and were not opened; this run "
             f"read {cov.get('ext') or 'trace'} files.")
     return out
 
 
 def uni_load_dir(d, direction=None):
-    """Load ONE direction's fibers from a folder of .sor/.json files.
+    """Load ONE direction's fibers from a folder of .sor/.json/.trc files.
 
     Files are grouped by GenParams direction signature FIRST, then the
     requested (or most populous) direction is keyed by fiber number — a
@@ -14101,20 +14693,17 @@ def uni_load_dir(d, direction=None):
         names = sorted(os.listdir(d))
     except OSError:
         return {}, None, {}, [], _uni_coverage(d, '', [], 0, {}, None, {}, [])
-    _n_json = sum(1 for f in names if not f.startswith('._')
-                  and f.lower().endswith('.json') and _extract_fiber_num(f))
-    _n_sor = sum(1 for f in names if not f.startswith('._')
-                 and f.lower().endswith('.sor') and _extract_fiber_num(f))
-    use_json = _n_json > 0 and _n_json >= _n_sor
-    ext = '.json' if use_json else '.sor'
-    # Files of the OTHER supported format are never opened.  Counted with the
-    # same fiber-number qualification `use_json` itself uses, so a stray
+    order, counts = _trace_ext_order(names)
+    ext = order[0]
+    use_json = ext == '.json'
+    # Files of the OTHER supported formats are never opened.  Counted with
+    # the same fiber-number qualification the choice itself uses, so a stray
     # landmarks/config .json next to a folder of .sor is not miscounted as a
     # dropped trace.
-    n_other_format = _n_json if not use_json else _n_sor
+    n_other_format = sum(v for e, v in counts.items() if e != ext)
     candidates = [f for f in names
                   if f.lower().endswith(ext) and not f.startswith('._')]
-    parser = parse_otdr_json if use_json else (lambda p: parse_sor_full(p, trim=False))
+    parser = _trace_parser(ext)
     # Same folder-pattern read as the Splice Report loader (SNA2ESNA1103).
     by_pattern = _folder_pattern_fibers(candidates)
     for fn in candidates:
@@ -15342,13 +15931,14 @@ def fr_uni_columns(fibers):
 
 
 def _uni_col_word(col):
-    """'Event' on a job under UNI_MIN_POP_SPLICE fibres, else 'Splice'."""
+    """'Event' on a job of at most UNI_EVENT_JOB_MAX fibres, else 'Splice'."""
     return 'Event' if col.get('is_event_column') else 'Splice'
 
 
 def uni_event_columns(fibers, exclude_km=()):
-    """The uni twin of discover_event_columns (Robert 2026-09-29: a job under
-    20 fibres shows its events and makes no splice or bend call).  One column
+    """The uni twin of discover_event_columns (Robert 2026-09-29/30: a uni job
+    of up to UNI_EVENT_JOB_MAX fibres shows its events and makes no splice or
+    bend call).  One column
     per cluster of in-span stored events, split on the closure gap floored at
     the pulse smear; a cluster within UNI_CLOSURE_MATCH_KM of a connector or
     reflective column already on the report (`exclude_km`) is that column's
@@ -15356,6 +15946,9 @@ def uni_event_columns(fibers, exclude_km=()):
     uni_build_columns and the grid judge them as they judge a splice column
     (the uni splice gate), marked is_event_column."""
     _set_run_pulse_smear(fibers)
+    # Port-area readings are listed and graded like any event, as FR lists
+    # them (Robert 2026-10-01); only the closure layout keeps a front dead
+    # zone (uni_front_dead_km).
     pairs = []
     for fnum, r in fibers.items():
         eof = next((e['dist_km'] for e in r['events'] if e.get('is_end')), None)
@@ -15367,7 +15960,7 @@ def uni_event_columns(fibers, exclude_km=()):
                 continue
             if not _is_inspan_event_type(e.get('type') or ''):
                 continue
-            pairs.append((d, fnum))
+            pairs.append((d, fnum, _event_is_reflective(e)))
     if not pairs:
         return []
     pairs.sort()
@@ -15378,17 +15971,30 @@ def uni_event_columns(fibers, exclude_km=()):
             clusters.append([p])
         else:
             clusters[-1].append(p)
+    # one reading per fibre per column, at any job size (_split_repeats)
+    clusters = [part for cl in clusters
+                for part in _split_repeats(cl, lambda p: p[1])]
     cols = []
     for cl in clusters:
         pos = float(np.median([p[0] for p in cl]))
-        if any(abs(pos - x) <= UNI_CLOSURE_MATCH_KM for x in exclude_km):
+        # a reflective cluster ON a connector / REFL column is that column's
+        # event; a non-reflective one there is a splice beside it (74 m
+        # before the far panel on the 1,152-fibre route, .301 dB)
+        if (any(p[2] for p in cl)
+                and any(abs(pos - x) <= UNI_CLOSURE_MATCH_KM for x in exclude_km)):
             continue
         first = min(cl, key=lambda p: (p[1], abs(p[0] - pos)))[0]
+        kind, tip = event_kind({p[1]: p[2] for p in cl})
         cols.append({'bin': int(round(pos)), 'position_km': round(pos, 2),
                      'position_km_refined': pos,
                      'position_km_display': math.floor(first * 100) / 100.0,
                      'count': len({p[1] for p in cl}),
-                     'is_event_column': True})
+                     'is_event_column': True,
+                     'event_kind': kind, 'event_kind_tip': tip,
+                     # the readings the column was made of: a wide cluster's
+                     # edge reading sits past the at-splice radius of its
+                     # median, and the grid and the Viewer read it from here
+                     'event_members': {(p[1], p[0]) for p in cl}})
     return cols
 
 
@@ -15432,7 +16038,10 @@ def uni_build_columns(valid_splices, off_columns, break_columns=None):
                                                    sp['position_km_refined']),
                      'broke_members': sp.get('broke_members') or set(),
                      'fiber_count': sp.get('count', 0),
-                     'is_event_column': bool(sp.get('is_event_column'))})
+                     'is_event_column': bool(sp.get('is_event_column')),
+                     'event_kind': sp.get('event_kind'),
+                     'event_kind_tip': sp.get('event_kind_tip') or '',
+                     'event_members': sp.get('event_members')})
     cols.extend(off_columns)
     if break_columns:
         cols.extend(break_columns)
@@ -15542,7 +16151,9 @@ def uni_build_ribbon_grid(fibers, columns, ribbon_size):
                 # the same number and must never disagree.
                 if not _clears_threshold(loss, UNI_BEND_THRESHOLD):
                     continue
-                if abs(e['dist_km'] - center) <= window:
+                _mem = col.get('event_members')
+                if ((fnum, e['dist_km']) in _mem if _mem is not None
+                        else abs(e['dist_km'] - center) <= window):
                     if best is None or abs(loss) > best[0]:
                         best = (abs(loss), loss)
             if fnum in (col.get('broke_members') or ()):
@@ -15555,19 +16166,63 @@ def uni_build_ribbon_grid(fibers, columns, ribbon_size):
     return grid
 
 
-def uni_format_cell_label(entries):
-    if not entries:
-        return ''
-    fibers = ','.join(f"F{f}" for f, _ in sorted(entries, key=lambda fl: fl[0]))
-    losses = [loss for _, loss in entries if loss is not None]
-    if not losses:
-        return f"{fibers} broke"
-    worst = max(losses)
-    sign = '-' if worst < 0 else ''
-    s = f"{abs(worst):.3f}"
+def _uni_cell_number(v):
+    """'.175' / '-.214': the uni grid's 3-decimal style, sign kept."""
+    s = f"{abs(v):.3f}"
     if s.startswith('0.'):
         s = s[1:]
-    return f"{fibers} {sign}{s}"
+    return f"{'-' if v < 0 else ''}{s}"
+
+
+def uni_format_cell_label(entries, kind=None):
+    """Cell text for one ribbon x column cell.
+
+    Several fibers in one cell share one number, the tech's group convention
+    ('139,144 .277' = every listed fiber is out, the value is the worst).
+    Worst means the reading furthest from zero, the same rule
+    uni_build_ribbon_grid uses to pick each fiber's own event (largest
+    |loss|) and the abs() gate that put the fiber in the cell.  It used to be
+    max() of the signed values, which on an all-gainer cell picked the
+    reading CLOSEST to zero: 'F316,F322 -.161' with F322 at -0.278.
+
+    A cell holding both losses and gainers prints each group with its own
+    number, losses first: 'F354 .175 F355 -.214'.  One number cannot speak
+    for both: '.175' hid F355's -0.214, the bigger reading of the two, and
+    '-.214' would call F354's loss a gain.  The Splice Report grid does the
+    same: fibers share an entry only when they share the reading, and a
+    gainer never merges with a loss.
+
+    A fiber that broke at this closure (None) prints 'broke' after the
+    readings instead of being listed under a number that is not its own;
+    the break-at-closure rule promises "broke" in exactly those cells.
+
+    Reflective columns carry a reflectance, where the worst is the one
+    closest to zero, so `kind='reflective'` keeps max() exactly as before.
+    """
+    if not entries:
+        return ''
+    ordered = sorted(entries, key=lambda fl: fl[0])
+    broke = [f for f, v in ordered if v is None]
+    read = [(f, v) for f, v in ordered if v is not None]
+
+    def _group(members):
+        fibers = ','.join(f"F{f}" for f, _ in members)
+        vals = [v for _, v in members]
+        if kind == 'reflective' or max(vals) > 0:
+            worst = max(vals)
+        else:
+            worst = min(vals)           # every reading a gainer: the biggest
+        return f"{fibers} {_uni_cell_number(worst)}"
+
+    if kind == 'reflective':
+        groups = [read]
+    else:
+        groups = [[(f, v) for f, v in read if v >= 0],
+                  [(f, v) for f, v in read if v < 0]]
+    parts = [_group(g) for g in groups if g]
+    if broke:
+        parts.append(','.join(f"F{f}" for f in broke) + " broke")
+    return ' '.join(parts)
 
 
 def uni_ribbon_label(ri, ribbon_size, n_fibers):
@@ -15579,15 +16234,58 @@ def uni_ribbon_label(ri, ribbon_size, n_fibers):
     return f"Fiber {first}-{last} ({ri + 1}){tube}"
 
 
+def uni_shot_direction(fibers):
+    """('A' | 'B', origin, far) for one direction's fibers: which end of the
+    cable the shot was taken from, and the two site names in the order the
+    distances run.
+
+    The names are GenParams' own, in full (SITEA, NET-XX-SITEB-0001): no
+    three-letter code.  EXFO stores the same pair in the same order for both
+    directions of a span (location A, location B) and says which way the
+    shot went in its own LocationsDirection field (1 = A->B, 2 = B->A), the
+    Direction FastReporter shows.  The majority of the files decides; a file
+    without the field (another make, a .json) is read as GenParams' own
+    order, originating location first.  The filename is never consulted."""
+    votes = {}
+    sample = None
+    for fnum in sorted(fibers):
+        r = fibers[fnum]
+        if sample is None:
+            sample = r
+        d = r.get('exfo_locations_direction')
+        votes[d] = votes.get(d, 0) + 1
+    if sample is None:
+        return 'A', '', ''
+    known = {k: v for k, v in votes.items() if k in (1, 2)}
+    d = max(known, key=lambda k: (known[k], -k)) if known else 1
+    loc_a = (sample.get('gen_loc_a') or '').strip()
+    loc_b = (sample.get('gen_loc_b') or '').strip()
+    if d == 2:
+        return 'B', loc_b, loc_a
+    return 'A', loc_a, loc_b
+
+
+def uni_shot_direction_named(fibers, typed_a=None, typed_b=None):
+    """uni_shot_direction with the tech's own names for the cable's A end
+    and B end swapped in: (side, origin, far).  An empty name keeps the
+    stored one."""
+    side, origin, far = uni_shot_direction(fibers)
+    a_end, b_end = (origin, far) if side == 'A' else (far, origin)
+    a_end = (typed_a or '').strip() or a_end
+    b_end = (typed_b or '').strip() or b_end
+    return (side,) + ((a_end, b_end) if side == 'A' else (b_end, a_end))
+
+
 def uni_short_code(location_str):
     """3-letter site code from a GenParams location ('LA Media Rd MH' → LAM)."""
     letters = ''.join(ch for ch in (location_str or '') if ch.isalpha())
     return letters[:3].upper()
 
 
-def uni_flagged_event_rows(grid, columns):
+def uni_flagged_event_rows(grid, columns, side='A'):
     """Per-event rows for the 'Flagged Events' sheet — the answer to 'why is
-    this cell shaded?' for every shaded cell."""
+    this cell shaded?' for every shaded cell.  `side` is the end the shot
+    was taken from ('A' or 'B', uni_shot_direction), named in the text."""
     splice_n = bend_n = break_n = refl_n = conn_n = 0
     col_labels = []
     for col in columns:
@@ -15687,7 +16385,7 @@ def uni_flagged_event_rows(grid, columns):
                           f"bend/damage per the job's closure map.  Loss "
                           f"{abs(loss):.3f} dB.")
             else:
-                reason = (f"Possible bend/damage: A-side event >= "
+                reason = (f"Possible bend/damage: {side}-side event >= "
                           f"{UNI_BEND_THRESHOLD:.3f} dB away from any validated "
                           f"splice closure.  Loss {abs(loss):.3f} dB.")
             rows.append({'fiber': fnum, 'ribbon': ri + 1,
@@ -15698,21 +16396,26 @@ def uni_flagged_event_rows(grid, columns):
     return rows
 
 
-def uni_build_reburn_summary(grid, columns, n_ribbons, ribbon_label_fn=None):
+def uni_build_reburn_summary(grid, columns, n_ribbons, ribbon_label_fn=None,
+                             ribbons=None):
     """Reburn % = splice cells with >= 1 flagged fiber / (ribbons × splice
-    columns).  Ported from the standalone reburn_percentage module."""
+    columns).  Ported from the standalone reburn_percentage module.
+    `ribbons` (0-based) are the ribbons that hold a loaded fiber; omitted,
+    every ribbon below `n_ribbons` counts."""
     if ribbon_label_fn is None:
         ribbon_label_fn = lambda ri: f"Ribbon {ri + 1}"
+    ribbon_list = sorted(ribbons) if ribbons else list(range(n_ribbons))
+    n_ribbons = len(ribbon_list)
     splice_cols = [(ci, col) for ci, col in enumerate(columns)
                    if col.get('kind') == 'splice']
     n_splice_cols = len(splice_cols)
     total_cells = n_ribbons * n_splice_cols
     reburn_cells = 0
     per_splice_counts = [0] * n_splice_cols
-    per_ribbon_counts = [0] * n_ribbons
+    per_ribbon_counts = {ri: 0 for ri in ribbon_list}
     for si, (ci, col) in enumerate(splice_cols):
         _broke = col.get('broke_members') or ()
-        for ri in range(n_ribbons):
+        for ri in ribbon_list:
             # A fiber that DIES at this closure rides the splice column
             # (uni_build_columns) but is not a reburn candidate — nobody is
             # going back to re-burn a splice on a fiber that is cut.  A cell
@@ -15732,7 +16435,7 @@ def uni_build_reburn_summary(grid, columns, n_ribbons, ribbon_label_fn=None):
     per_ribbon = [{'ribbon_label': ribbon_label_fn(ri), 'ribbon_idx': ri,
                    'n_splices': per_ribbon_counts[ri],
                    'pct': (per_ribbon_counts[ri] / n_splice_cols * 100.0) if n_splice_cols else 0.0}
-                  for ri in range(n_ribbons)]
+                  for ri in ribbon_list]
     return {'n_ribbons': n_ribbons, 'n_splice_cols': n_splice_cols,
             'total_cells': total_cells, 'reburn_cells': reburn_cells,
             'percentage': percentage, 'per_splice': per_splice,
@@ -15767,10 +16470,8 @@ def uni_write_reburn_sheet(wb, summary, insert_at=1,
     title.fill = hdr_fill
     for c in (2, 3, 4):
         ws.cell(row=1, column=c).fill = hdr_fill
-    ws.cell(row=2, column=1,
-            value="Splice cells that need a reburn, expressed as a fraction "
-                  "of the ribbon × splice grid.").font = Font(
-        name=FN, size=10, italic=True, color="595959")
+    # Row 2 stays empty: the grey sentence that explained the percentage
+    # is gone (Robert 2026-10-01), and every row below keeps its place.
     pct_cell = ws.cell(row=4, column=1, value=f"{summary['percentage']:.2f}%")
     pct_cell.font = Font(name=FN, size=28, bold=True, color="9C5700")
     pct_cell.alignment = Alignment(horizontal='left', vertical='center')
@@ -15852,8 +16553,46 @@ def uni_write_reburn_sheet(wb, summary, insert_at=1,
     ws.freeze_panes = "A6"
 
 
+# The Unidirectional grid's colors, in Legend order: (fill, color name
+# with the element it shades, text color, flag name).  The cell colors and
+# names are the Splice Report's; each header is a darker shade of its cells.
+# The Cable End column (navy header, no cell fill) holds readings, not flags,
+# and takes no row, like the Splice Report's own end columns.
+UNI_LEGEND = [
+    ("C2185B", "Dark Pink (header)", "FFFFFF", "{splice}"),
+    ("FFC7CE", "Pink (cell)", "000000", "Reburn"),
+    ("B7950B", "Gold (header)", "000000", "Bend/Damage"),
+    ("FFEB3B", "Yellow (cell)", "000000", "Bend/Damage"),
+    ("C00000", "Dark Red (header)", "FFFFFF", "Break"),
+    ("FF4444", "Red (cell)", "FFFFFF", "Break"),
+    ("A6340F", "Dark Orange (header)", "FFFFFF", "REFL"),
+    ("E64A19", "Deep Orange (cell)", "FFFFFF", "REFL"),
+    ("8C5300", "Dark Amber (header)", "FFFFFF", "Connector"),
+    ("FFA500", "Orange (cell)", "5D2E00", "Connector"),
+]
+
+
+def uni_legend_rows(ws, type_row):
+    """The Legend rows for the colors the Unidirectional grid paints, from
+    its column-type row (`type_row`) down.  'Splice' reads 'Event' on a job
+    that lists events rather than closures."""
+    painted, words = set(), set()
+    for r in range(type_row, ws.max_row + 1):
+        for c in range(2, ws.max_column + 1):
+            cell = ws.cell(row=r, column=c)
+            if cell.fill is not None and cell.fill.fill_type == 'solid':
+                painted.add(cell.fill.start_color.rgb[-6:])
+            if r == type_row and isinstance(cell.value, str):
+                words.add(cell.value.split(' ')[0])
+    splice = ('Event' if 'Event' in words and 'Splice' not in words
+              else 'Splice')
+    return [(name, fc, tc, desc.format(splice=splice))
+            for fc, name, tc, desc in UNI_LEGEND if fc in painted]
+
+
 def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
-                   site_a='', site_b='', fibers=None, coverage=None):
+                   site_a='', site_b='', fibers=None, coverage=None, side='A',
+                   ribbons=None):
     """ZK-approved five-sheet workbook: Acquisition Parameters, Reburn
     Percentage, Unidir Events (ribbon grid), Legend, Flagged Events.
 
@@ -15886,11 +16625,25 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     hdr_fill_sp = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
     hdr_fill_bend = PatternFill(start_color="B7950B", end_color="B7950B", fill_type="solid")
     hdr_fill_break = PatternFill(start_color="C00000", end_color="C00000", fill_type="solid")
-    hdr_fill_end = PatternFill(start_color="595959", end_color="595959", fill_type="solid")
-    end_shade = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
+    # The cell colors are the Splice Report's (UNI_LEGEND): a splice flag is
+    # the reburn pink, a bend yellow, a break red, a reflective event deep
+    # orange, a connector the end-connector orange.  Each column header is a
+    # darker shade of its cells' color, with text that reads on it (white
+    # at 5.9:1 or better; black on the gold).  The Cable End column holds
+    # readings, not flags: its cells take no fill, and its header the navy
+    # of the Ribbon header and the Splice Report's end columns.  Gray is the
+    # Splice Report's "not seen from either end" and means nothing else here.
+    hdr_fill_end = hdr_fill_sp
+    hdr_fill_splice = PatternFill(start_color="C2185B", end_color="C2185B", fill_type="solid")
+    hdr_fill_conn = PatternFill(start_color="8C5300", end_color="8C5300", fill_type="solid")
+    hdr_fill_refl = PatternFill(start_color="A6340F", end_color="A6340F", fill_type="solid")
+    conn_shade = PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid")
+    conn_text = Font(name=FN, size=FS, color="5D2E00")
+    refl_shade = PatternFill(start_color="E64A19", end_color="E64A19", fill_type="solid")
+    refl_text = Font(name=FN, bold=True, size=FS, color="FFFFFF")
     a_km_font = Font(name=FN, bold=True, size=FS, color="1F4E79")
     hh_font = Font(name=FN, size=FS, italic=True, color="595959")
-    splice_shade = PatternFill(start_color="BDD7EE", end_color="BDD7EE", fill_type="solid")
+    splice_shade = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
     bend_shade = PatternFill(start_color="FFEB3B", end_color="FFEB3B", fill_type="solid")
     break_shade = PatternFill(start_color="FF4444", end_color="FF4444", fill_type="solid")
     break_text = Font(name=FN, bold=True, size=FS, color="FFFFFF")
@@ -15928,7 +16681,10 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
             ws.row_dimensions[i].height = 30 if i == 1 else 46
         ws.sheet_properties.tabColor = "C00000"
 
-    ab_label = f"{site_a}→{site_b}:" if (site_a and site_b) else "A→B:"
+    # `site_a` / `site_b` are the shot's own origin and far end, in that
+    # order (uni_shot_direction): the distances on this row run from site_a.
+    ab_label = (f"{site_a} → {site_b}:" if (site_a and site_b)
+                else ("B→A:" if side == 'B' else "A→B:"))
     # One distance row: km and feet together in a single cell, the way the
     # splice report prints them (2026-09-17).  It used to take two rows.
     DIST_ROW = R0 + 1
@@ -15955,33 +16711,49 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     for ci, col in enumerate(columns):
         if col['kind'] == 'splice':
             if col.get('is_entry_case'):
-                label, fill = "Entry", hdr_fill_sp
+                label, fill = "Entry", hdr_fill_splice
             else:
                 splice_n += 1
-                label, fill = f"{_uni_col_word(col)} {splice_n}", hdr_fill_sp
+                label, fill = f"{_uni_col_word(col)} {splice_n}", hdr_fill_splice
         elif col['kind'] == 'break':
             break_n += 1
             label, fill = f"Break {break_n}", hdr_fill_break
         elif col['kind'] == 'connector':
             conn_n += 1
             label = "Launch Conn." if col.get('is_launch') else f"Connector {conn_n}"
-            fill = hdr_fill_bend
+            fill = hdr_fill_conn
         elif col['kind'] == 'reflective':
             refl_n += 1
-            label, fill = f"REFL {refl_n}", hdr_fill_bend
+            label, fill = f"REFL {refl_n}", hdr_fill_refl
         elif col['kind'] == 'end':
             label, fill = "Cable End", hdr_fill_end
         else:
             bend_n += 1
             label, fill = f"Bend/Damage {bend_n}", hdr_fill_bend
+        _ev_kind = (col.get('event_kind')
+                    if col.get('is_event_column') or col['kind'] in ('end', 'connector')
+                    else None)
+        if _ev_kind:
+            # FR's word on a second line ("Event 3" / "Non-reflective"); a
+            # Mixed column names each fibre's type in the hover note
+            label = f"{label}\n{_ev_kind}"
         c = ws.cell(row=TYPE_ROW, column=ci + 2, value=label)
         c.font = hdr_font_on_gold if fill is hdr_fill_bend else hdr_font
         c.fill = fill
-        c.alignment = Alignment(horizontal='center')
+        c.alignment = Alignment(horizontal='center', wrap_text=bool(_ev_kind))
+        if _ev_kind and col.get('event_kind_tip'):
+            from openpyxl.comments import Comment
+            c.comment = Comment(col['event_kind_tip'], 'OTDR Suite')
+    if any(c.get('event_kind') for c in columns):
+        ws.row_dimensions[TYPE_ROW].height = 30
 
     cell_text_font = Font(name=FN, size=FS, color="000000")
-    for ri in range(n_ribbons):
-        xr = ri + DATA_START_ROW
+    # Rows run from the first ribbon holding a loaded fiber to the last
+    # (`ribbons`, 0-based): fiber 354 loaded alone drew 29 empty ribbons
+    # above its own.  An empty ribbon between two loaded ones keeps its row.
+    ribbon_rows = ribbon_rows_between(ribbons, n_ribbons)
+    for _row_i, ri in enumerate(ribbon_rows):
+        xr = _row_i + DATA_START_ROW
         ws.cell(row=xr, column=1,
                 value=uni_ribbon_label(ri, ribbon_size, n_fibers)).font = cell_text_font
         for ci, col in enumerate(columns):
@@ -15994,7 +16766,11 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                 elif col['kind'] == 'break':
                     cell.fill, cell.font = break_shade, break_text
                 elif col['kind'] == 'end':
-                    cell.fill, cell.font = end_shade, cell_text_font
+                    cell.font = cell_text_font       # a reading: no fill
+                elif col['kind'] == 'connector':
+                    cell.fill, cell.font = conn_shade, conn_text
+                elif col['kind'] == 'reflective':
+                    cell.fill, cell.font = refl_shade, refl_text
                 else:
                     cell.fill, cell.font = bend_shade, cell_text_font
                 if col['kind'] == 'end':
@@ -16002,7 +16778,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                     cell.value = uni_format_end_cell(
                         entries, range(_first, min(_first + ribbon_size, n_fibers + 1)))
                 else:
-                    cell.value = uni_format_cell_label(entries)
+                    cell.value = uni_format_cell_label(entries, col['kind'])
                 cell.alignment = Alignment(horizontal='center', vertical='center',
                                            wrap_text=True)
 
@@ -16011,7 +16787,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         # 18, not 16: "42.01km, 137,834'" has to fit without the neighbour
         # clipping it.
         ws.column_dimensions[openpyxl.utils.get_column_letter(ci + 2)].width = 18
-    for ri in range(DATA_START_ROW, n_ribbons + DATA_START_ROW):
+    for ri in range(DATA_START_ROW, len(ribbon_rows) + DATA_START_ROW):
         ws.row_dimensions[ri].height = 32
     for ri in (DIST_ROW, HH_ROW, TYPE_ROW):
         ws.row_dimensions[ri].height = 18
@@ -16024,18 +16800,10 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     # element it shades in parentheses; B is the name the workbook prints.
     leg.column_dimensions['A'].width = 30
     leg.column_dimensions['B'].width = 20
-    leg_rows = [
-        ("Blue (header)",         "1F4E79", "FFFFFF", "Splice"),
-        ("Lt. Blue (cell)",       "BDD7EE", "1F4E79", "Splice"),
-        ("Gold (header)",         "B7950B", "000000", "Bend/Damage"),
-        ("Yellow (cell)",         "FFEB3B", "000000", "Bend/Damage"),
-        ("Dark Red (header)",     "C00000", "FFFFFF", "Break"),
-        ("Red (cell)",            "FF4444", "FFFFFF", "Break"),
-        ("Gold (connector)",      "B7950B", "000000", "Connector"),
-        ("Dark Gray (Cable End)", "595959", "FFFFFF", "Cable End"),
-    ]
+    # Only the colors this workbook paints are listed (uni_legend_rows).
+    leg_rows = uni_legend_rows(ws, DATA_START_ROW - 1)
     leg.cell(row=1, column=1, value="Color").font = Font(name=FN, bold=True, size=FS)
-    leg.cell(row=1, column=2, value="Flag").font = Font(name=FN, bold=True, size=FS)
+    leg.cell(row=1, column=2, value="Meaning").font = Font(name=FN, bold=True, size=FS)
     for i, (name, fc, tc, desc) in enumerate(leg_rows, start=2):
         c = leg.cell(row=i, column=1, value=name)
         c.fill = PatternFill(start_color=fc, end_color=fc, fill_type="solid")
@@ -16054,8 +16822,8 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
         c.alignment = Alignment(horizontal='center', vertical='center')
         ev.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
     kind_fill = {'splice': splice_shade, 'bend_damage': bend_shade,
-                 'break': break_shade, 'reflective': bend_shade,
-                 'connector': bend_shade}
+                 'break': break_shade, 'reflective': refl_shade,
+                 'connector': conn_shade}
     # One name per event across the workbook: the grid header, the manifest
     # label, the Legend and this Kind cell all read 'Bend/Damage'.  A Flagged
     # Events row used to print 'Bend/Damage 1' in Column and 'Possible
@@ -16064,7 +16832,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                   'reflective': 'REFL', 'connector': 'Connector',
                   'break': 'BREAK'}
     ev_row_font = Font(name=FN, size=FS, color="000000")
-    rows = uni_flagged_event_rows(grid, columns)
+    rows = uni_flagged_event_rows(grid, columns, side=side)
     for i, r in enumerate(rows, start=2):
         ev.cell(row=i, column=1, value=r['fiber']).font = ev_row_font
         ev.cell(row=i, column=2, value=r['ribbon']).font = ev_row_font
@@ -16082,7 +16850,9 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                        else ev_row_font)
         kc = ev.cell(row=i, column=6, value=kind_label[r['column_kind']])
         kc.font = (Font(name=FN, size=FS, bold=True, color='FFFFFF')
-                   if r['column_kind'] == 'break' else ev_row_font)
+                   if r['column_kind'] in ('break', 'reflective')
+                   else conn_text if r['column_kind'] == 'connector'
+                   else ev_row_font)
         kc.fill = kind_fill[r['column_kind']]
         ev.cell(row=i, column=7, value=r['reason']).font = Font(name=FN, size=FS)
         ev.cell(row=i, column=7).alignment = Alignment(wrap_text=True, vertical='top')
@@ -16110,7 +16880,8 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
     try:
         summary = uni_build_reburn_summary(
             grid, columns, n_ribbons,
-            ribbon_label_fn=lambda ri: uni_ribbon_label(ri, ribbon_size, n_fibers))
+            ribbon_label_fn=lambda ri: uni_ribbon_label(ri, ribbon_size, n_fibers),
+            ribbons=(ribbons or ribbon_rows))
         uni_write_reburn_sheet(wb, summary, insert_at=1)
         print(f"  Reburn percentage: {summary['percentage']:.2f}% "
               f"({summary['reburn_cells']} of {summary['total_cells']} splice cells)")
@@ -16128,12 +16899,216 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
             'total_splice_cells': (summary or {}).get('total_cells')}
 
 
+_UNI_VIEWER_KIND = {'splice': 'splice', 'bend_damage': 'bend', 'break': 'break',
+                    'connector': 'connector', 'reflective': 'ref', 'end': 'end'}
+
+
+def uni_viewer_table(fibers, columns, grid_columns, grid, leg='a'):
+    """The Unidirectional report, as the Viewer's OTDR Suite table needs it
+    for a load from ONE direction (Robert 2026-09-30: "it has to work for one
+    direction OR bidi, equally").  Same shape as suite_viewer_table, so the
+    Viewer reads one table format:
+
+        {'columns': [{'title', 'kind', 'km'}, ...], 'fibers': {'17': [cell]},
+         'direction': 'a' | 'b', 'gate_db': UNI_BEND_THRESHOLD}
+
+    The columns are the report's (grid_columns, its own words), in the
+    loaded direction's own frame, from that direction's launch: a B folder
+    reads from B's end, as the Viewer draws a B trace shot alone.  Only the
+    report's own columns are printed (Robert 2026-09-30), each fibre's
+    reading there flagged or not; a small job's are its event columns.
+    A reading no report column holds is left to the trace.  A cell's leg
+    sits under `leg` ('a' or 'b', the other None); its `loss` is that one
+    reading and `flag` the report's verdict (the cell is in its grid)."""
+    at_splice = _uni_at_splice_km()
+    off_win = UNI_OFF_SPLICE_CLUSTER_M / 1000.0
+    flagged = {}
+    for (_ri, ci), entries in grid.items():
+        for fnum, val in entries:
+            flagged[(fnum, ci)] = val
+
+    def _win(col):
+        if col.get('is_event_column') or col['kind'] == 'splice':
+            return at_splice
+        if col['kind'] in ('connector', 'reflective'):
+            return UNI_CLOSURE_MATCH_KM
+        return off_win
+
+    def _inspan(r):
+        eof = next((e['dist_km'] for e in r['events'] if e.get('is_end')), None)
+        for e in r['events']:
+            d = e['dist_km']
+            if d < LAUNCH_SKIP_KM or e.get('is_end'):
+                continue
+            if eof is not None and d >= eof:
+                continue
+            if not _is_inspan_event_type(e.get('type') or ''):
+                continue
+            yield e
+
+    # Only the report's own columns (Robert 2026-09-30: "report's columns
+    # only").  A reading no report column holds -- a small passing event
+    # away from any splice -- stays on the trace and in FR mode's event
+    # list, not in this table; anything the report flags already has a
+    # column of its own.
+    extra = []
+
+    # ── Columns: the report's, in its own titles ──
+    allc = [(c, grid_columns[i]['label'], i) for i, c in enumerate(columns)]
+    allc += [(c, None, None) for c in extra]
+    allc.sort(key=lambda t: t[0]['position_km_refined'])
+    n_ev = 0
+    out_cols = []
+    for c, label, _i in allc:
+        # event columns count in one sequence, the report's and the loose
+        # readings' alike, so no two share a name
+        if label is None or c.get('is_event_column'):
+            n_ev += 1
+            label = f"Event {n_ev}"
+        out_cols.append({'title': label,
+                         'kind': _UNI_VIEWER_KIND.get(c['kind'], c['kind']),
+                         'km': round(float(c.get('position_km_display',
+                                                 c['position_km_refined'])), 4)})
+        if c['kind'] == 'end':
+            out_cols[-1]['end'] = 'B' if leg == 'a' else 'A'
+        if c.get('event_kind') and (c.get('is_event_column')
+                                    or c['kind'] in ('end', 'connector')):
+            out_cols[-1]['event_kind'] = c['event_kind']
+            if c.get('event_kind_tip'):
+                out_cols[-1]['event_kind_tip'] = c['event_kind_tip']
+
+    def _leg(r, ev, loss, grey=False):
+        shim = {'events': r['events'], '_raw_events': r.get('_uni_raw_events')}
+        return _viewer_leg(shim, ev, loss, grey=grey)
+
+    def _cell(ci, c, lg, flag, label='', category='passing', is_break=False):
+        if lg is not None:
+            lg['flag'] = bool(flag)
+        return {'col': ci, 'km': round(float(c['position_km_refined']), 4),
+                'loss': lg['loss'] if lg is not None else None,
+                'flag': bool(flag),
+                'a': lg if leg == 'a' else None,
+                'b': lg if leg == 'b' else None,
+                'reflective': bool(lg and lg['reflective'])
+                              or c['kind'] in ('connector', 'reflective'),
+                'label': label, 'tags': [], 'category': category,
+                'is_break': is_break}
+
+    table = {}
+    for fnum, r in fibers.items():
+        cells = []
+        inspan = list(_inspan(r))
+        for ci, (c, _label, gi) in enumerate(allc):
+            center = c['position_km_refined']
+            flag_key = (fnum, gi) if gi is not None else None
+            is_flag = flag_key in flagged
+            kind = c['kind']
+            if kind == 'end':
+                refl = (c.get('end_members') or {}).get(fnum)
+                if fnum in (c.get('end_members') or {}):
+                    lg = {'loss': None, 'km': None,
+                          'refl': refl if (refl is not None and refl < 0) else None,
+                          'reflective': refl is not None, 'grey': False,
+                          'flag': False, 'flag_refl': False}
+                    cells.append(_cell(ci, c, lg, False, category='end'))
+                continue
+            if kind == 'break':
+                if is_flag:
+                    cells.append(_cell(ci, c, None, True, label=f"{fnum} broke",
+                                       category='break', is_break=True))
+                continue
+            if kind == 'reflective':
+                refl = (c.get('refl_members') or {}).get(fnum)
+                if refl is not None:
+                    ev = min(inspan, key=lambda e: abs(e['dist_km'] - center),
+                             default=None)
+                    lg = _leg(r, ev, None)
+                    if lg is None:
+                        lg = {'loss': None, 'km': None, 'refl': None,
+                              'reflective': True, 'grey': True,
+                              'flag': False, 'flag_refl': False}
+                    lg['refl'] = float(refl)
+                    lg['flag_refl'] = True
+                    cells.append(_cell(ci, c, lg, False,
+                                       label=f"{fnum} REFL{float(refl):.1f}dB",
+                                       category='ref'))
+                continue
+            if kind == 'connector':
+                loss = (c.get('conn_all') or {}).get(fnum)
+                if loss is None:
+                    continue
+                ev = min((e for e in r.get('_uni_raw_events') or r['events']
+                          if not e.get('is_end')),
+                         key=lambda e: abs(e['dist_km']
+                                           - (center + (r.get('_uni_event_offset_km') or 0.0))),
+                         default=None)
+                lg = _leg(r, ev, float(loss))
+                cells.append(_cell(ci, c, lg, fnum in (c.get('conn_members') or {}),
+                                   category='connector'))
+                continue
+            if c.get('prebreak_members') is not None and fnum in c['prebreak_members']:
+                loss = c['prebreak_members'][fnum]
+                lg = {'loss': None if loss is None else float(loss), 'km': None,
+                      'refl': None, 'reflective': False, 'grey': True,
+                      'flag': False, 'flag_refl': False}
+                cells.append(_cell(ci, c, lg, True, category='damage'))
+                continue
+            if fnum in (c.get('broke_members') or ()):
+                cells.append(_cell(ci, c, None, True, label=f"{fnum} broke",
+                                   category='broke', is_break=True))
+                continue
+            if gi is None or c.get('event_members') is not None:
+                # an event column holds exactly the readings it was made of
+                _mem = c['_members'] if gi is None else c['event_members']
+                near = [e for e in inspan if (fnum, e['dist_km']) in _mem]
+            else:
+                win = _win(c)
+                near = [e for e in inspan if abs(e['dist_km'] - center) <= win]
+            if not near:
+                continue
+            # the reading the report judged there: its worst, as its grid
+            ev = max(near, key=lambda e: abs(e.get('splice_loss') or 0.0))
+            lg = _leg(r, ev, float(ev.get('splice_loss') or 0.0))
+            cells.append(_cell(ci, c, lg, is_flag,
+                               label=(f"{fnum} {_format_loss(flagged[flag_key])}"
+                                      if is_flag and flagged[flag_key] is not None
+                                      else ''),
+                               category=('bend' if kind == 'bend_damage'
+                                         else 'splice')))
+        # one reading, one cell: a stored event two windows reach stays in
+        # the nearer column
+        def _key(cell):
+            lg = cell['a'] or cell['b']
+            if lg is None or lg.get('km') is None or cell['category'] in (
+                    'end', 'connector', 'ref', 'damage'):
+                return None
+            return lg['km']
+        best = {}
+        for cell in cells:
+            k = _key(cell)
+            if k is None:
+                continue
+            d = (not cell['flag'], abs(cell['km'] - k))
+            if k not in best or d < best[k][0]:
+                best[k] = (d, cell)
+        keep = [cell for cell in cells
+                if _key(cell) is None or best[_key(cell)][1] is cell]
+        table[str(int(fnum))] = keep
+    return {'columns': out_cols, 'fibers': table, 'direction': leg,
+            'gate_db': float(UNI_BEND_THRESHOLD)}
+
+
 def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
-                 landmarks=None, analysis='suite'):
+                 landmarks=None, analysis='suite', site_a=None, site_b=None,
+                 viewer_leg=None):
     """Full unidirectional pipeline: load one direction → normalize →
     discover/validate closures → trace-measured pre-break damage →
     off-splice + breaks → landmarks → ZK workbook.
-    Returns a summary dict for the hub manifest.  Raises on empty input."""
+    Returns a summary dict for the hub manifest.  Raises on empty input.
+
+    `site_a` / `site_b` are the names the tech typed for the cable's A end
+    and B end (the Splice Report's two site boxes); either left empty keeps
+    the stored GenParams name.  They print in the direction of the shot."""
     rs = ribbon_size or RIBBON_SIZE
     fibers, chosen, counts, merged_sigs, coverage = uni_load_dir(
         input_dir, direction=direction)
@@ -16263,20 +17238,48 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
             print(f"  Cable End column @ {end_cols[0]['position_km_display']:.2f} km "
                   f"({len(end_cols[0]['end_members'])} fiber(s) reach it)")
 
-        # ── Under UNI_MIN_POP_SPLICE fibres loaded: events, not closures ──
-        # Robert 2026-09-29: such a job shows its events and makes no splice,
-        # bend or damage call.  Every cluster of stored events becomes an
+        # ── Up to UNI_EVENT_JOB_MAX fibres loaded: events, not closures ──
+        # Robert 2026-09-29/30: such a job shows its events and makes no
+        # splice, bend or damage call (under 20 at first, then "up to 50").  Every cluster of stored events becomes an
         # "Event N" column judged at the splice gate; the damage-zone and
         # bend/damage finders stay out.  Breaks (found above, as always),
         # connectors, reflectance and the Cable End are unchanged.  A
         # panel tie keeps its layout: a span no longer than LAUNCH_FIBER_MAX
         # is reels and panels, not a route with closures to show.
-        if len(fibers) < UNI_MIN_POP_SPLICE and span > LAUNCH_FIBER_MAX:
+        if len(fibers) <= UNI_EVENT_JOB_MAX and span > LAUNCH_FIBER_MAX:
             valid = uni_event_columns(
                 fibers, exclude_km=[c['position_km_refined']
                                     for c in conn_cols + refl_cols])
             prebreak_cols, off_cols = [], []
-            print(f"  {len(fibers)} fibers loaded (< {UNI_MIN_POP_SPLICE}): "
+            # the Cable End reads FR's word too (Robert 2026-10-01): each
+            # reaching fibre's own end-of-fibre type
+            for _ec in end_cols:
+                _refl = {}
+                for _f in (_ec.get('end_members') or {}):
+                    _eof = next((e for e in fibers[_f]['events'] if e.get('is_end')), None)
+                    if _eof is not None:
+                        _refl[_f] = _type_is_reflective(_eof)
+                _ec['event_kind'], _ec['event_kind_tip'] = event_kind(_refl)
+            # so do its connector columns (the launch panel and, with a tail
+            # box, the far one, which IS this report's cable end): each
+            # member fibre's stored event there, in its own raw frame
+            _tol = max(UNI_CLOSURE_MATCH_KM, _RUN_PULSE_SMEAR_KM)
+            for _cc in conn_cols:
+                _refl = {}
+                for _f in (_cc.get('conn_all') or {}):
+                    _r = fibers.get(_f)
+                    if _r is None:
+                        continue
+                    _at = _cc['position_km_refined'] + float(
+                        _r.get('_uni_event_offset_km') or 0.0)
+                    _near = [e for e in (_r.get('_uni_raw_events') or _r['events'])
+                             if abs(e['dist_km'] - _at) <= _tol]
+                    if _near:
+                        _e = min(_near, key=lambda e: abs(e['dist_km'] - _at))
+                        _refl[_f] = _type_is_reflective(_e)
+                if _refl:
+                    _cc['event_kind'], _cc['event_kind_tip'] = event_kind(_refl)
+            print(f"  {len(fibers)} fibers loaded (<= {UNI_EVENT_JOB_MAX}): "
                   f"{len(valid)} event column(s), no closure or bend calls")
         columns = uni_build_columns(valid,
                                     prebreak_cols + off_cols + refl_cols + conn_cols
@@ -16290,13 +17293,14 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     grid = uni_build_ribbon_grid(fibers, columns, rs)
     grid, columns = uni_apply_show_filter(grid, columns)
 
-    sample = fibers[next(iter(sorted(fibers)))]
-    site_a = uni_short_code(sample.get('gen_loc_a'))
-    site_b = uni_short_code(sample.get('gen_loc_b'))
+    side, site_a, site_b = uni_shot_direction_named(fibers, site_a, site_b)
 
+    # The ribbons that hold a loaded fiber, 0-based: the grid draws the first
+    # to the last of them, and the reburn denominator counts these only.
+    ribbons = sorted({(f - 1) // rs for f in fibers})
     wrote = uni_write_xlsx(grid, columns, n_fibers, rs, span, output_path,
                            site_a=site_a, site_b=site_b, fibers=fibers,
-                           coverage=coverage)
+                           coverage=coverage, side=side, ribbons=ribbons)
 
     # In-app clickable grid payload (mirrors the bidir manifest's
     # columns/cells): the hub renders a ribbon × column grid where every
@@ -16326,6 +17330,9 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
         grid_columns.append({'km': round(col['position_km_display'], 3),
                              'kind': col['kind'], 'label': _lbl,
                              'landmark': col.get('landmark', '')})
+        if col.get('event_kind') and (col.get('is_event_column')
+                                      or col['kind'] in ('end', 'connector')):
+            grid_columns[-1]['event_kind'] = col['event_kind']
     cells = []
     for (ri, ci), entries in grid.items():
         for fnum, loss in entries:
@@ -16335,7 +17342,16 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
                           'loss': None if loss is None else round(float(loss), 3)})
     cells.sort(key=lambda c: (c['fiber'], c['km']))
 
+    # The Viewer's OTDR Suite table for a one-direction load (--viewer-table
+    # with --uni): the same columns and verdicts, every reading printed.
+    _vt = None
+    if viewer_leg in ('a', 'b'):
+        _vt = uni_viewer_table(fibers, columns, grid_columns, grid, leg=viewer_leg)
+        _vt.update({'span_km': round(span, 2),
+                    'launch_a_km': round(launch_offset_km, 4)})
+
     return {'direction': chosen,
+            **({'_viewer_table': _vt} if _vt is not None else {}),
             'direction_counts': counts,
             'merged_signatures': merged_sigs,
             'coverage': coverage,
@@ -16371,9 +17387,15 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
                                           for pc in prebreak_cols),
             'demoted_columns': [round(d, 2) for d in demoted],
             'landmarks_applied': len(landmarks or []),
+            # The shot's origin and far end, in that order, and which end of
+            # the cable it was taken from (uni_shot_direction).
             'site_a': site_a, 'site_b': site_b,
+            'shot_side': side,
+            'direction_label': (f"{site_a} → {site_b}" if site_a and site_b
+                                else ''),
             'ribbon_size': rs,
             'max_fiber': n_fibers,
+            'ribbons': ribbons,
             'launch_offset_km': round(launch_offset_km, 4),
             'grid_columns': grid_columns,
             'cells': cells,

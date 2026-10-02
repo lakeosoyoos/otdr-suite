@@ -227,8 +227,14 @@ def _fr_table_payload(spec_json, analysis='fr'):
                 for r in (ra, rb):
                     r['_source'] = 'sor'
             else:
-                ra = sr.parse_sor_full(pa, trim=False)
-                rb = sr.parse_sor_full(pb, trim=False)
+                def _read(p):
+                    # A .trc carries every wavelength shot; the table is
+                    # FR's at 1550 nm (or the file's first), as the Viewer
+                    # draws it.
+                    return (sr.parse_trc_wavelength(p, trim=False)
+                            if p.lower().endswith('.trc')
+                            else sr.parse_sor_full(p, trim=False))
+                ra, rb = _read(pa), _read(pb)
                 for r, side in ((ra, 'a'), (rb, 'b')):
                     r['_source'] = 'sor'
                     r['_span_side'] = side
@@ -342,12 +348,21 @@ def main():
                     help="JSON list of [fiber, path_a, path_b]: print FastReporter's "
                          "bidirectional table for each pair as one JSON line on "
                          "stdout and exit.  Nothing else runs (the Viewer's FR mode).")
+    ap.add_argument('--fr-table-file', default=None,
+                    help="Path to a file holding the --fr-table JSON list.  The "
+                         "Viewer uses this: Windows caps a command line at 32,767 "
+                         "characters, which a whole cable's pairs pass.")
     ap.add_argument('--viewer-table', default=None,
                     help="Path to write the Viewer's OTDR Suite table to: this "
-                         "report's columns and, for every fibre at every "
+                         "report's columns and, for every fiber at every "
                          "column, the numbers it worked from (flagged or "
                          "not).  The report itself is the same with or "
                          "without it.  Not written in FastReporter mode.")
+    ap.add_argument('--viewer-leg', default='a', choices=('a', 'b'),
+                    help="With --uni and --viewer-table: which direction the "
+                         "one folder is on the Viewer's screen (A->B or B->A); "
+                         "the table's readings sit under that leg, in that "
+                         "direction's own frame.")
     ap.add_argument('--site-a', default='A')
     ap.add_argument('--site-b', default='B')
     ap.add_argument('--threshold', type=float, default=None)
@@ -364,7 +379,8 @@ def main():
                     help='JSON dict of engine-global threshold overrides '
                          'from the OTDR settings panel.')
     args = ap.parse_args()
-    if not args.fr_table and (not args.dir_a or not args.out):
+    if (not args.fr_table and not args.fr_table_file
+            and (not args.dir_a or not args.out)):
         ap.error('--dir-a and --out are required')
 
     real_stdout = sys.stdout
@@ -374,6 +390,16 @@ def main():
         real_stdout.write(json.dumps(payload) + '\n')
         real_stdout.flush()
 
+    if args.fr_table_file and not args.fr_table:
+        try:
+            with open(args.fr_table_file, encoding='utf-8') as fh:
+                args.fr_table = fh.read()
+        except (OSError, UnicodeDecodeError) as exc:
+            emit({'ok': False, 'error': f'--fr-table-file: {exc}'})
+            return
+        if not args.fr_table.strip():
+            emit({'ok': False, 'error': '--fr-table-file: the file is empty'})
+            return
     if args.fr_table:
         try:
             emit(_fr_table_payload(args.fr_table, args.analysis))
@@ -636,15 +662,36 @@ def main():
                     direction=args.direction,
                     landmarks=_lms,
                     analysis=args.analysis,
+                    # The A-end / B-end names the tech typed; the 'A' / 'B'
+                    # defaults mean "none typed", as on the Splice Report.
+                    site_a=(args.site_a if args.site_a not in ('', 'A') else None),
+                    site_b=(args.site_b if args.site_b not in ('', 'B') else None),
+                    # the Viewer's Suite table for a one-direction load
+                    viewer_leg=(args.viewer_leg
+                                if args.viewer_table and args.analysis != 'fr'
+                                else None),
                 )
             except Exception as exc:
                 report_error('unidirectional (subprocess)', exc,
                              context={'input': os.path.basename(a)})
                 emit({'ok': False, 'error': f'{type(exc).__name__}: {exc}'})
                 return
+            _vt = summary.pop('_viewer_table', None)
+            _uni_table = None
+            if _vt is not None:
+                # A failure here costs the Viewer its table, never the report.
+                try:
+                    _vt.update({'dir_a' if args.viewer_leg == 'a' else 'dir_b':
+                                os.path.abspath(a)})
+                    _write_viewer_table(args.viewer_table, _vt)
+                    _uni_table = args.viewer_table
+                except Exception as _exc:
+                    print("splicereport: Viewer table skipped (%s)" % _exc,
+                          file=sys.stderr)
             emit({'ok': True, 'out': args.out, 'uni': summary,
                   'analysis_mode': args.analysis,
-                  'thresholds': _effective_gates()})
+                  'thresholds': _effective_gates(),
+                  **({'viewer_table': _uni_table} if _uni_table else {})})
             return
 
         threshold = args.threshold if args.threshold is not None else E.REBURN_THRESHOLD
@@ -906,15 +953,32 @@ def main():
                     print("  no closures discovered, publishing span structure: "
                           "%d column(s) (panel-to-panel span)" % len(splices),
                           file=sys.stderr)
-            # ── Under 20 fibres loaded: events, not closures ──
+            # ── Under 80 fibres loaded: events, not closures ──
+            # (E.EVENT_JOB_MAX_FIBERS; was under 20.  Robert 2026-10-01:
+            # "under 80 we don't try to determine bend or splice".)
             # Robert 2026-09-29: such a job shows its events and makes no
             # splice or bend call (E.discover_event_columns).  A panel-to-panel
             # span keeps the structure columns found just above.
-            _event_job = E.event_job(fa) and not _struct_fired
+            # Robert 2026-09-30: the Viewer must pair A and B even with one
+            # fibre from each direction.  A few fibres of a ROUTE find no
+            # closure either (the population floor is out of reach), so the
+            # structure pass fires on the launch reel and the far end; the
+            # route is told apart by its events: a panel span has none but
+            # its connectors (E.structure_is_panel_span).
+            _event_cols = E.discover_event_columns(fa, fb) if E.event_job(fa) else None
+            _panel_span = _struct_fired and E.structure_is_panel_span(
+                splices, _event_cols or [])
+            _event_job = _event_cols is not None and not _panel_span
             if _event_job:
-                splices = E.discover_event_columns(fa, fb)
+                # The event columns REPLACE the structure columns, so their
+                # cells go with them: they are keyed by those columns'
+                # indexes, which now name event columns (a far-end connector
+                # cell landed on "Event 1" and pushed that fiber's own
+                # reading off).
+                _struct_results, _struct_fired = {}, False
+                splices = _event_cols
                 print("  %d fibers loaded (< %d): %d event column(s), no "
-                      "closure or bend calls" % (len(fa), E.MIN_POP_SPLICE,
+                      "closure or bend calls" % (len(fa), E.EVENT_JOB_MAX_FIBERS + 1,
                                                  len(splices)), file=sys.stderr)
             # The entry case is a real closure but takes no splice number — it
             # renders as "Entry".  This numbering is a DUPLICATE of the one in
@@ -1018,7 +1082,8 @@ def main():
                               "that end" % _dropped, file=sys.stderr)
 
             E.apply_field_gainer_rule(all_results, span_km)
-            E.apply_connector_loss_rule(all_results, E.BIDIR_CONNECTOR_LOSS)
+            E.apply_connector_loss_rule(all_results, E.BIDIR_CONNECTOR_LOSS,
+                                        panel_span=E._is_panel_span(fa))
             # Additive review-bend sweep: surface off-grid consensus bends the
             # length-model/LSA test silently drops (display-only; never demotes).
             # Both bend-only passes stay off on an event job: it makes no
@@ -1042,6 +1107,9 @@ def main():
             if _event_job:
                 all_results, splices = E.neutralize_event_job(
                     all_results, splices, threshold)
+                # FR's word for every event column (Reflective /
+                # Non-reflective / Mixed): the sheet and the Viewer read it
+                E.stamp_event_kinds(splices, fa, fb)
                 num = 0
                 for sp in splices:
                     if sp.get('column_kind') == 'splice':
@@ -1092,6 +1160,13 @@ def main():
                       file=sys.stderr)
                 span_stats = None
 
+        # The fibers actually loaded, and the ribbons that hold one (0-based).
+        # `n_fibers` above is the HIGHEST fiber number, which lays the grid
+        # out; ribbon 30 loaded alone is 12 fibers in one ribbon, not "360
+        # fibers" over thirty rows.
+        _loaded = sorted(set(fa) | set(fb))
+        _ribbons = sorted({(f - 1) // ribbon_size for f in _loaded})
+
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
         print("Writing the Excel report…", file=sys.stderr, flush=True)
         E.write_xlsx(cells, splices, n_fibers, ribbon_size, args.out,
@@ -1099,7 +1174,7 @@ def main():
                      launch_cells_a=lca, launch_cells_b=lcb,
                      fibers_a=fa, fibers_b=fb, all_results=all_results,
                      fiber_avgs=fiber_avgs,
-                     span_stats=span_stats)
+                     span_stats=span_stats, ribbons=_ribbons)
 
         # ── Grid JSON for the clickable Splice Report page ──
         def sp_km(si):
@@ -1109,6 +1184,7 @@ def main():
         col = []
         for si, sp in enumerate(splices):
             col.append({'index': si, 'km': sp_km(si),
+                        'event_kind': sp.get('event_kind'),
                         'kind': ('event' if sp.get('is_event_column')
                                  else sp.get('column_kind', 'splice')),
                         'is_repair': bool(sp.get('is_repair')),
@@ -1139,19 +1215,28 @@ def main():
         # After the report is written, from what it already worked out.  A
         # failure here costs the Viewer its table, never the tech the report.
         viewer_table = None
-        # An event job writes none: the Viewer shows FR's table for it
-        # (Robert 2026-09-29), through its stand-in for a span with no table.
-        if _want_table and not _event_job:
+        # An event job writes one too (Robert 2026-09-30: "Viewer should
+        # always correctly pair the events in OTDR mode even if we only have
+        # one fiber from each direction"); it used to fall back to FR's table,
+        # which splits one splice in two when A and B place it apart.
+        if _want_table:
             try:
+                # The end columns name their sites.  The Viewer runs this
+                # report itself (no site boxes on its screen) and sends none,
+                # so its table read a bare "A-End ILA"; with none typed, each
+                # end takes the name its own direction's files store
+                # (E.uni_shot_direction: GenParams, in the shot's direction).
+                _tsa = args.site_a if args.site_a != 'A' else (
+                    E.uni_shot_direction(fa)[1] or None)
+                _tsb = args.site_b if args.site_b != 'B' else (
+                    E.uni_shot_direction(fb)[1] or None)
                 _tbl = E.suite_viewer_table(
                     fa, fb, splices, all_results,
                     population=_population, pre_split=_pre_split,
                     hidden={k: v for k, v in _pre_show.items()
                             if k not in all_results},
                     launch_issues=launch_issues, readings=_readings,
-                    span_km=span_km,
-                    site_a=(args.site_a if args.site_a != 'A' else None),
-                    site_b=(args.site_b if args.site_b != 'B' else None))
+                    span_km=span_km, site_a=_tsa, site_b=_tsb)
                 _tbl.update({'dir_a': os.path.abspath(a),
                              'dir_b': os.path.abspath(b),
                              'sig_a': _sigs[0], 'sig_b': _sigs[1],
@@ -1169,12 +1254,16 @@ def main():
         emit({
             'ok': True,
             'analysis_mode': args.analysis,
-            # under 20 fibres loaded: event columns, and no Viewer table
+            # under 20 fibres loaded: event columns (the Viewer table too)
             'event_job': bool(_event_job),
             'xlsx': args.out,
             'site_a': args.site_a, 'site_b': args.site_b,
             'site_src': site_src,
-            'span_km': span_km, 'n_fibers': n_fibers, 'ribbon_size': ribbon_size,
+            # n_fibers: how many fibers were loaded; max_fiber and ribbons
+            # (0-based, the ones holding a loaded fiber) lay out the grid.
+            'span_km': span_km, 'n_fibers': len(_loaded),
+            'max_fiber': n_fibers, 'ribbons': _ribbons,
+            'ribbon_size': ribbon_size,
             'launch_a_km': round(launch_a_km, 4),
             'n_splices': sum(1 for c in col if c['kind'] == 'splice'),
             'n_columns': len(col),

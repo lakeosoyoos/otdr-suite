@@ -177,7 +177,7 @@ def test_the_profile_s_connector_gate_reaches_a_real_uni_run(
     at.session_state["uni_report_dest"] = str(tmp_path)
     at.run()
     next(b for b in at.main.button
-         if b.label == "Run unidirectional report").click().run()
+         if b.label == "Run Unidirectional Report").click().run()
     finish_engine_run(at, "uni")
     assert not at.exception, at.exception
     assert at.session_state["uni_result"]["uni"]["connector_readings"] == 48
@@ -520,11 +520,12 @@ def test_every_break_call_the_engine_makes_reaches_the_viewer():
     # finding shares, so no list of names finds them
     ("panelbreak", {"connector": 4}),
     # a fibre broken twice: the split moves its breaks into damage columns
-    # and renames them 'broke_column' (#360).  The fixture's 11 fibres are an
-    # event job now (under 20 loaded: no Viewer table, FR's table instead), so
-    # the run reads four copies of it, 44 fibres, which the report lays out
-    # on closures as the full cable is: 7 break cells a copy, all in columns.
-    ("doublebreak", {"broke_column": 28}),
+    # and renames them 'broke_column' (#360).  The run reads four copies of
+    # the 11-fibre fixture, 44 fibres: under 80 an event job (Robert
+    # 2026-10-01), where 20 of the 28 break cells sit in split-off columns
+    # and the 8 at an event column keep the plain 'broke'.  7 a copy, all
+    # flagged either way.
+    ("doublebreak", {"broke_column": 20, "broke": 8}),
 ])
 def test_a_real_run_keeps_every_break_flagged_and_nothing_else(
         tmp_path, fixture, breaks):

@@ -105,7 +105,7 @@ def test_the_toolbar_carries_a_y_spacing_control():
     assert 'type="number"' in tag, 'FR uses a stepper; give the tech one too'
     assert 'step=' in tag
     # it belongs beside the stack checkbox, in the same toolbar group
-    grp = src[src.index('id="cb-stack"'):src.index('id="cb-events"')]
+    grp = src[src.index('id="cb-stack"'):src.index('id="cb-colors"')]
     assert 'num-yspace' in grp, 'the control must sit with stack A/B'
 
 
@@ -184,8 +184,10 @@ def test_only_drawing_and_viewport_code_may_use_the_offset():
     """Whitelist every dispDb caller by name.  A new one showing up in a
     measurement path is exactly the regression this pins."""
     src = _viewer_src()
+    # traceHits finds where a line is DRAWN, to name the fiber under the
+    # cursor; it reports no dB, so the spacing cannot corrupt a number.
     allowed = {'dataBounds', 'dataYBounds', 'drawTrace', 'drawEventMarkers',
-               'zoomToKm'}
+               'drawPairing', 'zoomToKm', 'traceHits'}
     # map each dispDb( occurrence back to its enclosing top-level function
     seen = set()
     for m in re.finditer(r'\bdispDb\(', src):

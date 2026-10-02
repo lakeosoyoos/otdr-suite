@@ -638,37 +638,19 @@ def _fake_winreg(monkeypatch, entries):
     monkeypatch.setitem(sys.modules, "winreg", w)
 
 
-def test_synced_sharepoint_libraries_are_offered_by_name(hub, settings_dir, tmp_path, monkeypatch):
-    jobs = tmp_path / "Acme Fiber" / "Field Ops - Jobs"
-    personal = tmp_path / "OneDrive - Acme Fiber"
-    jobs.mkdir(parents=True)
-    personal.mkdir()
-    _fake_winreg(monkeypatch, [
-        {"MountPoint": str(jobs), "UrlNamespace": "https://acme.sharepoint.com/sites/FieldOps/Jobs/"},
-        {"MountPoint": str(personal), "UrlNamespace": "https://acme-my.sharepoint.com/personal/rob_acme_com/Documents/"},
-        {"MountPoint": str(tmp_path / "gone"), "UrlNamespace": "https://acme.sharepoint.com/sites/X/"},
-    ])
-    assert hub.sharepoint_libraries() == [("SharePoint · Field Ops - Jobs", str(jobs))]
-    work = tmp_path / "w"
-    work.mkdir()
-    assert ("SharePoint · Field Ops - Jobs", str(jobs)) in hub.export_destinations(str(work))
-
-
-def test_new_project_can_be_saved_into_a_synced_library(home_on, settings_dir, span_dir, tmp_path, monkeypatch):
+def test_onedrive_synced_libraries_are_not_offered(hub, home_on, settings_dir, span_dir, tmp_path, monkeypatch):
+    # Robert, 2026-09-30: "I don't want to use OneDrive": SharePoint is the
+    # sign-in only, so a library this PC syncs is offered nowhere.
     jobs = tmp_path / "Acme Fiber" / "Field Ops - Jobs"
     jobs.mkdir(parents=True)
     _fake_winreg(monkeypatch, [{"MountPoint": str(jobs),
                                 "UrlNamespace": "https://acme.sharepoint.com/sites/FieldOps/Jobs/"}])
     at = _setup("📁 Start New Project")
-    at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
-    at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
-    at.selectbox(key="setup_parent_sp").set_value(str(jobs)).run()
-    assert at.text_input(key="setup_parent").value == str(jobs)
-    at.selectbox(key="setup_customer").set_value("Lumen").run()
-    name = at.text_input(key="setup_name").value         # read from the traces
-    _button(at, "Create project").click().run()
     assert not at.exception, list(at.exception)
-    assert (jobs / name / f"{name}.otdrproj").is_file()
+    assert "setup_parent_sp" not in {s.key for s in at.selectbox}
+    work = tmp_path / "w"
+    work.mkdir()
+    assert str(jobs) not in [p for _l, p in hub.export_destinations(str(work))]
 
 
 def test_a_tool_opened_from_the_project_has_a_way_back(home_on, settings_dir, span_dir):

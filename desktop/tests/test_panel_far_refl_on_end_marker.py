@@ -37,7 +37,7 @@ def _grid(tmp_path, name, site_a, site_b):
 def test_far_panel_on_the_end_marker_is_graded(tmp_path):
     grid = _grid(tmp_path, "panelfarrefl", "LSC1", "LSC6")
     refl = [t for t in grid if "REFL" in t]
-    assert refl == ["128 REFL-49.8dB"], grid
+    assert refl == ["128 B→A REFL-49.8dB"], grid
 
 
 def test_a_break_is_not_read_as_the_far_panel(tmp_path):

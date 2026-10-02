@@ -174,20 +174,17 @@ def test_a_genuine_launch_connector_is_still_found():
 
 
 def test_the_legend_documents_the_tag_without_adding_a_row():
-    """The tag is explained, but no Legend row is inserted.
+    """The tag is explained, but no Legend row is added for it.
 
-    A clean span must gain ZERO rows anywhere in the workbook.  Adding a
-    thirteenth Legend entry would have shifted FIELD GAINER down by one on
-    every span on disk, clean or not, so the explanation rides on the
-    existing Orange / ILA-column row instead.
+    It rides on the one Orange row of the cable-end columns, which names
+    what those cells hold in plain words (a trace to reshoot), never the
+    engine's tag.  The Legend lists only the colors a report paints, so a
+    clean span gains no row.
     """
-    import inspect
-    src = inspect.getsource(E.write_xlsx)
-    body = src[src.index('legend_items = ['):]
-    body = body[:body.index(']\n')]
-    assert body.count('("Orange"') == 1, 'a second Orange legend row was added'
-    assert body.count('", "') == 12 * 2, 'the legend row count changed'
-    assert 'RESHOOT_DEAD_TRACE' in body
+    assert sum(1 for r in E.SR_LEGEND if r[1] == 'Orange') == 1
+    rows = E.sr_legend_rows({'FFA500'}, ['7 RESHOOT_DEAD_TRACE'])
+    assert rows == [('Orange', 'FFA500', '5D2E00', 'Trace to check or reshoot')]
+    assert E.sr_legend_rows(set(), []) == []
 
 
 def test_an_end_event_with_no_distance_is_not_a_dead_shot():

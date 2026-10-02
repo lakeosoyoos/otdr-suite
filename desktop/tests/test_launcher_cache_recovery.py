@@ -39,6 +39,10 @@ from conftest import REPO_ROOT
 
 LAUNCHER = REPO_ROOT / "desktop" / "launcher.py"
 
+# Every test here runs the launcher's cache code, which reads and deletes
+# ~/.otdrSuite/engine.meta.json: never the real one.
+pytestmark = pytest.mark.usefixtures("temp_home")
+
 
 def _load_launcher():
     spec = importlib.util.spec_from_file_location("otdr_launcher_rec", LAUNCHER)
@@ -156,7 +160,7 @@ def test_stuck_report_dedupes_on_reason(tmp_path, monkeypatch):
 
 # ─── commit pinning ──────────────────────────────────────────────────────
 
-def test_engine_files_are_fetched_at_the_manifest_commit(monkeypatch):
+def test_engine_files_are_fetched_at_the_manifest_commit(tmp_path, monkeypatch):
     """The merge-vs-manifest race: main moves during the ~11 min build, so the
     branch tip stops matching the hashes we are checking against."""
     L = _load_launcher()
@@ -177,7 +181,8 @@ def test_engine_files_are_fetched_at_the_manifest_commit(monkeypatch):
 
     monkeypatch.setattr(L, "_fetch", fake_fetch)
     monkeypatch.setattr(L, "_verify_manifest_signature", lambda m, s: True)
-    L._try_auto_update(L.Path("/tmp/nonexistent-staging-xyz"))
+    monkeypatch.setattr(L, "_cached_version", lambda: 0)   # newer: files are fetched
+    L._try_auto_update(tmp_path / "staging")
 
     engine_urls = [u for u in urls if u.endswith("app.py")]
     assert engine_urls, "no engine file was fetched"
@@ -185,7 +190,7 @@ def test_engine_files_are_fetched_at_the_manifest_commit(monkeypatch):
     assert not any(f"/{L.GH_BRANCH}/app.py" in u for u in engine_urls)
 
 
-def test_a_manifest_without_a_commit_still_works(monkeypatch):
+def test_a_manifest_without_a_commit_still_works(tmp_path, monkeypatch):
     """Backwards compatible: an older manifest has no commit field."""
     L = _load_launcher()
     manifest = {"version": 999, "files": {rel: "0" * 64 for rel in L.ENGINE_FILES},
@@ -203,7 +208,8 @@ def test_a_manifest_without_a_commit_still_works(monkeypatch):
 
     monkeypatch.setattr(L, "_fetch", fake_fetch)
     monkeypatch.setattr(L, "_verify_manifest_signature", lambda m, s: True)
-    L._try_auto_update(L.Path("/tmp/nonexistent-staging-xyz2"))
+    monkeypatch.setattr(L, "_cached_version", lambda: 0)   # newer: files are fetched
+    L._try_auto_update(tmp_path / "staging")
     assert any(f"/{L.GH_BRANCH}/app.py" in u for u in urls)
 
 

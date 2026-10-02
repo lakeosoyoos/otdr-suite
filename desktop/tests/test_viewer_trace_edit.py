@@ -216,7 +216,7 @@ def _server_src():
 
 def test_the_span_menu_offers_the_edit_dialog():
     h = _html()
-    assert 'Edit trace settings' in h
+    assert 'Trace Settings (IOR, Names)' in h
     assert 'showEditDialog(dir, fiber)' in h
 
 
@@ -342,26 +342,15 @@ def test_the_route_forwards_the_span_and_the_dialog_offers_it():
 
 # ── the feature says it is there ─────────────────────────────────────────
 
-def test_the_event_table_tells_the_tech_that_right_click_exists():
-    """Right-click is the only way into the span menu and the settings
-    editor.  Until this line the page never said so, and a tech who does not
-    think to try it concludes the feature is missing."""
+def test_no_event_table_caption_carries_the_right_click_tip():
+    """Robert 2026-09-30: the tables' captions are only gaps and filter words,
+    so the right-click tip and the "click a column to zoom" headline are gone.
+    Each column header's ⋯ button still opens span and settings."""
     h = _html()
-    assert 'RIGHT_CLICK_HINT' in h
-    hint = h.split('const RIGHT_CLICK_HINT =', 1)[1].split(';', 1)[0].lower()
-    assert 'right-click' in hint
-    # BOTH jobs the menu does are named.  "more options" would be shorter
-    # still, but a generic label is the kind of thing eyes skip, and a tech
-    # hunting a wrong IOR has to see that this menu is where settings live.
-    assert 'span' in hint and 'settings' in hint
-
-
-def test_every_event_table_heading_carries_the_hint():
-    """One fiber, a pair, or a whole folder — all three headings get it."""
-    h = _html()
-    block = h.split('const RIGHT_CLICK_HINT =', 1)[1].split('const fmt ', 1)[0]
-    assert block.count('click a column to zoom') == 3, 'the three headings moved'
-    assert ') + RIGHT_CLICK_HINT;' in block, 'the hint must apply to all three'
+    assert 'RIGHT_CLICK_HINT' not in h
+    assert 'right-click an event for span and settings' not in h
+    assert 'click a column to zoom' not in h
+    assert 'title="span and settings">⋯</button>' in h
 
 
 def test_the_save_result_stays_on_screen_with_the_full_path():

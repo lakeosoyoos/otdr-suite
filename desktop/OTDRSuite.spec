@@ -5,14 +5,16 @@
 # CRITICAL TOOLCHAIN — DO NOT CHANGE WITHOUT READING (same lessons as the
 # Splice Report / Secret Sauce builds):
 #   * Build with Python 3.11 (NOT 3.12+).  We pin setuptools==65.5.1; that
-#     version's pkg_resources uses pkgutil.ImpImporter, removed in 3.12, so
-#     the exe crashes at launch on 3.12 with
-#     "module 'pkgutil' has no attribute 'ImpImporter'".
+#     version's pkg_resources uses pkgutil.ImpImporter, removed in 3.12.
+#     While the exe bundled pkg_resources it crashed at launch on 3.12 with
+#     "module 'pkgutil' has no attribute 'ImpImporter'"; the build is only
+#     proven on 3.11.
 #   * setuptools must be EXACTLY 65.5.1, installed LAST (build.bat re-pins it
 #     after the other deps).  Newer setuptools makes pkg_resources strict and
 #     crashes the exe with "InvalidVersion: '.../OTDRSuite'".
-#   * pkg_resources' vendored jaraco/packaging/platformdirs/etc. are bundled
-#     three ways (collect_submodules + real top-level installs + collect_all).
+#   * Since 2026-10 pkg_resources and setuptools are NOT bundled (nothing the
+#     app runs imports them; see below), which removes that crash from the
+#     exe itself.  The build venv keeps the pin above all the same.
 #
 # OTDR-SUITE-SPECIFIC NOTE — the sor_reader collision:
 #   viewer/ and secretsauce/ each ship a DIFFERENT sor_reader324802a.py.
@@ -30,11 +32,11 @@
 # green build with a missing/failing boot test as broken.
 
 import os
-from PyInstaller.utils.hooks import (
-    collect_all, collect_submodules, collect_data_files,
-)
+from PyInstaller.utils.hooks import collect_all
 
-APP_NAME  = "OTDRSuite"
+# OTDR App (this branch): the exe and its dist folder are OTDRApp, so the
+# name a person sees in Task Manager and Explorer is the product's.
+APP_NAME  = "OTDRApp"
 SPEC_DIR  = os.path.dirname(os.path.abspath(SPEC))
 REPO_ROOT = os.path.dirname(SPEC_DIR)
 
@@ -53,9 +55,19 @@ _to_collect = ["streamlit", "altair", "numpy", "openpyxl", "reportlab", "matplot
 # Optional: a build without it still runs, in a browser tab.
 _optional   = ["pyarrow", "pandas", "scipy", "webview", "clr_loader", "pythonnet",
                "qrcode"]
+# Each package's compiled modules and data, but not: its .py sources a second
+# time (the compiled copy in the archive is what runs), its test suites, or
+# build-only files (headers, Cython/Fortran sources, import libraries, type
+# stubs).  Those were over half the installed files.
+_SLIM = dict(
+    include_py_files=False,
+    filter_submodules=lambda mod: ".tests" not in mod and not mod.endswith(".conftest"),
+    exclude_datas=["**/tests/**", "**/*.pyi", "**/*.pxd", "**/*.pyx", "**/*.h",
+                   "**/*.c", "**/*.f90", "**/*.lib", "**/*.a"],
+)
 for name in _to_collect + _optional:
     try:
-        d, b, h = collect_all(name)
+        d, b, h = collect_all(name, **_SLIM)
         datas += d; binaries += b; hiddenimports += h
     except Exception as e:
         print(f"[spec] skip collect_all({name}): {e}")
@@ -72,15 +84,14 @@ try:
 except Exception as e:
     print(f"[spec] skip collect_all(tkinter): {e}")
 
-# ─── pkg_resources + setuptools (vendored deps) ──────────────────────────
-hiddenimports += collect_submodules("pkg_resources")
-hiddenimports += collect_submodules("setuptools")
-datas += collect_data_files("pkg_resources")
-for name in ("jaraco.text", "jaraco.functools", "jaraco.context",
-             "more_itertools", "packaging", "platformdirs", "appdirs",
-             "ordered_set"):
+# ─── pkg_resources / setuptools are NOT bundled ──────────────────────────
+# Nothing the app runs imports them.  Bundling them only added two runtime
+# hooks to every process start (the hub and every report run) and the
+# "InvalidVersion: '.../OTDRSuite'" crash class.  packaging stays (streamlit
+# uses it).  tzdata: Windows has no system time-zone database.
+for name in ("packaging", "tzdata"):
     try:
-        d, b, h = collect_all(name)
+        d, b, h = collect_all(name, **_SLIM)
         datas += d; binaries += b; hiddenimports += h
     except Exception as e:
         print(f"[spec] skip collect_all({name}): {e}")
@@ -95,6 +106,11 @@ hiddenimports += [
     # (Splice Report page).  declare_component loads index.html from disk
     # next to __init__.py — see the components/otdr_settings datas below.
     "components.otdr_settings",
+    # OTDR Suite App: the owner e-mail (app.py _send_owner_mail) imports
+    # smtplib inside a function of an engine file, which PyInstaller never
+    # reads; listed here so the exe is sure to carry it
+    # (test_engine_stdlib_in_exe).
+    "smtplib",
 ]
 
 # ─── Our code, bundled as ON-DISK DATA (loaded via sys.path at runtime) ──
@@ -102,7 +118,6 @@ datas += [(os.path.join(REPO_ROOT, "app.py"), ".")]
 datas += [(os.path.join(REPO_ROOT, "error_report.py"), ".")]   # stdlib-only Slack reporter
 datas += [(os.path.join(REPO_ROOT, "folder_intake.py"), ".")]  # stdlib-only folder/zip intake
 datas += [(os.path.join(REPO_ROOT, "sharepoint_link.py"), ".")]  # stdlib-only SharePoint folder (App)
-datas += [(os.path.join(REPO_ROOT, "app_theme.py"), ".")]      # Light / Dark palette
 
 # ─── Custom Streamlit component (EXFO OTDR settings panel) ────────────────
 # declare_component resolves index.html next to __init__.py, so both files
@@ -171,7 +186,10 @@ if os.path.exists(_version):
     datas += [(_version, ".")]
 
 excludes = ["weasyprint", "cairocffi", "pango", "gobject",
-            "PyQt5", "PyQt6", "PySide2", "PySide6"]
+            "PyQt5", "PyQt6", "PySide2", "PySide6",
+            # build and test tools, never run by the app
+            "pkg_resources", "setuptools", "_distutils_hack",
+            "pytest", "_pytest", "pluggy", "PyInstaller"]
 
 a = Analysis(
     [os.path.join(SPEC_DIR, "launcher.py")],

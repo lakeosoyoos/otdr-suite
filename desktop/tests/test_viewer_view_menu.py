@@ -46,8 +46,8 @@ def test_the_row_filter_is_no_longer_a_checkbox_in_the_header_strip():
 
 def test_both_menus_carry_both_items_with_their_state():
     item = SRC.split("function viewItems() {", 1)[1].split("\n}", 1)[0]
-    assert "${gFlaggedOnly ? '✓ ' : ''}Show only flagged rows" in item
-    assert "${gFailCellsOnly ? '✓ ' : ''}Show only failing cells" in item
+    assert "${gFlaggedOnly ? '✓ ' : ''}Show Only Flagged Rows" in item
+    assert "${gFailCellsOnly ? '✓ ' : ''}Show Only Failing Cells" in item
     assert 'data-view="rows"' in item and 'data-view="cells"' in item
     for fn in ("function showSpanMenu(", "function showDirChooser("):
         body = SRC.split(fn, 1)[1].split("\nasync function ", 1)[0].split("\nfunction ", 1)[0]
@@ -103,14 +103,13 @@ def test_the_fr_bidirectional_grid_blanks_the_same_way():
 
 def test_the_panel_hint_names_whichever_view_is_on():
     # once per event table: single-direction, FastReporter A+B, OTDR Suite A+B.
-    # The Suite caption is only the filter words (2026-09-29), so no leading dot.
-    assert SRC.count("' · flagged rows only'") == 2
-    assert SRC.count("' · failing cells only'") == 2
-    suite = SRC.split("function paintSuiteBidiGrid(", 1)[1].split("\n}\n", 1)[0]
-    assert "'flagged rows only'" in suite and "'failing cells only'" in suite
-    for painter in ("renderFastReporterGrid", "paintFrBidiGrid"):
+    # Every caption is only the filter words (Suite 2026-09-29, the other two
+    # 2026-09-30), joined with ' · ', so no leading dot.
+    assert "' · flagged rows only'" not in SRC
+    for painter in ("paintSuiteBidiGrid", "renderFastReporterGrid", "paintFrBidiGrid"):
         body = SRC.split("function " + painter + "(", 1)[1].split("\n}\n", 1)[0]
-        assert "' · flagged rows only'" in body and "' · failing cells only'" in body, painter
+        assert "'flagged rows only'" in body and "'failing cells only'" in body, painter
+        assert "].filter(Boolean).join(' · ');" in body, painter
 
 
 def test_the_view_switches_sit_behind_a_gear():
@@ -121,7 +120,7 @@ def test_the_view_switches_sit_behind_a_gear():
     menu = title.split('id="evt-view-menu"', 1)[1]
     for box in ('set-failcells', 'set-warncells', 'set-sections-off', 'set-avg-only'):
         assert f'id="{box}"' in menu, box
-    assert 'Show averages only' in menu
+    assert 'Show Averages Only' in menu
     assert "btn.classList.toggle('on', on.length > 0);" in SRC
     # the menu is fixed and the sticky header lifted, or the table covers it
     assert "position: fixed; z-index: 50;" in SRC
@@ -136,12 +135,16 @@ def test_averages_only_keeps_each_fibres_average_row():
     direction still shows (#370) and averages-only changes nothing."""
     rule = ("    .filter(w => (!collapse || w === 'avg' || legKept(fi, w))\n"
             "              && (collapse || !gAvgOnly || w === 'avg')).map(w => [fi, w]));")
-    assert SRC.count(rule) == 2
+    assert SRC.count(rule) == 1
+    # the Suite table's twin; a one-direction table has no Average row, so
+    # averages-only leaves its one row per fibre alone
+    assert ("    .filter(w => oneDir || ((!collapse || w === 'avg' || legKept(fi, w))\n"
+            "              && (collapse || !gAvgOnly || w === 'avg'))).map(w => [fi, w]));") in SRC
     assert "localStorage.setItem('otdr_viewer_avg_only'" in SRC
     item = SRC.split("function viewItems() {", 1)[1].split("\n}", 1)[0]
-    assert "${gAvgOnly ? '✓ ' : ''}Show averages only" in item
+    assert "${gAvgOnly ? '✓ ' : ''}Show Averages Only" in item
     suite = SRC.split("function paintSuiteBidiGrid(", 1)[1].split("\n}\n", 1)[0]
-    assert "if (gAvgOnly && !cellFilterOn())" in suite and "'averages only'" in suite
+    assert "if (gAvgOnly && !cellFilterOn() && !oneDir)" in suite and "'averages only'" in suite
 
 
 def test_the_gate_note_stays_on_screen_when_it_is_news():

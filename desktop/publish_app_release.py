@@ -1,5 +1,5 @@
 """
-Publish OTDR Suite App's release: installer + signed update feed (CI-only).
+Publish OTDR App's release: installer + signed update feed (CI-only).
 ===========================================================================
 The App does not read main's manifest: main's code would replace the App's
 screens.  Its launcher reads the signed manifest + signature from the assets
@@ -7,7 +7,7 @@ of one GitHub release, tag `app-build` (launcher.UPDATE_FEED_TAG), and takes
 only a manifest marked for its channel ("app").  The same release holds the
 App's installer, so its download link never changes:
 
-    https://github.com/lakeosoyoos/otdr-suite/releases/download/app-build/OTDRSuiteApp-Setup.exe
+    https://github.com/lakeosoyoos/otdr-suite/releases/download/app-build/OTDRApp-Setup.exe
 
 CI publishes this release only from the app-release branch, which moves only
 when Robert says to ship the App, so a checkpoint push to sandbox/app-window
@@ -33,7 +33,7 @@ manifest for another version, commit or channel, or uploads that keep failing.
 
 Usage (CI, from the repo root, with GH_TOKEN set):
     python desktop/publish_app_release.py --version <N> --built <SHA> \
-        --installer desktop/dist/OTDRSuiteApp-Setup.exe
+        --installer desktop/dist/OTDRApp-Setup.exe
 """
 from __future__ import annotations
 
@@ -50,9 +50,9 @@ sys.path.insert(0, str(REPO_ROOT / "desktop"))
 from launcher import UPDATE_CHANNEL, UPDATE_FEED_TAG  # noqa: E402
 from make_update_manifest import MANIFEST_NAME, SIG_NAME  # noqa: E402
 
-INSTALLER_NAME = "OTDRSuiteApp-Setup.exe"
-RELEASE_TITLE = "OTDR Suite App"
-RELEASE_NOTES = ("Permanent download link for OTDR Suite App. "
+INSTALLER_NAME = "OTDRApp-Setup.exe"
+RELEASE_TITLE = "OTDR App"
+RELEASE_NOTES = ("Permanent download link for OTDR App. "
                  f"{INSTALLER_NAME} is the installer; once installed, the App "
                  "updates itself from the signed manifest beside it. Rewritten "
                  "by CI from the app-release branch.")

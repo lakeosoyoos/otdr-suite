@@ -39,6 +39,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+# The product's name where a person reads it (the App's launcher sets the
+# edition to "OTDR App"; the regular exe leaves it unset).
+PRODUCT_NAME = os.environ.get('OTDR_SUITE_EDITION') or 'OTDR Suite'
+
 HERE = Path(__file__).resolve().parent
 ENGINE_ROOT = HERE.parent
 TEMPLATE = ENGINE_ROOT / 'fqa' / 'templates' / 'FQA_Site_Survey_v1_1.xlsm'
@@ -361,7 +365,12 @@ class Handler(BaseHTTPRequestHandler):
         ext = ''.join(f.suffixes[-1:]).lower()
         ctype = _TYPES.get(ext, 'application/octet-stream')
         cache = 'public, max-age=604800' if '/vendor/' in f.as_posix() else 'no-store'
-        self._send(200, f.read_bytes(), ctype, cache)
+        data = f.read_bytes()
+        if ext in ('.html', '.js') and '/vendor/' not in f.as_posix():
+            # The product's name where the tech reads it ("OTDR App" in the
+            # App, whose launcher sets the edition).
+            data = data.replace(b'OTDR Suite', PRODUCT_NAME.encode('utf-8'))
+        self._send(200, data, ctype, cache)
 
     # ── POST ──
     def do_POST(self):

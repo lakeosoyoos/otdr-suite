@@ -36,14 +36,15 @@ import time
 import json
 import socket
 import hashlib
+import http.client
 import threading
 import urllib.request
 import urllib.error
 import webbrowser
 from pathlib import Path
 
-# ── Edition: OTDR Suite App ─────────────────────────────────────────────
-# This branch builds "OTDR Suite App", the app-window edition, so it installs
+# ── Edition: OTDR App ───────────────────────────────────────────────────
+# This branch builds "OTDR App", the app-window edition, so it installs
 # and runs BESIDE the regular OTDR Suite on one PC.  Nothing is shared: its own
 # app folder (settings, cache, locks, log), its own port, its own installer
 # identity (OTDRSuite.iss), and its own updates.  main's manifest carries
@@ -52,8 +53,11 @@ from pathlib import Path
 # the signed manifest), which CI publishes only from the app-release branch,
 # and takes only a manifest marked for the App (UPDATE_CHANNEL).  The regular
 # edition is APP_NAME "OTDRSuite", ".otdrSuite", PORT 8510, main's manifest,
-# no channel.
-EDITION      = "OTDR Suite App"
+# no channel.  EDITION is the product name a person sees (window title,
+# installer, the hub through OTDR_SUITE_EDITION); the folder, the env var
+# names and APP_NAME keep the old spelling so nothing installed moves
+# (Robert, 2026-10-01: the product is "OTDR App", no "Suite" anyone sees).
+EDITION      = "OTDR App"
 APP_NAME     = "OTDRSuiteApp"
 APP_DIR_NAME = ".otdrSuiteApp"
 HOST         = "127.0.0.1"
@@ -76,6 +80,8 @@ APP_URL      = f"http://{HOST}:{PORT}"
 #   2. fetch manifest.sig (a detached Ed25519 signature over the EXACT
 #      manifest bytes),
 #   3. VERIFY that signature against UPDATE_PUBLIC_KEY_HEX (baked below),
+#      and stop there when manifest.version is not newer than the cached
+#      version (nothing to download; step 5 would refuse it anyway),
 #   4. fetch each ENGINE_FILE and check its SHA-256 against the manifest,
 #   5. refuse the swap unless manifest.version > the cached version
 #      (anti-rollback), then atomically swap into ~/.otdrSuite/engine.
@@ -126,7 +132,7 @@ MANIFEST_URL      = FEED_URL_FMT.format(path=MANIFEST_PATH)
 MANIFEST_SIG_URL  = FEED_URL_FMT.format(path=MANIFEST_SIG_PATH)
 # The permanent installer link, beside the manifest; the hub's "fresh install
 # needed" notices point here.
-INSTALLER_URL     = FEED_URL_FMT.format(path="OTDRSuiteApp-Setup.exe")
+INSTALLER_URL     = FEED_URL_FMT.format(path="OTDRApp-Setup.exe")
 
 # ── Ed25519 update-signing PUBLIC key ────────────────────────────────────
 # The committed source ALWAYS keeps the placeholder below, so every build is
@@ -158,7 +164,6 @@ ENGINE_FILES = [
     "error_report.py",
     "folder_intake.py",
     "sharepoint_link.py",
-    "app_theme.py",
     "viewer/trace_server.py",
     "viewer/sor_reader324802a.py",
     "viewer/json_reader.py",
@@ -221,17 +226,24 @@ def _cache_dir() -> Path:
 
 
 # ── Auto-update helpers ──────────────────────────────────────────────────
+_TLS_CONTEXT = None
+
+
 def _tls_context():
     """An explicit verifying TLS context.  Prefer certifi's CA bundle (bundled
     with the exe — the frozen build has no system trust store on Windows), and
     fall back to the OS default if certifi is unavailable (dev).  We NEVER
-    disable verification."""
-    try:
-        import certifi
-        return ssl.create_default_context(cafile=certifi.where())
-    except Exception:
-        # certifi missing (dev) — still verify, just with the OS store.
-        return ssl.create_default_context()
+    disable verification.  Made once per process: building one reads the
+    whole CA bundle, and an update fetches 45 URLs."""
+    global _TLS_CONTEXT
+    if _TLS_CONTEXT is None:
+        try:
+            import certifi
+            _TLS_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            # certifi missing (dev) — still verify, just with the OS store.
+            _TLS_CONTEXT = ssl.create_default_context()
+    return _TLS_CONTEXT
 
 
 def _fetch(url: str, timeout: int = 15):
@@ -241,7 +253,10 @@ def _fetch(url: str, timeout: int = 15):
             if resp.status != 200:
                 return None
             return resp.read()
-    except (urllib.error.URLError, socket.timeout, ConnectionError, OSError):
+    except (urllib.error.URLError, socket.timeout, ConnectionError, OSError,
+            http.client.HTTPException):
+        # HTTPException: a download cut off part way (IncompleteRead) used to
+        # escape here and stop the launcher before the hub ever started.
         return None
 
 
@@ -506,6 +521,9 @@ def _cache_pin() -> str:
     return str(pin.get("reason") or "engine files keep disappearing from the cache")
 
 
+UPDATE_FETCH_WORKERS = 6       # engine files fetched at once when an update applies
+
+
 def _try_auto_update(staging: Path):
     """Fetch + VERIFY a signed update into `staging`.  Returns the manifest dict
     on full success (signature ok, every file's SHA-256 matches), else None — in
@@ -560,6 +578,16 @@ def _try_auto_update(staging: Path):
         _report_install_needed(reason)
         return None
 
+    # 3b. Nothing newer than the cache: the swap in _prepare_engine refuses an
+    #     older-or-equal version (anti-rollback), so do not download 43 files
+    #     just to throw them away.  Same predicate, checked before the fetch.
+    #     That download was 7-13 s of every boot with no new publish.  A
+    #     damaged or missing cache reports version 0, so a repair still fetches.
+    cur = _cached_version()
+    if version <= cur:
+        print(f"auto-update: version {version} <= cached {cur}, nothing to fetch")
+        return None
+
     # 4. fetch each file into staging and check its SHA-256 against the manifest
     staging.mkdir(parents=True, exist_ok=True)
     # Pin to the manifest's own commit so a merge landing mid-update cannot
@@ -568,18 +596,35 @@ def _try_auto_update(staging: Path):
     ref = commit if _SHA_RE.match(commit) else GH_BRANCH
     if ref == GH_BRANCH:
         print("auto-update: manifest carries no commit — fetching at branch tip")
+    # Several at a time: one after another, each on its own new HTTPS
+    # connection, the 43 files took 7-13 s of the boot that applies an update.
+    # Every file is still checked against the signed manifest, the first
+    # failure stops the update, and nothing is written until all have passed.
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    got = {}
+    pool = ThreadPoolExecutor(max_workers=UPDATE_FETCH_WORKERS)
+    jobs = {pool.submit(_fetch, RAW_REF_URL_FMT.format(ref=ref, path=rel)): rel
+            for rel in ENGINE_FILES}
+    try:
+        for job in as_completed(jobs):
+            rel = jobs[job]
+            data = job.result()
+            if data is None:
+                print(f"auto-update: fetch failed for {rel}")
+                return None
+            if hashlib.sha256(data).hexdigest() != files[rel]:
+                print(f"auto-update: SHA-256 mismatch for {rel} — rejecting update")
+                return None
+            got[rel] = data
+    finally:
+        # On a failure, drop the queued downloads and do not wait for the ones
+        # in flight (each could take up to its socket timeout); their results
+        # are thrown away.  After a success everything has already finished.
+        pool.shutdown(wait=False, cancel_futures=True)
     for rel in ENGINE_FILES:
-        data = _fetch(RAW_REF_URL_FMT.format(ref=ref, path=rel))
-        if data is None:
-            print(f"auto-update: fetch failed for {rel}")
-            return None
-        digest = hashlib.sha256(data).hexdigest()
-        if digest != files[rel]:
-            print(f"auto-update: SHA-256 mismatch for {rel} — rejecting update")
-            return None
         target = staging / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        target.write_bytes(got[rel])
     manifest["__version_int"] = version
     return manifest
 
@@ -626,10 +671,10 @@ def _report_install_needed(reason: str):
         except Exception:
             who = "?"
         _post_slack(
-            ":arrow_down: *OTDR Suite needs a fresh install* — %s\n"
+            ":arrow_down: *%s needs a fresh install* — %s\n"
             "%s\n"
             "Update & restart cannot apply this one; the tech needs the "
-            "installer." % (who, reason))
+            "installer." % (EDITION, who, reason))
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(json.dumps({"build": build}), encoding="utf-8")
     except Exception:
@@ -995,15 +1040,20 @@ def _silence_first_run_prompt() -> None:
     os.environ.setdefault("STREAMLIT_SERVER_PORT", str(PORT))
     # No developer toolbar ("Deploy" button) in the hub's header.
     os.environ.setdefault("STREAMLIT_CLIENT_TOOLBAR_MODE", "viewer")
-    # Light theme to match the viewer (per-process so it doesn't touch the
-    # tech's other Streamlit apps via a global config).
-    os.environ.setdefault("STREAMLIT_THEME_BASE", "light")
-    os.environ.setdefault("STREAMLIT_THEME_PRIMARY_COLOR", "#2c5b8a")
-    os.environ.setdefault("STREAMLIT_THEME_BACKGROUND_COLOR", "#ffffff")
-    os.environ.setdefault("STREAMLIT_THEME_SECONDARY_BACKGROUND_COLOR", "#eef3f8")
-    # Black lettering, as .streamlit/config.toml has had since 2026-09-22
-    # ("the grey-blue read badly"); the exe reads this, not that file.
-    os.environ.setdefault("STREAMLIT_THEME_TEXT_COLOR", "#000000")
+    # The hub starts in Dark (Robert, 2026-10-01: "it needs to start fully in
+    # dark"), so the server starts in Dark too and the first page is not
+    # painted Light and switched after.  Per-process, so it doesn't touch the
+    # tech's other Streamlit apps via a global config.  These must equal
+    # app.py's THEME_STREAMLIT['dark'] (test_theme_light_dark.py checks); the
+    # exe reads these, not .streamlit/config.toml.
+    os.environ.setdefault("STREAMLIT_THEME_BASE", "dark")
+    os.environ.setdefault("STREAMLIT_THEME_PRIMARY_COLOR", "#3b82f6")
+    os.environ.setdefault("STREAMLIT_THEME_BACKGROUND_COLOR", "#0c0a09")
+    os.environ.setdefault("STREAMLIT_THEME_SECONDARY_BACKGROUND_COLOR", "#1c1917")
+    os.environ.setdefault("STREAMLIT_THEME_TEXT_COLOR", "#fafaf9")
+    os.environ.setdefault("STREAMLIT_THEME_BORDER_COLOR", "#292524")
+    os.environ.setdefault("STREAMLIT_THEME_DATAFRAME_BORDER_COLOR", "#292524")
+    os.environ.setdefault("STREAMLIT_THEME_DATAFRAME_HEADER_BACKGROUND_COLOR", "#1c1917")
     # Windows' own font (2026-09-24), matching .streamlit/config.toml.
     os.environ.setdefault("STREAMLIT_THEME_FONT", "Segoe UI, sans-serif")
     # NOTE: OTDR_SUITE_HOME is set in main() AFTER _prepare_engine() chooses the

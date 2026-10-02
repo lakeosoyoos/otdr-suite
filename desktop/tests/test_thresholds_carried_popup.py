@@ -9,9 +9,12 @@
    viewer to carry over with those same settings and thresholds"
 
     pop-up       landing on the Viewer, Splice Report or Unidirectional from
-                 another tool, by the Select Tool list or a "← Back" button;
-                 never on Secret Sauce, never on the first page, never on a
-                 report-cell or pair click (Robert: no pop-up on cell jumps)
+                 another tool, by the Select Tool list or a "← Back" button,
+                 when the settings come over from a DIFFERENT Settings tool
+                 (2026-10-01: only if actually carried); never on Secret
+                 Sauce, never on the first page, never back on the tool they
+                 were last set on, never on a report-cell or pair click
+                 (Robert: no pop-up on cell jumps)
     answer       OK or Edit Settings only: no ✕, Esc or click outside
     OK           dark, takes Return / Enter
     Edit         opens the Settings box and scrolls the page to it
@@ -143,7 +146,9 @@ def test_the_pop_up_names_the_selected_profile(which):
     # theme variables since the Light / Dark switch; Light = #e7f5ea / #9fd3aa
     assert box.startswith('<div style="background:var(--otdr-ok-bg-2);border:1px solid var(--otdr-ok-edge);')
     assert f"Customer Profile: <span" in box
-    assert box.endswith(f">{html.escape(picked)}</span></div>")
+    # The two built-in profiles print in Title Case; customer names as stored.
+    shown = {DEFAULT: "Default (Engine Baseline)"}.get(picked, picked)
+    assert box.endswith(f">{html.escape(shown)}</span></div>")
 
 
 def test_secret_sauce_gets_no_popup_and_the_way_back_asks():
@@ -153,6 +158,36 @@ def test_secret_sauce_gets_no_popup_and_the_way_back_asks():
     (d,) = _popup(at)
     # Secret Sauce has no thresholds: they came from the Viewer before it.
     assert "as **Viewer**" in " ".join(m.value for m in d.markdown)
+
+
+def test_back_on_the_same_tool_carries_nothing_so_no_popup():
+    """Robert 2026-10-01: only when the thresholds are actually carried over.
+    Viewer -> Secret Sauce -> Viewer brings nothing from another tool."""
+    at = _open(_hub(), "Secret Sauce")
+    assert not _popup(at)
+    _open(at, "Viewer")
+    assert not _popup(at)
+    # ...and a real hand-off after it still asks.
+    _open(at, "Unidirectional")
+    (d,) = _popup(at)
+    assert "as **Viewer**" in " ".join(m.value for m in d.markdown)
+
+
+def test_no_settings_tool_before_it_carries_nothing():
+    """A tool change with no Settings tool before it has nothing to carry."""
+    import app as hub
+    ss = {'_last_tool': 'Secret Sauce'}
+
+    class _SS(dict):
+        __getattr__ = dict.get
+    fake = _SS(ss)
+    real = hub.st.session_state
+    hub.st.session_state = fake
+    try:
+        hub._note_tool_change('Splice Report')
+    finally:
+        hub.st.session_state = real
+    assert '_carry_popup' not in fake
 
 
 def test_the_back_button_from_the_viewer_asks():
@@ -221,8 +256,10 @@ def test_ok_is_dark_and_takes_return():
     import app as hub
     assert hub.CARRY_OK_KEY == "carry_ok"
     css = hub._CARRY_OK_CSS
-    # --otdr-accent-2 is #16324f in Light (the Light / Dark switch)
+    # The button takes its colour from the Light / Dark palette; in Light
+    # (the default) that is still the dark navy it always was.
     assert ".st-key-carry_ok button{background-color:var(--otdr-accent-2)" in css
+    assert hub.THEME_VARS["light"]["accent-2"] == "#16324f"
     js = hub._CARRY_ENTER_JS
     assert ".st-key-carry_ok button" in js
     assert "ev.key !== 'Enter'" in js and "ok.click()" in js
@@ -413,7 +450,7 @@ def test_a_cancelled_run_opens_the_popup(tmp_path):
     _cancel_button(at, "sr")[0].click().run()
     assert not at.exception, at.exception
     assert "sr_job" not in at.session_state
-    assert any("Run cancelled" in i.value for i in at.info)
+    assert any("Run canceled" in i.value for i in at.info)
     assert len(_popup(at)) == 1
     gate.touch()
 

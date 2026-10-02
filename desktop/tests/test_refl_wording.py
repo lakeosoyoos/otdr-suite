@@ -145,7 +145,7 @@ def test_ila_cell_text_survives_the_tag_splitter():
     iss = E.detect_launch_issues({1: _dir(launch_refl=-20.0)}, {1: _dir()})
     _, lca, _ = E.build_ribbon_data({}, n_fibers=12, ribbon_size=12,
                                     n_splices=1, launch_issues=iss)
-    assert lca[0]['text'] == '1 REFL-20.0dB', lca[0]
+    assert lca[0]['text'] == '1 A→B REFL-20.0dB', lca[0]
 
 
 # ── in-grid reflective labels ───────────────────────────────────────────────
@@ -340,7 +340,12 @@ def test_bidi_is_untouched():
 
 
 def test_the_old_reflective_vocabulary_is_gone_from_the_engine():
+    # FastReporter's own word for an event's type is the one place the bare
+    # word lives (Robert 2026-10-01: event columns read "Reflective" /
+    # "Non-reflective"), and it is defined once
+    src = ENGINE_SRC.replace("EVENT_KIND_REFL = 'Reflective'", '', 1)
+    assert src.count("'Reflective'") == ENGINE_SRC.count("'Reflective'") - 1
     for dead in ('BAD_LAUNCH_REFL', 'BAD_TAILBOX_REFL', 'uni reflection',
                  '(refl {', 'Ref @ {', 'f"Reflective ', "f'Reflective ",
                  "'Reflective'", 'Reflective event'):
-        assert dead not in ENGINE_SRC, dead
+        assert dead not in src, dead

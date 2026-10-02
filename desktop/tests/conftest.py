@@ -16,6 +16,8 @@ import_trace_server()                            : -> the viewer engine module
                                                     (with VIEWER_DIR on sys.path)
 run_secretsauce(folder, out_dir, fmt='xlsx')     : -> (returncode, manifest|None, stderr)
     Invokes secretsauce/run_secretsauce.py exactly as the hub does in dev.
+temp_home (fixture)                              : -> pathlib.Path
+    ~ for this test only (see "A home of the test's own" below).
 
 Conventions for the other suites
 --------------------------------
@@ -176,9 +178,40 @@ def _cached_modules_put_back():
     yield
     _put_cached_back()
 
-# The span the trace server held when the running test first opened the hub
-# (see run_streamlit and _no_span_left_loaded).
-_HUB = {"opened": False, "before": None}
+# ── A home of the test's own ──────────────────────────────────────────────
+# The launcher keeps its engine cache, the cache's meta and its markers under
+# Path.home() / ".otdrSuite".  A test that hands _recover_cache a temp engine
+# still reads the meta from the REAL home, and when that meta's hashes condemn
+# the temp engine it unlinks the real meta: on a Windows dev box, a re-download
+# of the same engine at the next boot.  A launcher test module opts in with
+# pytestmark = pytest.mark.usefixtures("temp_home").
+
+
+@pytest.fixture
+def temp_home(tmp_path, monkeypatch):
+    """Point ~ at tmp_path / "home" for this test and return it: Path.home()
+    itself, and HOME / USERPROFILE / HOMEDRIVE+HOMEPATH so os.path.expanduser
+    agrees on either platform (ntpath ignores HOME).
+
+    For this process only: a Python child handed this HOME loses the user
+    site-packages (see test_stale_engine_gate), so a test that spawns one
+    builds that child's env itself."""
+    import os
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    drive, tail = os.path.splitdrive(str(home))
+    monkeypatch.setenv("HOMEDRIVE", drive)
+    monkeypatch.setenv("HOMEPATH", tail)
+    assert Path.home() == home and Path(os.path.expanduser("~")) == home, (
+        "~ still resolves outside the test's own home")
+    return home
+
+# The span the trace server held when the running test first opened the hub,
+# and the rest of its CONFIG then (see run_streamlit and _no_span_left_loaded).
+_HUB = {"opened": False, "before": None, "config": None}
 
 
 def _server_dirs(*put):
@@ -204,11 +237,24 @@ def _no_span_left_loaded():
     other test's span.
 
     Only hub tests are touched, and the folders are put back afterwards: the
-    viewer's own tests set them once per module and read them in every test."""
-    _HUB["opened"], _HUB["before"] = False, None
+    viewer's own tests set them once per module and read them in every test.
+
+    The rest of the server's CONFIG goes back too.  Every hub run writes its
+    own into it (engine_argv, settings, analysis_mode, the report's gates),
+    and a hub test that plays the installed build (sys.frozen) leaves the
+    frozen engine command, [python, '--run-splicereport'], which a plain
+    python refuses: the next test that has the server run the report then
+    gets no verdicts.  The test order used to hide it, a later hub test
+    writing the dev command back; in the CI's parallel parts the order is
+    not that."""
+    _HUB["opened"], _HUB["before"], _HUB["config"] = False, None, None
     yield
     if _HUB["opened"]:
         _server_dirs(*(_HUB["before"] or (None, None)))
+        if _HUB["config"] is not None:
+            config, before = _HUB["config"]
+            config.clear()
+            config.update(before)
 
 
 def run_streamlit(default_timeout: float = 60.0, **kwargs):
@@ -219,6 +265,9 @@ def run_streamlit(default_timeout: float = 60.0, **kwargs):
     if not _HUB["opened"]:
         _HUB["opened"] = True
         _HUB["before"] = _server_dirs()
+        tv = sys.modules.get("trace_server")
+        if isinstance(getattr(tv, "CONFIG", None), dict):
+            _HUB["config"] = (tv.CONFIG, dict(tv.CONFIG))
         _server_dirs(None, None)
     at = AppTest.from_file(str(APP_PATH), default_timeout=default_timeout, **kwargs)
     if os.environ.get("OTDR_TEST_HOME") != "1":

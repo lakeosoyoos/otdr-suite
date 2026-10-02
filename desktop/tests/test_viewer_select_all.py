@@ -31,9 +31,14 @@ def test_ctrl_a_off_an_input_marks_the_files_and_not_the_page():
 
 def test_select_all_marks_every_row_and_loads_them():
     fn = SRC.split("async function selectAllFiles() {", 1)[1].split("\n}", 1)[0]
-    assert "#files-list .file-row" in fn
-    assert "markFiles(want);" in fn            # the marks are painted first
-    assert "await applyFileSelection(want);" in fn   # ... then the load
+    assert "new Set(fileRowKeys())" in fn      # every row in the list
+    assert "await selectFiles(want);" in fn
+    rows = SRC.split("function fileRowKeys() {", 1)[1].split("\n}", 1)[0]
+    assert "#files-list .file-row" in rows
+    # selectFiles, the path a click takes too: the marks are painted first,
+    # then the load
+    sel = SRC.split("async function selectFiles(want) {", 1)[1].split("\n}", 1)[0]
+    assert sel.index("markFiles(want);") < sel.index("await applyFileSelection(w);")
     assert ".file-row.selected {" in SRC
 
 
@@ -51,10 +56,13 @@ def test_the_mark_is_used_by_remove_and_reset_by_a_click():
     rm = SRC.split("function removeSelectedFiles() {", 1)[1].split("\n}", 1)[0]
     assert "keys.forEach(key => gRemovedFiles.add(key));" in rm
     # A click no longer empties the mark set, it REPLACES it with what the
-    # click selected — one row for a plain click, the range for a shift-click.
+    # click selected — one row for a plain click, the range for a shift-click
+    # — through selectFiles, which marks before it loads.
     click = SRC.split("async function onFileClick(ev) {", 1)[1].split("\n}\n", 1)[0]
     assert "clearFileSelection();" not in click
-    assert "markFiles(want);" in click
+    assert "await selectFiles(s.want);" in click
+    sel = SRC.split("async function selectFiles(want) {", 1)[1].split("\n}", 1)[0]
+    assert "markFiles(want);" in sel
     mark = SRC.split("function markFiles(keys) {", 1)[1].split("\n}", 1)[0]
     assert "gSelectedFiles.clear();" in mark
     assert "for (const k of keys) gSelectedFiles.add(k);" in mark
@@ -65,14 +73,17 @@ def test_a_shift_clicked_range_is_what_remove_removes():
     the clicked file went.  The range is marked, so the marked-set branch runs
     and the menu says how many before it does."""
     click = SRC.split("async function onFileClick(ev) {", 1)[1].split("\n}\n", 1)[0]
-    rng = click.split("if (ev.shiftKey && gFileAnchor) {", 1)[1].split("} else", 1)[0]
-    assert "want = new Set(rows.slice(lo, hi + 1).map(keyOf));" in rng
-    assert click.index("want = new Set(rows.slice") < click.index("markFiles(want);")
+    assert "fileClickSelection(fileRowKeys(), gSelectedFiles, gFileAnchor, key," in click
+    assert "ev.shiftKey, ev.ctrlKey || ev.metaKey);" in click
+    assert click.index("fileClickSelection(") < click.index("await selectFiles(s.want);")
+    pick = SRC.split("function fileClickSelection(", 1)[1].split("\n}\n", 1)[0]
+    rng = pick.split("if (shift && anchor) {", 1)[1].split("\n  }", 1)[0]
+    assert "const want = new Set(fileRange(keys, anchor, key));" in rng
     menu = SRC.split("function showFileDirMenu(", 1)[1].split("\nasync function ", 1)[0]
     # the marked KEYS (Direction acts on them too now), and the count off them
     assert "const marks = gSelectedFiles.has(k) ? [...gSelectedFiles] : [k];" in menu
     assert "const marked = marks.length > 1 ? marks.length : 0;" in menu
-    assert "marked + ' marked files'" in menu
+    assert "marked + ' Marked Files'" in menu
 
 
 def test_clear_all_drops_the_marks_with_the_traces():

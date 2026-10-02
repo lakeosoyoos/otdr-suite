@@ -46,7 +46,9 @@ def test_every_drawn_event_number_records_a_hit_box():
 
 def test_hovering_a_number_shows_the_arrow_and_clicking_it_goes_to_the_cell():
     move = SRC.split("canvas.addEventListener('mousemove'", 1)[1].split("window.addEventListener('mouseup'", 1)[0]
-    assert "labelHit(ev.offsetX, ev.offsetY)) ? 'default' : 'crosshair'" in move
+    # (a trace under the cursor shows the hand instead: test_viewer_trace_hover_fiber)
+    assert "labelHit(ev.offsetX, ev.offsetY)" in move
+    assert "canvas.style.cursor = overLabel ? 'default' :" in move
     down = SRC.split("canvas.addEventListener('mousedown'", 1)[1].split("canvas.addEventListener('mousemove'", 1)[0]
     # pressing on a number must not start a pan
     assert "gLabelClick = { hit: lh" in down
@@ -86,7 +88,7 @@ def test_right_clicking_a_number_opens_the_span_menu_for_that_event():
 def test_right_clicking_a_file_removes_it_from_the_list_and_the_viewer():
     fn = SRC.split("function showFileDirMenu(", 1)[1].split("\nasync function ", 1)[0]
     # The label carries the count: one row alone, or the whole marked set.
-    assert '<button data-remove="1">Remove ${marked > 1 ? marked + \' marked files\' : \'file\'}' in fn
+    assert '<button data-remove="1">Remove ${marked > 1 ? marked + \' Marked Files\' : \'File\'}' in fn
     assert "removeFile(k, fiber)" in fn
     rm = SRC.split("function removeFile(", 1)[1].split("\n}", 1)[0]
     assert "gRemovedFiles.add(key);" in rm and "removeTrace(key);" in rm

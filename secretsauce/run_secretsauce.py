@@ -32,6 +32,36 @@ import sys
 import tempfile
 from collections import defaultdict
 
+
+def _keep_font_cache():
+    """Give matplotlib a font cache that outlives this run.  In the installed
+    app PyInstaller's matplotlib hook points MPLCONFIGDIR at a NEW temp folder
+    in every process, so each Duplicate Check run listed and parsed every
+    font on the machine before drawing its charts (3 to 13 s).  The charts
+    come out the same either way.  Must run before matplotlib is imported;
+    if the folder cannot be made, the temp one stays."""
+    if not getattr(sys, 'frozen', False):
+        return                       # dev: matplotlib's own ~/.matplotlib persists
+    keep = os.path.join(os.path.expanduser('~'), '.otdrSuite', 'mplconfig')
+    try:
+        os.makedirs(keep, exist_ok=True)
+        # A run stopped (Cancel, timeout) while matplotlib was saving the
+        # font list leaves its lock file behind.  matplotlib would then wait
+        # 5 s for it and fail to save on every later run, so a lock older
+        # than a minute is stale and goes.
+        import time
+        for name in os.listdir(keep):
+            if name.endswith('.matplotlib-lock'):
+                lock = os.path.join(keep, name)
+                if time.time() - os.path.getmtime(lock) > 60:
+                    os.remove(lock)
+        os.environ['MPLCONFIGDIR'] = keep
+    except OSError:
+        pass
+
+
+_keep_font_cache()
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 # Repo root (parent) on path so the stdlib-only error_report module imports in
@@ -374,6 +404,8 @@ def main():
     confidence_all = []        # detector confidence band, one entry per group (additive)
     mating_top_all = []        # top mating pairs per group, for the in-app ranking (additive)
     near_splice_all = []       # splice-behind-the-panel reading per group, for the two-fibre check (additive)
+    closure_all = []           # splice loss at every closure, per group (additive)
+    port_len_all = []          # port length (tie-panel ranking), per group (additive)
     fill_ins_all = []          # fibres skipped and shot later, per group (additive)
 
     try:
@@ -411,6 +443,10 @@ def main():
                     mating_top_all.extend(_mating_top_records(key, meta['mating_top'], paths))
                 if meta.get('near_splice'):
                     near_splice_all.append(_near_splice_record(key, meta['near_splice'], paths))
+                if meta.get('closure_fp'):
+                    closure_all.append(dict(meta['closure_fp'], group=key))
+                if meta.get('port_length'):
+                    port_len_all.append(dict(meta['port_length'], group=key))
                 if meta.get('fill_ins'):
                     fill_ins_all.extend(dict(r, group=key) for r in meta['fill_ins'])
                 fname = (f'{key}_secret_sauce.{ext}' if len(groups) > 1 else f'report.{ext}')
@@ -476,6 +512,10 @@ def main():
         payload['mating_top'] = mating_top_all
     if near_splice_all:
         payload['near_splice'] = near_splice_all
+    if closure_all:
+        payload['closure_fp'] = closure_all
+    if port_len_all:
+        payload['port_length'] = port_len_all
     if fill_ins_all:
         payload['fill_ins'] = fill_ins_all
     emit(payload)
@@ -576,12 +616,15 @@ def _emit_pairs(sor, folder, counts, emit):
         return
 
     out_pairs = []
+    sort_keys, all_pairs, n_flagged = [], [], 0
     n_files = 0
     short_traces_all = []
     window_warnings_all = []
     competence_all = []        # detector competence, one entry per group (additive)
     confidence_all = []        # detector confidence band, one entry per group (additive)
     near_splice_all = []       # splice-behind-the-panel reading (additive)
+    closure_all = []           # splice loss at every closure (additive)
+    port_len_all = []          # port length, tie-panel ranking (additive)
     fill_ins_all = []          # fibres skipped and shot later (additive)
     for key, paths in groups.items():
         stage = _stage_flat(paths)
@@ -602,63 +645,107 @@ def _emit_pairs(sor, folder, counts, emit):
             competence_all.append(_cd)
         if analysis.get('confidence'):
             confidence_all.append(analysis['confidence'])
-        from report_sor import _near_splice_meta, _fill_ins_meta
+        from report_sor import (_near_splice_meta, _fill_ins_meta, _closure_meta,
+                                _port_length_meta, _display_only_meta, _closure_pair)
         _nsm = _near_splice_meta(analysis)
         if _nsm:
             near_splice_all.append(_near_splice_record('report', _nsm, sor))
+        _cfm = _display_only_meta(_closure_meta, analysis)
+        if _cfm:
+            closure_all.append(dict(_cfm, group='report'))
+        _plm = _display_only_meta(_port_length_meta, analysis)
+        if _plm:
+            port_len_all.append(dict(_plm, group='report'))
         fill_ins_all.extend(dict(r, group='report') for r in _fill_ins_meta(analysis))
+        _plab = ((analysis.get('port_length') or {}).get('ab') or {})
+        _plflag = set()
+        for (_x, _y), _v in (_plab.get('z') or {}).items():
+            if abs(_v) > _plab.get('k_sd', 1e9):
+                _plflag.update((_x, _y))
+        _cfp = analysis.get('closure_fp') or {}
+        # Only the sort keys here (the rounded values the emitted rows carry);
+        # the full rows are built below for the emitted top MAX_EMIT_PAIRS
+        # alone.  A combined A+B folder has over a million pairs, and building
+        # a row for each to keep 500 cost seconds and hundreds of MB.
         for pr in analysis['pairs']:
-            na, nb = pr['a'], pr['b']           # filename stems
-            fa = name_to_num.get(na)
-            fb = name_to_num.get(nb)
-            viewable, reason = True, None
-            if fa is None or fb is None:
-                viewable, reason = False, 'no fiber number in filename'
-            elif fa == fb:
-                viewable, reason = False, 'both files share fiber number'
-            elif num_counts.get(fa, 0) > 1 or num_counts.get(fb, 0) > 1:
-                viewable, reason = False, 'fiber number not unique in folder'
-            rec = {
-                'group': key,
-                'fileA': na, 'fileB': nb,
-                'fiberA': fa, 'fiberB': fb,
-                'score': round(float(pr['score']), 4),
-                'shape_r': (None if pr.get('shape_r') is None
-                            else round(float(pr['shape_r']), 4)),
-                'p_dup': round(float(pr['p_dup']), 4),
-                'verdict': _verdict(float(pr['p_dup'])),
-                'viewable': viewable,
-                'reason': reason,
-            }
-            if pr.get('mating_lr') is not None:
-                rec['mating_lr'] = round(float(pr['mating_lr']), 1)
-                rec['mating_p'] = round(float(pr['mating_p']), 4)
-            if pr.get('splice_diff_sd') is not None:
-                rec['splice_sd'] = round(float(pr['splice_diff_sd']), 2)
-            if pr.get('raw_identical'):
-                # Raw-identity short-circuit (report_sor): the two files carry
-                # the same acquisition data (literal copy / re-export).  Key is
-                # only present when it fired, keeping every other manifest
-                # byte-stable.
-                rec['raw_identical'] = True
-                rec['verdict'] = 'CONFIRMED duplicate (identical)'
-            out_pairs.append(rec)
+            _pd = round(float(pr['p_dup']), 4)
+            _mp = (round(float(pr['mating_p']), 4)
+                   if pr.get('mating_lr') is not None else None)
+            sort_keys.append((-_pd, -(_mp or 0.0), round(float(pr['score']), 4)))
+            if _pd > 0.5:
+                n_flagged += 1
+            all_pairs.append((key, pr, _cfp, _plflag))
 
     # Worst-first: highest likelihood, then lowest σ (most similar) as tiebreak.
     # Ties in p_dup (every pair on a folder the fingerprint cannot judge) are
     # broken by the mating likelihood, so the emitted top rows are the ones a
-    # tech should look at.  n_flagged below is untouched.
-    out_pairs.sort(key=lambda d: (-d['p_dup'], -(d.get('mating_p') or 0.0), d['score']))
-    n_flagged = sum(1 for d in out_pairs if d['p_dup'] > 0.5)
+    # tech should look at.  heapq.nsmallest(n, ...) is documented equal to
+    # sorted(...)[:n], ties kept in order, so these are the rows a full sort
+    # put first.
+    MAX_EMIT_PAIRS = 500
+    n_pairs_total = len(all_pairs)
+    import heapq
+    top_idx = heapq.nsmallest(MAX_EMIT_PAIRS, range(n_pairs_total),
+                              key=sort_keys.__getitem__)
+    for _i in top_idx:
+        key, pr, _cfp, _plflag = all_pairs[_i]
+        na, nb = pr['a'], pr['b']           # filename stems
+        fa = name_to_num.get(na)
+        fb = name_to_num.get(nb)
+        viewable, reason = True, None
+        if fa is None or fb is None:
+            viewable, reason = False, 'no fiber number in filename'
+        elif fa == fb:
+            viewable, reason = False, 'both files share fiber number'
+        elif num_counts.get(fa, 0) > 1 or num_counts.get(fb, 0) > 1:
+            viewable, reason = False, 'fiber number not unique in folder'
+        rec = {
+            'group': key,
+            'fileA': na, 'fileB': nb,
+            'fiberA': fa, 'fiberB': fb,
+            'score': round(float(pr['score']), 4),
+            'shape_r': (None if pr.get('shape_r') is None
+                        else round(float(pr['shape_r']), 4)),
+            'p_dup': round(float(pr['p_dup']), 4),
+            'verdict': _verdict(float(pr['p_dup'])),
+            'viewable': viewable,
+            'reason': reason,
+        }
+        if pr.get('mating_lr') is not None:
+            rec['mating_lr'] = round(float(pr['mating_lr']), 1)
+            rec['mating_p'] = round(float(pr['mating_p']), 4)
+        if pr.get('splice_diff_sd') is not None:
+            rec['splice_sd'] = round(float(pr['splice_diff_sd']), 2)
+        _cq = _closure_pair(_cfp, na, nb)
+        if _cq is not None:
+            rec['closure_p'] = round(_cq['closure_p'], 4)
+            rec['closure_max_sd'] = round(_cq['closure_max_sd'], 2)
+            if _cq['closure_same_glass']:
+                rec['closure_same_glass'] = True
+            if _cq['closure_level']:
+                rec['closure_level'] = _cq['closure_level']
+        if pr.get('port_len_diff_m') is not None:
+            rec['port_len_diff_cm'] = round(100.0 * float(pr['port_len_diff_m']), 1)
+            if pr.get('port_len_left_in'):
+                rec['port_len_left_in'] = True
+            _hit = [n for n in (na, nb) if n in _plflag]
+            if _hit:
+                rec['port_len_other_end'] = _hit
+        if pr.get('raw_identical'):
+            # Raw-identity short-circuit (report_sor): the two files carry
+            # the same acquisition data (literal copy / re-export).  Key is
+            # only present when it fired, keeping every other manifest
+            # byte-stable.
+            rec['raw_identical'] = True
+            rec['verdict'] = 'CONFIRMED duplicate (identical)'
+        out_pairs.append(rec)
 
-    # Cap the EMITTED pair list.  out_pairs is sorted worst-first, so the likely
+    # The EMITTED pair list is capped.  It is sorted worst-first, so the likely
     # duplicates the tech cares about are at the top; the long tail is near-zero
     # non-duplicates nobody scrolls to.  On a combined bidirectional folder that
     # tail is enormous — 864 files → 372,816 pairs, 1152 → 662,976 — and
     # emitting them all builds an ~80-140 MB manifest + HTML table that freezes
     # the browser.  Keep the TRUE totals; ship only the top rows.
-    MAX_EMIT_PAIRS = 500
-    n_pairs_total = len(out_pairs)
 
     payload = {
         'ok': True,
@@ -668,7 +755,7 @@ def _emit_pairs(sor, folder, counts, emit):
         'n_files': n_files,
         'n_pairs': n_pairs_total,
         'n_flagged': n_flagged,
-        'pairs': out_pairs[:MAX_EMIT_PAIRS],
+        'pairs': out_pairs,
         'pairs_truncated': n_pairs_total > MAX_EMIT_PAIRS,
         'pairs_shown': min(n_pairs_total, MAX_EMIT_PAIRS),
     }
@@ -684,6 +771,10 @@ def _emit_pairs(sor, folder, counts, emit):
         payload['confidence'] = confidence_all
     if near_splice_all:
         payload['near_splice'] = near_splice_all
+    if closure_all:
+        payload['closure_fp'] = closure_all
+    if port_len_all:
+        payload['port_length'] = port_len_all
     if fill_ins_all:
         payload['fill_ins'] = fill_ins_all
     emit(payload)

@@ -13,7 +13,7 @@ settings panels of three pages because a custom-component call makes Streamlit
 run `is_dataframe_like()` on each argument, and that does `import pandas`.
 
 WHY THIS FILE EXISTS.  #133 shipped one answer for every ImportError: "a file
-this app needs is missing" plus a Repair and restart button.  For a blocked DLL
+this app needs is missing" plus a Repair and Restart button.  For a blocked DLL
 that advice is a loop with no exit — repair re-downloads ENGINE files, while the
 blocked file lives inside the installed exe, which no update we publish ever
 rewrites.  The two failures look alike and take opposite remedies, so the app
@@ -116,7 +116,7 @@ def test_a_blocked_file_is_not_offered_a_repair():
     mod._engine_policy_block_page(ImportError(REAL_BLOCK))
 
     text = " ".join(st.shown)
-    assert "Repair and restart" not in st.buttons, st.buttons
+    assert "Repair and Restart" not in st.buttons, st.buttons
     assert "blocked" in text.lower()
     assert "repairing or re-downloading will not clear it" in text.lower()
     assert "newest version" in text.lower(), "the tech is not told what to try"
@@ -139,7 +139,7 @@ def test_a_blocked_subprocess_gets_the_same_answer_not_a_repair():
                 _relaunch_and_exit=lambda: True,
                 _render_restart_watchdog=lambda *a, **k: None)
     assert mod._engine_damaged_notice(f"Traceback...\n{REAL_BLOCK}", 'ss') is True
-    assert "Repair and restart" not in st.buttons, st.buttons
+    assert "Repair and Restart" not in st.buttons, st.buttons
     assert "blocked" in " ".join(st.shown).lower()
 
 
@@ -151,7 +151,7 @@ def test_a_missing_file_subprocess_still_gets_the_repair():
                 _relaunch_and_exit=lambda: True,
                 _render_restart_watchdog=lambda *a, **k: None)
     assert mod._engine_damaged_notice(f"Traceback...\n{REAL_MISSING}", 'ss') is True
-    assert "Repair and restart" in st.buttons
+    assert "Repair and Restart" in st.buttons
     assert "missing from this computer" in " ".join(st.shown)
 
 

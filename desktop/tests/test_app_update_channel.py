@@ -1,4 +1,4 @@
-"""OTDR Suite App updates itself from its own release, never from main's.
+"""OTDR App updates itself from its own release, never from main's.
 
 Robert, 2026-09-29: push updates to the App without sending the boss a new
 installer each time, from a separate installer link.  The App reads release
@@ -126,7 +126,7 @@ def test_the_feed_is_the_app_release_not_a_branch():
     base = "https://github.com/lakeosoyoos/otdr-suite/releases/download/app-build/"
     assert L.MANIFEST_URL == base + "update_manifest.json"
     assert L.MANIFEST_SIG_URL == base + "update_manifest.json.sig"
-    assert L.INSTALLER_URL == base + "OTDRSuiteApp-Setup.exe"
+    assert L.INSTALLER_URL == base + "OTDRApp-Setup.exe"
     assert L.AUTO_UPDATE is True and L.UPDATE_CHANNEL == "app"
 
 
@@ -235,7 +235,7 @@ def _installer_url():
 
 
 def test_the_install_notices_point_at_the_apps_installer(monkeypatch):
-    app_link = "https://github.com/lakeosoyoos/otdr-suite/releases/download/app-build/OTDRSuiteApp-Setup.exe"
+    app_link = "https://github.com/lakeosoyoos/otdr-suite/releases/download/app-build/OTDRApp-Setup.exe"
     monkeypatch.setenv("OTDR_SUITE_INSTALLER_URL", app_link)
     assert _installer_url() == app_link
     monkeypatch.delenv("OTDR_SUITE_INSTALLER_URL")
@@ -295,7 +295,7 @@ def _stage(tmp_path, version=40, commit="d" * 40, channel="app"):
         m["channel"] = channel
     (tmp_path / "update_manifest.json").write_bytes(json.dumps(m).encode())
     (tmp_path / "update_manifest.json.sig").write_bytes(b"s" * 64)
-    inst = tmp_path / "dist" / "OTDRSuiteApp-Setup.exe"
+    inst = tmp_path / "dist" / "OTDRApp-Setup.exe"
     inst.parent.mkdir()
     inst.write_bytes(b"MZ installer")
     return inst
@@ -306,10 +306,10 @@ def test_a_new_build_goes_up_installer_first_then_the_feed(tmp_path):
     inst = _stage(tmp_path)
     gh = FakeGH(exists=False)
     assert P.publish(tmp_path, 40, "d" * 40, inst, gh=gh, sleep=lambda s: None) == "published"
-    assert gh.uploaded() == ["OTDRSuiteApp-Setup.exe", "update_manifest.json.sig",
+    assert gh.uploaded() == ["OTDRApp-Setup.exe", "update_manifest.json.sig",
                              "update_manifest.json"]
     assert gh.assets["update_manifest.json"] == (tmp_path / "update_manifest.json").read_bytes()
-    assert gh.assets["OTDRSuiteApp-Setup.exe"] == b"MZ installer"
+    assert gh.assets["OTDRApp-Setup.exe"] == b"MZ installer"
 
 
 def test_a_build_older_than_the_release_stands_down(tmp_path):
@@ -354,14 +354,14 @@ def test_the_publisher_retries_then_gives_up(tmp_path):
 def test_ci_publishes_the_app_release_from_app_release_only():
     ci = CI_WORKFLOW.read_text(encoding="utf-8")
     names = re.findall(r"^\s+- name: (.+)$", ci, re.MULTILINE)
-    step = ci.split("- name: Publish OTDR Suite App release (app-release only)", 1)[1]
+    step = ci.split("- name: Publish OTDR App release (app-release only)", 1)[1]
     step = step.split("\n      - name:", 1)[0]
     cond = re.search(r"\n\s+if: (.+)", step).group(1).strip()
     assert cond == "github.ref == 'refs/heads/app-release'"
-    assert "publish_app_release.py" in step and "OTDRSuiteApp-Setup.exe" in step
-    i = names.index("Publish OTDR Suite App release (app-release only)")
+    assert "publish_app_release.py" in step and "OTDRApp-Setup.exe" in step
+    i = names.index("Publish OTDR App release (app-release only)")
     assert i > names.index("Generate + sign update manifest")
-    assert i > names.index("Verify OTDRSuiteApp-Setup.exe signature")
+    assert i > names.index("Verify OTDRApp-Setup.exe signature")
     assert i > names.index("Boot self-test (launch exe, poll /_stcore/health)")
     # Nothing else writes to the App's release tag.
     assert not re.search(r"gh release [^\n]*app-build", ci.replace(step, ""))
@@ -513,12 +513,12 @@ def _home(monkeypatch, tmp_path, edition):
 
 
 def test_the_app_home_offers_the_photos_box_until_they_are_in(monkeypatch, tmp_path):
-    assert "Sample Span Photos" in _home(monkeypatch, tmp_path, "OTDR Suite App")
+    assert "Sample Span Photos" in _home(monkeypatch, tmp_path, "OTDR App")
     photos = tmp_path / "appdir" / "sample_photos"
     photos.mkdir(parents=True)
     for n in ("A-1.jpg", "A-2.jpg", "Z-1.jpg", "Z-2.jpg"):
         (photos / n).write_bytes(_jpeg(9))
-    assert "Sample Span Photos" not in _home(monkeypatch, tmp_path, "OTDR Suite App")
+    assert "Sample Span Photos" not in _home(monkeypatch, tmp_path, "OTDR App")
 
 
 def test_the_regular_home_has_no_photos_box(monkeypatch, tmp_path):

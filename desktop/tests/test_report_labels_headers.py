@@ -1,0 +1,404 @@
+"""Splice Report and Unidirectional report labels and headers (group 2).
+
+Display only: every test here checks what a workbook or the hub prints, never
+what the engine finds.  Shaped on a 432-fiber span whose two directions'
+files store the same GenParams pair, with the direction in EXFO's own
+LocationsDirection field.
+
+Engine tests run in a clean subprocess (3-engine sor_reader isolation).
+"""
+import json
+import subprocess
+import sys
+import textwrap
+
+from conftest import REPO_ROOT
+
+SPLICEREPORT_DIR = REPO_ROOT / "splicereport"
+
+_HELPERS = textwrap.dedent("""
+    import json, os, tempfile
+    import openpyxl
+    import splicereportmatchexfo as E
+
+    def ev(km, loss=0.05, end=False, refl=None):
+        return {'dist_km': km, 'splice_loss': loss, 'is_end': end,
+                'is_reflective': refl is not None, 'reflection': refl,
+                'type': '1E9999LS' if end else '0F9999LS'}
+
+    def header_rows(path, sheet='Splice Report'):
+        ws = openpyxl.load_workbook(path)[sheet]
+        return [[ws.cell(r, c).value for c in range(1, ws.max_column + 1)]
+                for r in range(1, 4)]
+""")
+
+
+def _run(body: str) -> dict:
+    code = _HELPERS + "\n" + textwrap.dedent(body)
+    proc = subprocess.run([sys.executable, "-c", code], cwd=str(SPLICEREPORT_DIR),
+                          capture_output=True, text=True, timeout=180)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+# ── #7 No negative header ──────────────────────────────────────────────────
+
+def test_far_connector_header_is_never_negative():
+    """F354 alone: the far connector sits at 55.003 km from A on a 55.00 km
+    span.  The B->A header is the span minus the A->B value, and that read
+    "-0.01km, -33'"; it is floored at 0.00.  The A->B header is the column's
+    own display distance, as before."""
+    out = _run("""
+        sp = [{'position_km': 55.003, 'position_km_refined': 55.003,
+               'position_km_display': 55.0, 'column_kind': 'connector'}]
+        p = os.path.join(tempfile.mkdtemp(), 'sr.xlsx')
+        E.write_xlsx({}, sp, 354, 12, p, 'SITEA', 'NET-XX-SITEB-0001', 54.99)
+        rows = header_rows(p)
+        print(json.dumps({'b': rows[0][2], 'a': rows[1][2]}))
+    """)
+    assert out['a'].startswith('55.00km'), out
+    assert out['b'] == "0.00km, 0'", out
+
+
+# ── #22 Unidirectional B workbook direction ────────────────────────────────
+
+RUNNER = SPLICEREPORT_DIR / "run_splicereport.py"
+
+
+def _uni(folder, out, *extra):
+    proc = subprocess.run([sys.executable, str(RUNNER), "--uni", "--dir-a",
+                           str(folder), "--out", str(out), *extra],
+                          cwd=str(SPLICEREPORT_DIR), capture_output=True,
+                          text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def test_uni_header_names_the_shot_from_its_own_direction(tmp_path):
+    """Both ends' files store GenParams (ELMDALE, MILL[E]R) in the same order;
+    EXFO's LocationsDirection says 1 for the A shots and 2 for the B shots.
+    The header prints the stored names in full, in the direction of the shot:
+    the B folder's distances run from MILLER.  It read "ELM→MIL:" for both."""
+    import openpyxl
+    from conftest import FIXTURE_A_DIR, FIXTURE_B_DIR
+    got = {}
+    for side, folder in (("A", FIXTURE_A_DIR), ("B", FIXTURE_B_DIR)):
+        out = tmp_path / f"uni_{side}.xlsx"
+        m = _uni(folder, out)
+        got[side] = (openpyxl.load_workbook(out)["Unidir Events"]["A1"].value,
+                     m["uni"].get("direction_label"))
+    assert got["A"] == ("ELMDALE → MILER:", "ELMDALE → MILER"), got
+    assert got["B"] == ("MILLER → ELMDALE:", "MILLER → ELMDALE"), got
+
+
+def test_uni_b_why_flagged_says_b_side():
+    """A bend/damage row of a B shot says B-side, not A-side."""
+    out = _run("""
+        cols = [{'kind': 'bend_damage', 'position_km_refined': 8.0,
+                 'position_km_display': 8.0, 'fiber_count': 3}]
+        grid = {(0, 0): [(2, 0.42)]}
+        try:
+            rows = E.uni_flagged_event_rows(grid, cols, side='B')
+        except TypeError:                      # before the fix: no side
+            rows = E.uni_flagged_event_rows(grid, cols)
+        print(json.dumps({'why': rows[0]['reason']}))
+    """)
+    assert "B-side event" in out["why"] and "A-side" not in out["why"], out
+
+
+# ── #3 Site names ──────────────────────────────────────────────────────────
+
+def test_uni_typed_site_names_print_in_the_direction_of_the_shot(tmp_path):
+    """The names typed for the A end and the B end (WEST, EAST) print in the
+    workbook and in the hub's summary line, ordered by the shot: a B shot
+    reads "EAST → WEST"."""
+    import openpyxl
+    from conftest import FIXTURE_A_DIR, FIXTURE_B_DIR
+    got = {}
+    for side, folder in (("A", FIXTURE_A_DIR), ("B", FIXTURE_B_DIR)):
+        out = tmp_path / f"uni_{side}.xlsx"
+        m = _uni(folder, out, "--site-a", "WEST", "--site-b", "EAST")
+        got[side] = (openpyxl.load_workbook(out)["Unidir Events"]["A1"].value,
+                     m["uni"].get("direction_label"))
+    assert got["A"] == ("WEST → EAST:", "WEST → EAST"), got
+    assert got["B"] == ("EAST → WEST:", "EAST → WEST"), got
+
+
+def test_sr_typed_site_names_print_everywhere_the_site_appears(tmp_path):
+    """Pin: the Splice Report's two typed names reach the A-End / B-End
+    header cells, the acquisition sheet, the Viewer table's end columns and
+    the manifest the hub prints and names the file from.  (This already
+    held before group 2; the test keeps it.)"""
+    import openpyxl
+    from conftest import FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR
+    out = tmp_path / "sr.xlsx"
+    vt = tmp_path / "vt.json"
+    proc = subprocess.run([sys.executable, str(RUNNER),
+                           "--dir-a", str(FIXTURE_SPLICE_A_DIR),
+                           "--dir-b", str(FIXTURE_SPLICE_B_DIR),
+                           "--out", str(out), "--site-a", "WEST",
+                           "--site-b", "EAST", "--viewer-table", str(vt)],
+                          cwd=str(SPLICEREPORT_DIR), capture_output=True,
+                          text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    m = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert (m["site_a"], m["site_b"]) == ("WEST", "EAST")
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Splice Report"]
+    # (a small job's header carries a second line, its event type)
+    assert ws.cell(3, 2).value.split("\n")[0] == "A-End ILA: WEST"
+    assert ws.cell(3, ws.max_column).value.split("\n")[0] == "B-End ILA: EAST"
+    acq = [c.value for row in wb["Acquisition Parameters"].iter_rows()
+           for c in row if isinstance(c.value, str)]
+    assert "A-dir WEST" in acq and "B-dir EAST" in acq
+    cols = json.loads(vt.read_text(encoding="utf-8"))["columns"]
+    assert cols[0]["title"] == "A-End ILA: WEST"
+    assert cols[-1]["title"] == "B-End ILA: EAST"
+
+
+# ── #6 End cells name the direction of each reading ────────────────────────
+
+def test_end_cell_names_the_direction_of_each_reflectance():
+    """F180 of the 432-fiber span fails at the B end both ways: B reads its own launch
+    connector at -48.3 dB, A reads the same connector at its far end at
+    -48.7 dB.  The cell printed '180 REFL-48.3dB 180 REFL-48.7dB'."""
+    out = _run("""
+        issues = {180: {'a_tags': ['REFL-42.3dB'],
+                        'b_tags': ['REFL-48.3dB', 'REFL-48.7dB'],
+                        'refl_rules': {'A': ['tailbox'],
+                                       'B': ['launch', 'tailbox']},
+                        'severity': 'HIGH'}}
+        cells, lca, lcb = E.build_ribbon_data({}, 432, 12, 0,
+                                              launch_issues=issues)
+        print(json.dumps({'a': lca[14]['text'], 'b': lcb[14]['text']}))
+    """)
+    assert out['b'] == '180 B→A REFL-48.3dB 180 A→B REFL-48.7dB', out
+    assert out['a'] == '180 B→A REFL-42.3dB', out      # B's far end, at A
+
+
+# ── #4 Legends: only the colors used, named for what they are ─────────────
+
+def test_sr_legend_lists_only_the_colors_used_in_plain_words():
+    """a 432-fiber span paints two colors: reburn pink and the orange cable-end
+    cells, which hold end-connector reflectances.  The Legend listed eleven
+    colors and called the orange ones "Launch / RESHOOT_DEAD_TRACE /
+    BREAK_AT_PANEL"."""
+    out = _run("""
+        sp = [{'position_km': 21.86, 'position_km_refined': 21.86,
+               'column_kind': 'splice', 'splice_display_num': 1}]
+        cells = {(0, 0): {'text': '7 .172', 'is_break': False,
+                          'is_broke': False}}
+        lcb = {14: {'text': '180 B→A REFL-48.3dB 180 A→B REFL-48.7dB',
+                    'severity': 'HIGH'}}
+        p = os.path.join(tempfile.mkdtemp(), 'sr.xlsx')
+        E.write_xlsx(cells, sp, 432, 12, p, 'SITEA', 'NET-XX-SITEB-0001', 55.03,
+                     launch_cells_b=lcb)
+        ws = openpyxl.load_workbook(p)['Legend']
+        print(json.dumps([[c.value for c in r] for r in ws.iter_rows()]))
+    """)
+    assert out == [['Color', 'Meaning'],
+                   ['Pink', 'Reburn (A and B average)'],
+                   ['Orange', 'End connector reflectance']], out
+
+
+def test_uni_colors_are_the_splice_reports_and_the_legend_lists_them():
+    """The Unidirectional grid paints with the Splice Report's colors: a
+    splice flag pink, a bend yellow, a connector the end-connector orange.
+    Each header is a darker shade of its cells.  The Cable End cells hold
+    readings: no fill and no Legend row (gray means "not seen from either
+    end" in the Splice Report).  The connector used to share the bend gold
+    and yellow, and the gray Cable End cells had no Legend row."""
+    out = _run("""
+        cols = [{'kind': 'splice', 'position_km_refined': 5.0,
+                 'position_km_display': 5.0, 'fiber_count': 12,
+                 'is_entry_case': False},
+                {'kind': 'bend_damage', 'position_km_refined': 8.0,
+                 'position_km_display': 8.0, 'fiber_count': 3},
+                {'kind': 'connector', 'position_km_refined': 20.0,
+                 'position_km_display': 20.0, 'conn_all': {2: 0.6},
+                 'conn_members': {2: 0.6}},
+                {'kind': 'end', 'position_km_refined': 30.0,
+                 'position_km_display': 30.0, 'end_members': {2: -45.0}}]
+        grid = {(0, 0): [(1, 0.31)], (0, 1): [(2, 0.42)], (0, 2): [(2, 0.6)],
+                (0, 3): [(2, -45.0)]}
+        p = os.path.join(tempfile.mkdtemp(), 'uni.xlsx')
+        E.uni_write_xlsx(grid, cols, 12, 12, 30.0, p, site_a='SITEA',
+                         site_b='NET-XX-SITEB-0001')
+        wb = openpyxl.load_workbook(p)
+        ws = wb['Unidir Events']
+        def fill(c):
+            return c.fill.start_color.rgb[-6:] if c.fill.fill_type == 'solid' else None
+        hdr = {ws.cell(3, c).value: fill(ws.cell(3, c)) for c in range(2, 6)}
+        cell = {ws.cell(3, c).value: fill(ws.cell(4, c)) for c in range(2, 6)}
+        leg = [[c.value for c in r] for r in wb['Legend'].iter_rows()]
+        print(json.dumps({'hdr': hdr, 'cell': cell, 'leg': leg}))
+    """)
+    hdr, cell, leg = out['hdr'], out['cell'], out['leg']
+    assert cell == {'Splice 1': 'FFC7CE', 'Bend/Damage 1': 'FFEB3B',
+                    'Connector 1': 'FFA500', 'Cable End': None}, cell
+    assert hdr == {'Splice 1': 'C2185B', 'Bend/Damage 1': 'B7950B',
+                   'Connector 1': '8C5300', 'Cable End': '1F4E79'}, hdr
+    assert leg[1:] == [['Dark Pink (header)', 'Splice'], ['Pink (cell)', 'Reburn'],
+                       ['Gold (header)', 'Bend/Damage'],
+                       ['Yellow (cell)', 'Bend/Damage'],
+                       ['Dark Amber (header)', 'Connector'],
+                       ['Orange (cell)', 'Connector']], leg
+
+
+# ── #2 Small loads: count what was loaded ──────────────────────────────────
+
+def _second_ribbon(tmp_path):
+    """Fibers 13-24 of the splice fixture alone, both directions: one ribbon
+    loaded, numbered as the cable's second (ribbon 30 of a 432-fiber span alone)."""
+    import shutil
+    from conftest import FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR
+    out = {}
+    for side, src in (("A", FIXTURE_SPLICE_A_DIR), ("B", FIXTURE_SPLICE_B_DIR)):
+        d = tmp_path / side
+        d.mkdir()
+        for p in sorted(src.glob("*.sor")):
+            if 13 <= int(p.name[6:10]) <= 24:
+                shutil.copy(p, d / p.name)
+        out[side] = d
+    return out["A"], out["B"]
+
+
+def test_sr_small_load_counts_the_loaded_fibers_and_ribbons(tmp_path):
+    """One ribbon loaded: the manifest says 12 fibers (it said the highest
+    fiber number, 24), the grid draws that ribbon's row only (it drew the
+    empty first ribbon too), and the Reburn Summary's denominator is one
+    ribbon times the splice columns."""
+    import openpyxl
+    a, b = _second_ribbon(tmp_path)
+    out = tmp_path / "sr.xlsx"
+    proc = subprocess.run([sys.executable, str(RUNNER), "--dir-a", str(a),
+                           "--dir-b", str(b), "--out", str(out)],
+                          cwd=str(SPLICEREPORT_DIR), capture_output=True,
+                          text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    m = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert m["n_fibers"] == 12, m["n_fibers"]
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Splice Report"]
+    labels = [ws.cell(r, 1).value for r in range(4, ws.max_row + 1)]
+    assert labels == ["Fiber 13-24 (2) (A2)"], labels
+    rs = {r[0]: r[1] for r in wb["Reburn Summary"].iter_rows(values_only=True)
+          if r[0]}
+    assert rs["Ribbons"] == 1, rs
+    n_cols = rs.get("Real splice columns", rs.get("Real event columns"))
+    assert rs["Total ribbon × splice cells" if "Real splice columns" in rs
+              else "Total ribbon × event cells"] == n_cols, rs
+
+
+def test_uni_small_load_counts_the_loaded_ribbons(tmp_path):
+    """Uni on one ribbon: one ribbon row, one ribbon in the Reburn
+    Percentage denominator."""
+    import openpyxl
+    a, _ = _second_ribbon(tmp_path)
+    out = tmp_path / "uni.xlsx"
+    m = _uni(a, out)
+    assert m["uni"]["n_fibers"] == 12
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Unidir Events"]
+    labels = [ws.cell(r, 1).value for r in range(4, ws.max_row + 1)]
+    assert labels == ["Fiber 13-24 (2) (A2)"], labels
+    rp = {r[0]: r[1] for r in wb["Reburn Percentage"].iter_rows(values_only=True)
+          if r[0]}
+    assert rp["Ribbons"] == 1, rp
+
+
+def _gap_span(tmp_path):
+    """The splice fixture in ribbons of six (four ribbons) with ribbon 2's
+    files (fibers 7-12) missing from both folders: a ribbon missing mid-span."""
+    import shutil
+    from conftest import FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR
+    out = {}
+    for side, src in (("A", FIXTURE_SPLICE_A_DIR), ("B", FIXTURE_SPLICE_B_DIR)):
+        d = tmp_path / side
+        d.mkdir()
+        for p in sorted(src.glob("*.sor")):
+            if not 7 <= int(p.name[6:10]) <= 12:
+                shutil.copy(p, d / p.name)
+        out[side] = d
+    return out["A"], out["B"]
+
+
+def test_a_ribbon_missing_mid_span_keeps_its_empty_row(tmp_path):
+    """Rows run from the first loaded ribbon to the last, so the missing
+    ribbon still shows as an empty row (Splice Report and Unidirectional);
+    the reburn denominators count only the three ribbons that were loaded."""
+    import openpyxl
+    a, b = _gap_span(tmp_path)
+    out = tmp_path / "sr.xlsx"
+    proc = subprocess.run([sys.executable, str(RUNNER), "--dir-a", str(a),
+                           "--dir-b", str(b), "--out", str(out),
+                           "--ribbon-size", "6"],
+                          cwd=str(SPLICEREPORT_DIR), capture_output=True,
+                          text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    m = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert (m["n_fibers"], m["ribbons"]) == (18, [0, 2, 3]), m["ribbons"]
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Splice Report"]
+    rows = {ws.cell(r, 1).value: [ws.cell(r, c).value
+                                  for c in range(2, ws.max_column + 1)]
+            for r in range(4, ws.max_row + 1)}
+    labels = list(rows)
+    assert [l.split(' (')[0] for l in labels] == [
+        "Fiber 1-6", "Fiber 7-12", "Fiber 13-18", "Fiber 19-24"], labels
+    assert all(v is None for v in rows[labels[1]]), rows[labels[1]]
+    rs = {r[0]: r[1] for r in wb["Reburn Summary"].iter_rows(values_only=True)
+          if r[0]}
+    assert rs["Ribbons"] == 3, rs
+    uout = tmp_path / "uni.xlsx"
+    _uni(a, uout, "--ribbon-size", "6")
+    wb = openpyxl.load_workbook(uout)
+    ws = wb["Unidir Events"]
+    ulabels = [ws.cell(r, 1).value.split(' (')[0]
+               for r in range(4, ws.max_row + 1)]
+    assert ulabels == ["Fiber 1-6", "Fiber 7-12", "Fiber 13-18",
+                       "Fiber 19-24"], ulabels
+    rp = {r[0]: r[1] for r in wb["Reburn Percentage"].iter_rows(values_only=True)
+          if r[0]}
+    assert rp["Ribbons"] == 3, rp
+
+
+# ── Reburn Summary names the span ───────────────────────────────────────────
+
+def test_reburn_summary_names_the_span():
+    """One line under the title names the span by the report's own end
+    names; a typed name is what the report prints, so it wins."""
+    out = _run("""
+        sp = [{'position_km': 21.86, 'position_km_refined': 21.86,
+               'column_kind': 'splice', 'splice_display_num': 1}]
+        res = {(7, 0): {'fiber': 7, 'event_source': 'bidir'}}
+        p = os.path.join(tempfile.mkdtemp(), 'sr.xlsx')
+        E.write_xlsx({}, sp, 24, 12, p, 'SITEA', 'NET-XX-SITEB-0001', 55.0,
+                     all_results=res)
+        ws = openpyxl.load_workbook(p)['Reburn Summary']
+        print(json.dumps({'a1': ws['A1'].value, 'a2': ws['A2'].value}))
+    """)
+    assert out == {'a1': 'Reburn Summary',
+                   'a2': 'Span: SITEA → NET-XX-SITEB-0001'}, out
+
+
+# ── Viewer table end columns name their sites with none typed ──────────────
+
+def test_viewer_table_end_columns_name_the_stored_sites(tmp_path):
+    """The Viewer runs the Splice Report itself and types no site names, so
+    its table's end columns read a bare "A-End ILA" / "B-End ILA" (any load,
+    a small one included).  With none typed, each end takes the name its
+    own direction's files store."""
+    from conftest import FIXTURE_A_DIR, FIXTURE_B_DIR
+    vt = tmp_path / "vt.json"
+    proc = subprocess.run([sys.executable, str(RUNNER),
+                           "--dir-a", str(FIXTURE_A_DIR),
+                           "--dir-b", str(FIXTURE_B_DIR),
+                           "--out", str(tmp_path / "sr.xlsx"),
+                           "--viewer-table", str(vt)],
+                          cwd=str(SPLICEREPORT_DIR), capture_output=True,
+                          text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    cols = json.loads(vt.read_text(encoding="utf-8"))["columns"]
+    ends = [c["title"] for c in cols if c.get("kind") == "end"]
+    assert ends == ["A-End ILA: ELMDALE", "B-End ILA: MILLER"], ends

@@ -106,7 +106,9 @@ def test_a_span_with_closures_is_untouched(tmp_path):
     out = tmp_path / "normal.xlsx"
     rc, m, stderr = run_splicereport(FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, out)
     assert rc == 0 and m and m.get("ok"), stderr[-800:]
-    assert m["n_splices"] >= 1, "fixture span should have closures"
+    # 24 fibres: under 80 the fixture lists its events (Robert 2026-10-01),
+    # one column per closure, and the structure pass still stays out
+    assert m["n_columns"] >= 1 and {c["kind"] for c in m["columns"]} <= {"splice", "event"}
     assert not any(c["kind"] in ("connector", "section") for c in m["columns"])
     assert "span structure" not in stderr
 

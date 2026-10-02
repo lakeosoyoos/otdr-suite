@@ -839,8 +839,7 @@ def compute_contract_conformance(records_a: list, records_b: list,
     headline = ("Acquisition matches the contract on every checked figure."
                 if clean else
                 f"{len(bad)} of {len(rows)} checked figures do NOT match the "
-                "contract. Reported, not corrected: distances are left "
-                "exactly as the instrument recorded them.")
+                "contract")
     return {"name": contract.get("name") or "Customer contract",
             "rows": rows, "clean": clean, "headline": headline}
 
@@ -898,8 +897,7 @@ def compute_test_settings(records_a: list, records_b: list,
                 mixed_notes.append(
                     f"{d['label']}, {r['name']}: not one setting across this "
                     f"direction's own {r['n_files']} trace(s): "
-                    f"{r['mixed_detail']}. The cell shows the most common "
-                    f"value; the rest were shot differently.")
+                    f"{r['mixed_detail']}")
     if a is None or b is None:
         # One direction only.  The settings ARE stored; there is simply no
         # counterpart to check them against, and saying "not stored" here
@@ -1073,14 +1071,18 @@ def engine_stamp_text() -> str:
 
     Never raises: a missing/broken error_report degrades to 'unknown' rather
     than taking the whole acquisition sheet down (its caller only warns)."""
+    import os
+    # The product's name: "OTDR App" in the App (its launcher sets the
+    # edition), as the sidebar footer prints it.
+    name = os.environ.get("OTDR_SUITE_EDITION") or "OTDR Suite"
     try:
         from error_report import version_labels
         appv, engv = version_labels()
     except Exception:
-        return "OTDR Suite · unknown"
+        return f"{name} · unknown"
     if appv == "dev" and engv == "dev":
-        return "OTDR Suite · dev"
-    return f"OTDR Suite · app {appv} · engine: {engv}"
+        return f"{name} · dev"
+    return f"{name} · app {appv} · engine: {engv}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1208,7 +1210,7 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
     # a reviewer skims for "how big was this run".
     if cov_incomplete:
         _count = (f"{cov['n_loaded']} of {cov['n_candidates']} trace(s) in "
-                  f"folder analysed, {cov['n_dropped']} NOT analysed")
+                  f"folder analyzed, {cov['n_dropped']} NOT analyzed")
         _fnt = fnt_alarm_detail
     else:
         _count = f"{audit['n_files']} trace(s)"
@@ -1286,15 +1288,7 @@ def render_xlsx_sheet(wb, audit: dict, font_name: str = "Calibri",
                       value="Per-Direction Acquisition Consistency")
         a.font = fnt_bold
         a.fill = fill_grey
-        b = ws.cell(row=row, column=2,
-                      value="Listed only when ONE direction disagrees with "
-                            "ITSELF: a second OTDR unit, or a second "
-                            "wavelength, inside a single end's set. Losses "
-                            "from two instruments are not one calibration. A "
-                            "direction shot as one job has no rows here.")
-        b.font = fnt_small
-        b.fill = fill_grey
-        b.alignment = Alignment(vertical="top", wrap_text=True)
+        ws.cell(row=row, column=2, value="").fill = fill_grey
         row += 1
         for d in audit["per_direction"]:
             for entry in d["rows"]:
@@ -1386,7 +1380,7 @@ def _render_contract(ws, con: dict, row: int, font_name: str,
     """The customer-contract conformance block.
 
     Deliberately laid out like the Test Settings panel above it (banner,
-    explanation, header, rows) so it reads as part of the same audit rather
+    header, rows) so it reads as part of the same audit rather
     than a bolted-on note — but it answers a different question, and the
     banner says so.
     """
@@ -1399,7 +1393,8 @@ def _render_contract(ws, con: dict, row: int, font_name: str,
     fnt_warn   = Font(name=font_name, size=font_size, bold=True,
                       color="7F6000")
 
-    c = ws.cell(row=row, column=1, value="Contract")
+    # The banner names the contract: the one place it is printed.
+    c = ws.cell(row=row, column=1, value=f"Contract: {con['name']}")
     c.font = fnt_bold
     c.fill = fill_grey
     c = ws.cell(row=row, column=2, value=con["headline"])
@@ -1409,19 +1404,6 @@ def _render_contract(ws, con: dict, row: int, font_name: str,
     c.border = box
     for col in (3, 4):
         ws.cell(row=row, column=col, value="").fill = fill_grey
-    row += 1
-
-    c = ws.cell(row=row, column=2,
-                value=(f"{con['name']}: the acquisition checked against the "
-                       "customer's own figures. The panel above asks whether "
-                       "these traces agree with EACH OTHER; this asks whether "
-                       "they agree with what the contract says the cable IS. "
-                       "A span shot at the wrong group index is perfectly "
-                       "self-consistent. Nothing here is corrected: "
-                       "distances stay exactly as the instrument recorded "
-                       "them."))
-    c.font = fnt_small
-    c.alignment = Alignment(vertical="top", wrap_text=True)
     row += 1
 
     for col, text in ((1, "Parameter"), (2, "Contract"),
@@ -1482,16 +1464,6 @@ def _render_test_settings(ws, ts: dict, row: int, font_name: str,
     c.border = box
     for col in (3, 4):
         ws.cell(row=row, column=col, value="").fill = fill_grey
-    row += 1
-
-    c = ws.cell(row=row, column=2,
-                value="FastReporter's Test Settings panel, read from each "
-                      "trace. One table per direction so the A and B shots "
-                      "can be checked against each other: same IOR, same "
-                      "backscatter, same detection thresholds. Each cell is "
-                      "that direction's most common value.")
-    c.font = fnt_small
-    c.alignment = Alignment(vertical="top", wrap_text=True)
     row += 1
 
     # ── Header row: the two panels' titles ──
@@ -1576,17 +1548,8 @@ def _render_test_settings(ws, ts: dict, row: int, font_name: str,
             rb = b["rows"][i] if b else None
             notes.append(
                 f"{v['name']}: {a['label']} = {ra['value']} but "
-                f"{b['label']} = {rb['value']}. The two directions were not "
-                f"shot with the same setting, so their losses are not "
-                f"strictly comparable.")
+                f"{b['label']} = {rb['value']}")
     notes.extend(ts["mixed_notes"])
-    notes.append(
-        "Fiber core size is not stored anywhere in a .sor file: neither the "
-        "Bellcore blocks nor EXFO's proprietary block carries a core size or "
-        "mode-field diameter. What is stored is the glass designation (ITU-T "
-        "fiber type), which is what the cell shows; FastReporter's \"9 µm\" is "
-        "its own display of that designation. The directions are still "
-        "compared on the stored designation.")
     if notes:
         row += 1
         for text in notes:

@@ -1213,10 +1213,7 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
             f'<b>{n_over_50} duplicate pair(s) identified at ≥50% likelihood; '
             f'{n_over_99} at ≥99% likelihood</b> across {len(all_pairs_list)} pairs.'
             f'</div>'
-            if n_over_50 else
-            f'<div class="verdict-box verdict-dispute">'
-            f'<b>No duplicate pairs identified at ≥50% likelihood</b> '
-            f'({len(all_pairs_list)} pairs).</div>'
+            if n_over_50 else ''
         )
 
     generated = datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -1225,7 +1222,6 @@ def build_report(files, all_pairs_list, truth_dups, out_path,
 <title>{title}</title>
 <style>{_BASE_CSS}</style></head><body>
 {_embed_logo()}
-<h1>{title}</h1>
 <div class="subtitle">{len(files)} files &bull; {len(all_pairs_list)} pairs &bull; generated {generated}</div>
 
 {verdict_block}
@@ -1895,7 +1891,7 @@ def _competence_meta(files, wl_list, meta):
             'what_it_takes': (f'This lineage has no fingerprint detector; it '
                               f'needs a common span of at least '
                               f'{_ALLDUPS_MIN_SPAN_M/1000:.0f} km to tell one '
-                              f'fibre shot N times from N different fibres.')}
+                              f'fiber shot N times from N different fibers.')}
 
 
 def build_json_html(folder, title='Duplicate Classification Report', truth_dups=None, meta=None):

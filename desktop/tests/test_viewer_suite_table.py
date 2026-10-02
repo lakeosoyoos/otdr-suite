@@ -62,9 +62,16 @@ def _report(dir_a, dir_b, out_dir, table=True, extra=()):
     return man, (json.loads(path.read_text(encoding="utf-8")) if path.exists() else None)
 
 
+# A job under 80 fibres lists events (E.EVENT_JOB_MAX_FIBERS, Robert
+# 2026-10-01); these tests read the 24-fibre fixture's CLOSURE layout, so
+# they lower the cutoff for the run.
+CLOSURES = ("--overrides", json.dumps({"EVENT_JOB_MAX_FIBERS": 0}))
+
+
 @pytest.fixture(scope="module")
 def splice(tmp_path_factory):
-    return _report(SPLICE_A, SPLICE_B, tmp_path_factory.mktemp("suite_table"))
+    return _report(SPLICE_A, SPLICE_B, tmp_path_factory.mktemp("suite_table"),
+                   extra=CLOSURES)
 
 
 @pytest.fixture(scope="module")
@@ -80,7 +87,7 @@ def _cells(table, fiber):
 
 def test_asking_for_the_table_changes_nothing_in_the_report(splice, tmp_path):
     man, table = splice
-    plain, none = _report(SPLICE_A, SPLICE_B, tmp_path, table=False)
+    plain, none = _report(SPLICE_A, SPLICE_B, tmp_path, table=False, extra=CLOSURES)
     assert none is None and "viewer_table" not in plain
     assert table is not None and os.path.isfile(man["viewer_table"])
     a, b = dict(man), dict(plain)
@@ -108,8 +115,9 @@ def test_the_columns_are_the_report_s_between_its_two_ends(splice):
     cols = table["columns"]
     assert [c["kind"] for c in cols] == (
         ["end"] + [c["kind"] for c in man["columns"]] + ["end"])
-    assert (cols[0]["title"], cols[0]["end"]) == ("A-End ILA", "A")
-    assert (cols[-1]["title"], cols[-1]["end"]) == ("B-End ILA", "B")
+    # no site typed: each end takes the name its own files store
+    assert (cols[0]["title"], cols[0]["end"]) == ("A-End ILA: ELMDALE", "A")
+    assert (cols[-1]["title"], cols[-1]["end"]) == ("B-End ILA: MILLER", "B")
     # named as the report's header row names them
     titles = [c["title"] for c in cols[1:-1]]
     nums = [c["num"] for c in man["columns"] if c["kind"] == "splice"]
@@ -415,8 +423,11 @@ def test_the_table_follows_the_analysis_mode():
             "  } else if (renderFrBidiGrid(visible, host, hint)) return;\n"
             "  renderFastReporterGrid(visible, host, hint);") in body
     ask = _fn('renderSuiteBidiGrid')
-    assert 'if (!pairs.length) return false;' in ask
-    assert "fetch(`/api/suite_table?fibers=${pairs.map(p => p.fiber).join(',')}`)" in ask
+    # a load from one direction asks for that direction's table (Robert
+    # 2026-09-30: "it has to work for one direction OR bidi, equally"); a
+    # mix of lone A and lone B traces still has no Suite table
+    assert "if (dirs.size !== 1) return false;" in ask
+    assert "fetch(`/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`)" in ask
     # the report may still be running: the table waits for it ...
     assert "if (res.pending) {" in ask and "gSuitePoll = setTimeout(ask, 3000);" in ask
     assert "if (seq !== gSuiteTableSeq) return;" in ask
@@ -424,11 +435,15 @@ def test_the_table_follows_the_analysis_mode():
     # paired or not (the call sits above the no-traces return)
     assert "suiteTableReset();" in body[:body.index("if (visible.length === 0) {")]
     reset = _fn('suiteTableReset')
-    assert "gSuiteTableSeq++;" in reset and "gSuiteNote = '';" in reset
+    assert "gSuiteTableSeq++;" in reset
     assert "if (gSuitePoll) { clearTimeout(gSuitePoll); gSuitePoll = null; }" in reset
-    # no report table: the files' own tables stand in, and the hint says so
-    assert "if (!renderFrBidiGrid(traces, host, hint)) renderFastReporterGrid(traces, host, hint);" in ask
-    assert "(gSuiteNote ? ` · ${gSuiteNote}` : '')" in _fn('paintFrBidiGrid')
+    # no report table: an error saying why, never FastReporter's table in
+    # its place (Robert 2026-09-30: "Error, no FR stand-in")
+    assert "renderFrBidiGrid" not in ask and "renderFastReporterGrid" not in ask
+    assert "noTable(res.error || 'The report has no table for these fibers');" in ask
+    assert "table could not be built." in ask      # the App: "OTDR App table ..."
+    assert "switch to FastReporter mode for FastReporter's table." in ask
+    assert 'gSuiteNote' not in VIEWER
 
 
 def test_the_suite_table_is_the_report_s_columns_and_three_rows_per_fibre():
@@ -439,7 +454,8 @@ def test_the_suite_table_is_the_report_s_columns_and_three_rows_per_fibre():
     assert "`${esc(c.title)} (${n}/${have.length})</th>`" in body
     assert '<span class="fr-km">${kmFt(c.km)}</span>' in body
     # zoom lands on the file's frame: the report's km plus A's launch length
-    assert "viewKm: (Number(c.km) || 0) + launchA," in body
+    # (a one-direction table's km goes on through its trace to the chart)
+    assert "viewKm: toView((Number(c.km) || 0) + launchA)," in body
     # three rows per fibre, as in the FastReporter table
     assert "['a', 'b', 'avg']" in body
     assert "which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average'" in body
@@ -661,7 +677,8 @@ def test_the_suite_table_filters_and_collapses_like_the_other_two():
     body = _fn('paintSuiteBidiGrid')
     # the row filter
     assert "(!gFlaggedOnly || rowFails[i])" in body
-    assert "const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));" in body
+    assert "const LEGS = oneDir ? [oneDir] : ['a', 'b', 'avg'];" in body
+    assert "const rowFails = have.map((_p, fi) => LEGS.some(w => legFails(fi, w)));" in body
     # the cell filters: what is kept, and that the rest prints blank and
     # uncoloured.  A loss is kept on the Average row's verdict alone (boss
     # 2026-09-29), or on a direction the report itself flagged (the one
@@ -671,7 +688,9 @@ def test_the_suite_table_filters_and_collapses_like_the_other_two():
     # per-direction flag, a mid-span one at the one-direction gate.
     assert ("const lossKept = (c, x, which) => which === 'avg'\n"
             "    ? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))\n"
-            "    : gFailCellsOnly && (x.reflective ? lossFails(c, x, which) : !!(x[which] && x[which].flag));") in body
+            "    : oneDir ? gFailCellsOnly && lossFails(c, x, which)\n"
+            "    : gFailCellsOnly && (x.reflective ? lossFails(c, x, which)\n"
+            "                                      : !!(x[which] && x[which].flag && !gainerHidden(x[which].loss)));") in body
     assert ("const cellKept = (c, x, which) => lossKept(c, x, which)"
             " || (gFailCellsOnly && reflFlagged(x, which));") in body
     assert "if (cellFilterOn() && !lossKept(c, x, which)) return `<td${attrs}></td>`;" in body
@@ -682,10 +701,10 @@ def test_the_suite_table_filters_and_collapses_like_the_other_two():
     assert "const collapse = cellFilterOn();" in body
     assert "const keepCol = cols.map(c => !collapse" in body
     assert body.count("if (!keepCol[i]) return;") == 3
-    assert "(!collapse || ['a', 'b', 'avg'].some(w => legKept(i, w)))" in body
+    assert "(!collapse || LEGS.some(w => legKept(i, w)))" in body
     assert "!collapse || w === 'avg' || legKept(fi, w)" in body
     # a warning is never a failure, and the ends have no warning level
-    assert "if (c.isEnd || lossFails(c, x, which)) return false;" in body
+    assert "if (oneDir || c.isEnd || lossFails(c, x, which)) return false;" in body
     # the hint names whichever view is on, and nothing else (Robert, 2026-09-29)
     for words in ("'flagged rows only'", "'failing cells only'", "'warning cells only'"):
         assert words in body, words

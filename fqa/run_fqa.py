@@ -161,9 +161,9 @@ def build(production: str,
         # That is missing source data, not a bad parse, and it has to be
         # said rather than shown as a blank tab.
         notes.append(
-            'no fibre count: the production sheet’s Termination Information '
+            'no fiber count: the production sheet’s Termination Information '
             'table is empty at both ends, so the Fiber Assignment Table '
-            'could not be built. Enter the fibre count to fill it')
+            'could not be built. Enter the fiber count to fill it')
 
     return {
         'ok': True,
@@ -207,16 +207,16 @@ def main(argv=None) -> int:
     ap.add_argument('--template', default=DEFAULT_TEMPLATE)
     ap.add_argument('--job', help='JSON of the job facts (see JobFacts)')
     ap.add_argument('--closures',
-                    help='JSON list of measured metres from Site A, one per '
+                    help='JSON list of measured meters from Site A, one per '
                          'splice location in span order')
     ap.add_argument('--exceptions', help='JSON list of exception rows')
     ap.add_argument('--photos',
                     help="JSON list of site photos: [{'end': 'A'|'Z', "
                          "'path': ..., 'caption': ...}]")
     ap.add_argument('--span-length', type=float,
-                    help='measured span length in metres')
+                    help='measured span length in meters')
     ap.add_argument('--entry-offset', type=int, default=DEFAULT_ENTRY_OFFSET_M,
-                    help='frame to entry splice at the A end, metres')
+                    help='frame to entry splice at the A end, meters')
     ap.add_argument('--entry-offset-z', type=int, default=None,
                     help='same at the Z end when it differs (Tucumcari is 50)')
     ap.add_argument('--termination-type', default=TERMINATION_EVENT,

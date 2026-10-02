@@ -13,7 +13,6 @@ on:
       - "error_report.py"
       - "folder_intake.py"
       - "sharepoint_link.py"
-      - "app_theme.py"
       - "viewer/**"
       - "secretsauce/**"
       - "splicereport/**"
@@ -27,6 +26,62 @@ permissions:
   contents: write    # to publish / update the permanent Release
 
 jobs:
+  # ── TESTS ─ the suite, split into 4 parts by recorded run time
+  #    (desktop/ci_test_shard.py), each on its own runner, running at the same
+  #    time as the build below.  One after another they took over 30 minutes.
+  #    Each runner has its own checkout and home folder, so nothing the build
+  #    job writes (the injected update key, the boot self-test on port 8510)
+  #    can reach a test.  The publish job further down needs every part to
+  #    pass: a failing test still stops the manifest and the Release.
+  #    PYTHONIOENCODING=utf-8 because windows-latest defaults to cp1252 and
+  #    any non-ASCII char (e.g. the arrows) crashes the run.
+  tests:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [0, 1, 2, 3]
+    defaults:
+      run:
+        working-directory: desktop
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5        # node24-native (v4 ran on the now-forced-off node20)
+
+      # Toolchain pins: see desktop/OTDRSuite.spec top-of-file for WHY.
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6    # node24-native
+        with:
+          python-version: "3.11"
+          architecture: "x64"
+          cache: pip
+          cache-dependency-path: desktop/constraints-desktop.txt
+
+      - name: Upgrade pip + wheel
+        run: python -m pip install --upgrade pip wheel
+
+      - name: Install desktop requirements
+        run: pip install -r requirements-desktop.txt -c constraints-desktop.txt
+
+      - name: Re-pin setuptools 65.5.1 LAST so it wins
+        run: pip install --force-reinstall "setuptools==65.5.1"
+
+      # Every installed package must be in constraints-desktop.txt at its
+      # locked version: a new dependency must not slip in at its newest.
+      - name: Installed packages match the lock
+        run: python check_lock.py
+
+      - name: Run test suite (pytest), part ${{ matrix.part }} of 4
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          $files = @(python ci_test_shard.py ${{ matrix.part }} 4)
+          if ($LASTEXITCODE -ne 0 -or $files.Count -eq 0) { Write-Error "could not split the test files"; exit 1 }
+          Write-Host "$($files.Count) test files in this part"
+          python -m pytest @files -v
+
   build:
     runs-on: windows-latest
     defaults:
@@ -43,27 +98,22 @@ jobs:
         with:
           python-version: "3.11"
           architecture: "x64"
+          cache: pip
+          cache-dependency-path: desktop/constraints-desktop.txt
 
       - name: Upgrade pip + wheel
         run: python -m pip install --upgrade pip wheel
 
       - name: Install desktop requirements
-        run: pip install -r requirements-desktop.txt
+        run: pip install -r requirements-desktop.txt -c constraints-desktop.txt
 
       - name: Re-pin setuptools 65.5.1 LAST so it wins
         run: pip install --force-reinstall "setuptools==65.5.1"
 
-      # ── TEST SUITE ─ runs ahead of the bundle step so a regression fails
-      #    in seconds instead of after the multi-minute build.  Covers: hub
-      #    pages render (AppTest), viewer engine SOR parse + contract,
-      #    Secret Sauce runner (subprocess), and packaging/port contracts.
-      #    PYTHONIOENCODING=utf-8 because windows-latest defaults to cp1252
-      #    and any non-ASCII char (e.g. the → arrows) crashes the run.
-      - name: Run test suite (pytest)
-        shell: pwsh
-        env:
-          PYTHONIOENCODING: utf-8
-        run: python -m pytest tests/ -v
+      # Every installed package must be in constraints-desktop.txt at its
+      # locked version: a new dependency must not slip in at its newest.
+      - name: Installed packages match the lock
+        run: python check_lock.py
 
       # Bake the Slack error-report webhook into the build from the repo SECRET
       # (never committed — the repo is public and Slack auto-revokes leaked
@@ -116,9 +166,9 @@ jobs:
           Write-Host "version.json: $stamp"
 
       # ── INJECT UPDATE-SIGNING PUBLIC KEY ─ turn auto-update ON for this build.
-      #    Runs AFTER pytest (so the guardrail tests still see the fail-closed
-      #    placeholder in source) and BEFORE PyInstaller (so the bundled exe
-      #    carries the real key).  Derives the PUBLIC key from the SAME
+      #    The tests run on their own runners (the tests job), so they still
+      #    see the fail-closed placeholder in source.  Runs BEFORE PyInstaller
+      #    (so the bundled exe carries the real key).  Derives the PUBLIC key from the SAME
       #    OTDR_UPDATE_SIGNING_KEY secret that signs the manifest, so the exe
       #    trusts exactly the key that signs — the two halves cannot drift.
       #    Secret unset (PRs / forks) → no-op → launcher stays fail-closed.
@@ -192,7 +242,7 @@ jobs:
       #    on main only (see the quota note there).
       #    NOTE: `uses:` steps ignore the job's `working-directory: desktop`, so
       #    these paths must be absolute via github.workspace.
-      - name: Sign OTDRSuite.exe (Azure Artifact Signing)
+      - name: Sign OTDRApp.exe (Azure Artifact Signing)
         if: steps.signing.outputs.enabled == 'true'
         uses: azure/artifact-signing-action@v2
         with:
@@ -207,7 +257,7 @@ jobs:
           endpoint:                 ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name:     ${{ secrets.AZURE_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
-          files: ${{ github.workspace }}\desktop\dist\OTDRSuite\OTDRSuite.exe
+          files: ${{ github.workspace }}\desktop\dist\OTDRApp\OTDRApp.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
@@ -215,25 +265,25 @@ jobs:
       # Fail LOUD if the signer no-opped.  An action that "succeeds" without
       # attaching a signature would ship a build SAC still blocks, and we would
       # not learn about it until a tech hit the dialog again.
-      - name: Verify OTDRSuite.exe signature
+      - name: Verify OTDRApp.exe signature
         if: steps.signing.outputs.enabled == 'true'
         shell: pwsh
         run: |
-          $sig = Get-AuthenticodeSignature "dist\OTDRSuite\OTDRSuite.exe"
+          $sig = Get-AuthenticodeSignature "dist\OTDRApp\OTDRApp.exe"
           Write-Host "Status    : $($sig.Status)"
           Write-Host "Signer    : $($sig.SignerCertificate.Subject)"
           Write-Host "Timestamp : $($sig.TimeStamperCertificate.Subject)"
           if ($sig.Status -ne 'Valid') {
-            Write-Error "SIGNATURE VERIFY FAILED - OTDRSuite.exe status '$($sig.Status)'."
+            Write-Error "SIGNATURE VERIFY FAILED - OTDRApp.exe status '$($sig.Status)'."
             exit 1
           }
           if (-not $sig.TimeStamperCertificate) {
-            Write-Error "SIGNATURE VERIFY FAILED - OTDRSuite.exe is not timestamped; it would stop validating when the cert expires."
+            Write-Error "SIGNATURE VERIFY FAILED - OTDRApp.exe is not timestamped; it would stop validating when the cert expires."
             exit 1
           }
-          Write-Host "OTDRSuite.exe signature OK."
+          Write-Host "OTDRApp.exe signature OK."
 
-      # ── SIGN THE BUNDLED DLLs / PYDs (main + OTDR Suite App) ─────────────
+      # ── SIGN THE BUNDLED DLLs / PYDs (main + OTDR App) ─────────────
       #    Windows Application Control (WDAC / App Control for Business)
       #    adjudicates EVERY PE file a process loads, not just the exe.  On
       #    2026-08-31 and 2026-09-06 a tech's machine blocked pandas'
@@ -251,7 +301,7 @@ jobs:
       #         Microsoft / PSF signature that App Control trusts on its own);
       #      2. the bundle is signed on `main` only, i.e. the build that
       #         becomes the Release.  Branch builds keep exe-only signing --
-      #         except app-release, whose build becomes OTDR Suite App's
+      #         except app-release, whose build becomes OTDR App's
       #         release (installer + update feed), so it must carry the same
       #         signed bundle.  236 signatures per build.  sandbox/app-window
       #         checkpoint builds are exe-only again: they are never handed
@@ -272,7 +322,7 @@ jobs:
           # paths into 'dist\D:\a\...' and died), so the list is written as
           # paths relative to dist\ and lives in dist\.
           $dist = (Resolve-Path "dist").Path
-          $all  = Get-ChildItem -Path (Join-Path $dist "OTDRSuite") -Recurse -File -Include *.dll,*.pyd
+          $all  = Get-ChildItem -Path (Join-Path $dist "OTDRApp") -Recurse -File -Include *.dll,*.pyd
           $todo = @()
           $skipped = 0
           foreach ($f in $all) {
@@ -345,7 +395,7 @@ jobs:
         env:
           OTDR_SUITE_NO_UPDATE: "1"
         run: |
-          $exe = "dist\OTDRSuite\OTDRSuite.exe"
+          $exe = "dist\OTDRApp\OTDRApp.exe"
           if (-not (Test-Path $exe)) {
             Write-Error "BOOT SELF-TEST FAILED — $exe missing after build."
             exit 1
@@ -366,7 +416,7 @@ jobs:
             } catch { }
           }
           if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
-          Get-Process -Name "OTDRSuite" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Get-Process -Name "OTDRApp" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           Write-Host "----- boot_out.txt -----"; Get-Content $out -ErrorAction SilentlyContinue
           Write-Host "----- boot_err.txt -----"; Get-Content $err -ErrorAction SilentlyContinue
           $log = Join-Path $env:USERPROFILE ".otdrSuiteApp\otdrsuiteapp.log"
@@ -391,10 +441,10 @@ jobs:
         env:
           OTDR_SUITE_NO_UPDATE: "1"
         run: |
-          $exe = "dist\OTDRSuite\OTDRSuite.exe"
+          $exe = "dist\OTDRApp\OTDRApp.exe"
           $home_ = Join-Path $env:USERPROFILE ".otdrSuiteApp"
           $ready = Join-Path $home_ "window.ready"
-          Get-Process -Name "OTDRSuite" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Get-Process -Name "OTDRApp" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 2
           Remove-Item $ready -ErrorAction SilentlyContinue
           $proc = Start-Process -FilePath $exe -PassThru
@@ -425,7 +475,7 @@ jobs:
                 Start-Sleep -Seconds 2
                 if ((Test-Path (Join-Path $home_ "window.raise")) -and -not (Test-Path $req)) { $claimed = $true; break }
               }
-              $windows = @(Get-Process -Name "OTDRSuite" -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
+              $windows = @(Get-Process -Name "OTDRApp" -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
               Write-Host ("After the second launch: request claimed={0}  windows={1}  maximized={2}" -f $claimed, $windows.Count, [W32.U]::IsZoomed($w.MainWindowHandle))
               if (-not $claimed) { $fail = "a double-clicked file was never picked up by the open window (no reload)" }
               elseif ($windows.Count -ne 1) { $fail = "a second launch left $($windows.Count) app windows" }
@@ -438,32 +488,52 @@ jobs:
               $gone = $false
               for ($i = 0; $i -lt 20; $i++) {   # ~40 s
                 Start-Sleep -Seconds 2
-                $alive = @(Get-Process -Name "OTDRSuite" -ErrorAction SilentlyContinue)
+                $alive = @(Get-Process -Name "OTDRApp" -ErrorAction SilentlyContinue)
                 $serving = $true
                 try { Invoke-WebRequest -Uri "http://127.0.0.1:8520/_stcore/health" -UseBasicParsing -TimeoutSec 2 | Out-Null } catch { $serving = $false }
                 if (-not $serving -and $alive.Count -eq 0) { $gone = $true; Write-Host ("Quit after ~{0}s" -f (($i+1)*2)); break }
               }
-              if (-not $gone) { $fail = "closing the window did not quit the app (server or OTDRSuite process still up)" }
+              if (-not $gone) { $fail = "closing the window did not quit the app (server or OTDRApp process still up)" }
             }
           }
-          Get-Process -Name "OTDRSuite" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Get-Process -Name "OTDRApp" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           $log = Join-Path $home_ "otdrsuiteapp.log"
           if (Test-Path $log) { Write-Host "----- otdrsuite.log (tail) -----"; Get-Content $log -Tail 60 -ErrorAction SilentlyContinue }
           if ($fail) { Write-Error "APP WINDOW SELF-TEST FAILED — $fail."; exit 1 }
           Write-Host "APP WINDOW SELF-TEST PASSED."
 
+      # ── FROZEN SELF-TEST ─ the step above only proves the exe serves health.
+      #    This one uses the built exe as a tech does: every report engine on
+      #    the 24-fibre test pair, the Splice Report results compared cell by
+      #    cell with the same runs from source (a library missing from the
+      #    bundle, or a different one, shows up here), and the first page of
+      #    the hub played over the websocket with no exception on it.  Offline
+      #    and with a scratch home folder; see desktop/frozen_selftest.py.
+      - name: Frozen self-test (reports and first page in the built exe)
+        shell: pwsh
+        env:
+          OTDR_SUITE_NO_UPDATE: "1"
+          PYTHONIOENCODING: utf-8
+        run: python frozen_selftest.py dist\OTDRApp\OTDRApp.exe
+
       - name: Zip the dist folder
         shell: pwsh
         run: |
-          Compress-Archive -Path "dist\OTDRSuite\*" `
-                           -DestinationPath "dist\OTDRSuite-Windows.zip" -Force
+          Compress-Archive -Path "dist\OTDRApp\*" `
+                           -DestinationPath "dist\OTDRApp-Windows.zip" -Force
 
       # ── INSTALLER ─ per-user Windows installer that REMOVES the prior
       #    version on upgrade (see desktop/OTDRSuite.iss).  Built only after the
       #    boot self-test, so we never wrap a DOA app in an installer.
       - name: Install Inno Setup
         shell: pwsh
-        run: choco install innosetup -y --no-progress
+        run: |
+          # windows-latest usually has it; choco took about 2 min to say so.
+          if (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe") {
+            Write-Host "Inno Setup is already installed."
+          } else {
+            choco install innosetup -y --no-progress
+          }
 
       - name: Build installer (Inno Setup)
         shell: pwsh
@@ -473,17 +543,17 @@ jobs:
           if (-not (Test-Path $iscc)) { $iscc = "iscc" }   # fall back to PATH
           & $iscc "/DAppVersion=$ver" OTDRSuite.iss
           if ($LASTEXITCODE -ne 0) { Write-Error "Inno Setup compile failed."; exit 1 }
-          if (-not (Test-Path "dist\OTDRSuiteApp-Setup.exe")) {
-            Write-Error "INSTALLER BUILD FAILED — dist\OTDRSuiteApp-Setup.exe missing."
+          if (-not (Test-Path "dist\OTDRApp-Setup.exe")) {
+            Write-Error "INSTALLER BUILD FAILED — dist\OTDRApp-Setup.exe missing."
             exit 1
           }
-          Write-Host "Built dist\OTDRSuiteApp-Setup.exe (version $ver)"
+          Write-Host "Built dist\OTDRApp-Setup.exe (version $ver)"
 
       # ── SIGN THE INSTALLER ─ separate binary, separate signature.  The exe
       #    inside it is already signed (Inno packaged the signed dist folder);
       #    this signs the Setup wrapper itself, which is what SAC adjudicates
       #    when a tech double-clicks the download.
-      - name: Sign OTDRSuiteApp-Setup.exe (Azure Artifact Signing)
+      - name: Sign OTDRApp-Setup.exe (Azure Artifact Signing)
         if: steps.signing.outputs.enabled == 'true'
         uses: azure/artifact-signing-action@v2
         with:
@@ -498,37 +568,82 @@ jobs:
           endpoint:                 ${{ secrets.AZURE_SIGNING_ENDPOINT }}
           signing-account-name:     ${{ secrets.AZURE_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
-          files: ${{ github.workspace }}\desktop\dist\OTDRSuiteApp-Setup.exe
+          files: ${{ github.workspace }}\desktop\dist\OTDRApp-Setup.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
-      - name: Verify OTDRSuiteApp-Setup.exe signature
+      - name: Verify OTDRApp-Setup.exe signature
         if: steps.signing.outputs.enabled == 'true'
         shell: pwsh
         run: |
-          $sig = Get-AuthenticodeSignature "dist\OTDRSuiteApp-Setup.exe"
+          $sig = Get-AuthenticodeSignature "dist\OTDRApp-Setup.exe"
           Write-Host "Status    : $($sig.Status)"
           Write-Host "Signer    : $($sig.SignerCertificate.Subject)"
           Write-Host "Timestamp : $($sig.TimeStamperCertificate.Subject)"
           if ($sig.Status -ne 'Valid') {
-            Write-Error "SIGNATURE VERIFY FAILED - OTDRSuiteApp-Setup.exe status '$($sig.Status)'."
+            Write-Error "SIGNATURE VERIFY FAILED - OTDRApp-Setup.exe status '$($sig.Status)'."
             exit 1
           }
           if (-not $sig.TimeStamperCertificate) {
-            Write-Error "SIGNATURE VERIFY FAILED - OTDRSuiteApp-Setup.exe is not timestamped."
+            Write-Error "SIGNATURE VERIFY FAILED - OTDRApp-Setup.exe is not timestamped."
             exit 1
           }
-          Write-Host "OTDRSuiteApp-Setup.exe signature OK."
+          Write-Host "OTDRApp-Setup.exe signature OK."
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6  # node24-native (v5 is still node20)
         with:
-          name: OTDRSuiteApp-Windows
+          name: OTDRApp-Windows
           path: |
-            desktop/dist/OTDRSuiteApp-Setup.exe
-            desktop/dist/OTDRSuite-Windows.zip
+            desktop/dist/OTDRApp-Setup.exe
+            desktop/dist/OTDRApp-Windows.zip
           retention-days: 14
+
+  # ── PUBLISH ─ only once every test part and the build have passed.  The
+  #    manifest is generated from this job's own checkout (the engine files
+  #    are the same at this commit; the build job's injected launcher key is
+  #    not one of them), and the Release takes the installer and portable zip
+  #    the build job uploaded.
+  publish:
+    needs: [tests, build]
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          architecture: "x64"
+          cache: pip
+          cache-dependency-path: desktop/constraints-desktop.txt
+
+      # The manifest tools need only cryptography (Ed25519), at its locked version.
+      - name: Install the manifest tools
+        run: pip install cryptography -c constraints-desktop.txt
+
+      - name: Download the build
+        uses: actions/download-artifact@v7    # node24-native
+        with:
+          name: OTDRApp-Windows
+          path: desktop/dist
+
+      # Branch builds never upload a Release; check here instead that the
+      # files it would upload came through from the build job.
+      - name: Rehearse the Release files (branch builds)
+        if: github.ref != 'refs/heads/main'
+        shell: pwsh
+        run: |
+          foreach ($f in "dist\OTDRApp-Setup.exe", "dist\OTDRApp-Windows.zip") {
+            if (-not (Test-Path $f) -or (Get-Item $f).Length -eq 0) { Write-Error "$f missing from the build artifact"; exit 1 }
+            Write-Host ("{0}: {1:N0} bytes" -f $f, (Get-Item $f).Length)
+          }
 
       # ── SIGNED UPDATE MANIFEST ─ generate + sign the auto-update manifest
       #    AFTER the boot self-test (so a manifest only ever points at a build
@@ -539,7 +654,7 @@ jobs:
       #    generator SKIPS gracefully (no files written) — the build still
       #    succeeds and auto-update stays unprovisioned (launcher fails closed).
       #    version = the run number (monotonic) so the launcher's anti-rollback
-      #    only ever moves forward.  This branch builds OTDR Suite App, so
+      #    only ever moves forward.  This branch builds OTDR App, so
       #    every manifest is marked --channel app: the App's launcher refuses
       #    any other (main's carries none).
       - name: Generate + sign update manifest
@@ -595,9 +710,9 @@ jobs:
             --built $env:GITHUB_SHA --version $env:GITHUB_RUN_NUMBER --dry-run
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      # ── OTDR SUITE APP RELEASE ─ app-release only.  The App's permanent
+      # ── OTDR APP RELEASE ─ app-release only.  The App's permanent
       #    installer link AND its update feed: release tag app-build holds
-      #    OTDRSuiteApp-Setup.exe, update_manifest.json and its .sig.  Installed
+      #    OTDRApp-Setup.exe, update_manifest.json and its .sig.  Installed
       #    Apps read the manifest there (launcher.UPDATE_FEED_TAG) and take it
       #    at their next start.  app-release moves only when Robert says to
       #    ship the App; pushes to sandbox/app-window build and test but never
@@ -605,7 +720,7 @@ jobs:
       #    page keeps the regular OTDR Suite.  Stands down (green) when a later
       #    app-release build already published; fails loud with no signed
       #    manifest (the App would never update) or when uploads keep failing.
-      - name: Publish OTDR Suite App release (app-release only)
+      - name: Publish OTDR App release (app-release only)
         if: github.ref == 'refs/heads/app-release'
         shell: pwsh
         working-directory: ${{ github.workspace }}
@@ -613,7 +728,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python desktop/publish_app_release.py --version $env:GITHUB_RUN_NUMBER `
-            --built $env:GITHUB_SHA --installer desktop/dist/OTDRSuiteApp-Setup.exe
+            --built $env:GITHUB_SHA --installer desktop/dist/OTDRApp-Setup.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # Permanent download link — rewritten on every successful build.  Guarded
@@ -644,7 +759,7 @@ jobs:
           # manifest is exactly what must not pass unnoticed.
           $delays = @(15, 30, 60, 120)
           for ($i = 0; $i -le $delays.Count; $i++) {
-            gh release upload $tag "dist\OTDRSuiteApp-Setup.exe" "dist\OTDRSuite-Windows.zip" --clobber
+            gh release upload $tag "dist\OTDRApp-Setup.exe" "dist\OTDRApp-Windows.zip" --clobber
             if ($LASTEXITCODE -eq 0) { break }
             if ($i -eq $delays.Count) {
               Write-Error "release upload failed after $($delays.Count + 1) attempts"

@@ -260,15 +260,15 @@ def test_traces_use_the_standard_fiber_colour_code():
 
 def test_fiber_colours_toggle_off_to_fastreporter_blue_and_black():
     """The toolbar "fiber colors" box turns the 12-colour code off; with it off
-    every A trace draws in FastReporter's blue and every B trace in black
-    (sampled from an FR3 bidirectional overlay), and the choice is remembered."""
+    every A trace draws in a softened FastReporter blue and every B trace in
+    mid gray (FR3's #0000f7 / #000 toned down), and the choice is remembered."""
     html = open(VIEWER_HTML, encoding='utf-8').read()
-    assert "const FR_COLORS = { a: '#0000f7', b: '#000000' }" in html
+    assert "const FR_COLORS = { a: '#7b96d8', b: '#8a8a8a' }" in html
     assert 'id="cb-colors" checked' in html
     fn = html[html.index('function nextColor('):][:700]
     assert '!gFiberColors' in fn and "startsWith('b-') ? FR_COLORS.b : FR_COLORS.a" in fn
     tog = html[html.index('function setFiberColors('):][:600]
-    assert 'COLORS_USED.clear()' in tog and 'for (const t of gTraces) t.color = nextColor(' in tog
+    assert 'COLORS_USED.clear()' in tog and 'for (const t of gTraces) t.color = traceColor(t);' in tog
     assert "localStorage.setItem('otdr_viewer_fiber_colors'" in tog
 
 
@@ -276,7 +276,7 @@ def test_event_table_section_columns_can_be_hidden():
     """The events-panel "sections" box drops the Section column groups AND the
     Section statistics from the FR-layout table; the choice is remembered."""
     html = open(VIEWER_HTML, encoding='utf-8').read()
-    assert '<input id="set-sections-off" type="checkbox"> Sections off' in html
+    assert '<input id="set-sections-off" type="checkbox"> Sections Off' in html
     assert "gShowSections = !e.target.checked;" in html
     assert "localStorage.setItem('otdr_viewer_sections'" in html
     grid = html[html.index('function renderFastReporterGrid('):html.index('function renderFrBidiGrid(')]
@@ -317,7 +317,12 @@ def test_popout_viewer_links_back_to_its_report():
     html = open(VIEWER_HTML, encoding='utf-8').read()
     assert 'id="btn-back"' in html and 'function renderBackButton(' in html
     fn = html[html.index("getElementById('btn-back').addEventListener('click'"):][:1400]
-    assert "window.open('', 'otdr_hub')" in fn, 'must reuse the hub tab, not open a second hub'
+    # OTDR Suite App: Back first asks the App to raise its own hub window
+    # (/api/raise_hub) and only without one takes the named route, which
+    # lives in openHubByName (the regular OTDR Suite's tabs).
+    assert "fetch('/api/raise_hub'" in fn and 'openHubByName(url)' in fn
+    hub = html[html.index('function openHubByName('):][:800]
+    assert "window.open('', 'otdr_hub')" in hub, 'must reuse the hub tab, not open a second hub'
     for nav in ("'uni'", "'sr'"):
         assert nav in fn
     assert 'srfr' not in fn, 'the FR (beta) page is retired'

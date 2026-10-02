@@ -210,7 +210,8 @@ def test_spawn_os_name_beats_the_ambient_platform():
 def test_nudge_renders_above_the_page_radio():
     """It only works if it is the first thing in the sidebar — below the tool
     radio a tech scrolls past it."""
-    sidebar = APP_SRC.index("    st.markdown('## 🔬 OTDR Suite')")
+    # The App names the product through PRODUCT_NAME ("OTDR App").
+    sidebar = APP_SRC.index("    st.markdown(f'## 🔬 {PRODUCT_NAME}')")
     # The sidebar's own call (the home screen has another, with no sidebar).
     call = APP_SRC.index("\n    _render_update_nudge()", sidebar)
     radio = APP_SRC.index("page = st.radio(")
@@ -275,10 +276,11 @@ def test_app_py_is_the_only_engine_file_touched():
     launcher = (REPO_ROOT / "desktop" / "launcher.py").read_text(encoding="utf-8")
     block = launcher.split("ENGINE_FILES = [", 1)[1].split("]", 1)[0]
     assert '"app.py",' in block
-    # 45 since the App's app_theme.py (2026-09-30, the Light / Dark switch);
-    # 44 since the App's sharepoint_link.py (2026-09-29, added on purpose
-    # before the App's first update ships); still nothing added here.
-    assert len([l for l in block.splitlines() if l.strip().startswith('"')]) == 45
+    # 44 = main + 1, the App's sharepoint_link.py (2026-09-29, added on
+    # purpose before the App's first update ships).  app_theme.py was here
+    # from 2026-09-30 until the App took main's theme (#448), which lives in
+    # app.py; still nothing added here.
+    assert len([l for l in block.splitlines() if l.strip().startswith('"')]) == 44
 
 
 # ═════════════════════════════════════════════════════════════════════════

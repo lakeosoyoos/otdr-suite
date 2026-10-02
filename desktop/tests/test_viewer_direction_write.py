@@ -105,7 +105,7 @@ def test_file_menu_offers_the_trace_settings_editor():
     # To the end of the function, not a fixed slice: the menu grows (Rename
     # files landed under the editor) and a character count goes stale silently.
     fn = html.split('function showFileDirMenu(', 1)[1].split('\nasync function ', 1)[0]
-    assert 'Edit trace settings' in fn and 'showEditDialog(src, fiber)' in fn
+    assert 'Trace Settings (IOR, Names)' in fn and 'showEditDialog(src, fiber)' in fn
 
 
 # ── Direction acts on the marked files ─────────────────────────────────
@@ -151,7 +151,7 @@ def test_save_writes_every_marked_file_that_changed():
     # only the ones actually changed are written, and the label counts them
     assert "const dirty = marks.filter(key => gDirOverride[key]);" in menu
     assert "saveFilesDirection(dirty)" in menu
-    assert "dirty.length > 1 ? dirty.length + ' directions to edited copies'" in menu
+    assert "dirty.length > 1 ? dirty.length + ' Directions to Edited Copies'" in menu
     assert "${dirty.length ? '' : ' disabled" in menu          # nothing changed, nothing to save
     fn = html.split('async function saveFilesDirection(', 1)[1].split('\n}\n', 1)[0]
     # one POST per (side, direction): the endpoint takes one of each, and a
@@ -174,8 +174,9 @@ def test_setting_the_direction_a_file_already_declares_still_shows_it():
     fn = _html().split('function setFilesDirection(keys, dir) {', 1)[1].split('\n}', 1)[0]
     assert "if (dir === (gStoredDir[key] || src)) delete gDirOverride[key];" in fn
     assert "else gDirOverride[key] = dir;" in fn
-    # the loaded trace is redrawn as what effDir now says, not as the raw pick
-    assert "if (t) t.dir = effDir(src, fiber);" in fn
+    # the loaded trace is redrawn as what effDir now says, not as the raw pick,
+    # and takes that direction's colour
+    assert "if (t) { t.dir = effDir(src, fiber); t.color = traceColor(t); }" in fn
     assert "`${keys.length} files set to ${arrow}`" in fn
 
 
