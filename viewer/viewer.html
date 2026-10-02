@@ -2738,6 +2738,22 @@ function planOrSay(fibers, addDir) {
   return null;
 }
 
+// A report link (or a pop-out jump) to fibers whose every file was removed
+// from the Viewer: say so and leave the chart as it is.  It loaded nothing
+// and said nothing, so the tech got a blank Viewer under the hub's "Jumped to
+// fiber 354" (2026-10-02 click audit).  True when it said so.
+function sayRemovedTarget(plan) {
+  if (!plan.pairs.length || !plan.pairs.every(({ f, d }) => gRemovedFiles.has(`${d}-${f}`)))
+    return false;
+  const fibers = [...new Set(plan.pairs.map(p => p.f))];
+  const names = fibers.slice(0, 3).map(f => 'F' + f).join(', ') +
+                (fibers.length > 3 ? ` (+${fibers.length - 3} more)` : '');
+  const one = fibers.length === 1;
+  setReadout('', { warn: `${names} ${one ? 'was' : 'were'} removed from the Viewer. ` +
+    `Right-click a file and choose Put Back to see ${one ? 'it' : 'them'} again.` });
+  return true;
+}
+
 // The ", could not load F12 A: ..." tail of a load readout: the first three
 // by name, then a count.  One copy for every load path.  The overview readout
 // used to print none of it, so a bad file just left the count one short.
@@ -11080,7 +11096,8 @@ async function applyTarget(t) {
   }
   const fibers = t.fibers;
   if (fibers && /^\d+(\s*,\s*\d+)*$/.test(String(fibers))) {
-    if (!planOrSay(parseFibers(String(fibers)), t.dir || 'a')) return;
+    const plan = planOrSay(parseFibers(String(fibers)), t.dir || 'a');
+    if (!plan || sayRemovedTarget(plan)) return;
     if (t.replace) clearAll();
     document.getElementById('fiber-input').value = String(fibers);
     setAddDir(t.dir || 'a');
@@ -11089,7 +11106,8 @@ async function applyTarget(t) {
   }
   const fiber = t.fiber;
   if (fiber != null && /^\d+$/.test(String(fiber))) {
-    if (!planOrSay([+fiber], t.dir || 'both')) return;
+    const plan = planOrSay([+fiber], t.dir || 'both');
+    if (!plan || sayRemovedTarget(plan)) return;
     if (t.replace) clearAll();
     document.getElementById('fiber-input').value = String(fiber);
     setAddDir(t.dir || 'both');

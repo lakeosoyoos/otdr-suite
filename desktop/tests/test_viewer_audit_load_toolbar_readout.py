@@ -204,8 +204,11 @@ def test_add_fibers_plans_before_it_fetches():
 
 def test_a_jump_to_nothing_does_not_clear_the_plot():
     fn = _js_func(SRC, 'applyTarget')
-    a = fn.index("if (!planOrSay(parseFibers(String(fibers)), t.dir || 'a')) return;")
-    b = fn.index("if (!planOrSay([+fiber], t.dir || 'both')) return;")
+    # 2026-10-02: the plan is kept, and a target of removed files says so
+    # before the clear too (sayRemovedTarget).
+    a = fn.index("const plan = planOrSay(parseFibers(String(fibers)), t.dir || 'a');")
+    b = fn.index("const plan = planOrSay([+fiber], t.dir || 'both');")
+    assert fn.count("if (!plan || sayRemovedTarget(plan)) return;") == 2
     assert a < fn.index("if (t.replace) clearAll();") < b < fn.rindex("if (t.replace) clearAll();")
 
 

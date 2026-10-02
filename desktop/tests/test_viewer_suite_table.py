@@ -407,7 +407,9 @@ def test_the_run_asks_for_the_table_in_suite_mode_only():
 def test_the_hub_asks_every_report_for_its_table_and_hands_it_over():
     cmd = APP.split("def splicereport_cmd(", 1)[1].split("\ndef ", 1)[0]
     assert "common += ['--viewer-table', viewer_table]" in cmd
-    assert "viewer_table=_viewer_table_path(_da, _db))})" in APP
+    # the run's command ends on the table path (2026-10-02: the run's
+    # removed set follows the command in the same dict)
+    assert "viewer_table=_viewer_table_path(_da, _db))," in APP
     assert APP.count("trace_server.set_suite_table(res.get('viewer_table'))") == 1
     # the uni grid has no A+B table, and a cleared report takes its own away
     assert APP.count("trace_server.set_suite_table(None)") == 2
