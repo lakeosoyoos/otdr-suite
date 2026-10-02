@@ -2024,6 +2024,54 @@ def _keep_box(key):
     st.session_state[key + '_saved'] = st.session_state.get(key)
 
 
+# Names Windows keeps for devices: a folder cannot have one, with or
+# without an extension.
+_WIN_RESERVED_NAMES = frozenset(
+    ['CON', 'PRN', 'AUX', 'NUL']
+    + [f'{d}{n}' for d in ('COM', 'LPT') for n in range(1, 10)])
+
+
+def _report_dir_problem(path, pathmod=os.path):
+    """Why reports cannot go to the folder `path`, in plain words, or None
+    when they can: it is a folder already, or one a report run can make.
+    Every run makes the whole missing path before it writes (os.makedirs),
+    so a new folder any number of levels deep is fine as long as the
+    nearest folder above it that is there can be written in.  Only "the
+    folder above is there" was checked before, so a new job folder two
+    levels down (Reports/Job 1, neither there yet) was refused as one that
+    "cannot be created" and the report went to Downloads (2026-10-02).
+
+    Nothing is made here: the box is checked as the tech types, and a
+    folder is only made when a report is written.  `pathmod` is os.path;
+    a test hands it ntpath to try Windows paths (drive letters, a missing
+    drive, \\\\server\\share) on a Mac."""
+    p = pathmod.abspath(path)
+    missing = []                     # the folders a run would have to make
+    while not pathmod.isdir(p):
+        if pathmod.exists(p):
+            return f'{p} is a file, not a folder'
+        up = pathmod.dirname(p)
+        if up == p:                  # a drive or network share that is not there
+            return 'that drive or network share cannot be reached'
+        missing.append(pathmod.basename(p))
+        p = up
+    if not missing:
+        # A folder already.  As before: no write check on it (on Windows,
+        # os.access says every folder can be written in anyway).
+        return None
+    for name in missing:
+        if '\0' in name:
+            return f'"{name}" is not a folder name that can be used'
+        if pathmod.sep == '\\':
+            if any(c in '<>:"|?*' or ord(c) < 32 for c in name):
+                return 'a folder name cannot contain < > : " | ? *'
+            if name.split('.')[0].strip().upper() in _WIN_RESERVED_NAMES:
+                return f'"{name}" is a name Windows keeps for itself'
+    if not os.access(p, os.W_OK):
+        return f'there is no permission to make a folder in {p}'
+    return None
+
+
 def _report_dest_row(key, default_dir):
     """The 'Save reports to' row every report page shows: a Browse button that
     opens the native folder picker, and a path box the tech can paste into.
@@ -2063,9 +2111,10 @@ def _report_dest_row(key, default_dir):
     st.session_state[saved] = st.session_state.get(key) or ''
     chosen = (st.session_state.get(key) or '').strip().strip('"')
     if chosen:
-        parent = os.path.dirname(os.path.abspath(chosen)) or chosen
-        if not os.path.isdir(chosen) and not os.path.isdir(parent):
-            st.warning(f'That folder cannot be created: {chosen}. Reports will go to {default_dir}')
+        problem = _report_dir_problem(chosen)
+        if problem:
+            st.warning(f'Reports cannot be saved to {chosen}: {problem}. '
+                       f'They will go to {default_dir} instead.')
             return default_dir
         return os.path.abspath(chosen)
     return default_dir
