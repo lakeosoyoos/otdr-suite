@@ -222,6 +222,28 @@
   .fiber-row.partial { box-shadow: inset 3px 0 0 #9fb3c8; background: #f1f4f7; }
   .fiber-row .fib-pair.bad { color: #b03a2e; }
   #files-list:focus .fiber-row.focus { outline: 1px dotted var(--accent); outline-offset: -2px; }
+  /* The Measurements tab: a dropped .olts, a row per fiber, as FastReporter's
+     Measurements panel lists them.  A click on a heading sorts by it. */
+  #files-list.meas { overflow: auto; }
+  .olts-bar { display: flex; align-items: center; gap: 6px; padding: 4px 8px; font-size: 11px;
+              border-bottom: 1px solid var(--border); background: var(--panel); }
+  .olts-bar .olts-file { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .olts-bar button { font-size: 11px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 3px;
+                     background: #fff; cursor: pointer; white-space: nowrap; }
+  table.olts-meas { border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; min-width: 100%; }
+  table.olts-meas th { position: sticky; top: 0; z-index: 1; background: #eef3f8; font-weight: 600; text-align: left;
+                       padding: 3px 6px; border-bottom: 1px solid var(--border); white-space: nowrap;
+                       cursor: pointer; user-select: none; }
+  table.olts-meas th:hover { color: var(--accent); }
+  table.olts-meas th.sorted { box-shadow: inset 0 -2px 0 var(--accent); }
+  table.olts-meas td { padding: 2px 6px; border-bottom: 1px solid #f0f3f7; white-space: nowrap; }
+  table.olts-meas td.num { text-align: right; }
+  table.olts-meas tbody tr { cursor: pointer; }
+  table.olts-meas tbody tr:hover { background: #eef3f8; }
+  table.olts-meas tbody tr.sel { background: #d4e6f7; box-shadow: inset 3px 0 0 var(--accent); }
+  table.olts-meas .olts-pf { text-align: center; font-weight: 700; }
+  .olts-pass { color: #1e7a46; }
+  .olts-fail { color: #b03a2e; font-weight: 700; }
   /* White behind the fiber rows (Robert, 2026-09-24); the headers keep the
      panel colour, and loaded / selected rows keep their own highlights. */
   #files-list { flex: 1; overflow-y: auto; min-height: 0; background: #ffffff; }
@@ -758,6 +780,11 @@
   html[data-theme="dark"] .file-row:hover { background: #1c1917; }
   html[data-theme="dark"] .file-row.loaded { background: #172554; }
   html[data-theme="dark"] #files-hd, html[data-theme="dark"] #files-tabs { background: #1c1917; }
+  html[data-theme="dark"] table.olts-meas th { background: #1c1917; }
+  html[data-theme="dark"] table.olts-meas td { border-bottom-color: #292524; }
+  html[data-theme="dark"] table.olts-meas tbody tr:hover { background: #292524; }
+  html[data-theme="dark"] table.olts-meas tbody tr.sel { background: #1e3a5f; }
+  html[data-theme="dark"] .olts-bar button { background: #0c0a09; color: var(--text); }
   html[data-theme="dark"] #files-tabs button.active { background: #0c0a09; color: var(--text); }
   html[data-theme="dark"] .file-row.selected, html[data-theme="dark"] .fiber-row.selected { background: #1e293b; }
   html[data-theme="dark"] .fiber-row:hover { background: #1c1917; }
@@ -899,7 +926,7 @@
   <div id="files-hd"><h2>Files</h2><span id="files-count"></span></div>
   <div id="files-cols"><span></span><span>File Name</span><span>Dir.</span></div>
   <div id="files-list" tabindex="0"><span id="chip-empty">no folders loaded</span></div>
-  <div id="files-tabs"><button data-view="files" class="active">Files</button><button data-view="fibers">Fibers</button></div>
+  <div id="files-tabs"><button data-view="files" class="active">Files</button><button data-view="fibers">Fibers</button><button data-view="meas" hidden title="the fibers of the .olts dropped here: click a heading to sort">Measurements</button></div>
   <div id="files-drop-hint">drop .sor / .json / .trc / .olts files, a folder, or a .zip here</div>
   <div id="drop-sign"><div class="ds-big"></div><div class="ds-small"></div></div>
 </div>
@@ -1565,6 +1592,9 @@ window.addEventListener('resize', resizeCanvas);
   } catch (e) {}
   // resizeCanvas's own resize listener ran first, on the old panel width.
   window.addEventListener('resize', () => { if (want != null) { refit(); resizeCanvas(); } });
+  // The Measurements tab's columns want room: widened for it, not
+  // remembered, so the tech's own width comes back with the next drag.
+  window.filesPanelAtLeast = (w) => { if (panel.offsetWidth < clamp(w)) apply(w); };
 
   let startX = 0, startW = 0;
   bar.addEventListener('pointerdown', ev => {
@@ -3203,6 +3233,9 @@ function renderFilesPanel() {
       : 'drop .sor / .json / .trc / .olts files, a folder, or a .zip here';
   };
   syncFilesTabs();
+  list.classList.toggle('meas', gFilesView === 'meas');
+  document.getElementById('files-cols').style.display = gFilesView === 'meas' ? 'none' : '';
+  if (gFilesView === 'meas') { renderMeasView(list, esc); return; }
   if (gFilesView === 'fibers') { renderFibersView(list, esc); sayNextDrop(); return; }
   const loaded = new Map(gTraces.map(t => [t.key, t]));
   const cols = shownFileCols();
@@ -3421,16 +3454,22 @@ function ensureFileFacts(now) {
 // Clicks work as in Files, a fibre at a time: click, Shift+click,
 // Ctrl/Cmd+click and the arrow keys select the fibre's files, and a
 // right-click opens the file menu on them.
-let gFilesView = 'files';            // 'files' | 'fibers'
+let gFilesView = 'files';            // 'files' | 'fibers' | 'meas' (a dropped .olts)
+let gOlts = null;                    // the .olts the Measurements tab lists (olts_load's answer)
+let gOltsSort = null;                // { col, desc }
+let gOltsSel = null;                 // the identifier of the row clicked
 try { if (localStorage.getItem('otdr_viewer_files_tab') === 'fibers') gFilesView = 'fibers'; } catch (e) {}
 let gFiberAnchor = null;             // as gFileAnchor / gFileFocus, a fibre at a time
 let gFiberFocus = null;
 
 function syncFilesTabs() {
-  document.querySelectorAll('#files-tabs button').forEach(b =>
-    b.classList.toggle('active', b.dataset.view === gFilesView));
+  if (gFilesView === 'meas' && !gOlts) gFilesView = 'files';
+  document.querySelectorAll('#files-tabs button').forEach(b => {
+    b.classList.toggle('active', b.dataset.view === gFilesView);
+    if (b.dataset.view === 'meas') b.hidden = !gOlts;
+  });
   const h = document.querySelector('#files-hd h2');
-  if (h) h.textContent = gFilesView === 'fibers' ? 'Fibers' : 'Files';
+  if (h) h.textContent = { fibers: 'Fibers', meas: 'Measurements' }[gFilesView] || 'Files';
 }
 document.getElementById('files-tabs').addEventListener('click', (ev) => {
   const b = ev.target.closest('button[data-view]');
@@ -3726,7 +3765,7 @@ function endFileDrag() {
 }
 
 filesList.addEventListener('keydown', (ev) => {
-  if (gFilesView === 'fibers') return;           // the Fibers tab has its own keys
+  if (gFilesView !== 'files') return;            // the other tabs have their own keys
   if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key)) return;
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
   const s = fileKeySelection(fileRowKeys(), gFileAnchor, gFileFocus, ev.key, ev.shiftKey);
@@ -9830,9 +9869,164 @@ async function handleOltsDrop(files) {
     }
   }
   hideDropSign();
-  // One dialog at a time: the next .olts's opens when this one closes.  Not
-  // awaited, so traces dropped with an .olts load while its dialog is open.
-  (async () => { for (const info of loaded) await showOltsDialog(info); })();
+  if (!loaded.length) return;
+  // The boss, 2026-10-02: the values on screen, in the panel on the right,
+  // as FastReporter's Measurements panel shows them, and sortable.  The last
+  // .olts dropped is the one listed; Save Report… there writes the files.
+  showOltsMeasurements(loaded[loaded.length - 1]);
+  if (loaded.length > 1) {
+    setReadout(`${loaded.length} .olts files dropped: Measurements lists the last one, `
+               + `${loaded[loaded.length - 1].file}`, { warn: true });
+  }
+}
+function showOltsMeasurements(info) {
+  gOlts = info;
+  gOltsSort = null;
+  gOltsSel = null;
+  gFilesView = 'meas';
+  if (window.filesPanelAtLeast) window.filesPanelAtLeast(640);
+  renderFilesPanel();
+}
+
+// ─── The Measurements tab ──────────────────────────────────────────
+// The boss, 2026-10-02, pointing at FastReporter's Measurements panel: "we
+// need to see those losses in that measurements column in our tool and sort
+// by them ... sort high to low in each column".  A row per fiber of the
+// dropped .olts: P/F, identifier, type, direction, then per wavelength the
+// A->B and B->A loss, their average and the two ORLs, each unit's reference
+// power (FR's FasTesT table), the length and when.
+// A click on a heading sorts by it, highest first (A to Z for words); a
+// second click turns it over; a right-click names the two.  Blank values
+// stay at the bottom either way.
+
+function oltsCols(info) {
+  const cols = [{ k: 'pf', t: 'P/F', kind: 'pf' }, { k: 'id', t: 'Identifiers', kind: 'text' },
+                { k: 'type', t: 'Type', kind: 'text' }, { k: 'dir', t: 'Direction', kind: 'text' }];
+  for (const wl of (info.wavelengths || [])) {
+    for (const [k, t] of [['loss_ab', 'A->B Loss'], ['loss_ba', 'B->A Loss'],
+                          ['loss_avg', 'Average Loss'], ['orl_a', 'ORL A'], ['orl_b', 'ORL B']]) {
+      cols.push({ k: `${k}@${wl}`, t: `${wl} ${t}`, kind: 'num', nd: 2, unit: ' dB' });
+    }
+  }
+  // FastReporter's FasTesT table: each unit's reference power, in dBm.
+  for (const wl of (info.wavelengths || [])) {
+    cols.push({ k: `ref_ab@${wl}`, t: `${wl} Ref. A->B`, kind: 'num', nd: 2, unit: ' dBm' });
+    cols.push({ k: `ref_ba@${wl}`, t: `${wl} Ref. B->A`, kind: 'num', nd: 2, unit: ' dBm' });
+  }
+  cols.push({ k: 'length_km', t: 'Length', kind: 'num', nd: 3, unit: ' km' });
+  cols.push({ k: 'when_ts', t: 'Test Date/Time', kind: 'num', text: 'when' });
+  return cols;
+}
+function oltsValue(r, k) {
+  const at = k.indexOf('@');
+  if (at < 0) return r[k];
+  const w = (r.wl || {})[k.slice(at + 1)];
+  return w ? w[k.slice(0, at)] : null;
+}
+function oltsSortRows(rows, cols, sort) {
+  const col = sort && cols.find(c => c.k === sort.col);
+  if (!col) return rows.slice();
+  const key = r => col.kind === 'pf' ? ({ fail: 1, pass: 0 }[r.pf] ?? null) : oltsValue(r, col.k);
+  return rows.map((r, i) => [r, i, key(r)]).sort((x, y) => {
+    const a = x[2], b = y[2];
+    const na = a == null || a === '', nb = b == null || b === '';
+    if (na || nb) return na === nb ? x[1] - y[1] : na ? 1 : -1;
+    let c = typeof a === 'number' && typeof b === 'number' ? a - b
+          : String(a).localeCompare(String(b), undefined, { numeric: true });
+    if (sort.desc) c = -c;
+    return c || x[1] - y[1];
+  }).map(x => x[0]);
+}
+function oltsCell(c, r, graded, esc) {
+  if (c.kind === 'pf') {
+    return `<td class="olts-pf ${r.pf ? 'olts-' + r.pf : ''}">${r.pf === 'fail' ? '✗' : r.pf === 'pass' ? '✓' : ''}</td>`;
+  }
+  if (c.text) return `<td>${esc(r[c.text] || '')}</td>`;
+  const v = oltsValue(r, c.k);
+  if (c.kind !== 'num') return `<td>${esc(v == null ? '' : v)}</td>`;
+  let cls = 'num';
+  const at = c.k.indexOf('@'), base = at < 0 ? c.k : c.k.slice(0, at);
+  if (graded && v != null && (base === 'orl_a' || base === 'orl_b')) {
+    const w = (r.wl || {})[c.k.slice(at + 1)] || {};
+    cls += w[base + '_fail'] ? ' olts-fail' : ' olts-pass';
+  }
+  return `<td class="${cls}">${v == null ? '' : (+v).toFixed(c.nd) + c.unit}</td>`;
+}
+function renderMeasView(list, esc) {
+  const info = gOlts;
+  const cols = oltsCols(info);
+  const rows = oltsSortRows(info.rows || [], cols, gOltsSort);
+  const graded = !!info.status;
+  const mark = c => gOltsSort && gOltsSort.col === c.k ? (gOltsSort.desc ? ' ▼' : ' ▲') : '';
+  const tip = c => c.kind === 'text' ? 'click to sort A to Z, again for Z to A; right-click for both'
+                                     : 'click to sort highest first, again for lowest first; right-click for both';
+  list.innerHTML = `<div class="olts-bar"><span class="olts-file" title="${esc(info.job || '')}">${esc(info.file)}</span>`
+    + (info.status ? `<span class="olts-${info.status.toLowerCase()}">${esc(info.status)}</span>` : '')
+    + `<button type="button" data-olts="save" title="Save these results as an Excel workbook or a PDF">Save Report…</button>`
+    + `<button type="button" data-olts="close" title="Close this .olts">Close</button></div>`
+    + `<table class="olts-meas"><thead><tr>`
+    + cols.map(c => `<th data-col="${c.k}" data-kind="${c.kind}"${gOltsSort && gOltsSort.col === c.k ? ' class="sorted"' : ''}`
+                    + ` title="${tip(c)}">${esc(c.t)}${mark(c)}</th>`).join('')
+    + `</tr></thead><tbody>`
+    + rows.map(r => `<tr data-id="${esc(r.id)}"${r.id === gOltsSel ? ' class="sel"' : ''}>`
+                    + cols.map(c => oltsCell(c, r, graded, esc)).join('') + `</tr>`).join('')
+    + `</tbody></table>`;
+  document.getElementById('files-count').textContent =
+    `${rows.length} fiber${rows.length === 1 ? '' : 's'}`;
+}
+filesList.addEventListener('click', (ev) => {
+  if (gFilesView !== 'meas' || !gOlts) return;
+  const btn = ev.target.closest('button[data-olts]');
+  if (btn) {
+    if (btn.dataset.olts === 'save') showOltsDialog(gOlts);
+    else { gOlts = null; gFilesView = 'files'; renderFilesPanel(); }
+    return;
+  }
+  const th = ev.target.closest('th[data-col]');
+  if (th) {
+    const c = th.dataset.col;
+    gOltsSort = gOltsSort && gOltsSort.col === c ? { col: c, desc: !gOltsSort.desc }
+                                                 : { col: c, desc: th.dataset.kind !== 'text' };
+    renderFilesPanel();
+    return;
+  }
+  const tr = ev.target.closest('tbody tr[data-id]');
+  if (!tr) return;
+  gOltsSel = gOltsSel === tr.dataset.id ? null : tr.dataset.id;
+  for (const el of filesList.querySelectorAll('tbody tr.sel')) el.classList.remove('sel');
+  if (gOltsSel) tr.classList.add('sel');
+});
+// A right-click on a heading: the two sorts by name (the boss, 2026-10-02:
+// "right click on any column header ... sort high to low or sort low to
+// high").  Words sort A to Z / Z to A.
+filesList.addEventListener('contextmenu', (ev) => {
+  if (gFilesView !== 'meas' || !gOlts) return;
+  const th = ev.target.closest('th[data-col]');
+  if (!th) return;
+  ev.preventDefault();
+  showOltsSortMenu(ev.clientX, ev.clientY, th.dataset.col, th.dataset.kind,
+                   th.textContent.replace(/ [▲▼]$/, ''));
+});
+function showOltsSortMenu(x, y, col, kind, label) {
+  closeSpanMenu();
+  const text = kind === 'text';
+  const m = document.createElement('div');
+  m.id = 'span-menu';
+  const on = d => gOltsSort && gOltsSort.col === col && gOltsSort.desc === d ? '✓ ' : '  ';
+  m.innerHTML = `<div class="span-menu-hd">${label.replace(/[&<>]/g, '')}</div>`
+    + `<button data-desc="${text ? 0 : 1}">${on(!text)}${text ? 'Sort A to Z' : 'Sort High to Low'}</button>`
+    + `<button data-desc="${text ? 1 : 0}">${on(text)}${text ? 'Sort Z to A' : 'Sort Low to High'}</button>`;
+  document.body.appendChild(m);
+  m.style.left = Math.max(8, Math.min(x, window.innerWidth - m.offsetWidth - 8)) + 'px';
+  m.style.top = Math.max(8, Math.min(y, window.innerHeight - m.offsetHeight - 8)) + 'px';
+  m.querySelectorAll('button[data-desc]').forEach(b => {
+    b.onclick = () => {
+      closeSpanMenu();
+      gOltsSort = { col, desc: b.dataset.desc === '1' };
+      renderFilesPanel();
+    };
+  });
+  setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
 }
 function showOltsDialog(info) {
   closeReportDialog();
