@@ -60,3 +60,28 @@ def test_uni_bend_hidden_drops_column_keeps_splices(tmp_path):
     splice = lambda d: [(c['fiber'], c['loss']) for c in d['uni']['cells']
                         if c['kind'] == 'splice']
     assert splice(hid) == splice(full)
+
+
+def _sheet(path, name):
+    return [[c.value for c in r] for r in openpyxl.load_workbook(path)[name].iter_rows()]
+
+
+def test_bidir_loss_hidden_still_counts_reburns(tmp_path):
+    # The Display sheet says hidden splice loss was found, so the Reburn
+    # Summary counts it: 1 reburn cell, not 0 (audit 2026-10-02).
+    _, full_x = _bidir(tmp_path, 'full')
+    _, hid_x = _bidir(tmp_path, 'hid', {'loss': False})
+    full = _sheet(full_x, 'Reburn Summary')
+    assert ['Cells with at least one reburn', 1] in [r[:2] for r in full]
+    assert _sheet(hid_x, 'Reburn Summary') == full
+
+
+def test_uni_loss_hidden_still_counts_reburns(tmp_path):
+    base = ['--uni', '--dir-a', str(FIX / 'splice_A'),
+            '--overrides', json.dumps({'UNI_EVENT_JOB_MAX': 1})]
+    _, full_x = _run(tmp_path, 'u_full', *base)
+    hid, hid_x = _run(tmp_path, 'u_hid', *base, '--show', json.dumps({'loss': False}))
+    assert [c for c in hid['uni']['cells'] if c['kind'] == 'splice'] == []
+    full = _sheet(full_x, 'Reburn Percentage')
+    assert full[3][0] != '0.00%'
+    assert _sheet(hid_x, 'Reburn Percentage') == full
