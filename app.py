@@ -11316,7 +11316,7 @@ def _render_phone_job(prod, job_id, work, kp='ps'):
             ss[box] = (_settings_read().get(FIELD_CAPTURE_URL_KEY)
                                                   or FIELD_CAPTURE_DEFAULT_URL)
         url = _clean_path(st.text_input(
-            'Field Capture web address', key=box,
+            'Field Capture Web Address', key=box,
             placeholder='https://… (where Field Capture is hosted)',
             help='Set once; every project uses it.'))
         st.caption('The phone link needs this https address. The Field Capture page '
@@ -11457,30 +11457,30 @@ def audit_key(item):
 # The job-detail fields the audit can fill in on its own screen, per item:
 # (path in the job form, input kind, label).
 AUDIT_FIELDS = {
-    '1.01': [('site_a.address', 'text', 'A end street address')],
-    '1.02': [('site_z.address', 'text', 'Z end street address')],
-    '1.03': [('site_a.alias', 'text', 'A end alias')],
-    '1.04': [('site_z.alias', 'text', 'Z end alias')],
-    '1.05': [('site_a.clli', 'text', 'A end CLLI')],
-    '1.06': [('site_z.clli', 'text', 'Z end CLLI')],
-    '1.07': [('site_a.panel_port_count', 'int', 'A end panel port count')],
-    '1.08': [('site_z.panel_port_count', 'int', 'Z end panel port count')],
-    '1.09': [('fiber_count', 'int', 'Number of fibers tested')],
-    '1.10': [('revision', 'text', 'Test revision')],
-    '1.11': [('package_type', 'text', 'Package type')],
-    '1.12': [('contractor', 'text', 'Splicing contractor'),
-             ('prepared_by', 'text', 'Package preparer')],
-    '1.13': [('project', 'text', 'NetBuild or project ID')],
-    '1.14': [('tester_1', 'text', 'Tester name and phone number')],
-    '1.15': [('calibration_date', 'date', 'Date of most recent calibration')],
+    '1.01': [('site_a.address', 'text', 'A End Street Address')],
+    '1.02': [('site_z.address', 'text', 'Z End Street Address')],
+    '1.03': [('site_a.alias', 'text', 'A End Alias')],
+    '1.04': [('site_z.alias', 'text', 'Z End Alias')],
+    '1.05': [('site_a.clli', 'text', 'A End CLLI')],
+    '1.06': [('site_z.clli', 'text', 'Z End CLLI')],
+    '1.07': [('site_a.panel_port_count', 'int', 'A End Panel Port Count')],
+    '1.08': [('site_z.panel_port_count', 'int', 'Z End Panel Port Count')],
+    '1.09': [('fiber_count', 'int', 'Number of Fibers Tested')],
+    '1.10': [('revision', 'text', 'Test Revision')],
+    '1.11': [('package_type', 'text', 'Package Type')],
+    '1.12': [('contractor', 'text', 'Splicing Contractor'),
+             ('prepared_by', 'text', 'Package Preparer')],
+    '1.13': [('project', 'text', 'NetBuild or Project ID')],
+    '1.14': [('tester_1', 'text', 'Tester Name and Phone Number')],
+    '1.15': [('calibration_date', 'date', 'Date of Most Recent Calibration')],
 }
 for _end, _x in (('A', 'site_a'), ('Z', 'site_z')):
     AUDIT_FIELDS[f'{_end} end rack location'] = [
         (f'{_x}.floor', 'text', 'Floor'), (f'{_x}.room', 'text', 'Room'),
         (f'{_x}.aisle', 'text', 'Aisle'), (f'{_x}.bay', 'text', 'Bay')]
     AUDIT_FIELDS[f'{_end} end panel details'] = [
-        (f'{_x}.rmu', 'text', 'RMU (shelf)'), (f'{_x}.connector_type', 'text', 'Connector'),
-        (f'{_x}.panel_type', 'text', 'Panel type')]
+        (f'{_x}.rmu', 'text', 'RMU (Shelf)'), (f'{_x}.connector_type', 'text', 'Connector'),
+        (f'{_x}.panel_type', 'text', 'Panel Type')]
 
 
 def _audit_fields_for(item):
@@ -11635,21 +11635,21 @@ def _render_audit(work):
                     vals[path] = col.text_input(label, key=key)
             st.button('Save and Continue', key='aud_save', type='primary')
         elif 'photos' in n or 'labels match' in n or 'GPS' in n:
-            if _drop_into('Save what the phone sent (capture package, workbook)',
+            if _drop_into('Save What the Phone Sent (Capture Package, Workbook)',
                           'aud_drop_field', 'field', ['zip', 'xlsm', 'xlsx']):
                 st.success('Saved. The audit moves on once it counts.')
-            st.button('📱 Email the Tech the Job Link (On the Status Page)', key='aud_go_phone')
+            st.button('📱 Email the Tech the Job Link (on the Status Page)', key='aud_go_phone')
         elif n.startswith(('2.', '3.')):
             st.button('🧮 Open the FQA Builder', key='aud_go_fqa', type='primary')
         elif n.startswith('4.01'):
             st.button('📂 Go to the Traces Tab', key='aud_go_status', type='primary')
         elif n.startswith('4.02'):
-            if _drop_into('Power meter files', 'aud_drop_pm', 'power', None):
+            if _drop_into('Power Meter Files', 'aud_drop_pm', 'power', None):
                 st.success('Saved.')
         elif n.startswith('4.03'):
             st.button('The File Names Follow the Convention', key='aud_403', type='primary')
         elif n.startswith(('4.04', '4.05')):
-            if _drop_into('Splice logs and exception documents', 'aud_drop_logs',
+            if _drop_into('Splice Logs and Exception Documents', 'aud_drop_logs',
                           'splice_logs', None):
                 st.success('Saved.')
             st.button('Not Needed on This Job', key='aud_na')
@@ -12662,7 +12662,7 @@ def _work_folder_picker(work):
         labels = {p: l for l, p in files}
         pick = st.selectbox('Files in This Project', [p for _l, p in files], index=None,
                             key='wf_pick', format_func=lambda p: labels.get(p, p),
-                            placeholder='Choose a file or a set of traces…')
+                            placeholder='Choose a File or a Set of Traces…')
         c1, c2, c3 = st.columns(3)
         from fieldcapture.email_draft import open_with_default_app, reveal
         if c1.button('Open', key='wf_open', disabled=not pick, use_container_width=True):
@@ -12738,7 +12738,7 @@ def _render_project_owner(work):
             recents = owner_recents()
             if recents:
                 st.selectbox('Recents', list(range(len(recents))), index=None,
-                             key='own_recent', placeholder='Choose a recent owner…',
+                             key='own_recent', placeholder='Choose a Recent Owner…',
                              format_func=lambda i: f"{recents[i]['name']} · {recents[i]['email']}",
                              on_change=_pick_recent_owner, args=(recents, work))
             _bind('own_name', owner.get('name') or '', work)
@@ -12908,14 +12908,14 @@ def _project_tab_traces(work):
         c1, c2, c3 = st.columns(3)
         for col, key, label in ((c1, 'ps_tr_a', 'A-Direction Folder'),
                                 (c2, 'ps_tr_b', 'B-Direction Folder'),
-                                (c3, 'ps_tr_one', 'One folder, both directions')):
+                                (c3, 'ps_tr_one', 'One Folder, Both Directions')):
             with col:
                 if st.button('📂 ' + label, key=key + '_pick', use_container_width=True):
                     p = pick_folder('Choose the ' + label)
                     if p:
                         ss[key] = p
                 st.text_input(label, key=key, label_visibility='collapsed',
-                              placeholder='or paste a path')
+                              placeholder='Or Paste a Path')
         drop = st.file_uploader('…or Drop the Traces: a .zip, Loose Files, or .bdr',
                                 type=['zip', 'sor', 'json', 'bdr'],
                                 accept_multiple_files=True, key='ps_tr_drop')
@@ -12933,9 +12933,9 @@ def _project_tab_traces(work):
         except ValueError:
             default_day = _dt.date.today()
         d1, d2 = st.columns([1, 2])
-        day = d1.date_input('Shot on', value=default_day,
+        day = d1.date_input('Shot On', value=default_day,
                             help='Read from the .sor files when they carry it.')
-        lab = d2.text_input('Label (optional)', key='ps_tr_label',
+        lab = d2.text_input('Label (Optional)', key='ps_tr_label',
                             placeholder='e.g. reshoot after repair')
         if st.button('Add This Shoot', key='ps_tr_copy', type='primary'):
             if not (a and b) and (one or drop):
@@ -12981,7 +12981,7 @@ def _project_tab_reports(work):
     if not rows:
         st.caption('No reports yet. Run one on the final traces:')
     kinds = sorted({r[0] for r in rows})
-    pick = st.multiselect('Show', kinds, key='rep_filter', placeholder='Every report') \
+    pick = st.multiselect('Show', kinds, key='rep_filter', placeholder='Every Report') \
         if len(kinds) > 1 else []
     shown = [r for r in rows if not pick or r[0] in pick]
     data = events_read(work)
@@ -13076,7 +13076,7 @@ def _traces_text(work, traces, shoot):
 
 def _drop_zfc(key, work):
     """A drop box for Field Capture's .zfc: it is filed into Field/."""
-    for dest in _drop_into('Drop a Field Capture file (.zfc) here', key, 'field',
+    for dest in _drop_into('Drop a Field Capture File (.zfc) Here', key, 'field',
                            [e.lstrip('.') for e in capture_package_exts()],
                            'What the phone emailed. It is saved into the Field folder, '
                            'where its photos and GPS are read from.'):
@@ -13092,7 +13092,7 @@ def _project_tab_pictures(work):
         c1, c2 = st.columns([1, 2])
         with c1:
             end = st.radio('Where They Were Taken', list(PICTURE_ENDS), key='pic_end',
-                           format_func=lambda k: PICTURE_ENDS[k])
+                           format_func=lambda k: PICTURE_ENDS[k].replace(' end', ' End'))
         with c2:
             for dest in _drop_into('Photos (.jpg, .png)', 'pic_drop',
                                    ('pictures', PICTURE_ENDS[end]),
@@ -13254,7 +13254,7 @@ def _project_tab_audit(work):
                 st.info('No file picker on this machine: paste the path.')
         c2.text_input('Production Sheet Path', key='ps_prod_path',
                       label_visibility='collapsed',
-                      placeholder='…or paste the production sheet\'s path')
+                      placeholder='…or Paste the Production Sheet\'s Path')
         src = _clean_path(ss.get('ps_prod_path'))
         if src and st.button('Add It to the Project', key='ps_prod_add'):
             if not os.path.isfile(src):
@@ -13299,13 +13299,13 @@ def _project_tab_audit(work):
     with st.container(border=True):
         box1 = st.container()
         f1, f2 = st.columns(2)
-        f1.button('📝 Job details (FQA Builder)', key='ps_go_fqa',
+        f1.button('📝 Job Details (FQA Builder)', key='ps_go_fqa',
                   use_container_width=True, disabled=not prod,
                   help='Addresses, CLLIs, contractor, testers, calibration: '
                        'the cover page, pre-filled from the production sheet.')
         with f2:
-            for dest in _drop_into('From the phone: capture package (.zfc), FQA '
-                                   'workbook or capture sheet',
+            for dest in _drop_into('From the Phone: Capture Package (.zfc), FQA '
+                                   'Workbook or Capture Sheet',
                                    'ps_drop_field', 'field',
                                    [e.lstrip('.') for e in capture_package_exts()] + ['xlsm', 'xlsx'],
                                    'What the phone emailed. Files saved into the '
@@ -13339,13 +13339,13 @@ def _project_tab_audit(work):
         st.markdown('**Other Data Files**')
         d1, d2 = st.columns(2)
         with d1:
-            _drop_into('Power meter files (4.02)', 'ps_drop_pm', 'power', None)
+            _drop_into('Power Meter Files (4.02)', 'ps_drop_pm', 'power', None)
         with d2:
-            _drop_into('Splice logs, exception documents (4.04, 4.05)',
+            _drop_into('Splice Logs, Exception Documents (4.04, 4.05)',
                        'ps_drop_logs', 'splice_logs', None)
         m1, m2, m3 = st.columns(3)
         _bind('ps_tick_403', manual.get('4.03') is True, work)
-        v = m1.checkbox('4.03 file names checked', key='ps_tick_403')
+        v = m1.checkbox('4.03 File Names Checked', key='ps_tick_403')
         if v:
             manual['4.03'] = True
         else:
@@ -13468,12 +13468,12 @@ def _render_fqa_build(work, prod_path, pkgs):
         for w in (m.get('warnings') or [])[:6]:
             st.caption('⚠ ' + str(w))
         b1, b2 = st.columns(2)
-        if b1.button('Open it in Excel', key='ps_fqa_open', use_container_width=True):
+        if b1.button('Open It in Excel', key='ps_fqa_open', use_container_width=True):
             from fieldcapture.email_draft import open_with_default_app
             ok, err = open_with_default_app(m['out'])
             if not ok:
                 st.error(f'Could not open it: {err}')
-        if b2.button('Show it in its folder', key='ps_fqa_show', use_container_width=True):
+        if b2.button('Show It in Its Folder', key='ps_fqa_show', use_container_width=True):
             from fieldcapture.email_draft import reveal
             reveal(m['out'])
 
@@ -13590,9 +13590,9 @@ LEGACY_PACKAGE_EXT = '.otdrproject'
 LEGACY_PACKAGE_FORMAT = 'otdr-suite-project-package'
 OPEN_FILE_EXTS = ('.zdb', '.zfc', LEGACY_PACKAGE_EXT)
 EMAIL_LIMIT_BYTES = 20 * 1024 * 1024
-EXPORT_MODES = {'none': 'Without traces',
-                'final': 'With final traces',
-                'all': 'With all traces'}
+EXPORT_MODES = {'none': 'Without Traces',
+                'final': 'With Final Traces',
+                'all': 'With All Traces'}
 
 
 def _export_files(work, mode):
@@ -13926,7 +13926,7 @@ def _render_open_project():
             if p:
                 ss['open_pkg_path'] = p
         c2.text_input('File Path', key='open_pkg_path', label_visibility='collapsed',
-                      placeholder='…or paste its path')
+                      placeholder='…or Paste Its Path')
         up = st.file_uploader('…or Drop It Here (Up to 200 MB)',
                               type=[e.lstrip('.') for e in OPEN_FILE_EXTS], key='open_pkg_up')
         st.caption(f'A project is unpacked into `{_default_projects_root()}` and opened.')
@@ -13950,7 +13950,7 @@ def _render_open_project():
         c1, c2 = st.columns([1, 2])
         c1.button('📁 Choose Its Work Folder', key='home_project', use_container_width=True)
         c2.text_input('Work Folder', key='home_folder', label_visibility='collapsed',
-                      placeholder='…or paste the work folder\'s path')
+                      placeholder='…or Paste the Work Folder\'s Path')
         if ss.get('_home_need_path'):
             st.caption('No folder picker on this machine: paste the work folder\'s path.')
         st.button('Open This Folder', key='home_open_path')
@@ -14513,7 +14513,7 @@ def page_project_setup():
                 st.caption('No file picker here: paste the path, or drop the file.')
         c2.text_input('Production Sheet Path', key='setup_prod_path',
                       label_visibility='collapsed',
-                      placeholder='…or paste the production sheet\'s path')
+                      placeholder='…or Paste the Production Sheet\'s Path')
         up = st.file_uploader('…or Drop It Here (Up to 200 MB; Paste the Path for '
                               'Bigger Sheets)', type=['xlsx', 'xlsm'], key='setup_prod_up')
         src = _clean_path(ss.get('setup_prod_path'))
@@ -14553,7 +14553,7 @@ def page_project_setup():
         c1, c2, c3 = st.columns(3)
         for col, key, label in ((c1, 'setup_tr_a', 'A-Direction Folder'),
                                 (c2, 'setup_tr_b', 'B-Direction Folder'),
-                                (c3, 'setup_tr_one', 'One folder, both directions')):
+                                (c3, 'setup_tr_one', 'One Folder, Both Directions')):
             with col:
                 if st.button('📂 ' + label, key=key + '_pick', use_container_width=True):
                     p = pick_folder('Choose the ' + label)
@@ -14562,7 +14562,7 @@ def page_project_setup():
                     elif p is None:
                         st.caption('No folder picker here: paste the path.')
                 st.text_input(label, key=key, label_visibility='collapsed',
-                              placeholder='or paste a path')
+                              placeholder='Or Paste a Path')
         drop = st.file_uploader('…or Drop the Traces: a .zip, Loose Files, or .bdr',
                                 type=['zip', 'sor', 'json', 'bdr'],
                                 accept_multiple_files=True, key='setup_tr_drop')
@@ -14601,7 +14601,7 @@ def page_project_setup():
     with box_customer:
         st.markdown('**4 · Customer**')
         st.selectbox('Customer', project_customers(), index=None, key='setup_customer',
-                     placeholder='Select the customer…', label_visibility='collapsed',
+                     placeholder='Select the Customer…', label_visibility='collapsed',
                      help='Sets the project\'s Splice Report customer profile. The FQA '
                           'checklist is Lumen\'s, the only FQA form set up so far.')
     customer = ss.get('setup_customer')
@@ -14615,7 +14615,7 @@ def page_project_setup():
             ss['_setup_auto'] = proposal
         ss.setdefault('setup_parent', _default_projects_root())
         n1, n2 = st.columns([1, 1])
-        n1.text_input('Project name', key='setup_name', placeholder='e.g. Flagler to Bethune')
+        n1.text_input('Project Name', key='setup_name', placeholder='e.g. SITEA to SITEB')
         with n2:
             # Robert, 2026-09-30: no OneDrive-synced libraries here; a project
             # goes to SharePoint through the sign-in (Export Project tab).

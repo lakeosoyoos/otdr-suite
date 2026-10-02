@@ -2845,9 +2845,22 @@ def _read_stamp(path):
 
 
 def _same_bytes(p1, p2):
-    import filecmp
+    """Same size and same bytes; False when either cannot be read.
+
+    Read in 64 KB pieces rather than with filecmp: this file reaches the exe
+    as on-disk data (and by hot update), so PyInstaller never sees what it
+    imports, and the frozen bundle has no filecmp.  Every Rename of dropped
+    files died on it in the App's VM test (2026-10-01)."""
     try:
-        return filecmp.cmp(p1, p2, shallow=False)
+        if os.path.getsize(p1) != os.path.getsize(p2):
+            return False
+        with open(p1, 'rb') as f1, open(p2, 'rb') as f2:
+            while True:
+                b1, b2 = f1.read(65536), f2.read(65536)
+                if b1 != b2:
+                    return False
+                if not b1:
+                    return True
     except OSError:
         return False
 
@@ -5259,12 +5272,7 @@ def _trace_names(d):
         return {}
 
 
-def _same_bytes(p, q):
-    import filecmp
-    try:
-        return filecmp.cmp(p, q, shallow=False)
-    except OSError:
-        return False
+# _same_bytes (above) is the byte test match_originals uses.
 
 
 def match_originals(drop_dir, folder):

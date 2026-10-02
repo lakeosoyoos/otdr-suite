@@ -603,7 +603,7 @@ def test_export_is_a_tab_of_the_project_screen(home_on, settings_dir, span_dir):
     at = _start_project(span_dir)
     assert "Export Project" in [t.label for t in at.tabs]
     assert not any(b.key in ("fx_export", "bar_audit") for b in at.button)
-    assert at.radio(key="ps_export_mode").options[0].startswith("Without traces")
+    assert at.radio(key="ps_export_mode").options[0].startswith("Without Traces")
     assert "Choose another folder…" in at.selectbox(key="ps_export_where").options
 
 
