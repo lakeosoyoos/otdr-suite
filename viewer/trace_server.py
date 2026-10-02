@@ -2291,7 +2291,8 @@ class Handler(BaseHTTPRequestHandler):
                                   fields=dict(data.get('fields') or {}),
                                   dest_name=data.get('dest_name'),
                                   span=dict(data.get('span') or {}),
-                                  new_direction=data.get('new_direction'))
+                                  new_direction=data.get('new_direction'),
+                                  export=bool(data.get('export')))
             except (ValueError, TypeError) as e:
                 self._send_json({'error': str(e)}, status=400)
                 return
@@ -5388,7 +5389,7 @@ def trace_settings(direction, fiber, dir_a=None, dir_b=None):
 
 def edit_traces(direction, fibers, ior=None, fields=None, dest_name=None,
                 dir_a=None, dir_b=None, span=None, new_direction=None,
-                backscatter=None):
+                backscatter=None, export=False):
     """Write edited COPIES of one fiber's file or every file in a direction.
 
     `fibers` is 'all' or a list of fiber numbers.  `ior` None = unchanged.
@@ -5397,6 +5398,9 @@ def edit_traces(direction, fibers, ior=None, fields=None, dest_name=None,
     `span` is {'start_km', 'end_km'} in the direction's raw frame (the span
     store's frame); each fiber snaps to its own event, as the store promises.
     `new_direction` 'a' | 'b' stamps FR's LocationsDirection (Files > Direction).
+    `export` (FILES > Export Selected Traces): every listed file is written,
+    changed or not.  With nothing to change, a file is copied byte for byte,
+    whatever its type; a change a .json or .trc cannot carry skips that file.
     Returns {'dest', 'written': [fiber...], 'skipped': [{'fiber','reason'}]}.
     Per-file failures skip that file and say why; they never stop the batch.
     """
@@ -5421,8 +5425,9 @@ def edit_traces(direction, fibers, ior=None, fields=None, dest_name=None,
             if k in ('start_km', 'end_km') and v is not None}
     if new_direction is not None and new_direction not in ('a', 'b'):
         raise ValueError("new_direction must be 'a' or 'b'")
-    if ior is None and backscatter is None and not fields and not span \
-            and new_direction is None:
+    changes = not (ior is None and backscatter is None and not fields and not span
+                   and new_direction is None)
+    if not changes and not export:
         raise ValueError('nothing to change')
     all_fibers = [n for n, _ in list_fibers(d)]
     if fibers == 'all':
@@ -5440,13 +5445,17 @@ def edit_traces(direction, fibers, ior=None, fields=None, dest_name=None,
         path = _fiber_path(d, n)
         if path is None:
             skipped.append({'fiber': n, 'reason': 'no file'}); continue
-        if not path.lower().endswith('.sor'):
+        if changes and not path.lower().endswith('.sor'):
             skipped.append({'fiber': n, 'reason': 'not a .sor'}); continue
         dst = os.path.join(dest, os.path.basename(path))
         if os.path.exists(dst):
             skipped.append({'fiber': n, 'reason': 'already exists in ' + os.path.basename(dest)}); continue
         try:
             raw = open(path, 'rb').read()
+            if not changes:                      # an export of an untouched file:
+                write(raw, dst, src=path)        # the bytes as they are, no rebuild
+                written.append(n)
+                continue
             if not roundtrip_ok(raw):
                 skipped.append({'fiber': n, 'reason': 'does not rebuild byte-exact'}); continue
             out = raw

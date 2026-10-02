@@ -463,9 +463,10 @@ def test_the_suite_table_is_the_report_s_columns_and_three_rows_per_fibre():
     # three rows per fibre, as in the FastReporter table
     assert "['a', 'b', 'avg']" in body
     assert "which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average'" in body
-    # no sections, and no Sections switch to go with them
-    assert "fr-sec" not in body and "secOf" not in body
-    assert "if (secLab) secLab.style.display = 'none';" in body
+    # Sections, behind the Sections Off switch (Robert 2026-10-02; pinned in
+    # test_viewer_suite_sections.py); the switch shows when the table has them
+    assert "secOf" in body and "fr-sec" in body
+    assert "if (secLab) secLab.style.display = anySec ? '' : 'none';" in body
     assert "if (secLab) secLab.style.display = '';" in _fn('suiteTableReset')
     # a leg the report measured on the silent side is grey
     assert "if (leg && leg.grey) cls.push('fr-synth');" in body

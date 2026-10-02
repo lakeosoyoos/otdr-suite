@@ -4312,6 +4312,12 @@ function showFileDirMenu(x, y, src, fiber, name) {
                               : 'change the direction first'}">`
     + `Save ${dirty.length > 1 ? dirty.length + ' Directions to Edited Copies'
                                : 'Direction to Edited Copy'}…</button>`
+    // Every marked file out to one folder, as the Viewer shows it: the
+    // direction set above, plus any IOR / backscatter / span picked in the
+    // dialog, all in ONE copy per file.  Unchanged files go out as they are.
+    + `<button data-export="1" title="write ${marks.length === 1 ? 'this file' : 'the ' + marks.length + ' marked files'}`
+    + ` to a folder you choose, with the direction shown here; the originals are never touched">`
+    + `Export ${marks.length > 1 ? marks.length + ' Marked Traces' : 'This Trace'}…</button>`
     // Same editor the span menu offers: IOR, names, span — written to a copy.
     + `<button data-edit="1">Trace Settings (IOR, Names)…</button>`
     // Find and replace over the file NAMES, PowerRename-style.  Marked
@@ -4348,6 +4354,7 @@ function showFileDirMenu(x, y, src, fiber, name) {
     };
   });
   m.querySelector('button[data-edit]').onclick = () => { closeSpanMenu(); showEditDialog(src, fiber); };
+  m.querySelector('button[data-export]').onclick = () => { closeSpanMenu(); showExportDialog(marks); };
   m.querySelector('button[data-rename]').onclick = () => { closeSpanMenu(); showRenameDialog(src, fiber, name); };
   const un = m.querySelector('button[data-undo]');
   if (un) un.onclick = () => { closeSpanMenu(); undoLastRename(); };
@@ -8420,9 +8427,10 @@ async function setSpanEdge(dir, edge, km) {
 // end columns), and under each one every fibre prints the numbers the report
 // worked from, flagged or not: A→B, B→A and the bidirectional value, three
 // rows per fibre as in the FastReporter table.  A leg the report measured on
-// the silent side is grey.  There are no Section columns: the report has
-// none.  The columns are found across the whole cable, so they cannot be
-// built from the fibres on screen; they come from the report through
+// the silent side is grey.  Between two columns a Section (Loss, Att.)
+// prints the glass the report measured off each trace there, behind the
+// Sections Off switch as in FastReporter mode.  The columns are found
+// across the whole cable, so they cannot be built from the fibres on screen; they come from the report through
 // /api/suite_table -- the one that opened the Viewer, or the server's own
 // run on the two folders (the table waits for it).  Nothing here computes a
 // figure.  A cell the report flagged is red and carries the report's words
@@ -8532,8 +8540,6 @@ function renderSuiteBidiGrid(traces, host, hint) {
 function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   host.innerHTML = '';
   gGridGoTo = null;
-  const secLab = document.getElementById('set-sections-off').closest('label');
-  if (secLab) secLab.style.display = 'none';       // the report has no sections
   const tables = res.tables || {};
   const have = pairs.filter(p => Array.isArray(tables[String(p.fiber)]));
   const missing = pairs.filter(p => !have.includes(p)).map(p => p.fiber);
@@ -8654,6 +8660,27 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
       : [] }));
   const marks = { mode: 'suite', single: !!oneDir, have, goCell: () => {}, cols: markCols() };
 
+  // ── Sections (Robert 2026-10-02: "in Suite mode, we want Sections back") ──
+  // The glass between a fibre's reading in column i and its reading in
+  // column i + 1, as the report measured it off each trace
+  // (E.viewer_table_sections): one per direction, the Average row their
+  // mean.  Nothing here computes a figure.  A pair of columns no fibre has
+  // a section between (a panel tie's own Section columns sit there) gets
+  // none; with Sections Off, or a cell filter on, there are none at all.
+  const secOf = (fi, i) => {
+    const x = cols[i].ev[fi];
+    return x && x.section && cols[i + 1] && cols[i + 1].ev[fi] ? x.section : null;
+  };
+  const anySec = cols.some((_c, i) => have.some((_p, fi) => secOf(fi, i)));
+  const secLab = document.getElementById('set-sections-off').closest('label');
+  if (secLab) secLab.style.display = anySec ? '' : 'none';   // an older report's table has none
+  const showSec = gShowSections && !collapse;
+  const secCol = cols.map((_c, i) => showSec && keepCol[i] && i < cols.length - 1
+    && have.some((_p, fi) => secOf(fi, i)));
+  // A row's figures: its own direction's, the Average row the mean (a
+  // one-direction table's merged figures are that direction's own).
+  const secFig = (s, which) => !s ? null : (which === 'avg' || oneDir) ? s : s[which];
+
   // What the report said about a cell, for its tooltip: the row's own
   // reason first (an end connector's rows are judged one by one), then the
   // report's words for the cell.
@@ -8705,6 +8732,14 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
       : '';
     h2 += `<th colspan="2" class="fr-evsub" data-col="${i}">${kindTxt}<span class="fr-km">${kmFt(c.km)}</span></th>`;
     h3 += `<th class="fr-sub" data-col="${i}">Loss<br>(dB)</th><th class="fr-sub" data-col="${i}">Refl.<br>(dB)</th>`;
+    if (secCol[i]) {
+      const lens = have.map((_p, fi) => secOf(fi, i)).filter(s => s && s.length_m != null)
+                       .map(s => s.length_m / 1000);
+      const len = lens.length ? lens.reduce((a, b) => a + b, 0) / lens.length : null;
+      h1 += '<th colspan="2" class="fr-sechdr">Section</th>';
+      h2 += `<th colspan="2" class="fr-sechdr fr-evsub"><span class="fr-km">${len != null ? fmtDist(len) : ''}</span></th>`;
+      h3 += '<th class="fr-sub fr-sec">Loss<br>(dB)</th><th class="fr-sub fr-sec">Att.<br>(dB/km)</th>';
+    }
   });
 
   const shown = have.map((_p, i) => i).filter(i => (!gFlaggedOnly || rowFails[i])
@@ -8744,6 +8779,11 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
                      + (leg.km != null ? ` data-km="${rawKm(leg.km)}"` : ''))
                  + reflCell(c, x, which));
       }
+      if (secCol[i]) {
+        const v = secFig(secOf(fi, i), which);
+        cells.push(`<td class="fr-sec">${cellText(v && v.loss != null ? fmt(v.loss) : '---')}</td>`
+                 + `<td class="fr-sec">${cellText(v && v.att_db_km != null ? fmt(v.att_db_km) : '---')}</td>`);
+      }
     });
     // The picked row is marked: a direction's row for its own trace, the
     // Average row when both of its fibre's traces are the pick.
@@ -8772,7 +8812,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const table = document.createElement('table');
   table.className = 'fr-table';
   const kept = cols.filter((_c, i) => keepCol[i]);
-  const NCELL = LEAD.length + kept.length * 2;
+  const NCELL = LEAD.length + kept.length * 2 + secCol.filter(Boolean).length * 2;
   // Said after the caption, not inside it, so it reads right whichever
   // wording the caption has.  With a cell filter on, the filter decides.
   if (gAvgOnly && !cellFilterOn() && !oneDir)
@@ -8816,6 +8856,14 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
       cells.push((cellFilterOn() && !keep ? '<td></td>'
                   : `<td${aggOwnAttrs(have, lossFi, 'avg', i, false) || cls}>${fmt(v)}</td>`)
                + `<td${aggOwnAttrs(have, reflFi, reflW, i, true)}>${cellText(rs.length ? fmtR(r) : '---')}</td>`);
+      if (secCol[i]) {
+        // over the fibres' Average-row sections, as FastReporter's table
+        const ss = have.map((_p, fi) => secFig(secOf(fi, i), 'avg')).filter(Boolean);
+        const pick = k => ss.map(x => x[k]).filter(num);
+        const [pl, pa] = [pick('loss'), pick('att_db_km')];
+        cells.push(`<td class="fr-sec">${cellText(pl.length ? fmt(fn(pl)) : '---')}</td>`
+                 + `<td class="fr-sec">${cellText(pa.length ? fmt(fn(pa)) : '---')}</td>`);
+      }
     });
     return `<tr class="fr-agg">${cells.join('')}</tr>`;
   };
@@ -9191,6 +9239,151 @@ async function submitEdit(dir, fiber, original) {
   if (!n && !k) lines.push('Nothing was written.');
   setReadout(msg);
   d.innerHTML = `<h3>Edited Copies Saved</h3><div class="note" style="font-size:12px;line-height:1.5">`
+    + lines.map(l => `<div style="margin:6px 0">${l}</div>`).join('') + `</div>`
+    + `<div class="btns"><button class="primary" id="edit-done">Done</button></div>`;
+  d.querySelector('#edit-done').onclick = closeEditDialog;
+}
+
+// ─── Export traces (FILES panel > right-click > Export…) ───────────────
+//
+// Robert 2026-10-02: "export traces from viewer after we have made changes to
+// them, either by changing their direction or some other setting".  Save
+// Direction and Trace Settings each write a copy made from the ORIGINAL, so a
+// file given both lost one of them: the second save found the first's copy
+// and was "skipped: already exists".  Export writes every marked file once,
+// with everything at the same time: the direction the Viewer shows, and the
+// IOR, backscatter and declared span picked here.  A file with nothing to
+// change is copied as it is, so the folder holds the whole marked set.
+// Same rules as every other save in the Viewer (trace_server.edit_traces):
+// copies only, never into the source folder, never over a file.
+function exportGroups(marks, span) {
+  const groups = new Map();
+  for (const key of marks) {
+    const [src, fiber] = splitFileKey(key);
+    const eff = effDir(src, fiber);
+    const nd = gDirOverride[key] ? eff : null;
+    // The declared span is kept per DRAWN direction (gSpanDecl[t.dir]), so a
+    // file turned round here takes the span of the side it now sits on.
+    const g = `${src}-${nd || ''}-${eff}`;
+    if (!groups.has(g)) groups.set(g, { src, dir: nd, fibers: [], span: span[eff] || {} });
+    groups.get(g).fibers.push(fiber);
+  }
+  return [...groups.values()];
+}
+let gExportDlgSeq = 0;
+async function showExportDialog(marks) {
+  const seq = ++gExportDlgSeq;
+  closeEditDialog();
+  const [src0, fiber0] = splitFileKey(marks[0]);
+  let dest = '';
+  try {                                           // where Trace Settings saves, for the box
+    const r = await fetch(`/api/trace_settings?dir=${src0}&fiber=${fiber0}`);
+    const j = await r.json();
+    if (r.ok && !j.error) dest = j.dest_full || j.dest_default || '';
+  } catch (e) { /* the box stays blank: blank = Downloads */ }
+  if (seq !== gExportDlgSeq) return;
+  closeEditDialog();
+  const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  const n = marks.length;
+  const turned = marks.filter(k => gDirOverride[k]).length;
+  const sides = [...new Set(marks.map(k => effDir(...splitFileKey(k))))];
+  const spans = sides.filter(sd => gSpanDecl && gSpanDecl[sd]
+    && (gSpanDecl[sd].start_km != null || gSpanDecl[sd].end_km != null));
+  const bg = document.createElement('div'); bg.id = 'edit-dlg-bg';
+  const d = document.createElement('div'); d.id = 'edit-dlg';
+  d.innerHTML = `<h3>Export ${n === 1 ? `F${fiber0}` : n + ' Traces'}</h3>`
+    + `<div class="sub">${turned
+        ? `${turned} with the direction changed here, written as shown`
+          + (n - turned ? `; ${n - turned} without` : '')
+        : 'no direction changed here'}. A file with nothing to change is copied as it is.</div>`
+    + `<div class="row"><label>IOR</label><input type="number" id="exp-ior" step="0.000001" min="1.40" max="1.55" placeholder="unchanged"></div>`
+    + `<div class="row"><label>Backscatter (dB)</label><input type="number" id="exp-bs" step="0.1" min="-100" max="-40" placeholder="unchanged"></div>`
+    + (spans.length
+       ? `<div class="row"><label>Declared Span</label><label style="color:var(--text)">`
+         + `<input type="checkbox" id="exp-span"> Write It Into the Copies</label></div>` : '')
+    + `<div class="note">Blank a box to leave each file's own value. The originals are never touched, and a file already in the folder is never overwritten. Browse to choose a folder, or type a full path (a bare name makes a folder of that name in Downloads).</div>`
+    + `<div class="row"><label>Export To</label><input type="text" id="exp-dest" value="${esc(dest)}">`
+    + `<button type="button" id="exp-browse" title="choose the folder the traces are exported to">Browse…</button></div>`
+    + `<div class="err" id="exp-err"></div>`
+    + `<div class="btns"><button id="exp-cancel">Cancel</button><button class="primary" id="exp-go">Export ${n === 1 ? 'Trace' : n + ' Traces'}</button></div>`;
+  document.body.appendChild(bg);
+  document.body.appendChild(d);
+  bg.onclick = closeEditDialog;
+  d.querySelector('#exp-cancel').onclick = closeEditDialog;
+  d.querySelector('#exp-go').onclick = () => submitExport(marks);
+  d.querySelector('#exp-browse').onclick = async () => {
+    const err = d.querySelector('#exp-err');
+    err.textContent = 'choose a folder in the dialog that just opened…';
+    try {
+      const r = await fetch('/api/pick_folder', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Export traces to' }),
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) { err.textContent = j.error || ('server said ' + r.status); return; }
+      if (!j.available) { err.textContent = 'no folder picker on this machine. Type the full path instead'; return; }
+      if (j.path) d.querySelector('#exp-dest').value = j.path;
+      err.textContent = '';
+    } catch (e) {
+      err.textContent = (e && e.message) || String(e);
+    }
+  };
+}
+async function submitExport(marks) {
+  const d = document.getElementById('edit-dlg');
+  const err = d.querySelector('#exp-err');
+  const iorTxt = d.querySelector('#exp-ior').value.trim();
+  const ior = iorTxt === '' ? null : +iorTxt;
+  const bsTxt = d.querySelector('#exp-bs').value.trim();
+  const bs = bsTxt === '' ? null : Math.round(+bsTxt * 10) / 10;
+  if (ior != null && !(ior >= 1.40 && ior <= 1.55)) { err.textContent = 'IOR must be between 1.40 and 1.55'; return; }
+  if (bs != null && !(bs >= -100 && bs <= -40)) { err.textContent = 'Backscatter must be between -100 and -40 dB'; return; }
+  const spanBox = d.querySelector('#exp-span');
+  const span = {};
+  if (spanBox && spanBox.checked) {
+    for (const sd of ['a', 'b']) {
+      const s = gSpanDecl && gSpanDecl[sd];
+      if (s) span[sd] = { start_km: s.start_km ?? null, end_km: s.end_km ?? null };
+    }
+  }
+  err.textContent = '';
+  const go = d.querySelector('#exp-go');
+  go.disabled = true;
+  const destName = d.querySelector('#exp-dest').value;
+  const written = [], skipped = [];
+  let dest = '';
+  try {
+    for (const g of exportGroups(marks, span)) {
+      const r = await fetch('/api/trace_edit', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dir: g.src, fibers: g.fibers, new_direction: g.dir, ior, backscatter: bs,
+                               span: g.span, dest_name: destName, export: true }),
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) { err.textContent = j.error || ('server said ' + r.status); go.disabled = false; return; }
+      written.push(...(j.written || []));
+      skipped.push(...(j.skipped || []));
+      if (j.dest) dest = j.dest;
+    }
+  } catch (e) {
+    err.textContent = (e && e.message) || String(e); go.disabled = false; return;
+  }
+  // The result stays in the dialog until read, as Trace Settings does: the
+  // full folder and every skip reason, not one line in the readout.
+  const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const n = written.length, k = skipped.length;
+  const lines = [`<b>Exported ${n} trace${n === 1 ? '' : 's'}</b> to:<br><code>${esc(dest)}</code>`];
+  if (k) {
+    const why = {};
+    for (const s of skipped) why[s.reason] = (why[s.reason] || 0) + 1;
+    const parts = Object.entries(why).map(([r, c]) => `${c} ${r}`);
+    lines.push(`<b>Skipped ${k}:</b> ` + parts.map(esc).join('; ')
+      + (Object.keys(why).some(r => r.startsWith('already exists'))
+         ? '<br>A file already in that folder is never overwritten. Pick a different folder, or remove the old file first.' : ''));
+  }
+  if (!n && !k) lines.push('Nothing was written.');
+  setReadout(`exported ${n} trace${n === 1 ? '' : 's'} to ${dest}` + (k ? `; skipped ${k}` : ''));
+  d.innerHTML = `<h3>Traces Exported</h3><div class="note" style="font-size:12px;line-height:1.5">`
     + lines.map(l => `<div style="margin:6px 0">${l}</div>`).join('') + `</div>`
     + `<div class="btns"><button class="primary" id="edit-done">Done</button></div>`;
   d.querySelector('#edit-done').onclick = closeEditDialog;
