@@ -1517,7 +1517,9 @@ def main():
                         num += 1
                         sp['splice_display_num'] = num
 
-        _pre_show = dict(all_results) if _want_table else None
+        # Everything found, before the Show/Hide switches drop anything: the
+        # Viewer's table and the Reburn Summary both count from it.
+        _pre_show = dict(all_results)
         E.apply_show_filter(all_results)
         cells, lca, lcb = E.build_ribbon_data(
             all_results, n_fibers, ribbon_size, len(splices), launch_issues=launch_issues)
@@ -1575,7 +1577,8 @@ def main():
                      launch_cells_a=lca, launch_cells_b=lcb,
                      fibers_a=fa, fibers_b=fb, all_results=all_results,
                      fiber_avgs=fiber_avgs,
-                     span_stats=span_stats, ribbons=_ribbons)
+                     span_stats=span_stats, ribbons=_ribbons,
+                     reburn_results=_pre_show)
 
         # ── Grid JSON for the clickable Splice Report page ──
         def sp_km(si):
