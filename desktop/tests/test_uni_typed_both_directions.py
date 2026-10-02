@@ -100,7 +100,7 @@ def test_a_b_run_opens_the_viewer_on_b_and_back_keeps_the_typed_folder(tmp_path,
     assert _server() == (None, ran)
     # The left panel's B box names the folder, not its temporary split.
     assert _box(seen, 'A Folder').value == ''
-    assert _box(seen, 'B Folder').value == 'both directions: B direction (24 files)'
+    assert _box(seen, 'B Folder').value == 'both directions: B Direction (24 files)'
     _back(seen, 'Unidirectional')
     # The typed folder again, Run On still on B, and the report.
     assert _uni_box(seen) == folder

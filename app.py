@@ -2546,7 +2546,7 @@ def _staged_key(path):
 
 def _upload_label(path):
     """What a box shows for the folder an upload was staged in, for example
-    'Uploaded files: B direction (12 files)', or None for any other folder."""
+    'Uploaded Files: B Direction (12 files)', or None for any other folder."""
     if not path:
         return None
     try:
@@ -2557,7 +2557,7 @@ def _upload_label(path):
 
 def _remember_upload(folder, name, side, what=None):
     """Name the staged upload `folder` for the boxes (_upload_label): the
-    .zip it came from (`name`) or 'Uploaded files', the direction its files
+    .zip it came from (`name`) or 'Uploaded Files', the direction its files
     are (`side`, 'a' | 'b' | None) and how many there are.  `what` names it
     instead, for one side of a typed folder holding both directions."""
     key = _staged_key(folder)
@@ -2569,8 +2569,8 @@ def _remember_upload(folder, name, side, what=None):
                  if f.lower().endswith(trace_server.DROP_EXTS) and not f.startswith('.')])
     except OSError:
         return None
-    what = what or (f'{name} (uploaded)' if name else 'Uploaded files')
-    label = (f"{what}: {side.upper()} direction ({_count(n, 'file')})" if side
+    what = what or (f'{name} (Uploaded)' if name else 'Uploaded Files')
+    label = (f"{what}: {side.upper()} Direction ({_count(n, 'file')})" if side
              else f"{what} ({_count(n, 'file')})")
     _remember(labels, key, label)
     return label
@@ -7744,7 +7744,7 @@ def page_unidirectional():
                    'in the left panel.')
     else:
         # A folder an upload was staged in shows as what was uploaded
-        # ('Uploaded files: B direction (12 files)'), never its temporary
+        # ('Uploaded Files: B Direction (12 files)'), never its temporary
         # path: the way back from a cell click brings that path into the box
         # (2026-10-01).  The page still runs on the staged files
         # (_uni_box_folder).

@@ -14,7 +14,7 @@ a drop on the Viewer uses for one direction.
 
 An upload is staged in a temporary folder, and the way back from the Viewer
 put that folder's path in the page's folder box.  The box now shows what was
-uploaded, for example "Uploaded files: B direction (24 files)", and the page
+uploaded, for example "Uploaded Files: B Direction (24 files)", and the page
 still runs on the staged files, with the report on screen.
 """
 from __future__ import annotations
@@ -153,11 +153,11 @@ def test_an_upload_of_both_directions_run_on_b_opens_the_viewer_on_b(tmp_path, d
     # The left panel's boxes: A empty, and B names the upload, not the
     # temporary folder it was staged in.
     assert _box(seen, 'A Folder').value == ''
-    assert _box(seen, 'B Folder').value == 'Uploaded files: B direction (24 files)'
+    assert _box(seen, 'B Folder').value == 'Uploaded Files: B Direction (24 files)'
     assert 'A: 0 fibers · B: 24 fibers' in _texts(seen.sidebar.caption)
     # ── 2. Back shows a plain label in the page's box, and the report ──
     _back(seen, 'Unidirectional')
-    assert _uni_box(seen) == 'Uploaded files: B direction (24 files)'
+    assert _uni_box(seen) == 'Uploaded Files: B Direction (24 files)'
     assert tempfile.gettempdir() not in _uni_box(seen)
     assert _done(seen)
     assert seen.session_state['uni_result']['_folder'] == ran
@@ -175,7 +175,7 @@ def test_a_one_direction_upload_of_b_opens_the_viewer_on_b(tmp_path, drops):
     seen = _click(links[0])
     assert _server() == (None, ran)
     _back(seen, 'Unidirectional')
-    assert _uni_box(seen) == 'Uploaded files: B direction (24 files)'
+    assert _uni_box(seen) == 'Uploaded Files: B Direction (24 files)'
     assert _done(seen)
 
 
@@ -188,9 +188,9 @@ def test_a_zip_upload_is_named_after_the_zip(tmp_path, drops):
     links = _this_tab_links(at)
     assert {q['dir'] for q in links} == {'a'}
     seen = _click(links[0])
-    assert _box(seen, 'A Folder').value == 'both directions.zip (uploaded): A direction (24 files)'
+    assert _box(seen, 'A Folder').value == 'both directions.zip (Uploaded): A Direction (24 files)'
     _back(seen, 'Unidirectional')
-    assert _uni_box(seen) == 'both directions.zip (uploaded): A direction (24 files)'
+    assert _uni_box(seen) == 'both directions.zip (Uploaded): A Direction (24 files)'
     assert _done(seen)
 
 
@@ -206,7 +206,7 @@ def test_the_labelled_box_still_runs_on_the_staged_files(tmp_path, drops):
     _back(seen, 'Unidirectional')
     _open(seen, 'Splice Report')
     _open(seen, 'Unidirectional')
-    assert _uni_box(seen) == 'Uploaded files: B direction (24 files)'
+    assert _uni_box(seen) == 'Uploaded Files: B Direction (24 files)'
     assert _done(seen)
     _run(seen, str(tmp_path))
     assert seen.session_state['uni_result']['_folder'] == ran
