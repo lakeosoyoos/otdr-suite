@@ -39,8 +39,11 @@ def test_failures_bold_red_warnings_bold_orange_no_plain_notes():
     assert "#readout .ro-fail { color: var(--readout-fail); font-weight: 700; }" in SRC
     assert "#readout .ro-warn { color: var(--readout-warn); font-weight: 700; }" in SRC
     assert ("const READOUT_FAIL_START = /^(could not |viewer failed|drop failed|nothing written|"
-            "no [AB/]+ folder is set|F\\d+(, F\\d+)* (\\(\\+\\d+ more\\) )?(is|are) not in the )/;") in SRC
-    assert ("const READOUT_FAIL_TAIL = /, (could not load |"
+            "no [AB/]+ folder is set|No fiber numbers in \"|"
+            "F\\d+(, F\\d+)* (\\(\\+\\d+ more\\) )?(is|are) not in the )/;") in SRC
+    # 2026-10-02: the Fibers box's "No fiber numbers in ..." and its
+    # 'ignored "abc"' tail are failures too (test_viewer_fibers_box_no_numbers).
+    assert ("const READOUT_FAIL_TAIL = /, (could not load |ignored \"|"
             "F\\d+(, F\\d+)* (\\(\\+\\d+ more\\) )?(is|are) not in the )/;") in SRC
     fn = SRC.split("function setReadout(s, extra = {}) {", 1)[1].split("\n}\n", 1)[0]
     assert "parts.push([s, 'ro-fail'])" in fn
