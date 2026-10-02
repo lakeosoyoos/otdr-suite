@@ -8048,8 +8048,10 @@ def _fec_folder_row(slot, label, placeholder):
 
 
 def _fec_rows_html(rows, dir_a, dir_b):
-    """The FEC fails as a table whose fiber cells open Viewer FEC on that
-    fiber, from its own end, zoomed to the panel connector."""
+    """The FEC fails as a table whose rows open Viewer FEC on that fiber,
+    from its own end, zoomed to the panel connector.  Every cell of a row is
+    the same link (Robert 2026-10-01: a click on a row jumps), so the whole
+    row is the target, not just the fiber number."""
     import html as _h
     from urllib.parse import quote as _q
     raw_a = (st.session_state.get('fec_dir_a') or '').strip().strip('"')
@@ -8058,23 +8060,31 @@ def _fec_rows_html(rows, dir_a, dir_b):
               f"&ra={_q(raw_a, safe='')}&rb={_q(raw_b, safe='')}{_panel_qs()}")
     head = ['Fiber Number', 'FAILING @', 'Distance', 'Side', 'Failed on',
             'Connector loss', 'Combined with']
-    td = "padding:3px 8px;border:1px solid #e3e8ee;white-space:nowrap"
-    out = ["<div style='overflow-x:auto'><table style='border-collapse:collapse;"
-           "font-size:13px'><thead><tr>"
-           + ''.join(f"<th style='{td};background:#eef3f8'>{h}</th>" for h in head)
+    # The theme's own colours (--otdr-*): a fixed light header was white
+    # lettering on a pale band under the Dark theme.
+    td = "padding:0;border:1px solid var(--otdr-line-soft,#eef2f6);white-space:nowrap"
+    th = ("padding:3px 8px;border:1px solid var(--otdr-line,#dbe4ee);white-space:nowrap;"
+          "background:var(--otdr-panel,#eef3f8);color:var(--otdr-text,#000000)")
+    out = ["<style>.fec-rows a{display:block;padding:3px 8px;color:inherit;"
+           "text-decoration:none}.fec-rows tbody tr{cursor:pointer}"
+           ".fec-rows tbody tr:hover{background:var(--otdr-hover,#dde7f1)}</style>"
+           "<div style='overflow-x:auto'><table class='fec-rows' "
+           "style='border-collapse:collapse;font-size:13px'><thead><tr>"
+           + ''.join(f"<th style='{th}'>{h}</th>" for h in head)
            + "</tr></thead><tbody>"]
     for r in rows:
         href = (f"?nav=viewerfec&fiber={r['fiber']}&km={r['conn_km']}"
                 f"&dir={'b' if r['side'] == 'B' else 'a'}{common}")
         comb = '; '.join(f"{c['loss']:.3f} @ {c['km']:.3f} km"
                          for c in r.get('combined') or [])
-        cells = [f"<a href='{_h.escape(href, quote=True)}' target='_self' "
-                 f"title='Open in Viewer FEC' style='font-weight:600;"
-                 f"text-decoration:none'>{_h.escape(r['fiber_id'])}</a>",
+        link = (f"<a href='{_h.escape(href, quote=True)}' target='_self' "
+                f"title='Open F{r['fiber']} in Viewer FEC'")
+        cells = [f"<b>{_h.escape(r['fiber_id'])}</b>",
                  r['failing_at'], r['distance'], r['side'],
                  'Reflectance' if r['kind'] == 'refl' else 'Loss',
-                 f"{r['conn_loss']:.3f}", _h.escape(comb)]
-        out.append('<tr>' + ''.join(f"<td style='{td}'>{c}</td>" for c in cells) + '</tr>')
+                 f"{r['conn_loss']:.3f}", _h.escape(comb) or '&nbsp;']
+        out.append('<tr>' + ''.join(f"<td style='{td}'>{link}>{c}</a></td>"
+                                    for c in cells) + '</tr>')
     out.append('</tbody></table></div>')
     return ''.join(out)
 
@@ -8204,7 +8214,7 @@ def page_splice_report_fec():
                        'file(s), not graded.')
     rows = [r for s in sides for r in s.get('rows') or []]
     if rows:
-        st.caption('Click a fiber to open it in Viewer FEC.')
+        st.caption('Click a row to open that fiber in Viewer FEC.')
         st.markdown(_fec_rows_html(rows, dir_a, dir_b), unsafe_allow_html=True)
     else:
         st.info('No fiber fails.')

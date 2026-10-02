@@ -3507,7 +3507,8 @@ def fec_tables(fibers):
             continue
         for f in fibers:
             p = _fiber_path(d, f)
-            if not p or not p.lower().endswith('.sor'):
+            # .sor, .trc and .json: the engine reads each in its own frame
+            if not p or not p.lower().endswith(('.sor', '.trc', '.json')):
                 continue
             try:
                 key = (gkey, p, os.path.getmtime(p))

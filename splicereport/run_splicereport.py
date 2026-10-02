@@ -220,9 +220,25 @@ def _fec_round(x, nd):
     return float(Decimal(repr(float(x))).quantize(q, rounding=ROUND_HALF_UP))
 
 
+def _fec_origin_m(rec):
+    """Metres to add to a record's event positions to measure them from the
+    OTDR port, the frame the panel-connector rule is written in.
+
+    A file with a declared span start counts from that start: a .sor or .trc
+    re-based by FastReporter (user_offset, e.g. the panel at 1.006 km reads
+    0), and every .json export, which puts SpanStart at 0 with the launch reel
+    at minus its length.  Read raw, the panel connector of such a file sits at
+    0, inside FEC_PORT_SKIP_M, and the rule would grade the wrong event."""
+    first = rec.get('_json_first_pos_m')
+    if first is not None:
+        return -float(first)
+    return float(rec.get('user_offset_km') or 0.0) * 1000.0
+
+
 def _fec_events(rec):
     """[(pos_m, loss_db, refl_db_or_None, reflective, is_end)] for one parsed
-    .sor: EXFO's own event list when present, else the KeyEvents."""
+    trace (.sor, .trc or .json), positions from the OTDR port: EXFO's own
+    event list when present, else the KeyEvents (a .json's own events)."""
     import math
 
     def num(v):
@@ -232,19 +248,29 @@ def _fec_events(rec):
             return None
         return None if math.isnan(v) else v
 
-    out = []
+    out, o = [], _fec_origin_m(rec)
     xs = [e for e in (rec.get('exfo_events') or []) if not e.get('_is_section')]
     if xs:
         for e in xs:
             typ = e.get('Type')
-            out.append((num(e.get('Position')) or 0.0, num(e.get('Loss')) or 0.0,
+            out.append(((num(e.get('Position')) or 0.0) + o, num(e.get('Loss')) or 0.0,
                         num(e.get('Reflectance')), typ == 3, typ == 5))
         return out
     for e in rec.get('events') or []:
-        out.append(((e.get('dist_km') or 0.0) * 1000.0, e.get('splice_loss') or 0.0,
+        out.append(((e.get('dist_km') or 0.0) * 1000.0 + o, e.get('splice_loss') or 0.0,
                     num(e.get('reflection')) or None, bool(e.get('is_reflective')),
                     bool(e.get('is_end'))))
     return out
+
+
+_FEC_EXTS = ('.sor', '.trc', '.json')    # a .bdr pairs two ends; FEC never does
+
+
+def _fec_parser(path):
+    """The Splice Report's own reader for `path`'s type (a .trc at the
+    graded wavelength)."""
+    from splicereportmatchexfo import _trace_parser
+    return _trace_parser(os.path.splitext(path)[1].lower())
 
 
 def fec_grade(events, loss_gate=None, refl_gate=None, combine_m=None,
@@ -303,16 +329,30 @@ def _fec_prefix(stems):
 
 
 def _fec_side(folder, side, log=print):
-    import sor_reader324802a as SR
-    from splicereportmatchexfo import _extract_fiber_num
-    files = sorted(f for f in os.listdir(folder)
-                   if f.lower().endswith('.sor') and not f.startswith('._'))
+    """Read one end's folder: every .sor, .trc and .json in it.  A fiber
+    shot in more than one type is read once, from the type the folder holds
+    most of (the Splice Report's own order, _trace_ext_order), so a .sor
+    folder with a few .trc reshoots still grades its .sor."""
+    from splicereportmatchexfo import _extract_fiber_num, _trace_ext_order
+    names = [f for f in os.listdir(folder) if not f.startswith('._')]
+    order, _n = _trace_ext_order(names)
+    order = [e for e in order if e in _FEC_EXTS] + \
+        [e for e in _FEC_EXTS if e not in order]
+    files, seen = [], set()
+    for ext in order:
+        for f in sorted(f for f in names if f.lower().endswith(ext)):
+            key = _extract_fiber_num(f) or os.path.splitext(f)[0]
+            if key in seen:
+                continue
+            seen.add(key)
+            files.append(f)
     traces, unreadable = [], []
     for k, fn in enumerate(files):
         if k % 100 == 0:
             log(f'FEC {side}: reading {k + 1}-{min(k + 100, len(files))} of {len(files)}')
+        path = os.path.join(folder, fn)
         try:
-            rec = SR.parse_sor_full(os.path.join(folder, fn))
+            rec = _fec_parser(path)(path)
         except Exception as exc:                       # noqa: BLE001
             rec = None
             log(f'FEC {side}: {fn}: {type(exc).__name__}: {exc}')
@@ -321,7 +361,7 @@ def _fec_side(folder, side, log=print):
             continue
         traces.append({'file': fn, 'stem': os.path.splitext(fn)[0],
                        'fiber': _extract_fiber_num(fn),
-                       'pulse_ns': rec.get('fxd_pulse_ns'),
+                       'pulse_ns': rec.get('fxd_pulse_ns') or rec.get('_json_pulse_ns'),
                        'loc_a': rec.get('gen_loc_a') or '',
                        'loc_b': rec.get('gen_loc_b') or '',
                        'events': _fec_events(rec)})
@@ -446,7 +486,11 @@ def _fec_payload(dirs, out, overrides=None, log=print):
                       'unreadable': sd['unreadable'], 'pulse_groups': pulse_groups,
                       'n_fail_fibers': len({r['fiber'] for r in rows})})
     if not any(s['n_traces'] for s in sides):
-        return {'ok': False, 'error': 'No readable .sor traces in the FEC folder(s).'}
+        return {'ok': False, 'error': 'No readable .sor, .trc or .json traces '
+                                      'in the FEC folder(s).'}
+    # The page offers a new folder under an existing one, as every report
+    # page does; the Splice Report's own run makes it the same way.
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     _fec_write_xlsx(out, sides, gates)
     return {'ok': True, 'xlsx': out, 'fec': {'gates': gates, 'sides': sides}}
 
@@ -471,7 +515,6 @@ def _fec_table_payload(spec_json, overrides=None):
     """The Viewer's FEC mode: grade every listed trace (pass or fail).
     spec: {"A": [[fiber, path], ...], "B": [...]}.  Returns
     {ok, gates, grades: {"A": {fiber: grade}, "B": {...}}, errors}."""
-    import sor_reader324802a as SR
     gates = _fec_apply_overrides(overrides)
     spec = json.loads(spec_json)
     grades, errors = {}, {}
@@ -479,7 +522,7 @@ def _fec_table_payload(spec_json, overrides=None):
         out = grades.setdefault(str(side), {})
         for fiber, path in items or []:
             try:
-                rec = SR.parse_sor_full(path)
+                rec = _fec_parser(path)(path)
                 if not rec:
                     raise ValueError('unreadable trace')
                 g = fec_grade(_fec_events(rec))
@@ -487,7 +530,7 @@ def _fec_table_payload(spec_json, overrides=None):
                     g['conn_km'] = round(g.pop('conn_m') / 1000.0, 4)
                     g['combined'] = [{'km': round(p / 1000.0, 4), 'loss': l}
                                      for p, l in g['combined']]
-                g['pulse_ns'] = rec.get('fxd_pulse_ns')
+                g['pulse_ns'] = rec.get('fxd_pulse_ns') or rec.get('_json_pulse_ns')
                 out[str(fiber)] = g
             except Exception as exc:                   # noqa: BLE001 -- one bad
                 errors[f'{side}{fiber}'] = f'{type(exc).__name__}: {exc}'

@@ -273,7 +273,10 @@ def test_fec_rows_link_each_fibre_from_its_own_end():
              'failing_at': '-35.3', 'distance': '1.005km', 'kind': 'refl',
              'conn_loss': 0.205, 'combined': []}]
     html = hub._fec_rows_html(rows, '/x/A end', '/x/B end')
-    assert html.count("target='_self'") == 2
+    # Every cell of a row is the row's link: a click anywhere on it jumps.
+    assert html.count("target='_self'") == 2 * 7
+    for f in (324, 123):
+        assert html.count(f'fiber={f}&amp;') == 7
     assert '?nav=viewerfec&amp;fiber=324&amp;km=1.006&amp;dir=b&amp;fa=%2Fx%2FA%20end' in html
     assert '?nav=viewerfec&amp;fiber=123&amp;km=1.005&amp;dir=a&amp;' in html
     assert '0.420 @ 1.081 km' in html
@@ -301,3 +304,86 @@ def test_the_fec_boxes_show_values_set_on_an_earlier_run():
     assert (page.index("_fec_resync('fec_report_dest')")
             < page.index("_report_dest_row('fec_report_dest'"))
     assert 'fec_report_dest' in hub._CARRIED_SETTINGS
+
+
+# ── every trace type: .sor, .trc and .json, each from the OTDR port ──────
+
+def test_a_json_export_is_measured_from_the_port():
+    """A .json puts SpanStart (the panel) at 0 and the launch reel at minus
+    its length; read raw, the panel sat inside the port skip and the rule
+    found no connector (a real export: panel 0 m, first sample -1006.956 m)."""
+    _run("""
+        rec = {'_json_first_pos_m': -1006.956, 'events': [
+            {'dist_km': 0.0, 'splice_loss': 0.395, 'reflection': -54.9,
+             'is_reflective': True, 'is_end': False},
+            {'dist_km': 0.075, 'splice_loss': 0.2, 'reflection': 0.0,
+             'is_reflective': False, 'is_end': False},
+            {'dist_km': 59.877, 'splice_loss': 0.0, 'reflection': -15.3,
+             'is_reflective': True, 'is_end': True}]}
+        g = R.fec_grade(R._fec_events(rec))
+        assert g['found'] and abs(g['conn_m'] - 1006.956) < 1e-6, g
+        assert g['loss'] == 0.595 and g['fail_loss'], g
+        print('OK')
+    """)
+
+
+def test_a_declared_span_trc_is_measured_from_the_port():
+    """A .trc whose span start was set on the panel (1.006 km) stores its
+    events from there: the panel at 0, its pigtail splice at 31 m.  Raw, the
+    rule skipped both and graded an event 1 km down the cable."""
+    from conftest import FIXTURE_DIR as FIXTURES_DIR
+    p = FIXTURES_DIR / 'trc' / 'TRCDECL0001_155016251310.trc'
+    _run(f"""
+        rec = R._fec_parser({str(p)!r})({str(p)!r})
+        g = R.fec_grade(R._fec_events(rec))
+        assert g['found'] and abs(g['conn_m'] - 1005.92) < 0.01, g
+        assert [round(m) for m, _ in g['combined']] == [1037], g
+        print('OK')
+    """)
+
+
+def test_a_folder_of_mixed_types_reads_each_fiber_once(tmp_path):
+    """.sor, .trc and .json are all read; a fiber shot in two types is read
+    once, from the type the folder holds most of."""
+    import shutil
+    from conftest import FIXTURE_DIR as FIXTURES_DIR
+    sor = sorted((FIXTURES_DIR / 'splice_A').glob('*.sor'))[0]
+    trc = FIXTURES_DIR / 'trc' / 'TRCDECL0001_155016251310.trc'
+    for n in (1, 2):
+        shutil.copy(sor, tmp_path / f'ABCDEFsh{n:04d}_1550.sor')
+    shutil.copy(trc, tmp_path / 'ABCDEFsh0002_1550.trc')      # a reshoot
+    shutil.copy(trc, tmp_path / 'ABCDEFsh0003_1550.trc')      # only a .trc
+    _run(f"""
+        sd = R._fec_side({str(tmp_path)!r}, 'A', log=lambda *a: None)
+        got = sorted((t['fiber'], t['file'][-4:]) for t in sd['traces'])
+        assert got == [(1, '.sor'), (2, '.sor'), (3, '.trc')], got
+        assert not sd['unreadable'], sd['unreadable']
+        print('OK')
+    """)
+
+
+def test_viewer_fec_grades_every_trace_type():
+    from conftest import VIEWER_DIR
+    src = (VIEWER_DIR / 'trace_server.py').read_text(encoding='utf-8')
+    body = src.split('def fec_tables(fibers):', 1)[1].split('\ndef ', 1)[0]
+    assert "endswith(('.sor', '.trc', '.json'))" in body
+    assert "endswith('.sor')" not in body
+
+
+def test_the_report_goes_into_a_new_save_folder(tmp_path):
+    """'Save reports to' may name a folder that does not exist yet under one
+    that does; the FEC run makes it, as the Splice Report's run does."""
+    import shutil
+    from conftest import FIXTURE_DIR
+    src = sorted((FIXTURE_DIR / 'splice_A').glob('*.sor'))[0]
+    a = tmp_path / 'A'
+    a.mkdir()
+    shutil.copy(src, a / 'ABCDEFsh0001_1550.sor')
+    out = tmp_path / 'new folder' / 'FEC_OOS.xlsx'
+    _run(f"""
+        res = R._fec_payload([('A', {str(a)!r})], {str(out)!r}, log=lambda *a: None)
+        assert res['ok'], res
+        import os
+        assert os.path.isfile({str(out)!r})
+        print('OK')
+    """)
