@@ -783,6 +783,46 @@ def test_a_shoots_run_in_starts_the_fec_tools(hub, tmp_path, monkeypatch):
     assert (ss["view_dir_a_input"], ss["view_dir_b_input"]) == (sh["a"], sh["b"])
 
 
+def _open_a_new_project(span_dir, tmp_path):
+    """A new project made from the sample span, then opened.  Returns
+    (at, project folder)."""
+    at = run_streamlit().run()
+    work = _new_project(at, span_dir, tmp_path)
+    at = run_streamlit().run()
+    next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
+    at.text_input(key="home_folder").set_value(str(work)).run()
+    next(b for b in at.button if b.label == "Open This Folder").click().run()
+    return at, work
+
+
+def _uni_run_on_shoot(at, side):
+    """The shoot's Run In… Unidirectional on `side` ('A folder' | 'B folder'),
+    run to the end."""
+    from conftest import finish_engine_run
+    at.button(key="run_unidirectional_2026-05-06").click().run()
+    assert not at.exception, list(at.exception)
+    (run_on,) = [r for r in at.main.radio if r.label == "Run On"]
+    run_on.set_value(side).run()
+    next(b for b in at.main.button if b.label == "Run Unidirectional Report").click().run()
+    finish_engine_run(at, "uni")
+    assert not at.exception and not at.error, (list(at.exception), [e.value for e in at.error])
+    return at
+
+
+def test_a_first_unidirectional_run_in_a_new_project_writes_to_reports(settings_dir, span_dir,
+                                                                      tmp_path):
+    """A new project has no Reports folder until a report goes there, and the
+    first Unidirectional run in it failed ("No such file or directory" for
+    Reports/unidirectional_events <time>.xlsx): the engine did not make the
+    folder it writes to.  Main #560: it does now, as the Splice Report's run
+    always did."""
+    at, work = _open_a_new_project(span_dir, tmp_path)
+    assert not (work / "Reports").exists()
+    _uni_run_on_shoot(at, "A folder")
+    made = list((work / "Reports").glob("unidirectional_events *.xlsx"))
+    assert len(made) == 1, sorted(os.listdir(work))
+
+
 def test_a_shoots_b_run_on_unidirectional_opens_the_viewer_on_b(settings_dir, span_dir,
                                                                   tmp_path):
     """A shoot's Run In… Unidirectional run on its B folder opens the Viewer
@@ -792,23 +832,8 @@ def test_a_shoots_b_run_on_unidirectional_opens_the_viewer_on_b(settings_dir, sp
     from the files' own direction stamps."""
     import re
     from urllib.parse import parse_qsl
-    from conftest import finish_engine_run
-    at = run_streamlit().run()
-    work = _new_project(at, span_dir, tmp_path)
-    # A new project has no Reports folder yet, and the Unidirectional engine
-    # does not make the folder it writes to (the Splice Report's does).
-    (work / "Reports").mkdir(exist_ok=True)
-    at = run_streamlit().run()
-    next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
-    at.text_input(key="home_folder").set_value(str(work)).run()
-    next(b for b in at.button if b.label == "Open This Folder").click().run()
-    at.button(key="run_unidirectional_2026-05-06").click().run()
-    assert not at.exception, list(at.exception)
-    (run_on,) = [r for r in at.main.radio if r.label == "Run On"]
-    run_on.set_value("B folder").run()
-    next(b for b in at.main.button if b.label == "Run Unidirectional Report").click().run()
-    finish_engine_run(at, "uni")
-    assert not at.exception and not at.error, (list(at.exception), [e.value for e in at.error])
+    at, work = _open_a_new_project(span_dir, tmp_path)
+    at = _uni_run_on_shoot(at, "B folder")
     grid = next(f.proto.srcdoc for f in at.get("iframe") if "class='vc'" in (f.proto.srcdoc or ""))
     assert set(re.findall(r"data-dir='(\w)'", grid)) == {"b"}
     next(r for r in at.main.radio if r.label == "Cell Clicks Open In").set_value(
