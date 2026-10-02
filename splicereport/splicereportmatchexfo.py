@@ -14780,8 +14780,17 @@ def uni_coverage_lines(cov):
     return out
 
 
-def uni_load_dir(d, direction=None):
+def uni_load_dir(d, direction=None, one_box=False):
     """Load ONE direction's fibers from a folder of .sor/.json/.trc files.
+
+    `one_box`: the folder is one of the Viewer's A/B boxes, and the box, not
+    GenParams, names its direction (the Viewer draws every file in it as that
+    leg).  Every other signature whose fiber numbers are disjoint from the
+    loaded ones is then folded in too, whatever its site codes.  El Paso B
+    (2026-10-02): 36 files said ELP->LSC like the A side, the 4 re-shots said
+    LSC->ELP; B alone left out fibers 241/245/252/264 while A+B showed them.
+    A signature that re-uses fiber numbers is a real second direction and
+    stays out.
 
     Files are grouped by GenParams direction signature FIRST, then the
     requested (or most populous) direction is keyed by fiber number — a
@@ -14891,6 +14900,21 @@ def uni_load_dir(d, direction=None):
               f"{_uni_fiber_ranges(grp)}).  Without this they would have been "
               "dropped from the report without a word; check the GenParams "
               "site code on those shots.")
+    if one_box:
+        done = {m['signature'] for m in merged}
+        for sig in sorted(groups, key=lambda s: (-counts[s], s)):
+            if sig == chosen or sig in done:
+                continue
+            grp = groups[sig]
+            if set(grp) & set(fibers):
+                continue
+            fibers.update(grp)
+            merged.append({'signature': sig, 'n_fibers': len(grp),
+                           'fibers': sorted(grp)})
+            print(f"  ** {len(grp)} file(s) in this box say '{sig}' where the "
+                  f"rest say '{chosen}'. Read as the box's direction (fibers "
+                  f"{_uni_fiber_ranges(grp)}); check the GenParams site codes "
+                  "on those shots.")
     coverage = _uni_coverage(d, ext, candidates, n_other_format, drops,
                              chosen, groups, merged)
     return fibers, chosen, counts, merged, coverage
@@ -17238,7 +17262,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     the stored GenParams name.  They print in the direction of the shot."""
     rs = ribbon_size or RIBBON_SIZE
     fibers, chosen, counts, merged_sigs, coverage = uni_load_dir(
-        input_dir, direction=direction)
+        input_dir, direction=direction, one_box=viewer_leg in ('a', 'b'))
     if not fibers:
         raise RuntimeError("no SOR/JSON files found (or none in the selected direction)")
     print(f"  Loaded {len(fibers)} fibers (direction: {chosen!r}; "
