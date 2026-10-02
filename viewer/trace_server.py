@@ -494,7 +494,7 @@ def removed_names(folder):
         # A copy kept under COPIES_DIR is not one of the folder's own files
         # (no run reads it), and its name is the same as one that is.
         out.update(os.path.basename(p) for n, p in list_fibers(folder)
-                   if n in want and p == os.path.basename(p))
+                   if n in want and COPIES_DIR not in os.path.normpath(p).split(os.sep))
     return sorted(out)
 
 

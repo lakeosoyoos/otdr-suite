@@ -25,6 +25,7 @@ import subprocess
 import pytest
 
 from conftest import VIEWER_DIR
+from conftest import COPY_HELPERS_JS  # noqa: E402
 
 SRC = (VIEWER_DIR / 'viewer.html').read_text(encoding='utf-8')
 JSC = ('/System/Library/Frameworks/JavaScriptCore.framework/'
@@ -130,7 +131,7 @@ def res(tmp_path_factory):
         'forgetSide', 'newSpanView', 'setAddDir', 'syncFiberBox', 'fiberRangeText',
         'pollAnalysisMode'))
     path = tmp_path_factory.mktemp('new_span_view') / 'nsv.js'
-    path.write_text(_STUBS + funcs + '\n' + _CASES, encoding='utf-8')
+    path.write_text(_STUBS + COPY_HELPERS_JS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
     out = r.stdout + r.stderr
     assert r.returncode == 0 and 'OUT ' in out, out[-2000:]
