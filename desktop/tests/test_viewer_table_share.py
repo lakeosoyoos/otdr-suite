@@ -147,7 +147,7 @@ def test_nothing_shows_through_the_pinned_footer():
 
 
 def test_the_toolbar_is_tighter():
-    assert '#toolbar { gap: 4px; padding: 6px 10px; }' in SRC
+    assert '#toolbar { gap: 6px; padding: 6px 10px; }' in SRC
     assert '#toolbar button { padding: 4px 7px; }' in SRC
     # every control is still there
     for ctl in ('id="fiber-input"', 'id="btn-add"', 'id="btn-clear"', 'id="btn-fit"',

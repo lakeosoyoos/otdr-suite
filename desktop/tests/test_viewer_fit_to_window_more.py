@@ -8,7 +8,6 @@
   y title   the dB axis title was cut off on a short chart
   readout   the A/B marker readout cut its last trace row in half on a short
             chart, and sat over marker B
-  toolbar   wrapped a second line at 1366 px for Summary Report alone
   table     one fiber on a big screen left most of the table empty; until the
             tech drags the bar it takes what its rows need, up to two thirds
   repaint   the event grids paint only the rows in view; a taller box showed
@@ -149,14 +148,6 @@ print('OUT ' + JSON.stringify([ro.style.left, ro.style.transform, ro.style.maxWi
 def test_the_status_line_goes_right_of_a_readout_on_the_left(tmp_path):
     res = _run(tmp_path, _js_func('placeReadout') + _STATUS)
     assert res == [f'{62 + 284 + 10}px', 'none', f'{1100 - 356 - 16}px']
-
-
-# ── Toolbar ─────────────────────────────────────────────────────────────────
-def test_the_toolbar_is_tighter_again():
-    assert '#toolbar { gap: 4px; padding: 6px 10px; }' in SRC
-    assert '#toolbar .group { padding: 2px 4px; }' in SRC
-    assert '#toolbar #fiber-input { width: 136px; }' in SRC
-    assert '#toolbar #num-yspace { width: 44px; }' in SRC
 
 
 # ── Table fitted to its rows ────────────────────────────────────────────────

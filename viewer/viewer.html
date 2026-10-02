@@ -83,16 +83,13 @@
   /* Tighter in the toolbar (demo list #32): embedded in the hub at
      1184 px with the sidebar open the bar wrapped to three lines, and every
      line came out of the chart and the table.  Same controls, less padding,
-     so it fits two lines there and one on a wide screen.
-     Tighter again (window-size audit 2026-10-01): at 1366 px the pop-out
-     wrapped a second line for Summary Report alone, 50 px over. */
-  #toolbar { gap: 4px; padding: 6px 10px; }
-  #toolbar .group { padding: 2px 4px; }
+     so it fits two lines there and one on a wide screen. */
+  #toolbar { gap: 6px; padding: 6px 10px; }
+  #toolbar .group { padding: 2px 6px; }
   #toolbar button { padding: 4px 7px; }
   #toolbar .seg button { padding: 4px 8px; }
   #toolbar .group > label[style] { margin-left: 4px !important; }
-  #toolbar #fiber-input { width: 136px; }   /* its "e.g. 354, add files first" just fits */
-  #toolbar #num-yspace { width: 44px; }
+  #toolbar #fiber-input { width: 150px; }
   label { color: var(--text-sec); font-size: 12px; }
   input[type=text], input[type=number] {
     background: #ffffff; color: var(--text);
