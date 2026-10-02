@@ -106,6 +106,11 @@ hiddenimports += [
     # (Splice Report page).  declare_component loads index.html from disk
     # next to __init__.py — see the components/otdr_settings datas below.
     "components.otdr_settings",
+    # OTDR Suite App: the owner e-mail (app.py _send_owner_mail) imports
+    # smtplib inside a function of an engine file, which PyInstaller never
+    # reads; listed here so the exe is sure to carry it
+    # (test_engine_stdlib_in_exe).
+    "smtplib",
 ]
 
 # ─── Our code, bundled as ON-DISK DATA (loaded via sys.path at runtime) ──
