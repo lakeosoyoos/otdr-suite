@@ -1154,7 +1154,10 @@ function refreshMirrorFrame() {
   gHaveA = gTraces.some(t => t.dir === 'a');
   if (gFecMode || !gStacked || !gHaveA) return;
   if (spanIsDeclared()) {          // the tech has settled it; measuring is noise
-    gMirrorNote = '   ⓘ B mirrored on the span you set for these folders (every fiber uses its own event there).';
+    // The warning takes the note's place: the status line is one line, cut
+    // at the window edge, and the warning is the part the tech must read.
+    gMirrorNote = '   ' + (halfSpanWarning()
+      || 'ⓘ B mirrored on the span you set for these folders (every fiber uses its own event there).');
     return;
   }
   const byFiber = new Map();
@@ -1270,6 +1273,41 @@ function spanEventNumbers(t) {
     if (inDeclaredSpan(t, e)) out.set(e, ++n);
   }
   return out;
+}
+// A span declared on ONE side only, far past any launch reel (Robert
+// 2026-10-01, "add the warning").  A span START on A is read as "A's launch
+// reel ends here", the way FastReporter reads its Launch fiber length, and B
+// is mirrored to meet it there.  On a real reel that is right.  Picked on a
+// splice in the middle of the cable it slides every B trace along by that
+// distance, and FastReporter does the same until B's own span end (its
+// Receive length) is set as well.  So say so, and say where B's end goes:
+// the point on B that is A's start, by the same reel frame the mirror uses
+// (B's km = far connector + A's launch - A's km).  The other half mirrors it.
+const SPAN_HALF_WARN_KM = 3.0;   // past the longest launch reel in use
+function halfSpanWarning() {
+  const A = gSpanDecl && gSpanDecl.a, B = gSpanDecl && gSpanDecl.b;
+  const startRef = (A && A.start_km != null) ? Number(A.start_km) : null;
+  const endRef   = (B && B.end_km   != null) ? Number(B.end_km)   : null;
+  if ((startRef == null) === (endRef == null)) return '';   // none, or both set
+  for (const bT of gTraces) {
+    if (!bT.data || bT.dir !== 'b') continue;
+    const aT = gTraces.find(x => x.dir === 'a' && x.fiber === bT.fiber && x.data);
+    if (!aT) continue;
+    const origin = reelOriginKm(bT);          // B's far connector + A's reel
+    if (startRef != null) {
+      const start = declaredEdgeKm(aT, startRef);
+      if (start - gLaunchA <= SPAN_HALF_WARN_KM) return '';
+      return `⚠ Span START is set on A only, ${fmtDist(start)} in: B is drawn as if `
+        + `A had a launch reel that long. Set B's span END too, at about `
+        + `${fmtDist(origin - start)} on F${bT.fiber}'s B→A trace, so the two line up.`;
+    }
+    const end = declaredEdgeKm(bT, endRef);
+    if (origin - gLaunchA - end <= SPAN_HALF_WARN_KM) return '';
+    return `⚠ Span END is set on B only, ${fmtDist(origin - gLaunchA - end)} short of its `
+      + `far end: A is drawn as if B had a receive reel that long. Set A's span START `
+      + `too, at about ${fmtDist(origin - end)} on F${bT.fiber}'s A→B trace, so the two line up.`;
+  }
+  return '';
 }
 function spanIsDeclared() {
   return !!((gSpanDecl && gSpanDecl.a && gSpanDecl.a.start_km != null) ||
