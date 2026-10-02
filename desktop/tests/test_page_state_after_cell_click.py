@@ -41,9 +41,15 @@ def _own_dirs(tmp_path, monkeypatch):
 
 def _on_screen(el):
     """What the browser shows for this element after this run: the value
-    the run sent, else the element's default."""
+    the run sent, else the element's default.  A radio gives the index of
+    the option shown: Streamlit 1.64 (the Windows build) sends a radio's
+    value as the option's text (`raw_value`), 1.50 as its index (`value`)."""
     p = el.proto
-    return p.value if p.set_value else p.default
+    if not p.set_value:
+        return p.default
+    if 'raw_value' in {f.name for f in p.DESCRIPTOR.fields}:
+        return list(p.options).index(p.raw_value)
+    return p.value
 
 
 def _box(at, label, where='main'):
