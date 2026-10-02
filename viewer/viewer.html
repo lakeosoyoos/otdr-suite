@@ -318,13 +318,19 @@
     position: fixed; z-index: 50; display: flex; flex-direction: column; gap: 3px;
     background: #ffffff; border: 1px solid #c9d5e1; border-radius: 5px;
     box-shadow: 0 3px 10px rgba(0,0,0,.15); padding: 6px 10px;
+    max-height: calc(100vh - 8px); overflow-y: auto; box-sizing: border-box;
   }
   #evt-view-menu[hidden] { display: none; }
   #evt-view-menu label { display: flex; gap: 5px; align-items: center; white-space: nowrap;
                          font-size: 11px; color: #000000; cursor: pointer; }
   #evt-view-menu input[type="checkbox"] { width: 11px; height: 11px; margin: 0; }
-  #evt-settings { margin-left: auto; display: flex; gap: 12px; align-items: center;
-                  font-size: 11px; color: #000000; }
+  #evt-settings { margin-left: auto; display: flex; gap: 4px 12px; align-items: center;
+                  font-size: 11px; color: #000000;
+                  flex-wrap: wrap; justify-content: flex-end; }
+  /* A narrow Viewer (the hub at 800 px with its sidebar open) cut the Refl
+     Band boxes off the panel's right edge, out of reach (window-size audit
+     2026-10-01).  The header wraps to a second line instead. */
+  #event-panel-header { flex-wrap: wrap; row-gap: 4px; }
   #evt-settings input[type="number"] { width: 62px; font-size: 11px; padding: 1px 3px; }
   #evt-settings label { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
   .evt-scroll { overflow-y: auto; flex: 1; min-height: 0; background: #ffffff; }
@@ -552,6 +558,12 @@
   /* "Pin Min/Max/Average" off: the strip stays at the end of the table, under
      the last row, and covers nothing while you scroll. */
   #event-panel.agg-unpinned table.fr-table tfoot { position: static; }
+  /* Pinned, but the box has no room for it: under FOOT_PIN_MIN_ROWS rows
+     between the header and the strip, the strip sat on top of the column
+     headers and hid every row (window-size audit 2026-10-01: the table
+     dragged low, or a 640 x 480 window).  It goes under the last row until
+     the box has the room again; the switch itself is not changed. */
+  .fr-scroll.foot-free table.fr-table tfoot { position: static; }
   table.fr-table tfoot tr.fr-agg td { background: #eef3f8; }
   /* Two sticky axes meet in the top-left and bottom-left corners: the body's
      sticky-left fiber column and the sticky header/footer.  `.fr-rowlab` sets
@@ -1333,12 +1345,20 @@ window.addEventListener('resize', resizeCanvas);
 // Drag the bar left of the FILES panel to trade chart width for panel width
 // (long file names, or more chart).  Remembered per browser; double-click
 // puts the default width back.
+// The chart keeps MIN_CHART on every window size, not only while dragging
+// (window-size audit 2026-10-01): a panel widened on a big window, then the
+// window made smaller (restored, another screen, the hub sidebar opened),
+// pushed the chart and the event table to no width at all, and the
+// remembered width brought that back on every reload.  The tech's width is
+// kept as the wish; the panel takes as much of it as the window leaves room
+// for, and grows back to it when the window does.
 (function () {
   const bar   = document.getElementById('files-resizer');
   const panel = document.getElementById('files-panel');
   const ws    = document.getElementById('workspace');
   const KEY   = 'viewer.filesPanelWidth';
   const MIN_PANEL = 140, MIN_CHART = 300;
+  let want = null;                      // the tech's own width, once dragged
 
   function clamp(w) {
     const max = ws.clientWidth - bar.offsetWidth - MIN_CHART;
@@ -1348,10 +1368,15 @@ window.addEventListener('resize', resizeCanvas);
     panel.style.width = clamp(w) + 'px';
     resizeCanvas();
   }
+  function refit() {
+    if (want != null) panel.style.width = clamp(want) + 'px';
+  }
   try {
     const saved = parseInt(localStorage.getItem(KEY), 10);
-    if (saved > 0) panel.style.width = saved + 'px';
+    if (saved > 0) { want = saved; refit(); }
   } catch (e) {}
+  // resizeCanvas's own resize listener ran first, on the old panel width.
+  window.addEventListener('resize', () => { if (want != null) { refit(); resizeCanvas(); } });
 
   let startX = 0, startW = 0;
   bar.addEventListener('pointerdown', ev => {
@@ -1370,11 +1395,13 @@ window.addEventListener('resize', resizeCanvas);
     if (!bar.classList.contains('dragging')) return;
     bar.classList.remove('dragging');
     document.body.classList.remove('resizing-files');
-    try { localStorage.setItem(KEY, String(panel.offsetWidth)); } catch (e) {}
+    want = panel.offsetWidth;
+    try { localStorage.setItem(KEY, String(want)); } catch (e) {}
   }
   bar.addEventListener('pointerup', stop);
   bar.addEventListener('pointercancel', stop);
   bar.addEventListener('dblclick', () => {
+    want = null;
     panel.style.width = '';
     try { localStorage.removeItem(KEY); } catch (e) {}
     resizeCanvas();
@@ -1422,13 +1449,18 @@ window.addEventListener('resize', resizeCanvas);
   const TABLE_SHARE = 2 / 3;   // the table gets two thirds by default
   const avail = () => Math.max(0, main.clientHeight - bar.offsetHeight);
   let share = null;                     // the tech's own split, once dragged
+  // A split dragged in THIS visit is kept exactly when the window changes
+  // size (window-size audit 2026-10-01): the table pulled to the top came
+  // back down to a 150 px chart on every resize, the hub sidebar opening
+  // included.  The 150 px floor is for opening the Viewer only.
+  let draggedNow = false;
   try {
     const s = parseFloat(localStorage.getItem(SHARE_KEY));
     if (s > 0 && s < 1) share = s;
   } catch (e) {}
   function fitShare() {
     const h = Math.round((share != null ? share : TABLE_SHARE) * avail());
-    panel.style.height = openHeight(h) + 'px';
+    panel.style.height = (draggedNow ? clamp(h) : openHeight(h)) + 'px';
   }
   try {
     const saved = parseInt(localStorage.getItem(KEY), 10);
@@ -1457,6 +1489,7 @@ window.addEventListener('resize', resizeCanvas);
     if (!bar.classList.contains('dragging')) return;
     bar.classList.remove('dragging');
     document.body.classList.remove('resizing-panel');
+    draggedNow = true;
     if (avail() > 0) share = panel.offsetHeight / avail();
     try {
       localStorage.setItem(KEY, String(panel.offsetHeight));
@@ -1467,6 +1500,7 @@ window.addEventListener('resize', resizeCanvas);
   bar.addEventListener('pointercancel', stop);
   bar.addEventListener('dblclick', () => {
     share = null;
+    draggedNow = false;
     try { localStorage.removeItem(KEY); localStorage.removeItem(SHARE_KEY); } catch (e) {}
     fitShare();
     resizeCanvas();
@@ -9173,12 +9207,21 @@ function syncViewBtn() {
 function setViewMenu(open) {
   const btn = document.getElementById('evt-view-btn');
   const menu = document.getElementById('evt-view-menu');
-  if (open) {
-    const r = btn.getBoundingClientRect();
-    menu.style.left = r.left + 'px';
-    menu.style.top = (r.bottom + 3) + 'px';
-  }
   menu.hidden = !open;
+  if (open) {
+    // Under the gear when it fits, else above it (window-size audit
+    // 2026-10-01: with the table dragged low, five of the eight switches,
+    // Pin Min/Max/Average among them, opened below the window's edge).
+    // Too short for either: against the bottom, scrolling (CSS max-height).
+    const r = btn.getBoundingClientRect();
+    const h = menu.offsetHeight, w = menu.offsetWidth;
+    let top = r.bottom + 3;
+    if (top + h > window.innerHeight - 4) {
+      top = r.top - 3 - h >= 4 ? r.top - 3 - h : Math.max(4, window.innerHeight - 4 - h);
+    }
+    menu.style.left = Math.max(4, Math.min(r.left, window.innerWidth - 4 - w)) + 'px';
+    menu.style.top = top + 'px';
+  }
   btn.setAttribute('aria-expanded', open ? 'true' : 'false');
 }
 document.getElementById('evt-view-btn').addEventListener('click', (e) => {
@@ -9205,6 +9248,32 @@ syncViewBtn();
     try { localStorage.setItem('otdr_viewer_pin_agg', box.checked ? '1' : '0'); } catch (e) {}
   };
 }
+// ─── Pinned Min/Max/Average needs room ────────────────────────────────
+// See .foot-free in the stylesheet.  Checked whenever the table box changes
+// size or the table is redrawn, at most once a frame.
+const FOOT_PIN_MIN_ROWS = 3, FOOT_PIN_ROW_PX = 22;
+(function () {
+  const host = document.getElementById('event-tbody-wrap');
+  let queued = false;
+  function check() {
+    queued = false;
+    for (const sc of host.querySelectorAll('.fr-scroll')) {
+      const t = sc.querySelector('table.fr-table');
+      const foot = t && t.tFoot;
+      if (!foot) { sc.classList.remove('foot-free'); continue; }
+      const room = sc.clientHeight - (t.tHead ? t.tHead.offsetHeight : 0) - foot.offsetHeight;
+      sc.classList.toggle('foot-free', room < FOOT_PIN_MIN_ROWS * FOOT_PIN_ROW_PX);
+    }
+  }
+  function queue() {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(check);
+  }
+  if (window.ResizeObserver) new ResizeObserver(queue).observe(host);
+  new MutationObserver(queue).observe(host, { childList: true, subtree: true });
+})();
+
 document.getElementById('cb-stack').onchange = (e) => {
   gStacked = e.target.checked;
   syncYSpacingEnabled();
