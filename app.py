@@ -3432,8 +3432,10 @@ def _mode_actions():
 
 # Each shoot's row on the Traces tab has its own Run In… button (Robert,
 # 2026-09-27: "instead of selecting them and clicking buttons at the bottom
-# we can just click a button in the trace's row").
-RUN_IN_TOOLS = ('Viewer', 'Splice Report', 'Unidirectional', 'Secret Sauce')
+# we can just click a button in the trace's row").  The FEC tools start there
+# too (Robert, 2026-10-02): a project opens them from a shoot's Run In….
+RUN_IN_TOOLS = ('Viewer', 'Splice Report', 'Splice Report FEC', 'Viewer FEC',
+                'Unidirectional', 'Secret Sauce')
 
 
 def run_in_key(sh, page):
@@ -3448,8 +3450,11 @@ def _run_shoot_in(page, sh):
         if str(k).startswith(('sr_result', 'sr_dirs', 'uni_result', 'ss_result',
                               'viewer_target')):
             ss.pop(k, None)
-    if page in ('Viewer', 'Splice Report'):
+    if page in ('Viewer', 'Splice Report', 'Viewer FEC'):
         ss['view_dir_a_input'], ss['view_dir_b_input'] = sh['a'], sh['b']
+    if page == 'Splice Report FEC':
+        # Its own A End / B End FEC boxes (the page shows what is in them).
+        ss['fec_dir_a'], ss['fec_dir_b'] = sh['a'], sh['b']
     if page == 'Splice Report':
         ss[_sr_span_keys(1)['mode']] = SR_MODE_TWO
         ss['sr_n_spans'] = 1

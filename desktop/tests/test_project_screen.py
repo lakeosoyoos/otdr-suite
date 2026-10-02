@@ -761,3 +761,22 @@ def test_owner_recents_fill_the_boxes_and_saving_puts_an_owner_on_top(settings_d
     assert at.session_state["project_owner"] == {"name": "Lee Example", "email": "lee@example.com"}
     saved = json.loads((settings_dir / "settings.json").read_text(encoding="utf-8"))
     assert [r["email"] for r in saved["owner_recents"]] == ["lee@example.com", "pat@example.com"]
+
+
+def test_a_shoots_run_in_starts_the_fec_tools(hub, tmp_path, monkeypatch):
+    """Robert, 2026-10-02: in a project the FEC tools start from a shoot's
+    Run In… on the Traces tab (and from the tool list in Quick Analysis)."""
+    assert hub.RUN_IN_TOOLS.index("Splice Report FEC") == hub.RUN_IN_TOOLS.index("Splice Report") + 1
+    assert "Viewer FEC" in hub.RUN_IN_TOOLS
+    sh = {"id": "2026-05-06", "a": str(tmp_path / "A"), "b": str(tmp_path / "B"),
+          "dir": str(tmp_path)}
+    ss = {"sr_result": 1, "viewer_target": 2}
+    monkeypatch.setattr(hub.st, "session_state", ss)
+    hub._run_shoot_in("Splice Report FEC", sh)
+    assert ss["nav_radio"] == "Splice Report FEC" and ss["project_run_shoot"] == "2026-05-06"
+    assert (ss["fec_dir_a"], ss["fec_dir_b"]) == (sh["a"], sh["b"])
+    assert "sr_result" not in ss and "viewer_target" not in ss
+    ss.clear()
+    hub._run_shoot_in("Viewer FEC", sh)
+    assert ss["nav_radio"] == "Viewer FEC"
+    assert (ss["view_dir_a_input"], ss["view_dir_b_input"]) == (sh["a"], sh["b"])
