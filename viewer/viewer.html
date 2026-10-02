@@ -1789,9 +1789,25 @@ function forgetSide(dir) {
   for (const key of Object.keys(gDirOverride)) if (key.startsWith(dir + '-')) delete gDirOverride[key];
   for (const key of Object.keys(gStoredDir)) if (key.startsWith(dir + '-')) delete gStoredDir[key];
   for (const t of gTraces.filter(t => t.src === dir)) COLORS_USED.delete(t.key);
+  const had = gTraces.length;
   gTraces = gTraces.filter(t => t.src !== dir);
   syncFileMarks();                   // the side that stays keeps its selection
   gFileAnchor = gFileFocus = null;
+  if (had && !gTraces.length) newSpanView();
+}
+
+// The folders moved and nothing of the old span is left on the chart (a drop
+// of a new span, or the other window's drop reaching this one): the view
+// starts over as Clear All starts it.  The old zoom kept a 2 km span drawn
+// at 41.9-45.9 km, a blank chart (2026-10-01), and the Dir buttons stayed on
+// the last side forgotten, so the next Add loaded B alone.
+function newSpanView() {
+  gPickKey = null;
+  gAutoFit = true;
+  gView = null;
+  gMarkers = { a: null, b: null };
+  gDragMarker = null;
+  setAddDir('both');
 }
 
 // Trace files go up in BATCHES, not one request each.  One request per file
