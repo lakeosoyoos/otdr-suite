@@ -3163,7 +3163,10 @@ _TOP_NAV_CSS = '''<style>
 .st-key-top_nav button[data-testid="stBaseButton-primary"] p{color:var(--nav-hi) !important;font-weight:600}
 .st-key-nav_logo button p{color:var(--nav-hi) !important;font-weight:700;font-size:15px !important}
 .st-key-nav_logo button span{color:#22c55e !important}
-.st-key-nav_update_ready button p,.st-key-nav_update_ready button span{color:#22c55e !important;font-weight:600}
+.st-key-nav_update_ready{gap:0 !important}
+.st-key-nav_update_ready [data-testid="stPopover"] button{min-height:28px !important;height:28px;padding:0 4px !important}
+.st-key-top_nav p.nav-update-flag{color:#f97316 !important;font-size:12px;font-weight:700;
+  line-height:14px;margin:0 4px 0 0;text-align:right}
 .st-key-nav_tick{display:none}
 /* The narrow-window menu.  One set of tabs and switches: a narrow window
    only lays them out differently, so no switch is ever drawn twice.  The
@@ -3175,6 +3178,8 @@ _TOP_NAV_CSS = '''<style>
   cursor:pointer;color:var(--nav-fg);opacity:.65;transition:opacity .15s,transform .2s}
 .nav-menu-arrow:hover{opacity:1}
 #nav_menu_cb:checked+.nav-menu-arrow{transform:rotate(180deg)}
+/* A narrow window hides the orange Update: the arrow wears its color. */
+.st-key-top_nav:has(.st-key-nav_update_ready) .nav-menu-arrow{color:#f97316;opacity:1}
 @media (max-width:%(menu_px)dpx){
   .st-key-top_nav>[data-testid="stElementContainer"]:has(#nav_menu_cb){display:block;
     position:absolute;top:0;left:50%%;transform:translateX(-50%%);width:auto !important}
@@ -3198,6 +3203,19 @@ _TOP_NAV_CSS = '''<style>
 </style>'''
 
 
+# The bar's two switches (Robert 2026-10-01): the name in use is bold, as
+# the open tab is, with no halo; the other name is plain.  The switch is
+# always lit, the same bright blue in Dark and Light, and only the knob
+# moves, toward the name in use.  After _MODE_SWITCH_CSS, so these win.
+_NAV_SWITCH_CSS = '''<style>
+.st-key-top_nav .mode-on,.st-key-top_nav .mode-off{box-shadow:none !important;padding:0 !important}
+.st-key-top_nav .mode-on{font-weight:700;color:var(--nav-hi) !important}
+.st-key-top_nav .mode-off{font-weight:400}
+.st-key-top_nav [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child
+{background-color:#3b82f6 !important}
+</style>'''
+
+
 def _nav_go(target):
     """A tab's on_click: runs before anything draws, so nav_radio may be
     written (no widget owns it any more)."""
@@ -3205,29 +3223,44 @@ def _nav_go(target):
     st.session_state['nav_picks'] = st.session_state.get('nav_picks', 0) + 1
 
 
+def _update_actions(latest, cur, key):
+    """What the update menu offers for a published update newer than this
+    copy: the pinned-cache note, the reinstall note, or Update & Restart."""
+    if _cache_pinned():
+        _render_cache_pinned_notice()
+    elif _needs_install():
+        _render_install_notice(latest, cur)
+    elif getattr(sys, 'frozen', False):
+        if st.button('⬇ Update & Restart Now', key=key,
+                     type='primary', use_container_width=True):
+            if _relaunch_and_exit():
+                _render_restart_watchdog()
+    else:
+        st.caption('Restart the app to apply. Updates install at launch.')
+
+
 def _render_update_menu():
-    """Far right of the top bar: the build this copy runs, and the update
-    check that was the sidebar footer, in a small menu.  The label turns
-    green when a newer update is published."""
+    """Far right of the top bar: the build this copy runs, opening a small
+    menu with the update check that was the sidebar footer.  When a newer
+    update is published, an orange "Update" sits under the build (Robert
+    2026-10-01) and the menu opens on Update & Restart."""
     _appv, _engv = _app_version(), _engine_version()
     try:
         _nudge = _update_state()
     except Exception:
         _nudge = None
     _cur = _parse_engine_version(_appv, _engv)
-    if _nudge:
-        label, key = f'Update {_nudge[0]} Ready', 'nav_update_ready'
-    elif _cur is None:
-        label, key = 'Dev Build', 'nav_update'
-    else:
-        label, key = f'Version {_cur}', 'nav_update'
-    with st.container(key=key, width=165, horizontal=True,
-                      horizontal_alignment='right'):
+    label = 'Dev Build' if _cur is None else f'Version {_cur}'
+    with st.container(key='nav_update_ready' if _nudge else 'nav_update',
+                      width=165, horizontal_alignment='right'):
         with st.popover(label, icon=':material/system_update_alt:'):
             if _appv == 'dev' and _engv == 'dev':
                 st.caption(f'{PRODUCT_NAME} · dev')
             else:
                 st.caption(f'{PRODUCT_NAME} · app {_appv} · engine: {_engv}')
+            if _nudge:
+                st.warning(f'Update {_nudge[0]} is available (running {_nudge[1]}).')
+                _update_actions(_nudge[0], _nudge[1], 'upd_menu_restart')
             if st.button('🔄 Check for Updates', key='upd_check',
                          use_container_width=True):
                 st.session_state['upd_latest'] = _latest_manifest_version()
@@ -3242,20 +3275,12 @@ def _render_update_menu():
                 elif _cur is None:
                     st.info(f'Latest published update: {_latest} · running: dev '
                             'checkout (updates apply to installed builds only).')
-                else:
+                elif not _nudge:
                     st.info(f'Update {_latest} is available (running {_cur}).')
-                    if _cache_pinned():
-                        _render_cache_pinned_notice()
-                    elif _needs_install():
-                        _render_install_notice(_latest, _cur)
-                    elif getattr(sys, 'frozen', False):
-                        if st.button('⬇ Update & Restart Now', key='upd_restart',
-                                     type='primary', use_container_width=True):
-                            if _relaunch_and_exit():
-                                _render_restart_watchdog()
-                    else:
-                        st.caption('Restart the app to apply. Updates install '
-                                   'at launch.')
+                    _update_actions(_latest, _cur, 'upd_restart')
+        if _nudge:
+            st.markdown('<p class="nav-update-flag">Update</p>',
+                        unsafe_allow_html=True)
 
 
 def _render_top_nav(page):
@@ -3265,7 +3290,7 @@ def _render_top_nav(page):
               dict(bg='rgba(250,250,252,.94)', fg='rgba(0,0,0,.78)',
                    hi='#000000', line='rgba(0,0,0,.10)'))
     st.markdown(_TOP_NAV_CSS % dict(colors, h=NAV_HEIGHT_PX, menu_px=NAV_MENU_BELOW_PX)
-                + _MODE_SWITCH_CSS,
+                + _MODE_SWITCH_CSS + _NAV_SWITCH_CSS,
                 unsafe_allow_html=True)
     with st.container(key='top_nav', horizontal=True,
                       horizontal_alignment='distribute',
