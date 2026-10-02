@@ -35,7 +35,7 @@ def _own_dirs(tmp_path, monkeypatch):
 
 
 def _box(at):
-    return next(t for t in at.main.text_input if t.label == "Save reports to")
+    return next(t for t in at.main.text_input if t.label == "Save Reports To")
 
 
 def _on_screen(at):
@@ -97,7 +97,8 @@ def test_the_other_page_s_folder_survives_a_cell_click_too(tmp_path):
     _box(at).input(keep_uni).run()
     view = run_streamlit(default_timeout=180)
     for k, v in {"nav": "viewer", "fiber": "3", "km": "1.0", "dir": "a",
-                 "sra": A, "src": "uni", "cs": at.session_state["_carry_id"]}.items():
+                 "sra": A, "src": "uni", "pa": A, "pb": B,
+                 "cs": at.session_state["_carry_id"]}.items():
         view.query_params[k] = v
     view.run()
     next(b for b in view.button if b.label == "← Back to Unidirectional").click().run()
