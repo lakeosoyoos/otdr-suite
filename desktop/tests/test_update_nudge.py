@@ -212,7 +212,8 @@ def test_nudge_renders_above_the_page_radio():
     radio a tech scrolls past it."""
     call = APP_SRC.index("\n    _render_update_nudge()")     # the call, not the def
     radio = APP_SRC.index("page = st.radio(")
-    sidebar = APP_SRC.index("with st.sidebar:\n    st.markdown('## 🔬 OTDR Suite')")
+    # The heading names the product through PRODUCT_NAME ("OTDR App" in the App).
+    sidebar = APP_SRC.index("with st.sidebar:\n    st.markdown(f'## 🔬 {PRODUCT_NAME}')")
     assert sidebar < call < radio, "the nudge belongs at the top of the nav sidebar"
 
 

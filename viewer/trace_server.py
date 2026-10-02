@@ -67,6 +67,9 @@ except Exception:                                  # standalone/dev — best-eff
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 VIEWER_HTML = os.path.join(HERE, 'viewer.html')
+# The product's name where a person reads it (the App's launcher sets the
+# edition to "OTDR App"; the regular exe leaves it unset).
+PRODUCT_NAME = os.environ.get('OTDR_SUITE_EDITION') or 'OTDR Suite'
 
 # Shared, hub-writable configuration.  No pre-seeded sample folders: a hardcoded
 # dev path (a Mac Downloads folder) is meaningless on a tech's Windows box and
@@ -1441,6 +1444,12 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as e:
             self.send_error(404, str(e))
             return
+        # The product's name for the page's own wording (the App: "OTDR App";
+        # unmarked, the page says "OTDR Suite").
+        if PRODUCT_NAME != 'OTDR Suite':
+            import html as _html
+            body = body.replace(b'<html', b'<html data-product="'
+                                + _html.escape(PRODUCT_NAME).encode('utf-8') + b'"', 1)
         if CONFIG.get('theme') == 'dark':
             body = body.replace(b'<html', b'<html data-theme="dark"', 1)
         self.send_response(200)
@@ -5799,7 +5808,7 @@ def _report_xlsx(payload, path, folder=None):
             x.alignment = Alignment(horizontal=al, vertical='center', wrap_text='\n' in text)
             tip = cell.get('tip')
             if tip:                               # a flagged cell keeps its reason
-                x.comment = Comment(str(tip)[:500], 'OTDR Suite')
+                x.comment = Comment(str(tip)[:500], PRODUCT_NAME)
             x.border = box
             if rs > 1 or cs > 1:                  # the merge carries the border round
                 ws.merge_cells(start_row=top + r, start_column=c + 1,
@@ -6237,7 +6246,7 @@ def _report_pdf(payload, path, folder=None):
     def frame(size):
         return Frame(margin, margin + 6, size[0] - 2 * margin, size[1] - 2 * margin - 6,
                      leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
-    doc = BaseDocTemplate(path, pagesize=page, title=title, author='OTDR Suite',
+    doc = BaseDocTemplate(path, pagesize=page, title=title, author=PRODUCT_NAME,
                           pageTemplates=[PageTemplate('land', [frame(page)], pagesize=page),
                                          PageTemplate('port', [frame(port)], pagesize=port)])
     doc.build(story, canvasmaker=NumberedCanvas)
