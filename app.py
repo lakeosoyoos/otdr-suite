@@ -3790,6 +3790,11 @@ def page_viewer(fec=False):
         trace_server.set_dirs(dir_a or None, dir_b or None)
         for w in warn:
             st.warning(w)
+        # The folder boxes are not on this page any more (Robert
+        # 2026-10-01): with nothing loaded, say where they are.
+        if not dir_a and not dir_b:
+            st.caption('No traces loaded. Drop files on the Viewer, or pick '
+                       'the A and B folders on the **Traces** tab.')
 
     # If the tech arrived here by clicking a Duplicate Check pair, offer a
     # one-click route back to the report (the sidebar radio also works, but an
