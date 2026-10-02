@@ -4111,6 +4111,9 @@ def _handle_nav():
         st.session_state['view_dir_b_input'] = _fb if os.path.isdir(_fb) else ''
         for _k, _v in (('fec_dir_a', qp.get('ra') or _fa), ('fec_dir_b', qp.get('rb') or _fb)):
             st.session_state[_k] = st.session_state[_k + '_saved'] = _v
+        # The folders the report ran on, which its saved copy is filed
+        # under: Clear Traces finds it with these (_forget_fec_report).
+        st.session_state['fec_ran_dirs'] = [_fa, _fb]
         st.session_state['viewer_target'] = {
             'fiber': qp.get('fiber'), 'km': qp.get('km'),
             'dir': qp.get('dir') if qp.get('dir') in ('a', 'b') else 'a'}
@@ -4770,6 +4773,31 @@ def _drop_report(which):
         trace_server.set_suite_table(None)
 
 
+def _forget_fec_report():
+    """Take the Splice Report FEC report off the page and delete its saved
+    copy, which is filed under the pair of folders it ran on: the report's
+    own record of them, the pair a Viewer FEC row link brought into this
+    session, and the boxes when they hold plain folders (a .zip's folder is
+    only known once the page resolves it).  Never raises."""
+    ss = st.session_state
+    pairs = [(ss.get('fec_result') or {}).get('_dirs'), ss.get('fec_ran_dirs')]
+    boxes = []
+    for _k in ('fec_dir_a', 'fec_dir_b'):
+        _raw = ss.get(_k) or ss.get(_k + '_saved') or ''
+        _raw = _raw.strip().strip('"') if isinstance(_raw, str) else ''
+        boxes.append(os.path.abspath(_raw) if _raw and os.path.isdir(_raw) else '')
+    pairs.append(boxes)
+    for _p in pairs:
+        if not (isinstance(_p, (list, tuple)) and len(_p) == 2 and _p[0]):
+            continue
+        try:
+            os.remove(_hub_cache_path('fec_result_cache.json', *_p))
+        except OSError:
+            pass
+    for _k in ('fec_result', 'fec_ran_dirs', 'fec_pending_cmd'):
+        ss.pop(_k, None)
+
+
 def _clear_traces():
     """Back to an empty Suite: every report, every tool's folder box and the
     Viewer's folders.  The pages' own drop zones keep their files: Streamlit
@@ -4793,6 +4821,13 @@ def _clear_traces():
         st.session_state[_k] = ''
     st.session_state.pop('_drop_box_a', None)
     st.session_state.pop('_drop_box_b', None)
+    # Splice Report FEC: its two boxes, its report and the report's saved
+    # copy.  The dialog says every tool; the FEC page kept all three
+    # (2026-10-02 audit).
+    _forget_fec_report()
+    for _k in ('fec_dir_a', 'fec_dir_b'):
+        st.session_state[_k] = ''
+        st.session_state.pop(_k + '_saved', None)
     # Unidirectional's own upload is kept in a slot, not in its uploader.
     st.session_state.pop('uni_upload', None)
     st.session_state.pop('uni_both_side', None)
@@ -10609,6 +10644,29 @@ def _fec_folder_row(slot, label, placeholder):
     return os.path.abspath(d)
 
 
+def _fec_rule_text(gates):
+    """The fail rule in words, for the page and for a report's own gates."""
+    return (f"loss {'>' if gates['FEC_LOSS_STRICT'] else '≥'} "
+            f"{gates['FEC_LOSS_GATE']:.3f} dB (connector + events within "
+            f"{gates['FEC_COMBINE_M']:.0f} m behind it), or reflectance > "
+            f"{gates['FEC_REFL_GATE']:.1f} dB")
+
+
+def _fec_same_gates(ran, now):
+    """True when a report was run with the gates `now` holds.  `ran` is the
+    report's own record (its manifest's fec.gates); a report without one is
+    not questioned.  The page hands the engine these exact floats, so they
+    are compared as they are."""
+    if not isinstance(ran, dict) or not ran:
+        return True
+    try:
+        return (all(abs(float(ran[k]) - float(now[k])) < 1e-9
+                    for k in ('FEC_LOSS_GATE', 'FEC_REFL_GATE', 'FEC_COMBINE_M'))
+                and bool(ran['FEC_LOSS_STRICT']) == bool(now['FEC_LOSS_STRICT']))
+    except (KeyError, TypeError, ValueError):
+        return True
+
+
 def _fec_rows_html(rows, dir_a, dir_b):
     """The FEC fails as a table whose rows open Viewer FEC on that fiber,
     from its own end, zoomed to the panel connector.  Every cell of a row is
@@ -10686,10 +10744,7 @@ def page_splice_report_fec():
         'FEC_REFL_GATE': float(st.session_state[f'fec_FEC_REFL_GATE{sfx}']),
         'FEC_COMBINE_M': float(st.session_state[f'fec_FEC_COMBINE_M{sfx}']),
     }
-    st.caption(f"Fails: loss {'>' if gates['FEC_LOSS_STRICT'] else '≥'} "
-               f"{gates['FEC_LOSS_GATE']:.3f} dB (connector + events within "
-               f"{gates['FEC_COMBINE_M']:.0f} m behind it), or reflectance > "
-               f"{gates['FEC_REFL_GATE']:.1f} dB.")
+    st.caption(f'Fails: {_fec_rule_text(gates)}.')
 
     dir_a = _fec_folder_row('fec_dir_a', 'A End FEC',
                             r'C:\...\FEC shots, A end')
@@ -10705,7 +10760,10 @@ def page_splice_report_fec():
     _dest = _report_dest_row('fec_report_dest', _fi_dest.default_report_dir())
     _stale = _report_gate('fec')
     if st.button('Run FEC Report', type='primary', disabled=bool(_stale)):
-        out_xlsx = os.path.join(_dest, 'FEC_OOS.xlsx')
+        # A name of its own: a second span run into the same folder wrote
+        # over the first one's workbook, and the first span's page then
+        # offered the second span's file (2026-10-02 audit).
+        out_xlsx = _unused_report_path(os.path.join(_dest, 'FEC_OOS.xlsx'))
         st.session_state['fec_pending_cmd'] = fec_cmd(dir_a, dir_b, out_xlsx, gates)
         st.session_state.pop('fec_result', None)
         st.rerun()
@@ -10758,6 +10816,13 @@ def page_splice_report_fec():
         return
     fec = res.get('fec') or {}
     sides = fec.get('sides') or []
+    # The report on screen is found by its folders only, so an FEC Settings
+    # edit (or another profile) left the old fails under the new rule's
+    # caption with nothing said (2026-10-02 audit).
+    if not _fec_same_gates(fec.get('gates'), gates):
+        st.warning('This report was made with other FEC Settings: '
+                   f"{_fec_rule_text(fec['gates'])}. Run FEC Report again "
+                   'to use the settings above.')
     st.success('Done: ' + ' · '.join(
         f"{s['side']} end {s['label']}: {s['n_traces']} traces, "
         f"{s['n_fail_fibers']} failing" for s in sides))
