@@ -1052,6 +1052,11 @@ def main():
                           file=sys.stderr)
                     _lms = None
             try:
+                # The page offers a new folder under an existing one, as every
+                # report page does, and a new project has no Reports folder
+                # until a report is written: make it, as the Splice Report does.
+                os.makedirs(os.path.dirname(os.path.abspath(args.out)),
+                            exist_ok=True)
                 summary = E.uni_generate(
                     a, args.out,
                     ribbon_size=args.ribbon_size,

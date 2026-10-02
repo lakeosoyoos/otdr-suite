@@ -901,7 +901,7 @@
       <span class="hint" id="event-hint">add a trace to see events</span>
       <span id="evt-settings">
         <label title="An event at or above this loss is flagged. Seeded from the report that opened this Viewer, so the two agree; edit to explore.">
-          Loss &ge; <input id="set-loss" type="number" step="0.005" min="0" value="0.160"> dB</label>
+          <span id="loss-op">Loss &ge;</span> <input id="set-loss" type="number" step="0.005" min="0" value="0.160"> dB</label>
         <span id="gate-src" class="gate-src" title="Which report's threshold this Viewer is judging by."></span>
         <label title="Reflectance band low end (engine UNI_REFL_FLOOR_DB). 0 turns the reflectance rule off.">
           Refl Band <input id="set-refl-lo" type="number" step="1" max="0" value="-80"></label>
@@ -2321,6 +2321,7 @@ async function loadInfo() {
 // Put the seeded gate in the box and name its source beside it.  Called
 // after /api/list and again whenever the source report changes.
 function syncGateUI() {
+  if (gFecMode) { syncFecGateUI(); return; }
   const el = document.getElementById('set-loss');
   // Empty, not 1e9, when the report graded no loss at all — typing a number
   // still works and is picked up as an override, the usual escape hatch.
@@ -5838,13 +5839,22 @@ function wireEventSettings() {
   if (lossEl) lossEl.addEventListener('change', () => {
     const v = parseFloat(lossEl.value);
     if (!Number.isFinite(v)) return;
+    if (gFecMode) { setFecGateOverride('loss', v); return; }
     // Back to following the report when the tech types its value back in.
     gGateOverride = (Math.abs(v - reportGateDb()) < 1e-9) ? null : v;
     syncGateUI();
     renderEventTable();
   });
-  bind('set-refl-lo', 'reflLo');
-  bind('set-refl-hi', 'reflHi');
+  if (!gFecMode) {
+    bind('set-refl-lo', 'reflLo');
+    bind('set-refl-hi', 'reflHi');
+    return;
+  }
+  const reflEl = document.getElementById('set-refl-lo');
+  if (reflEl) reflEl.addEventListener('change', () => {
+    const v = parseFloat(reflEl.value);
+    if (Number.isFinite(v)) setFecGateOverride('refl', v);
+  });
 }
 
 // Opened on its own, the server runs the report on the folders for the end-
@@ -5913,12 +5923,64 @@ function renderEventTable() {
 // Splice Report FEC tool prints.  The side is the folder the trace came
 // from (A box / B box), not a direction.
 let gFecSeq = 0;
+// The FEC gates on the Viewer's own boxes (Robert 2026-10-02, "show FEC
+// gates in the boxes"): Loss shows the FEC loss gate (> when strict, as the
+// profile decides), the Refl Band's low end the FEC reflectance gate, and
+// its high end is 0 and fixed, since FEC fails any reflectance above the
+// gate.  Typing in a box overrides that gate for this window only, as the
+// Viewer's Loss box overrides the report's; the customer profile is never
+// changed.  Typing the profile's value back lets go.
+let gFecGates = null;                  // the gates the table on screen was graded at
+let gFecBase = null;                   // the profile's, from the last un-overridden read
+const gFecOverride = { loss: null, refl: null };
+function fecOverridden() { return gFecOverride.loss != null || gFecOverride.refl != null; }
+function setFecGateOverride(which, v) {
+  const key = which === 'loss' ? 'FEC_LOSS_GATE' : 'FEC_REFL_GATE';
+  const base = gFecBase ? Number(gFecBase[key]) : null;
+  gFecOverride[which] = (base != null && Math.abs(v - base) < 1e-9) ? null : v;
+  renderEventTable();
+}
+// Before a table is graded: the profile's gates as the server has them
+// (none = the engine's defaults, known after the first read).
+function fecGatesShown() {
+  return gFecGates || gFecBase || (gInfo && gInfo.fec_gates
+    && gInfo.fec_gates.FEC_LOSS_GATE != null ? gInfo.fec_gates : null);
+}
+function fecGateLabel() {
+  const g = fecGatesShown();
+  if (!g) return 'FEC gates: loading';
+  return `FEC: ${fecGateText(g)}${fecOverridden() ? ', overridden in this window' : ', customer profile'}`;
+}
+function syncFecGateUI() {
+  const g = fecGatesShown();
+  const loss = document.getElementById('set-loss');
+  const lo = document.getElementById('set-refl-lo');
+  const hi = document.getElementById('set-refl-hi');
+  const op = document.getElementById('loss-op');
+  if (loss) loss.value = g ? Number(g.FEC_LOSS_GATE).toFixed(3) : '';
+  if (lo) lo.value = g ? Number(g.FEC_REFL_GATE).toFixed(1) : '';
+  if (op && g) op.textContent = g.FEC_LOSS_STRICT ? 'Loss >' : 'Loss ≥';
+  if (lo) lo.step = '0.1';
+  if (hi) {
+    hi.value = '0';
+    hi.disabled = true;
+    hi.title = 'FEC fails any reflectance above the low end; there is no high end';
+  }
+  if (loss) loss.title = `${fecGateLabel()}. Type to override for this window; the profile is not changed.`;
+  const lbl = document.getElementById('gate-src');
+  if (lbl) {
+    lbl.textContent = fecOverridden() ? '(FEC gates overridden)' : '';
+    lbl.classList.toggle('overridden', fecOverridden());
+  }
+}
 function renderFecGrid(traces, host, hint) {
   const fibers = [...new Set(traces.map(t => t.fiber))];
   if (!fibers.length) return false;
   const seq = ++gFecSeq;
   hint.textContent = `FEC table: grading ${traces.length} trace${traces.length === 1 ? '' : 's'}…`;
-  fetch(`/api/fec_table?fibers=${fibers.join(',')}`)
+  const ov = (gFecOverride.loss != null ? `&loss_gate=${gFecOverride.loss}` : '')
+           + (gFecOverride.refl != null ? `&refl_gate=${gFecOverride.refl}` : '');
+  fetch(`/api/fec_table?fibers=${fibers.join(',')}${ov}`)
     .then(r => r.json())
     .then(res => { if (seq === gFecSeq) paintFecGrid(traces, res || {}, host, hint); })
     .catch(e => {
@@ -5938,6 +6000,10 @@ function paintFecGrid(traces, res, host, hint) {
   gGridGoTo = null;
   const grades = res.grades || {};
   const gates = res.gates || null;
+  // the boxes show what this table was graded at (see syncFecGateUI)
+  gFecGates = gates;
+  if (gates && !fecOverridden()) gFecBase = gates;
+  syncGateUI();
   const all = traces.map(t => {
     const side = t.src === 'b' ? 'B' : 'A';
     return { t, side, g: (grades[side] || {})[String(t.fiber)] || null };
@@ -5953,16 +6019,26 @@ function paintFecGrid(traces, res, host, hint) {
   const FEC_MARK_TOL_KM = 0.005;
   const graded0 = all.filter(r => r.g && r.g.found);
   tableMarkReset(graded0.map(r => r.t));
+  // Each trace's own events behind its row, by key: the panel connector's
+  // ('conn') and the combined ones' ('comb'), for the span menu (an event's
+  // own raw km) and for an event number clicked on the chart (its cell).
+  const evAt = new Map();              // t.key -> {conn: km, comb: [km]}
+  const evCol = new Map();             // `${t.key}|${tableKmKey(km)}` -> cell
   for (const { t, g } of graded0) {
     const evs = (t.data && t.data.events) || [];
-    for (const km of [g.conn_km, ...(g.combined || []).map(c => c.km)]) {
+    const own = { conn: null, comb: [] };
+    [g.conn_km, ...(g.combined || []).map(c => c.km)].forEach((km, k) => {
       let best = null;
       for (const e of evs) {
         const d = Math.abs(e.dist_km - km);
         if (d <= FEC_MARK_TOL_KM && (!best || d < best.d)) best = { d, e };
       }
-      if (best) tableMark(t, best.e.dist_km);
-    }
+      if (!best) return;
+      tableMark(t, best.e.dist_km);
+      evCol.set(`${t.key}|${tableKmKey(best.e.dist_km)}`, k === 0 ? 'conn' : 'comb');
+      if (k === 0) own.conn = best.e.dist_km; else own.comb.push(best.e.dist_km);
+    });
+    evAt.set(t.key, own);
   }
   // The gear's switches, the FEC way.  A gainer (a negative connector or FEC
   // loss: one trace's reading) prints blank with Show Gainers off and leaves
@@ -5975,18 +6051,30 @@ function paintFecGrid(traces, res, host, hint) {
   const hideG = v => gainerHidden(v);
   const kept = (g, col) => !cellFilterOn() || (gFailCellsOnly && !!g && !!(col === 'refl' ? g.fail_refl : g.fail_loss));
   const collapse = cellFilterOn();
-  const rows = all.filter(({ g }) => !collapse || (gFailCellsOnly && g && (g.fail_loss || g.fail_refl)));
+  // "Show Only Flagged Rows" (the table's ⋯ menu) keeps the traces that fail
+  const failsRow = g => !!(g && (g.fail_loss || g.fail_refl));
+  const rows = all.filter(({ g }) => (!gFlaggedOnly || failsRow(g))
+    && (!collapse || (gFailCellsOnly && failsRow(g))));
   hint.textContent = `FEC: ${all.length} trace${all.length === 1 ? '' : 's'}, ${fails} failing`
     + (gates ? `  ·  fails on ${fecGateText(gates)}` : '')
     + (res.error ? `  ·  ${res.error}` : '')
     + (gFailCellsOnly ? `  ·  failing cells only${fails ? '' : ': nothing fails'}` : '')
     + (gWarnCellsOnly ? '  ·  warning cells only: FEC has no warning band' : '')
-    + (gShowGainers ? '' : '  ·  gainers hidden');
+    + (gShowGainers ? '' : '  ·  gainers hidden')
+    + (gFlaggedOnly ? `  ·  flagged rows only${fails ? '' : ': nothing fails'}` : '')
+    + (fecOverridden() ? '  ·  gates overridden in this window' : '');
   const scroller = document.createElement('div');
   scroller.className = 'fr-scroll';
   const table = document.createElement('table');
   table.className = 'fr-table';
-  const H = ['Identifiers', 'P/F', 'λ (nm)', 'Side', 'Panel Connector<br>(km)',
+  // Distances in the Viewer's unit (its ⋯ menu), km to 4 / 3 places as before
+  const U = distU();
+  const dist = (km, dpKm) => {
+    const d = gDistUnit === 'km' ? dpKm : U.dp, v = Number(km) * U.f;
+    return d === 0 ? Math.round(v).toLocaleString() : v.toFixed(d);
+  };
+  const H = ['Identifiers', 'P/F', 'λ (nm)', 'Side',
+             `Panel Connector<br>(${U.label}) <button class="fr-evmenu" title="span and settings">⋯</button>`,
              'Connector<br>Loss (dB)', 'Combined With', 'FEC Loss<br>(dB)',
              'Refl.<br>(dB)', 'Distance'];
   const head = H.map((h, i) => `<th class="${i === 0 ? 'fr-rowlab ' : ''}${i === 4 ? 'fr-evhdr' : ''}">${h}</th>`).join('');
@@ -6005,16 +6093,16 @@ function paintFecGrid(traces, res, host, hint) {
         + `<td colspan="6">${g ? 'no panel connector found (not graded)' : 'not graded'}</td></tr>`;
     }
     const fail = g.fail_loss || g.fail_refl;
-    const comb = (g.combined || []).map(c => `${f3(c.loss)} @ ${Number(c.km).toFixed(3)} km`).join('; ');
-    const dist = g.fail_loss && (g.combined || []).length ? 'COMBINE' : `${Number(g.conn_km).toFixed(3)}km`;
+    const comb = (g.combined || []).map(c => `${f3(c.loss)} @ ${dist(c.km, 3)} ${U.label}`).join('; ');
+    const where = g.fail_loss && (g.combined || []).length ? 'COMBINE' : `${dist(g.conn_km, 3)}${U.label}`;
     return `<tr${attrs}>${lead}`
       + `<td class="${pfClass(fail)}" title="FEC rule: ${fecGateText(gates)}">${pfMark(fail)}</td>`
       + `<td>${(t.data && t.data.wavelength_nm) || '---'}</td><td>${side}</td>`
-      + `<td class="fr-fec-km" data-col="km" data-km="${g.conn_km}" style="cursor:pointer" title="zoom to the connector">${Number(g.conn_km).toFixed(4)}</td>`
+      + `<td class="fr-fec-km" data-col="km" data-km="${g.conn_km}" style="cursor:pointer" title="zoom to the connector">${dist(g.conn_km, 4)}</td>`
       + `<td data-col="conn">${lossTxt(g, g.conn_loss)}</td><td data-col="comb">${kept(g, 'loss') ? (comb || '---') : ''}</td>`
       + `<td data-col="loss" class="${hideG(g.loss) ? '' : fecHi(g.fail_loss)}">${lossTxt(g, g.loss)}</td>`
       + `<td data-col="refl" class="${fecHi(g.fail_refl)}">${kept(g, 'refl') ? f1(g.refl) : ''}</td>`
-      + `<td>${fail ? dist : ''}</td></tr>`;
+      + `<td>${fail ? where : ''}</td></tr>`;
   });
   // Minimum / Maximum / Average down each number column, as every other
   // Viewer table ends, over the figures the column prints (the rows on screen,
@@ -6024,7 +6112,7 @@ function paintFecGrid(traces, res, host, hint) {
   // Average is nobody's measurement and stays inert; all three stay plain,
   // since the FEC verdict is per trace.
   const graded = rows.map((r, ti) => ({ ...r, ti })).filter(r => r.g && r.g.found);
-  const AGG_COLS = [['km', g => g.conn_km, v => Number(v).toFixed(4), () => true],
+  const AGG_COLS = [['km', g => g.conn_km, v => dist(v, 4), () => true],
                     ['conn', g => g.conn_loss, f3, g => kept(g, 'loss') && !hideG(g.conn_loss)],
                     ['loss', g => g.loss, f3, g => kept(g, 'loss') && !hideG(g.loss)],
                     ['refl', g => g.refl, f1, g => kept(g, 'refl')]];
@@ -6088,14 +6176,64 @@ function paintFecGrid(traces, res, host, hint) {
     markPick();
   });
   // A click on a trace on the chart (goToTrace) lands here: its row, marked
-  // and centred.  A row a filter has taken out says so instead.
-  gGridGoTo = (t) => {
+  // and centred.  An event number clicked on the chart (`e`) flashes its own
+  // cell, as on the other tables: the connector's loss, or the Combined With
+  // cell for an event the rule adds to it.  A row a filter has taken out
+  // says so instead.
+  gGridGoTo = (t, e) => {
     markPick();
     const tr = tb.querySelector(`tr[data-key="${t.key}"]`);
-    if (!tr) { setReadout(`F${t.fiber}: its row is hidden by "Show Failing Cells Only"`); return; }
+    if (!tr) {
+      setReadout(`F${t.fiber}: its row is hidden by "${gFlaggedOnly ? 'Show Only Flagged Rows' : 'Show Failing Cells Only'}"`);
+      return;
+    }
     centre(tr);
-    flash(tr.cells[0]);
+    const col = e ? evCol.get(`${t.key}|${tableKmKey(e.dist_km)}`) : null;
+    flash((col && tr.querySelector(`td[data-col="${col}"]`)) || tr.cells[0]);
   };
+  // The span and settings menu, as on the other tables: a right-click on a
+  // trace's row, or the ⋯ on the Panel Connector header.  The event it is
+  // picked on is the trace's own: the combined event for a right-click on
+  // Combined With, the panel connector anywhere else on the row.
+  const menuAt = (x, y, t, which) => {
+    const own = evAt.get(t.key);
+    const km = own && ((which === 'comb' && own.comb[0] != null) ? own.comb[0] : own.conn);
+    if (km == null) return false;
+    showSpanMenu(x, y, t.dir, km, t.fiber, t.src || t.dir);
+    return true;
+  };
+  tb.addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-key]');
+    const r = tr && rows[+tr.dataset.ti];
+    if (!r) return;
+    const td = ev.target.closest('td[data-col]');
+    if (menuAt(ev.clientX, ev.clientY, r.t, td && td.dataset.col)) ev.preventDefault();
+  });
+  const hdr = table.querySelector('th.fr-evhdr');
+  if (hdr) {
+    hdr.style.cursor = 'pointer';
+    hdr.title = 'zoom to the panel connectors';
+    hdr.addEventListener('click', (ev) => {
+      const shownG = rows.filter(r => r.g && r.g.found && evAt.get(r.t.key) && evAt.get(r.t.key).conn != null);
+      const btn = ev.target.closest('.fr-evmenu');
+      if (!btn) {                        // the header itself zooms, as on the other tables
+        const kms = shownG.map(r => r.g.conn_km).sort((a, b) => a - b);
+        if (kms.length) zoomToKm(kms[Math.floor(kms.length / 2)], 0.3);
+        return;
+      }
+      // The ⋯: the header is every row's, so each direction uses its first
+      // row, at that trace's own connector.
+      ev.stopPropagation();
+      const picks = [];
+      for (const dir of ['a', 'b']) {
+        const r = shownG.find(q => q.t.dir === dir);
+        if (r) picks.push({ dir, km: evAt.get(r.t.key).conn, fiber: r.t.fiber, src: r.t.src || dir });
+      }
+      const b = btn.getBoundingClientRect();
+      if (picks.length === 1) showSpanMenu(b.left, b.bottom + 2, picks[0].dir, picks[0].km, picks[0].fiber, picks[0].src);
+      else if (picks.length === 2) showDirChooser(b.left, b.bottom + 2, picks);
+    });
+  }
   // A Minimum or Maximum click: pick its trace on the chart, centre its row
   // and flash the cell.  A second click lets go, as on the other grids.
   if (table.tFoot) table.tFoot.addEventListener('click', (ev) => {
@@ -9543,14 +9681,24 @@ async function reportPayload(opt, token, progress) {
   try {
     const sorted = [...vis].sort((a, b) => a.fiber - b.fiber || a.dir.localeCompare(b.dir));
     const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';
-    const meta = [['Mode', gAnalysisMode === 'fr' ? 'FastReporter' : PRODUCT_NAME]];
+    // Viewer FEC: the mode and the gates the FEC table was graded at, not
+    // the analysis mode's or the Viewer boxes' usual meaning.
+    const meta = [['Mode', gFecMode ? 'FEC' : gAnalysisMode === 'fr' ? 'FastReporter' : PRODUCT_NAME]];
     if (vis.some(t => t.src === 'a') && folderLabel('a')) meta.push(['A folder', folderLabel('a')]);
     if (vis.some(t => t.src === 'b') && folderLabel('b')) meta.push(['B folder', folderLabel('b')]);
     const nf = new Set(vis.map(t => t.fiber)).size;
     meta.push(['Fibers', `${fiberRanges(vis.map(t => t.fiber))} (${nf} fiber${nf === 1 ? '' : 's'})`]);
-    meta.push(['Loss gate', gateLabel()]);
-    const lo = document.getElementById('set-refl-lo').value, hi = document.getElementById('set-refl-hi').value;
-    meta.push(['Reflectance band', `${lo} to ${hi} dB`]);
+    const fg = gFecMode ? fecGatesShown() : null;
+    if (gFecMode) {
+      const src = w => gFecOverride[w] != null ? 'overridden in this window' : 'customer profile';
+      meta.push(['FEC loss gate', fg ? `fails ${fg.FEC_LOSS_STRICT ? '>' : '≥'} ${Number(fg.FEC_LOSS_GATE).toFixed(3)} dB, `
+        + `connector + events within ${Number(fg.FEC_COMBINE_M).toFixed(0)} m (${src('loss')})` : 'not loaded']);
+      meta.push(['FEC reflectance gate', fg ? `fails > ${Number(fg.FEC_REFL_GATE).toFixed(1)} dB (${src('refl')})` : 'not loaded']);
+    } else {
+      meta.push(['Loss gate', gateLabel()]);
+      const lo = document.getElementById('set-refl-lo').value, hi = document.getElementById('set-refl-hi').value;
+      meta.push(['Reflectance band', `${lo} to ${hi} dB`]);
+    }
     const views = [gFlaggedOnly && 'flagged rows only', gFailCellsOnly && 'failing cells only',
                    gWarnCellsOnly && 'warning cells only', !gShowSections && 'sections off',
                    gAvgOnly && 'averages only'].filter(Boolean);

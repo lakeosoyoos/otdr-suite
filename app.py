@@ -6994,6 +6994,20 @@ def _count(n, word):
     return f"{n} {word}" + ('' if n == 1 else 's')
 
 
+def _sr_column_count(res):
+    """The summary line's column count, named the way the workbook names
+    them.  A small job lays its closures out as Event columns, and the
+    manifest's n_splices counts only kind 'splice', so the line read
+    "0 splices" above a grid of flagged Event columns (2026-10-02).  The
+    Reburn Summary says "events" for the whole job once any column is an
+    event column, and counts those columns: so does this."""
+    cols = res.get('columns') or []
+    if any(c.get('kind') == 'event' for c in cols):
+        return _count(sum(1 for c in cols if c.get('kind') in ('splice', 'event')),
+                      'event')
+    return _count(res['n_splices'], 'splice')
+
+
 def _sr_result_slot(_p, span):
     """session_state key roots for one span's finished run: span 1 keeps the
     names every other path reads (`sr_result` / `sr_dirs` — the disk cache,
@@ -7038,7 +7052,7 @@ def _render_sr_result(_p, res, *, span, n_spans, dirs, dest, tech_xlsx,
     # Summary + Excel download
     st.success(f"{res['site_a']} → {res['site_b']}  ·  "
                f"{_count(res['n_fibers'], 'fiber')}  ·  "
-               f"{_count(res['n_splices'], 'splice')}  ·  span {res['span_km']} km  ·  "
+               f"{_sr_column_count(res)}  ·  span {res['span_km']} km  ·  "
                f"{_count(res['n_flagged'], 'flagged event')}")
     xp = res.get('xlsx')
     if xp and os.path.exists(xp):

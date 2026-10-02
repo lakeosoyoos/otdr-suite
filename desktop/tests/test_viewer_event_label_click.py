@@ -58,7 +58,9 @@ def test_hovering_a_number_shows_the_arrow_and_clicking_it_goes_to_the_cell():
 
 
 def test_the_grid_scrolls_the_row_into_the_window_paints_and_marks_the_cell():
-    goto = SRC.split("gGridGoTo = (t, e) => {", 1)[1].split("\n  };", 1)[0]
+    # the FastReporter grid's (the FEC table's own comes earlier in the file)
+    fr = SRC.split('function renderFastReporterGrid(', 1)[1]
+    goto = fr.split("gGridGoTo = (t, e) => {", 1)[1].split("\n  };", 1)[0]
     assert "shown.indexOf(ti)" in goto                       # hidden by flagged-only → no-op
     assert "paintRows(k);" in goto     # the body is virtual, and it must hold THIS row
     assert 'td[data-km="${e.dist_km}"]' in goto              # the event's own raw km
