@@ -8129,13 +8129,15 @@ def page_unidirectional():
 # never see the same glass, so this tool grades each folder on its own and
 # never pairs A with B; the Splice Report and the Viewer both pair them.
 # Engine: run_splicereport.py --fec (same subprocess, no new engine file).
-FEC_DEFAULTS = {"FEC_LOSS_GATE": 0.500, "FEC_LOSS_STRICT": 0,
+# Tech C's style (0.500 passes) is the default, Robert 2026-10-01, until the
+# boss says which one the customer wants; profile A keeps tech A's.
+FEC_DEFAULTS = {"FEC_LOSS_GATE": 0.500, "FEC_LOSS_STRICT": 1,
                 "FEC_REFL_GATE": -50.0, "FEC_COMBINE_M": 150.0}
 
 
 def _fec_settings_from_profile(profile_name):
     """The FEC gates for a customer profile: its "fec" block over the
-    defaults (tech A's style).  Profiles without one get the defaults."""
+    defaults (tech C's style).  Profiles without one get the defaults."""
     out = dict(FEC_DEFAULTS)
     prof = CUSTOMER_PROFILES.get(profile_name) or {}
     for k, v in (prof.get("fec") or {}).items():

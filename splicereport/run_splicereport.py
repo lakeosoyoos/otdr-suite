@@ -196,17 +196,19 @@ def _provenance_warnings(E, fa, fb):
 # The rule is two techs' FEC OOS lists on one span (2026-09 / 10):
 #   * loss  = panel connector + every event within FEC_COMBINE_M behind it
 #             ("COMBINE" on the tech sheet), event-table values, 3 dp,
-#             fails at >= FEC_LOSS_GATE  (tech A's style: 0.500 fails);
+#             fails above FEC_LOSS_GATE  (tech C's style, the default since
+#             Robert 2026-10-01: 0.500 passes; tech A fails it);
 #   * refl  = panel connector reflectance, 1 dp, fails above FEC_REFL_GATE.
 # Values come from EXFO's own event list (what FastReporter shows), falling
 # back to the Bellcore KeyEvents when a file has no proprietary block.
 # ═══════════════════════════════════════════════════════════════════════
-FEC_LOSS_GATE = 0.500        # dB, combined loss at or above this fails
+FEC_LOSS_GATE = 0.500        # dB, combined loss above this fails
 FEC_REFL_GATE = -50.0        # dB, connector reflectance above this fails
 FEC_COMBINE_M = 150.0        # m behind the panel connector folded into its loss
 FEC_PORT_SKIP_M = 50.0       # events this close to 0 are the OTDR port
-FEC_LOSS_STRICT = 0.0        # 1 = only loss ABOVE the gate fails (tech C:
-                             # .500 passes); 0 = at or above (tech A: .500 fails)
+FEC_LOSS_STRICT = 1.0        # 1 = only loss ABOVE the gate fails (tech C:
+                             # .500 passes, the default); 0 = at or above
+                             # (tech A: .500 fails)
 
 FEC_OVERRIDABLE = ('FEC_LOSS_GATE', 'FEC_REFL_GATE', 'FEC_COMBINE_M',
                    'FEC_LOSS_STRICT')

@@ -8,7 +8,8 @@ The rule comes from two techs' FEC OOS lists on one span:
   * loss = panel connector + every event within 150 m behind it ("COMBINE"),
     each event as the table prints it (3 dp), then added;
   * reflectance = the panel connector's, fails above -50.0 (1 dp);
-  * a loss of exactly 0.500 fails for tech A, passes for tech C.
+  * a loss of exactly 0.500 fails for tech A, passes for tech C (the
+    default, Robert 2026-10-01).
 The event values below are that span's real numbers (no names, no files).
 """
 import json
@@ -129,6 +130,11 @@ def test_rows_use_the_tech_sheet_columns():
         rows, no_conn, pulses = R.fec_rows(side)
         got = [(r['fiber_id'], r['failing_at'], r['distance'], r['side'])
                for r in rows]
+        # the default (tech C): a printed .500 passes
+        assert got == [('ABCDEF0324', '0.502', 'COMBINE', 'A')], got
+        R.FEC_LOSS_STRICT = 0.0                     # tech A: .500 fails
+        got = [(r['fiber_id'], r['failing_at'], r['distance'], r['side'])
+               for r in R.fec_rows(side)[0]]
         assert got == [('ABCDEF0104', '0.500', '1.005km', 'A'),
                        ('ABCDEF0324', '0.502', 'COMBINE', 'A')], got
         assert no_conn == ['ABCDEFsh0986_1550'], no_conn
@@ -180,8 +186,8 @@ def test_profiles_a_and_c_carry_the_two_tech_styles():
     assert a == {'FEC_LOSS_GATE': 0.5, 'FEC_LOSS_STRICT': 0.0,
                  'FEC_REFL_GATE': -50.0, 'FEC_COMBINE_M': 150.0}
     assert c == dict(a, FEC_LOSS_STRICT=1.0)
-    # every other profile runs FEC at the defaults (tech A's style)
-    assert hub._fec_settings_from_profile('Default (engine baseline)') == hub.FEC_DEFAULTS
+    # every other profile runs FEC at the defaults: tech C's style
+    assert hub._fec_settings_from_profile('Default (engine baseline)') == hub.FEC_DEFAULTS == c
     # and A / C run the other tools at the engine baseline, like Default
     base = hub._overrides_from_settings(hub._otdr_settings_from_profile(
         'Default (engine baseline)'))
@@ -387,3 +393,17 @@ def test_the_report_goes_into_a_new_save_folder(tmp_path):
         assert os.path.isfile({str(out)!r})
         print('OK')
     """)
+
+
+def test_the_engine_default_is_tech_cs_style():
+    """With no profile and no override, a printed 0.500 passes (tech C);
+    the hub's defaults and the engine's agree."""
+    import app as hub
+    _run("""
+        evs = [PORT, ev(1002.0, 0.500, -53.9, True), END]
+        assert R.FEC_LOSS_STRICT == 1.0
+        assert not R.fec_grade(evs)['fail_loss']
+        assert R.fec_grade([PORT, ev(1002.0, 0.501, -53.9, True), END])['fail_loss']
+        print('OK')
+    """)
+    assert hub.FEC_DEFAULTS['FEC_LOSS_STRICT'] == 1
