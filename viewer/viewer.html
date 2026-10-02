@@ -5109,7 +5109,8 @@ function drawPairing(sets, r, failedOnly = false) {
     const detail = shown.size <= DRAWER_DETAIL_MAX;
     const allTicks = shown.size <= DRAWER_TICK_MAX;
     // What a cell's value is called on its tag: the A+B tables' Average, or
-    // a one-direction table's own loss.
+    // a one-direction table's own loss.  A column may name and format its own
+    // (`word`, `fmt`): the FEC table's reflectance column prints dB to 0.1.
     const word = D.single ? 'loss' : 'avg';
     // A leg's place: its own km on its own trace, or -- a gray leg the report
     // gave no km of its own -- the cell's km on that trace.
@@ -5166,10 +5167,10 @@ function drawPairing(sets, r, failedOnly = false) {
       const color = colorOf(cell.avgFail, cell.avgWarn);
       band(lo, hi, color, 0.13);
       qs.forEach(q => legMark(q, cell.fi, col.i, !D.single, 1));
-      const v = fmtV(cell.avg);
+      const v = (col.fmt || fmtV)(cell.avg);
       const who = many ? `F${p.fiber}${D.single ? ((p.ta ? ' A' : ' B')) : ''} ` : '';
       tags.push({ x: (xToPx(lo, r) + xToPx(hi, r)) / 2, color,
-                  full: `${who}${col.title}${v ? `  ${word} ${v}` : ''}${cell.avgFail ? '  FAIL' : ''}`,
+                  full: `${who}${col.title}${v ? `  ${col.word || word} ${v}` : ''}${cell.avgFail ? '  FAIL' : ''}`,
                   short: `${who}${v || col.title}`,
                   go: () => D.goCell(cell.fi, D.single ? (p.ta ? 'a' : 'b') : 'avg', col.i) });
     };
@@ -5205,7 +5206,7 @@ function drawPairing(sets, r, failedOnly = false) {
         band(lo, hi, color, 0.09);
         const dim = pickFi >= 0 ? 0.3 : 0.75;
         legs.forEach(([q, fi]) => legMark(q, fi, col.i, false, dim));
-        const worst = fmtV(s.worst);
+        const worst = (col.fmt || fmtV)(s.worst);
         const count = s.nFail ? `  ${s.nFail}/${s.n} FAIL` : s.nWarn ? `  ${s.nWarn}/${s.n} warn` : '';
         const wp = D.have[s.worstFi];
         tags.push({ x: (xToPx(lo, r) + xToPx(hi, r)) / 2, color,
@@ -5820,14 +5821,50 @@ function paintFecGrid(traces, res, host, hint) {
   gGridGoTo = null;
   const grades = res.grades || {};
   const gates = res.gates || null;
-  const rows = traces.map(t => {
+  const all = traces.map(t => {
     const side = t.src === 'b' ? 'B' : 'A';
     return { t, side, g: (grades[side] || {})[String(t.fiber)] || null };
   });
-  const fails = rows.filter(r => r.g && (r.g.fail_loss || r.g.fail_refl)).length;
-  hint.textContent = `FEC: ${rows.length} trace${rows.length === 1 ? '' : 's'}, ${fails} failing`
+  const fails = all.filter(r => r.g && (r.g.fail_loss || r.g.fail_refl)).length;
+  // The chart numbers only what the table prints, as on the Viewer's other
+  // tables (see tableMark; Robert 2026-10-01, "make FEC viewer match Viewer
+  // in all areas"): each graded trace's panel connector and the events the
+  // rule combines with it.  The grade's km comes from the engine's own read
+  // of the file, so each is matched to the trace's nearest event within
+  // FEC_MARK_TOL_KM.  A trace with no grade keeps every number, as a trace
+  // no table has taken does.
+  const FEC_MARK_TOL_KM = 0.005;
+  const graded0 = all.filter(r => r.g && r.g.found);
+  tableMarkReset(graded0.map(r => r.t));
+  for (const { t, g } of graded0) {
+    const evs = (t.data && t.data.events) || [];
+    for (const km of [g.conn_km, ...(g.combined || []).map(c => c.km)]) {
+      let best = null;
+      for (const e of evs) {
+        const d = Math.abs(e.dist_km - km);
+        if (d <= FEC_MARK_TOL_KM && (!best || d < best.d)) best = { d, e };
+      }
+      if (best) tableMark(t, best.e.dist_km);
+    }
+  }
+  // The gear's switches, the FEC way.  A gainer (a negative connector or FEC
+  // loss: one trace's reading) prints blank with Show Gainers off and leaves
+  // the Minimum / Maximum / Average; it never fails, so no verdict moves.
+  // "Failing cells only" keeps the traces that fail and, on them, only what
+  // failed: the loss with the connector and events it adds up, and/or the
+  // reflectance.  FEC grades pass or fail, with no warning band, so
+  // "warning cells only" alone keeps nothing.
+  const num = v => v != null && !isNaN(v);
+  const hideG = v => gainerHidden(v);
+  const kept = (g, col) => !cellFilterOn() || (gFailCellsOnly && !!g && !!(col === 'refl' ? g.fail_refl : g.fail_loss));
+  const collapse = cellFilterOn();
+  const rows = all.filter(({ g }) => !collapse || (gFailCellsOnly && g && (g.fail_loss || g.fail_refl)));
+  hint.textContent = `FEC: ${all.length} trace${all.length === 1 ? '' : 's'}, ${fails} failing`
     + (gates ? `  ·  fails on ${fecGateText(gates)}` : '')
-    + (res.error ? `  ·  ${res.error}` : '');
+    + (res.error ? `  ·  ${res.error}` : '')
+    + (gFailCellsOnly ? `  ·  failing cells only${fails ? '' : ': nothing fails'}` : '')
+    + (gWarnCellsOnly ? '  ·  warning cells only: FEC has no warning band' : '')
+    + (gShowGainers ? '' : '  ·  gainers hidden');
   const scroller = document.createElement('div');
   scroller.className = 'fr-scroll';
   const table = document.createElement('table');
@@ -5839,40 +5876,45 @@ function paintFecGrid(traces, res, host, hint) {
   const f3 = v => (v == null || isNaN(v)) ? '---' : Number(v).toFixed(3);
   const f1 = v => (v == null || isNaN(v)) ? '---' : Number(v).toFixed(1);
   const fecHi = x => (x && !flagsOff()) ? 'fr-hi' : '';
+  // a loss cell: blank when the cell filter drops it or it is a hidden gainer
+  const lossTxt = (g, v) => (!kept(g, 'loss') || hideG(v)) ? '' : f3(v);
   const body = rows.map(({ t, side, g }, ti) => {
     const dot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;`
       + `background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>`;
     const lead = `<td class="fr-rowlab">${dot}F${t.fiber}</td>`;
+    const attrs = ` data-ti="${ti}" data-key="${t.key}"${isPicked(t.key) ? ' class="fr-pick"' : ''}`;
     if (!g || !g.found) {
-      return `<tr>${lead}<td></td><td>${(t.data && t.data.wavelength_nm) || '---'}</td><td>${side}</td>`
+      return `<tr${attrs}>${lead}<td></td><td>${(t.data && t.data.wavelength_nm) || '---'}</td><td>${side}</td>`
         + `<td colspan="6">${g ? 'no panel connector found (not graded)' : 'not graded'}</td></tr>`;
     }
     const fail = g.fail_loss || g.fail_refl;
     const comb = (g.combined || []).map(c => `${f3(c.loss)} @ ${Number(c.km).toFixed(3)} km`).join('; ');
     const dist = g.fail_loss && (g.combined || []).length ? 'COMBINE' : `${Number(g.conn_km).toFixed(3)}km`;
-    return `<tr data-ti="${ti}">${lead}`
+    return `<tr${attrs}>${lead}`
       + `<td class="${pfClass(fail)}" title="FEC rule: ${fecGateText(gates)}">${pfMark(fail)}</td>`
       + `<td>${(t.data && t.data.wavelength_nm) || '---'}</td><td>${side}</td>`
       + `<td class="fr-fec-km" data-col="km" data-km="${g.conn_km}" style="cursor:pointer" title="zoom to the connector">${Number(g.conn_km).toFixed(4)}</td>`
-      + `<td data-col="conn">${f3(g.conn_loss)}</td><td>${comb || '---'}</td>`
-      + `<td data-col="loss" class="${fecHi(g.fail_loss)}">${f3(g.loss)}</td>`
-      + `<td data-col="refl" class="${fecHi(g.fail_refl)}">${f1(g.refl)}</td>`
+      + `<td data-col="conn">${lossTxt(g, g.conn_loss)}</td><td data-col="comb">${kept(g, 'loss') ? (comb || '---') : ''}</td>`
+      + `<td data-col="loss" class="${hideG(g.loss) ? '' : fecHi(g.fail_loss)}">${lossTxt(g, g.loss)}</td>`
+      + `<td data-col="refl" class="${fecHi(g.fail_refl)}">${kept(g, 'refl') ? f1(g.refl) : ''}</td>`
       + `<td>${fail ? dist : ''}</td></tr>`;
   });
-  // Minimum / Maximum / Average down each number column, over the graded
-  // traces, as every other Viewer table ends.  A Minimum or Maximum is one
-  // trace's figure, so the cell names it and a click finds its row (the
+  // Minimum / Maximum / Average down each number column, as every other
+  // Viewer table ends, over the figures the column prints (the rows on screen,
+  // less the cells a filter or Show Gainers blanks).  A Minimum or Maximum is
+  // one trace's figure, so the cell names it and a click finds its row (the
   // owner is matched on the PRINTED figure; ties go to the first row).  The
   // Average is nobody's measurement and stays inert; all three stay plain,
   // since the FEC verdict is per trace.
   const graded = rows.map((r, ti) => ({ ...r, ti })).filter(r => r.g && r.g.found);
-  const AGG_COLS = [['km', g => g.conn_km, v => Number(v).toFixed(4)],
-                    ['conn', g => g.conn_loss, f3], ['loss', g => g.loss, f3],
-                    ['refl', g => g.refl, f1]];
+  const AGG_COLS = [['km', g => g.conn_km, v => Number(v).toFixed(4), () => true],
+                    ['conn', g => g.conn_loss, f3, g => kept(g, 'loss') && !hideG(g.conn_loss)],
+                    ['loss', g => g.loss, f3, g => kept(g, 'loss') && !hideG(g.loss)],
+                    ['refl', g => g.refl, f1, g => kept(g, 'refl')]];
   const aggCell = (col, fn, owned) => {
-    const [key, get, fmt] = col;
-    const have = graded.filter(r => get(r.g) != null && !isNaN(get(r.g)));
-    if (!have.length) return '<td>---</td>';
+    const [key, get, fmt, prints] = col;
+    const have = graded.filter(r => num(get(r.g)) && prints(r.g));
+    if (!have.length) return `<td>${collapse ? '' : '---'}</td>`;
     const v = fn(have.map(r => Number(get(r.g))));
     const own = owned ? have.find(r => fmt(get(r.g)) === fmt(v)) : null;
     return own
@@ -5899,29 +5941,107 @@ function paintFecGrid(traces, res, host, hint) {
   // three-row FR headers, which set their own per row the same way)
   table.querySelectorAll('thead th').forEach(th => { th.style.top = '0px'; });
   table.querySelectorAll('td.fr-fec-km').forEach(td => {
-    td.addEventListener('click', () => zoomToKm(+td.dataset.km, 0.3));
+    td.addEventListener('click', (ev) => { ev.stopPropagation(); zoomToKm(+td.dataset.km, 0.3); });
   });
-  // A Minimum or Maximum click: pick its trace on the chart, centre its row in
-  // the window the pinned header and footer leave, and flash the cell.  A
-  // second click lets go, as on the other grids.
-  if (table.tFoot) table.tFoot.addEventListener('click', (ev) => {
-    const td = ev.target.closest('td.fr-own');
-    if (!td) return;
-    const t = rows[+td.dataset.ti].t;
-    if (gPickKey === t.key) { gPickKey = null; draw(); return; }
-    gPickKey = t.key;
-    draw();
-    const tr = table.tBodies[0].querySelector(`tr[data-ti="${td.dataset.ti}"]`);
-    if (!tr) return;
+  const tb = table.tBodies[0];
+  // The picked trace's row is marked, as on the other grids; the table is not
+  // virtual, so the mark is moved on the rows themselves.
+  const markPick = () => tb.querySelectorAll('tr[data-key]').forEach(tr =>
+    tr.classList.toggle('fr-pick', isPicked(tr.dataset.key)));
+  // Centre a row in the window the pinned header and footer leave.
+  const centre = tr => {
     const headH = table.tHead ? table.tHead.offsetHeight : 0;
     const view = Math.max(FR_ROW_H, scroller.clientHeight - headH - pinnedFootH(table));
     scroller.scrollTop = Math.max(0, tr.offsetTop - headH - (view - tr.offsetHeight) / 2);
-    const cell = tr.querySelector(`td[data-col="${td.dataset.ownCol}"]`);
-    if (!cell) return;
+  };
+  const flash = cell => {
     table.querySelectorAll('td.fr-hit').forEach(x => x.classList.remove('fr-hit', 'fading'));
     cell.classList.add('fr-hit');
     setTimeout(() => cell.classList.add('fading'), 1500);
     setTimeout(() => cell.classList.remove('fr-hit', 'fading'), 2200);
+  };
+  // A click on a row: its trace to the front (pickRow); again lets go.
+  tb.addEventListener('click', (ev) => {
+    // Not the second click of a double-click (it would let go at once), and
+    // not a mouse-up that ends selecting text to copy.
+    if (ev.detail > 1 || String(window.getSelection() || '').trim()) return;
+    const tr = ev.target.closest('tr[data-key]');
+    if (!tr) return;
+    pickRow([tr.dataset.key]);
+    markPick();
+  });
+  // A click on a trace on the chart (goToTrace) lands here: its row, marked
+  // and centred.  A row a filter has taken out says so instead.
+  gGridGoTo = (t) => {
+    markPick();
+    const tr = tb.querySelector(`tr[data-key="${t.key}"]`);
+    if (!tr) { setReadout(`F${t.fiber}: its row is hidden by "Show Failing Cells Only"`); return; }
+    centre(tr);
+    flash(tr.cells[0]);
+  };
+  // A Minimum or Maximum click: pick its trace on the chart, centre its row
+  // and flash the cell.  A second click lets go, as on the other grids.
+  if (table.tFoot) table.tFoot.addEventListener('click', (ev) => {
+    const td = ev.target.closest('td.fr-own');
+    if (!td) return;
+    const t = rows[+td.dataset.ti].t;
+    if (gPickKey === t.key) { gPickKey = null; markPick(); draw(); return; }
+    gPickKey = t.key;
+    markPick();
+    draw();
+    const tr = tb.querySelector(`tr[data-ti="${td.dataset.ti}"]`);
+    if (!tr) return;
+    centre(tr);
+    const cell = tr.querySelector(`td[data-col="${td.dataset.ownCol}"]`);
+    if (cell) flash(cell);
+  });
+  // The chart's marks (Show Event Labels / Show Failed Event Labels, see
+  // drawPairing), as a one-direction table: each trace's panel connector
+  // (tagged with its FEC loss), every event the rule combines with it (its
+  // own loss) and the connector's reflectance, colored by the FEC verdict --
+  // a combined event fails with the loss it is part of.  Each trace is its
+  // own "fibre", on the side it came from.  Only the cells the table prints
+  // are marked, so the filters reach the chart.
+  const fecRows = rows.filter(r => r.g && r.g.found);
+  const fecHave = fecRows.map(({ t, side }) => side === 'A' ? { fiber: t.fiber, ta: t } : { fiber: t.fiber, tb: t });
+  const fecCell = (r, fi, km, v, fail) => {
+    const w = r.side === 'A' ? 'a' : 'b';
+    return { fi, km, avg: v, avgFail: !flagsOff() && !!fail, avgWarn: false,
+             legs: { [w]: { km, loss: v, fail: !flagsOff() && !!fail, warn: false } } };
+  };
+  // `at(g)` is the event's km (null: this trace has no such event)
+  const fecCol = (ci, title, key, at, val, fail) => {
+    const cells = fecRows.map((r, fi) => (kept(r.g, key) && at(r.g) != null)
+      ? fecCell(r, fi, at(r.g), val(r.g), fail(r.g)) : null).filter(Boolean);
+    return { i: ci, title, km: cells.length ? cells[0].km : 0, cells };
+  };
+  const nComb = Math.max(0, ...fecRows.map(r => (r.g.combined || []).length));
+  const combCols = Array.from({ length: nComb }, (_x, k) => fecCol(2 + k,
+    nComb > 1 ? `Combined Event ${k + 1}` : 'Combined Event', 'loss',
+    g => (g.combined || [])[k] ? g.combined[k].km : null,
+    g => { const v = g.combined[k].loss; return hideG(v) ? null : v; },
+    g => g.fail_loss));
+  if (fecRows.length) gDrawerMarks.push({
+    mode: 'fec', single: true, have: fecHave,
+    cols: [fecCol(0, 'Panel Connector', 'loss', g => g.conn_km,
+                  g => hideG(g.loss) ? null : g.loss, g => g.fail_loss),
+           ...combCols,
+           { ...fecCol(1, 'Connector Refl.', 'refl', g => g.conn_km, g => g.refl, g => g.fail_refl),
+             word: 'refl', fmt: v => (v != null && !isNaN(v)) ? v.toFixed(1) : null }]
+      .filter(c => c.cells.length),
+    // a tag or tick goes to that trace's row and flashes the cell it marks
+    goCell: (fi, _w, ci) => {
+      const t = fecRows[fi] && fecRows[fi].t;
+      if (!t) return;
+      gPickKey = t.key;
+      markPick();
+      draw();
+      const tr = tb.querySelector(`tr[data-key="${t.key}"]`);
+      if (!tr) return;
+      centre(tr);
+      const cell = tr.querySelector(`td[data-col="${ci === 1 ? 'refl' : ci >= 2 ? 'comb' : 'loss'}"]`);
+      if (cell) flash(cell);
+    },
   });
   draw();
 }
