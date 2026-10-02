@@ -893,7 +893,7 @@
   <div id="files-cols"><span></span><span>File Name</span><span>Dir.</span></div>
   <div id="files-list" tabindex="0"><span id="chip-empty">no folders loaded</span></div>
   <div id="files-tabs"><button data-view="files" class="active">Files</button><button data-view="fibers">Fibers</button></div>
-  <div id="files-drop-hint">drop .sor / .json / .trc files, a folder, or a .zip here</div>
+  <div id="files-drop-hint">drop .sor / .json / .trc / .olts files, a folder, or a .zip here</div>
   <div id="drop-sign"><div class="ds-big"></div><div class="ds-small"></div></div>
 </div>
 </div>
@@ -1749,7 +1749,9 @@ function parseFibers(str) {
 // The browser gives bytes, not paths, so each file is POSTed to the local
 // trace server, which stages the drop into a temp folder, splits it into A
 // and B by filename prefix (the hub's rule) and points itself at it.
-const DROP_EXTS = ['.sor', '.json', '.trc', '.zip'];
+// An EXFO .olts (OLTS loss / ORL / length, no trace) is not loaded into the
+// chart: it goes to its own report dialog (see handleOltsDrop).
+const DROP_EXTS = ['.sor', '.json', '.trc', '.zip', '.olts'];
 // The folder each dropped file came from (its parent's name, '' for a file
 // dropped on its own), so a staged side can go by the folder the tech dropped
 // rather than its staging name (see trace_server.drop_name).
@@ -1912,9 +1914,16 @@ async function handleFilesDrop(dt) {
   try {
     files = Array.isArray(dt) ? dt.filter(_dropOk) : await _dropCollect(dt);
   } catch (e) { hideDropSign(); throw e; }
+  const olts = files.filter(isOltsFile);
+  if (olts.length) {
+    files = files.filter(f => !isOltsFile(f));
+    await handleOltsDrop(olts);
+    if (!files.length) return;
+    showDropSign('load', 'reading the files');
+  }
   if (!files.length) {
     hideDropSign();
-    setReadout('nothing dropped was a .sor / .json / .trc file or a .zip');
+    setReadout('nothing dropped was a .sor / .json / .trc / .olts file or a .zip');
     return;
   }
   showDropSign('load', `uploading 0 / ${files.length} files`);
@@ -2211,7 +2220,7 @@ function showDropSign(state, small = '', big = '') {
   el.querySelector('.ds-big').textContent =
     big || { drag: 'Drop to load', hint: 'Drop here', load: 'Loading…', done: 'Loaded' }[state];
   el.querySelector('.ds-small').textContent = small
-    || { drag: 'an A or B folder, .sor / .json / .trc files, or a .zip',
+    || { drag: 'an A or B folder, .sor / .json / .trc / .olts files, or a .zip',
          hint: 'drag the files onto this Files panel' }[state] || '';
   if (state !== 'load') {
     gDropSignTimer = setTimeout(hideDropSign, state === 'done' ? DROP_SIGN_DONE_MS : DROP_SIGN_DRAG_MS);
@@ -3105,7 +3114,7 @@ function renderFilesPanel() {
       (hasA && hasB) ? 'both sides loaded, dropping a folder here starts a new span'
       : hasA ? 'drop the other direction here, A stays loaded'
       : hasB ? 'drop the other direction here, B stays loaded'
-      : 'drop .sor / .json / .trc files, a folder, or a .zip here';
+      : 'drop .sor / .json / .trc / .olts files, a folder, or a .zip here';
   };
   syncFilesTabs();
   if (gFilesView === 'fibers') { renderFibersView(list, esc); sayNextDrop(); return; }
@@ -9531,6 +9540,165 @@ async function submitReport() {
   d.querySelector('#rpt-open').onclick = () => open(false);
   d.querySelector('#rpt-reveal').onclick = () => open(true);
   d.querySelector('#rpt-done').onclick = closeReportDialog;
+}
+
+// ─── EXFO .olts: OLTS results as a PDF or an Excel workbook ─────────
+// The boss, 2026-10-01: "we need to be able to handle these in viewer ... we
+// want it pdf or excel so we can sort if we need to".  An .olts holds loss,
+// ORL and length per fiber and no trace, so a dropped one is read by the
+// server (POST /api/olts_load) and offered as a report, the Summary Report's
+// dialog with the same Save To; it never touches the A / B folders.
+function isOltsFile(f) {
+  return !!(f && f.name) && /\.olts$/i.test(f.name);
+}
+async function handleOltsDrop(files) {
+  const loaded = [];
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    showDropSign('load', `reading ${f.name}` + (files.length > 1 ? ` (${i + 1} of ${files.length})` : ''));
+    try {
+      const r = await fetch('/api/olts_load?name=' + encodeURIComponent(f.name), { method: 'POST', body: f });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || ('server said ' + r.status));
+      loaded.push(j);
+    } catch (e) {
+      setReadout(`could not read ${f.name}: ${(e && e.message) || e}`);
+    }
+  }
+  hideDropSign();
+  // One dialog at a time: the next .olts's opens when this one closes.  Not
+  // awaited, so traces dropped with an .olts load while its dialog is open.
+  (async () => { for (const info of loaded) await showOltsDialog(info); })();
+}
+function showOltsDialog(info) {
+  closeReportDialog();
+  return new Promise(async (resolve) => {
+    let dest = '';
+    try { dest = (await (await fetch('/api/report_defaults')).json()).dest || ''; } catch (e) {}
+    const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    const bg = document.createElement('div'); bg.id = 'report-dlg-bg';
+    const d = document.createElement('div'); d.id = 'report-dlg';
+    const wls = (info.wavelengths || []).join(' / ');
+    const mins = Object.values(info.orl_min || {}).filter(v => v != null);
+    const orlLine = mins.length
+      ? `ORL below ${Number(mins[0]).toFixed(2)} dB: ${info.orl_fails} reading${info.orl_fails === 1 ? '' : 's'}`
+      : 'no ORL threshold in the file';
+    const stem = String(info.file || 'OLTS').replace(/\.olts$/i, '');
+    d.innerHTML = `<h3>OLTS Report</h3>`
+      + `<div class="sub">${esc(info.file)}: ${info.fibers} fiber${info.fibers === 1 ? '' : 's'}`
+      + (wls ? `, ${esc(wls)} nm` : '') + (info.job ? `, ${esc(info.job)}` : '') + `</div>`
+      + `<div class="sub">${esc(orlLine)}${info.status ? `, ${esc(info.status)}` : ''}</div>`
+      + `<div class="scope"><label title="one row per fiber with a filter on every column, to sort">`
+      + `<input type="radio" name="olts-fmt" value="xlsx" checked> Excel</label>`
+      + `<label title="laid out like EXFO's OLTS Report"><input type="radio" name="olts-fmt" value="pdf"> PDF</label></div>`
+      + `<div class="row"><label>File Name</label><input type="text" id="olts-name" value="${esc(stem)}"></div>`
+      + `<div class="row"><label>Save To</label><input type="text" id="olts-dest" value="${esc(dest)}">`
+      + `<button type="button" id="olts-browse" title="choose the folder the report is saved to">Browse…</button></div>`
+      + `<div class="err" id="olts-err"></div>`
+      + `<div class="btns"><button id="olts-cancel">Cancel</button><button class="primary" id="olts-save">Save Report</button></div>`;
+    document.body.appendChild(bg);
+    document.body.appendChild(d);
+    // Closed by any route (Cancel, Done, the backdrop, another dialog opening).
+    const gone = new MutationObserver(() => {
+      if (!d.isConnected) { gone.disconnect(); resolve(); }
+    });
+    gone.observe(document.body, { childList: true });
+    bg.onclick = closeReportDialog;
+    d.querySelector('#olts-cancel').onclick = closeReportDialog;
+    const err = d.querySelector('#olts-err');
+    d.querySelector('#olts-browse').onclick = async () => {
+      err.textContent = 'choose a folder in the dialog that just opened…';
+      try {
+        const r = await fetch('/api/pick_folder', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: 'Save the report to' }),
+        });
+        const j = await r.json();
+        if (!r.ok || j.error) { err.textContent = j.error || ('server said ' + r.status); return; }
+        if (!j.available) { err.textContent = 'no folder picker on this machine. Type the full path instead'; return; }
+        if (j.path) d.querySelector('#olts-dest').value = j.path;
+        err.textContent = '';
+      } catch (e) {
+        err.textContent = (e && e.message) || String(e);
+      }
+    };
+    const write = async (fmt, name, where) => {
+      const r = await fetch('/api/olts_report', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: info.token, format: fmt, name, dest: where }),
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || ('server said ' + r.status));
+      return j;
+    };
+    const kind = fmt => fmt === 'pdf' ? 'PDF' : 'Excel workbook';
+    d.querySelector('#olts-save').onclick = async () => {
+      const fmt = d.querySelector('input[name=olts-fmt]:checked').value;
+      const name = d.querySelector('#olts-name').value;
+      const where = d.querySelector('#olts-dest').value;
+      const save = d.querySelector('#olts-save'), cancel = d.querySelector('#olts-cancel');
+      save.disabled = cancel.disabled = true;
+      bg.onclick = null;
+      err.style.color = 'var(--text-sec)';
+      err.textContent = `writing the ${fmt === 'pdf' ? 'PDF' : 'workbook'}…`;
+      let j;
+      try {
+        j = await write(fmt, name, where);
+      } catch (e) {
+        err.style.color = '';
+        err.textContent = (e && e.message) || String(e);
+        save.disabled = cancel.disabled = false;
+        bg.onclick = closeReportDialog;
+        return;
+      }
+      bg.onclick = closeReportDialog;
+      setReadout(`OLTS report saved to ${j.path}`);
+      const other = fmt === 'pdf' ? 'xlsx' : 'pdf';
+      const saved = [[fmt, j.path]];
+      const paint = () => {
+        d.innerHTML = `<h3>OLTS Report Saved</h3>`
+          + saved.map(([f, p]) => `<div class="note" style="font-size:12px;line-height:1.5"><b>${kind(f)}</b> saved to:<br><code>${esc(p)}</code></div>`).join('')
+          + `<div class="err" id="olts-err"></div>`
+          + `<div class="btns">`
+          + (saved.length < 2 ? `<button id="olts-other">Save ${other === 'pdf' ? 'PDF' : 'Excel'} Too</button>` : '')
+          + `<button id="olts-reveal">Show in Folder</button><button id="olts-open">Open</button>`
+          + `<button class="primary" id="olts-done">Done</button></div>`;
+        const e2 = d.querySelector('#olts-err');
+        const open = async (reveal) => {
+          try {
+            const r = await fetch('/api/report_open', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ path: saved[saved.length - 1][1], reveal }),
+            });
+            const k = await r.json();
+            e2.textContent = (!r.ok || k.error) ? (k.error || ('server said ' + r.status)) : '';
+          } catch (e) {
+            e2.textContent = (e && e.message) || String(e);
+          }
+        };
+        d.querySelector('#olts-open').onclick = () => open(false);
+        d.querySelector('#olts-reveal').onclick = () => open(true);
+        d.querySelector('#olts-done').onclick = closeReportDialog;
+        const ob = d.querySelector('#olts-other');
+        if (ob) ob.onclick = async () => {
+          ob.disabled = true;
+          e2.style.color = 'var(--text-sec)';
+          e2.textContent = `writing the ${other === 'pdf' ? 'PDF' : 'workbook'}…`;
+          try {
+            const k = await write(other, name, where);
+            saved.push([other, k.path]);
+            setReadout(`OLTS report saved to ${k.path}`);
+            paint();
+          } catch (e) {
+            e2.style.color = '';
+            e2.textContent = (e && e.message) || String(e);
+            ob.disabled = false;
+          }
+        };
+      };
+      paint();
+    };
+  });
 }
 
 // A report link's km as a chart position.  The Splice Report hands it in A's

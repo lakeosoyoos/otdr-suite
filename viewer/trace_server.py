@@ -22,6 +22,8 @@ Endpoints:
                                     the file would not parse, with the reason;
                                     &facts=1 leaves out dist_km and trace_db)
   POST /api/report              -> writes the Viewer's Summary Report (PDF or Excel)
+  POST /api/olts_load?name=      -> parses a dropped EXFO .olts (body = its bytes)
+  POST /api/olts_report          -> writes that .olts's results (PDF or Excel)
 
 Trace sign convention served to the browser:
   Higher value = stronger signal (descending = loss), FastReporter-style.
@@ -56,6 +58,7 @@ import numpy as np
 from sor_reader324802a import parse_sor_full, parse_genparams, read_test_panel
 from sor_reader324802a import parse_trc_wavelength, trc_head, _trc_stream_of
 from sor_reader324802a import _IOR_SANE_MIN, _IOR_SANE_MAX
+from sor_reader324802a import parse_olts, olts_orl_min
 from json_reader import parse_otdr_json
 
 # Stdlib-only Slack reporting (repo root is on sys.path when the hub imports us).
@@ -2128,6 +2131,52 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({'error': str(e)}, status=500)
                 return
             self._send_json({'ok': True})
+            return
+
+        if u.path == '/api/olts_load':
+            # A dropped .olts: parsed here, reported from the dialog.
+            if not self._origin_is_local():
+                self._refuse_foreign(OLTS_FILE_MAX)
+                return
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                if n > OLTS_FILE_MAX:
+                    self._send_json({'error': 'file too large'}, status=413)
+                    return
+                body = self.rfile.read(n) if n else b''
+                out = olts_load((parse_qs(u.query).get('name') or [''])[0], body)
+            except ValueError as e:
+                self._send_json({'error': str(e)}, status=400)
+                return
+            except Exception as e:                    # noqa: BLE001 - a parse
+                try:
+                    report_error('viewer /api/olts_load', e)
+                except Exception:
+                    pass
+                self._send_json({'error': str(e)}, status=500)
+                return
+            self._send_json({'ok': True, **out})
+            return
+
+        if u.path == '/api/olts_report':
+            if not self._origin_is_local():
+                self._refuse_foreign()
+                return
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                data = json.loads((self.rfile.read(min(n, 1 << 20)) if n else b'{}').decode('utf-8') or '{}')
+                out = write_olts_report(data)
+            except ValueError as e:
+                self._send_json({'error': str(e)}, status=400)
+                return
+            except Exception as e:                    # noqa: BLE001 - a write
+                try:
+                    report_error('viewer /api/olts_report', e)
+                except Exception:
+                    pass
+                self._send_json({'error': str(e)}, status=500)
+                return
+            self._send_json({'ok': True, **out})
             return
 
         if u.path in ('/api/report', '/api/report_open'):
@@ -6614,6 +6663,414 @@ def open_report(path, reveal=False):
         subprocess.Popen(['open', '-R', path] if reveal else ['open', path])
     else:
         subprocess.Popen(['xdg-open', os.path.dirname(path) if reveal else path])
+
+
+# ─── EXFO .olts: OLTS loss / ORL / length results as a PDF or an Excel workbook
+# The boss, 2026-10-01: "we need to be able to handle these in viewer ... we
+# want it pdf or excel so we can sort if we need to".  An .olts has no trace,
+# only per-fiber numbers, so a dropped one does not load into the chart: the
+# page sends its bytes here, sor_reader324802a.parse_olts computes EXFO's
+# numbers from the raw readings (equal to EXFO's own report on every cell of
+# the first file), and the report is written like the Summary Report: same
+# Save To rules, same Open / Show in Folder.  The layout follows EXFO's
+# "OLTS Report" so a tech reads it the same way; the workbook keeps every
+# number a number, with a filter row, so it sorts.
+
+OLTS_FILE_MAX = 512 * 1024 * 1024
+_OLTS_LOADED = {}                       # token -> (parsed, started)
+
+
+def olts_load(name, body):
+    """Parse a dropped .olts; returns the facts the report dialog shows."""
+    now = time.time()
+    for tok, (_p, t0) in list(_OLTS_LOADED.items()):
+        if now - t0 > 3600:
+            _OLTS_LOADED.pop(tok, None)
+    base = os.path.basename(str(name or '')) or 'results.olts'
+    if not base.lower().endswith('.olts'):
+        raise ValueError('not an .olts file: ' + base)
+    if not body:
+        raise ValueError(base + ' is empty')
+    d = tempfile.mkdtemp(prefix='otdr_olts_')
+    try:
+        path = os.path.join(d, _REPORT_BAD_CHARS.sub('_', base))
+        with open(path, 'wb') as f:
+            f.write(body)
+        parsed = parse_olts(path)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    parsed['file'] = base
+    tok = secrets.token_hex(12)
+    _OLTS_LOADED[tok] = (parsed, now)
+    fails = sum(1 for _f, r in _olts_rows(parsed) for side in ('orl_a', 'orl_b')
+                if _olts_orl_fail(parsed, r, side))
+    return {'token': tok, 'file': base, 'job': parsed['job'],
+            'customer': parsed['customer'], 'company': parsed['company'],
+            'fibers': len(parsed['fibers']), 'wavelengths': parsed['wavelengths'],
+            'status': _olts_status(parsed), 'orl_fails': fails,
+            'orl_min': {str(wl): olts_orl_min(parsed, wl) for wl in parsed['wavelengths']}}
+
+
+def _olts_rows(parsed):
+    for f in parsed['fibers']:
+        for r in f['rows']:
+            yield f, r
+
+
+def _olts_orl_fail(parsed, row, side):
+    lim = olts_orl_min(parsed, row['wl_nm'])
+    v = row.get(side)
+    return lim is not None and v is not None and round(v, 2) < lim
+
+
+def _olts_status(parsed):
+    """'Pass' / 'Fail' as EXFO's report header shows it, or '' when the file
+    has no threshold the Viewer grades, or one it cannot (Link ORL is the
+    only kind read so far: a loss limit it cannot read must not come out as
+    a Pass)."""
+    if any(t['set'] == '$ct' and t['enabled'] and t['kind'] != 3
+           for t in parsed.get('thresholds') or []):
+        return ''
+    if not any(olts_orl_min(parsed, wl) is not None for wl in parsed['wavelengths']):
+        return ''
+    for _f, r in _olts_rows(parsed):
+        if _olts_orl_fail(parsed, r, 'orl_a') or _olts_orl_fail(parsed, r, 'orl_b'):
+            return 'Fail'
+    return 'Pass'
+
+
+def _olts_local(dt):
+    """A UTC datetime in this machine's time, without a zone (Excel's kind)."""
+    return dt.astimezone().replace(tzinfo=None) if dt else None
+
+
+def _olts_when(dt):
+    """'9/28/2026, 11:28:39 AM' in this machine's time, as EXFO prints it."""
+    t = _olts_local(dt)
+    if not t:
+        return ''
+    h = t.hour % 12 or 12
+    return f'{t.month}/{t.day}/{t.year}, {h}:{t.minute:02d}:{t.second:02d} {"AM" if t.hour < 12 else "PM"}'
+
+
+def _olts_cal(s):
+    """'2024-12-18' -> '12/18/2024 (UTC)', EXFO's calibration date."""
+    m = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', str(s or ''))
+    return f'{int(m.group(2))}/{int(m.group(3))}/{m.group(1)} (UTC)' if m else str(s or '')
+
+
+_OLTS_HEAD = ['Identifier', 'Wavelength (nm)', 'Loss Average (dB)', 'Loss Margin (dB)',
+              'Loss A->B (dB)', 'Loss B->A (dB)', 'ORL A (dB)', 'ORL B (dB)',
+              'Length (km)', 'Date/Time']
+
+
+def _olts_r(v, nd):
+    return None if v is None or v != v else round(v, nd)
+
+
+def _olts_xlsx(parsed, path):
+    """Two sheets.  Results: the table alone from row 1, a filter on its
+    header and the header frozen, so it sorts and filters like any list.
+    Job: what EXFO prints above and below the table (job, locations,
+    reference, thresholds)."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Results'
+    bold = Font(bold=True)
+    head_fill = PatternFill('solid', fgColor='EEEEEE')
+    thin = Side(style='thin', color='B7D7E8')
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    green, red = Font(color='008000'), Font(color='C00000', bold=True)
+    when_fmt = 'm/d/yyyy h:mm:ss AM/PM'
+
+    def header(sheet, row, names):
+        for c, h in enumerate(names, start=1):
+            cell = sheet.cell(row=row, column=c, value=h)
+            cell.font, cell.fill, cell.border = bold, head_fill, box
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+    header(ws, 1, _OLTS_HEAD)
+    ws.row_dimensions[1].height = 30
+    fmts = [None, '0', '0.00', None, '0.00', '0.00', '0.00', '0.00', '0.000', when_fmt]
+    row = 1
+    for f, r in _olts_rows(parsed):
+        row += 1
+        km = None if f['length_m'] is None else f['length_m'] / 1000.0
+        vals = [f['id'], r['wl_nm'], _olts_r(r['loss_avg'], 2), '---',
+                _olts_r(r['loss_ab'], 2), _olts_r(r['loss_ba'], 2),
+                _olts_r(r['orl_a'], 2), _olts_r(r['orl_b'], 2), _olts_r(km, 3),
+                _olts_local(f['when'])]
+        for c, v in enumerate(vals, start=1):
+            cell = ws.cell(row=row, column=c, value=v)
+            cell.border = box
+            if fmts[c - 1]:
+                cell.number_format = fmts[c - 1]
+            if c == 4:
+                cell.alignment = Alignment(horizontal='right')
+        for c, side in ((7, 'orl_a'), (8, 'orl_b')):
+            if r.get(side) is not None and _olts_lim(parsed, r['wl_nm']) is not None:
+                ws.cell(row=row, column=c).font = red if _olts_orl_fail(parsed, r, side) else green
+    ws.auto_filter.ref = f'A1:{get_column_letter(len(_OLTS_HEAD))}{row}'
+    ws.freeze_panes = 'B2'
+    for c, w in enumerate((16, 12, 12, 11, 11, 11, 10, 10, 11, 22), start=1):
+        ws.column_dimensions[get_column_letter(c)].width = w
+
+    js = wb.create_sheet('Job')
+    js['A1'] = 'OLTS Report'
+    js['A1'].font = Font(bold=True, size=16)
+    status = _olts_status(parsed)
+    if status:
+        js['C1'] = status
+        js['C1'].font = Font(bold=True, size=14, color='008000' if status == 'Pass' else 'C00000')
+    row = 3
+    for label, val in (('Job ID:', parsed['job']), ('Customer:', parsed['customer']),
+                       ('Company:', parsed['company']), ('File name:', parsed['file']),
+                       ('Fibers:', len(parsed['fibers']))):
+        js.cell(row=row, column=1, value=label)
+        js.cell(row=row, column=2, value=val).font = bold
+        row += 1
+    row += 1
+    js.cell(row=row, column=1, value='Locations').font = Font(bold=True, size=12)
+    row += 1
+    ua, ub = parsed['units']['A'], parsed['units']['B']
+    header(js, row, ('', 'Location A', 'Location B'))
+    for label, a, b in (('Operator', ua['operator'], ub['operator']),
+                        ('Model', ua['model'], ub['model']),
+                        ('Serial number', ua['serial'], ub['serial']),
+                        ('Calibration date', _olts_cal(ua['calibration']),
+                         _olts_cal(ub['calibration']))):
+        row += 1
+        for c, v in enumerate((label, a, b), start=1):
+            js.cell(row=row, column=c, value=v).border = box
+    row += 2
+    js.cell(row=row, column=1, value='Reference').font = Font(bold=True, size=12)
+    row += 1
+    header(js, row, ('Reference Method', 'Wavelength (nm)', 'Reference A->B (dB)',
+                     'Reference B->A (dB)', 'Date/Time'))
+    for ref in parsed['references']:
+        for r in ref['rows']:
+            row += 1
+            for c, (v, fmt) in enumerate(((ref['method'], None), (r['wl_nm'], '0'),
+                                          (_olts_r(r['ref_ab'], 2), '0.00'),
+                                          (_olts_r(r['ref_ba'], 2), '0.00'),
+                                          (_olts_local(ref['when']), when_fmt)), start=1):
+                cell = js.cell(row=row, column=c, value=v)
+                cell.border = box
+                if fmt:
+                    cell.number_format = fmt
+    th = _olts_threshold_rows(parsed)
+    if th:
+        row += 2
+        js.cell(row=row, column=1, value='Pass/Fail Thresholds').font = Font(bold=True, size=12)
+        row += 1
+        header(js, row, ('Wavelength (nm)', 'Min. Link ORL (dB)'))
+        for wl, lim in th:
+            row += 1
+            js.cell(row=row, column=1, value=wl).border = box
+            cell = js.cell(row=row, column=2, value=lim)
+            cell.border, cell.number_format = box, '0.00'
+    for c, w in enumerate((20, 22, 22, 20, 22), start=1):
+        js.column_dimensions[get_column_letter(c)].width = w
+    wb.save(path)
+
+
+def _olts_lim(parsed, wl):
+    return olts_orl_min(parsed, wl)
+
+
+def _olts_threshold_rows(parsed):
+    """[(wavelength or '', min Link ORL)] of the custom set, as EXFO lists it
+    (a blank wavelength is 'all wavelengths')."""
+    seen, out = set(), []
+    for t in parsed.get('thresholds') or []:
+        if t['set'] != '$ct' or t['kind'] != 3 or not t['enabled']:
+            continue
+        key = (t['wl_nm'], t['fail'])
+        if key not in seen:
+            seen.add(key)
+            out.append((t['wl_nm'] or '', t['fail']))
+    return out
+
+
+def _olts_pdf(parsed, path):
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.platypus import (Paragraph, SimpleDocTemplate, Spacer, Table,
+                                    TableStyle)
+    from xml.sax.saxutils import escape
+
+    FONT, BOLD, uni = _pdf_fonts()
+
+    def txt(v):
+        s = str(v if v is not None else '')
+        if not uni:
+            for k, a in _PDF_ASCII.items():
+                s = s.replace(k, a)
+            s = s.encode('latin-1', 'replace').decode('latin-1')
+        return s
+
+    INK = colors.HexColor('#000000')
+    GREY = colors.HexColor('#444444')
+    LINE = colors.HexColor('#b7d7e8')
+    HEAD = colors.HexColor('#eeeeee')
+    GREEN = colors.HexColor('#008000')
+    RED = colors.HexColor('#c00000')
+    margin = 30.0
+    status = _olts_status(parsed)
+    today = time.localtime()
+    foot = f'{PRODUCT_NAME}    Signature: ______________________________    ' \
+           f'Date: {today.tm_mon}/{today.tm_mday}/{today.tm_year}'
+
+    class NumberedCanvas(rl_canvas.Canvas):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self._pages = []
+
+        def showPage(self):
+            self._pages.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            n = len(self._pages)
+            for st in self._pages:
+                self.__dict__.update(st)
+                w, h = self._pagesize
+                self.setFont(BOLD, 16)
+                self.setFillColor(INK)
+                self.drawString(margin, h - 42, 'OLTS Report')
+                if status and self._pageNumber == 1:
+                    self.setFillColor(GREEN if status == 'Pass' else RED)
+                    self.drawRightString(w - margin, h - 42, status)
+                self.setFont(FONT, 8)
+                self.setFillColor(GREY)
+                self.drawString(margin, 18, txt(foot))
+                self.drawRightString(w - margin, 18, f'Page {self._pageNumber} of {n}')
+                super().showPage()
+            super().save()
+
+    h2 = ParagraphStyle('h2', fontName=BOLD, fontSize=11, leading=14, textColor=INK,
+                        spaceBefore=6, spaceAfter=2)
+    cellp = ParagraphStyle('c', fontName=FONT, fontSize=7.5, leading=9, textColor=INK)
+    headp = ParagraphStyle('h', fontName=BOLD, fontSize=7.5, leading=9, textColor=INK,
+                           alignment=1)
+    datep = ParagraphStyle('d', fontName=FONT, fontSize=6, leading=7, textColor=INK, alignment=1)
+
+    def grid(data, widths, head_rows=1, extra=()):
+        t = Table(data, colWidths=widths, repeatRows=head_rows)
+        t.setStyle(TableStyle([
+            ('FONT', (0, 0), (-1, -1), FONT, 7.5),
+            ('GRID', (0, 0), (-1, -1), 0.5, LINE),
+            ('BACKGROUND', (0, 0), (-1, head_rows - 1), HEAD),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 2), ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ] + list(extra)))
+        return t
+
+    story = []
+    factp = ParagraphStyle('f', parent=cellp, fontName=BOLD, fontSize=8)
+    facts = [[txt(k), Paragraph(escape(txt(v)), factp)] for k, v in (
+        ('Job ID:', parsed['job']), ('Customer:', parsed['customer']),
+        ('Company:', parsed['company']), ('File name:', parsed['file']))]
+    ft = Table(facts, colWidths=[90, 300], hAlign='LEFT')
+    ft.setStyle(TableStyle([('FONT', (0, 0), (-1, -1), FONT, 8),
+                            ('TOPPADDING', (0, 0), (-1, -1), 1), ('BOTTOMPADDING', (0, 0), (-1, -1), 1)]))
+    story += [ft, Paragraph('Locations', h2)]
+    ua, ub = parsed['units']['A'], parsed['units']['B']
+    loc = [['', Paragraph('Location A', headp), Paragraph('Location B', headp)]] + [
+        [txt(a), txt(b), txt(c)] for a, b, c in (
+            ('Operator', ua['operator'], ub['operator']), ('Model', ua['model'], ub['model']),
+            ('Serial number', ua['serial'], ub['serial']),
+            ('Calibration date', _olts_cal(ua['calibration']), _olts_cal(ub['calibration'])))]
+    lt = grid(loc, [150, 148, 148])
+    lt.hAlign = 'LEFT'
+    story += [lt, Paragraph('Results', h2)]
+
+    head = [Paragraph(h, headp) for h in (
+        'Identifier', 'Wave-<br/>length<br/>(nm)', 'Loss<br/>Average<br/>(dB)',
+        'Loss<br/>Margin<br/>(dB)', 'Loss<br/>A-&gt;B<br/>(dB)', 'Loss<br/>B-&gt;A<br/>(dB)',
+        'ORL<br/>A<br/>(dB)', 'ORL<br/>B<br/>(dB)', 'Length<br/><br/>(km)', 'Date/Time')]
+    data, extra = [head], []
+
+    def num(v, nd):
+        return '' if v is None or v != v else f'{v:.{nd}f}'
+
+    for f, r in _olts_rows(parsed):
+        i = len(data)
+        km = None if f['length_m'] is None else f['length_m'] / 1000.0
+        data.append([txt(f['id']), str(r['wl_nm']), num(r['loss_avg'], 2), '---',
+                     num(r['loss_ab'], 2), num(r['loss_ba'], 2), num(r['orl_a'], 2),
+                     num(r['orl_b'], 2), num(km, 3),
+                     Paragraph(escape(_olts_when(f['when'])).replace(', ', ',<br/>'), datep)])
+        for c, side in ((6, 'orl_a'), (7, 'orl_b')):
+            if r.get(side) is not None and _olts_lim(parsed, r['wl_nm']) is not None:
+                extra.append(('TEXTCOLOR', (c, i), (c, i),
+                              RED if _olts_orl_fail(parsed, r, side) else GREEN))
+    extra += [('ALIGN', (1, 1), (1, -1), 'CENTER'), ('ALIGN', (2, 1), (8, -1), 'RIGHT')]
+    res = grid(data, [98, 40, 50, 42, 42, 42, 42, 42, 50, 64], extra=extra)
+    res.hAlign = 'LEFT'
+    story.append(res)
+
+    story += [Spacer(1, 8), Paragraph('Reference', h2)]
+    rdata = [[Paragraph(h, headp) for h in ('Reference Method', 'Wavelength<br/>(nm)',
+                                            'Reference<br/>A-&gt;B<br/>(dB)',
+                                            'Reference<br/>B-&gt;A<br/>(dB)', 'Date/Time')]]
+    for ref in parsed['references']:
+        for r in ref['rows']:
+            rdata.append([txt(ref['method']), str(r['wl_nm']), num(r['ref_ab'], 2),
+                          num(r['ref_ba'], 2),
+                          Paragraph(escape(_olts_when(ref['when'])).replace(', ', ',<br/>'), datep)])
+    rt = grid(rdata, [110, 70, 70, 70, 80],
+              extra=[('ALIGN', (0, 1), (1, -1), 'CENTER'), ('ALIGN', (2, 1), (3, -1), 'RIGHT')])
+    rt.hAlign = 'LEFT'
+    story.append(rt)
+    th = _olts_threshold_rows(parsed)
+    if th:
+        story.append(Paragraph('Pass/Fail Thresholds', h2))
+        tdata = [[Paragraph('Wavelength<br/>(nm)', headp), Paragraph('Min.<br/>Link ORL<br/>(dB)', headp)]]
+        tdata += [[str(wl), num(lim, 2)] for wl, lim in th]
+        tt = grid(tdata, [110, 70], extra=[('ALIGN', (1, 1), (1, -1), 'RIGHT')])
+        tt.hAlign = 'LEFT'
+        story.append(tt)
+
+    doc = SimpleDocTemplate(path, pagesize=letter, leftMargin=margin, rightMargin=margin,
+                            topMargin=56, bottomMargin=34, title='OLTS Report',
+                            author=PRODUCT_NAME, subject=parsed['file'])
+    doc.build(story, canvasmaker=NumberedCanvas)
+
+
+def write_olts_report(payload):
+    """Write a loaded .olts's report; returns {'path', 'folder', 'name'}."""
+    if not isinstance(payload, dict):
+        raise ValueError('report body must be a JSON object')
+    ent = _OLTS_LOADED.get(str(payload.get('token') or ''))
+    if not ent:
+        raise ValueError('that .olts is no longer loaded; drop it again')
+    parsed = ent[0]
+    fmt = str(payload.get('format') or '').lower()
+    if fmt not in ('pdf', 'xlsx'):
+        raise ValueError('format must be pdf or xlsx')
+    folder = report_dest(payload.get('dest'))
+    os.makedirs(folder, exist_ok=True)
+    stem = payload.get('name') or os.path.splitext(parsed['file'])[0]
+    path = _report_path(folder, stem, fmt)
+    tmp = path + '.part'
+    try:
+        (_olts_pdf if fmt == 'pdf' else _olts_xlsx)(parsed, tmp)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    _REPORTS_WRITTEN.add(path)
+    return {'path': path, 'folder': folder, 'name': os.path.basename(path)}
+
 
 
 def _main():
