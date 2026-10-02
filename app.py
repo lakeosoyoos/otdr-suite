@@ -324,13 +324,18 @@ def _mode_name(name, on):
     return '<span class="%s">%s</span>' % ('mode-on' if on else 'mode-off', name)
 
 
-def _render_theme_control(where):
+def _render_theme_control(where, compact=False):
     """Dark | switch | Light under a "Theme" title (Robert, 2026-09-29): the
     same shape as the Analysis Mode switch.  ui_theme holds the theme; the
-    knob is read every run (no on_change).  Knob right = Light."""
-    box = where.container(key='theme_box')
-    box.markdown(_MODE_SWITCH_CSS, unsafe_allow_html=True)
-    box.markdown('**Theme**')
+    knob is read every run (no on_change).  Knob right = Light.
+    compact=True is the top bar's: one row, no title (the bar draws the CSS)."""
+    if compact:
+        box = where.container(key='theme_box', width=150, horizontal=True,
+                              vertical_alignment='center', gap='small')
+    else:
+        box = where.container(key='theme_box')
+        box.markdown(_MODE_SWITCH_CSS, unsafe_allow_html=True)
+        box.markdown('**Theme**')
     dark = st.session_state.get('ui_theme') == 'dark'
     # No key: the knob's start is the theme itself (value=), and a keyless
     # widget's identity includes that value, so after every change the
@@ -338,7 +343,8 @@ def _render_theme_control(where):
     # failed twice in testing: once the sidebar was hidden (the home screen)
     # and shown again, the browser drew the knob in its old position while
     # the theme stayed put, and the next click anywhere flipped it back.
-    l, m, r = box.columns([5, 3, 5], vertical_alignment='center')
+    l, m, r = (box, box, box) if compact else box.columns(
+        [5, 3, 5], vertical_alignment='center')
     l.markdown(_mode_name('Dark', dark), unsafe_allow_html=True)
     _right = m.toggle('Theme', value=not dark, label_visibility='collapsed')
     r.markdown(_mode_name('Light', not dark), unsafe_allow_html=True)
@@ -348,7 +354,7 @@ def _render_theme_control(where):
         st.rerun()
 
 
-def _render_analysis_mode_control():
+def _render_analysis_mode_control(compact=False):
     """The OTDR Suite / FastReporter switch, right under the Tool list so
     it is visible on every page.  Seeded from settings.json on the first run of a
     session and written back on every change, so a tech's choice survives a
@@ -363,15 +369,21 @@ def _render_analysis_mode_control():
     # Robert, 2026-09-24: both modes on show, FR Mode on the left and OTDR
     # Mode on the right, the switch between them; the knob points at the
     # mode in use and that name is bold.  Knob right = OTDR Mode.
-    box = st.container(key='analysis_mode_box')
-    box.markdown(_MODE_SWITCH_CSS, unsafe_allow_html=True)
-    box.markdown('**Analysis Mode**')
+    # compact=True is the top bar's: one row, no title (the bar draws the CSS).
+    if compact:
+        box = st.container(key='analysis_mode_box', width=270, horizontal=True,
+                           vertical_alignment='center', gap='small')
+    else:
+        box = st.container(key='analysis_mode_box')
+        box.markdown(_MODE_SWITCH_CSS, unsafe_allow_html=True)
+        box.markdown('**Analysis Mode**')
     # No key (2026-09-30): with key='analysis_switch', the App's home screen
     # (no sidebar) and back redrew the knob in its old position while the
     # mode stayed put, and the next page change silently switched OTDR Mode
     # to FR Mode.  Keyless, the knob starts at the mode itself (value=) and
     # is a new widget after every change.
-    l, m, r = box.columns([5, 3, 5], vertical_alignment='center')
+    l, m, r = (box, box, box) if compact else box.columns(
+        [5, 3, 5], vertical_alignment='center')
     l.markdown(_mode_name('FR Mode', _on), unsafe_allow_html=True,
                help=("FR Mode: reproduce EXFO FastReporter's analysis from the same "
                      "files, to the digit, with only your pass/fail thresholds on top."))
@@ -1692,7 +1704,7 @@ except ImportError as _engine_exc:
 TRACE_PORT_BASE = 8771
 
 st.set_page_config(page_title=PRODUCT_NAME, layout='wide',
-                   initial_sidebar_state='expanded')
+                   initial_sidebar_state='collapsed')
 # Light / Dark: every new session starts Dark, and the session's choice is
 # applied before anything draws.  Streamlit sends the theme at the START of a
 # run, so when this run changed it the page on screen still has the old one:
@@ -2862,7 +2874,7 @@ def _confirm_clear_report(which):
     st.markdown('**Clear Report Only** removes this report. The traces stay '
                 'loaded and the same folder will need a fresh run.')
     st.markdown('**Clear Report and Traces** also clears the traces from the '
-                'left panel and from every tool, with their reports.')
+                'Traces tab and from every tool, with their reports.')
     st.caption('Report files already saved to a folder are not deleted.')
     if st.button('Skip', key='clear_report_skip', use_container_width=True):
         st.rerun()
@@ -3109,148 +3121,336 @@ def _after_page(page):
     _carry_settings_out()
 
 
-# ─── Sidebar nav ─────────────────────────────────────────────────────────
-st.session_state.setdefault('nav_radio', 'Viewer')
-with st.sidebar:
-    st.markdown(f'## 🔬 {PRODUCT_NAME}')
+# ─── Top bar (sandbox/top-tabs-design, Robert 2026-10-01) ────────────────
+# One bar across the top of every page, after Apple's header: the logo at the
+# left, a tab per tool, the Analysis Mode and Theme switches, and the build /
+# update check at the far right.  It replaces the sidebar: the tool radio
+# became the tabs, the Trace Folders boxes became the Traces tab, and the
+# sidebar footer became the update menu.  nav_radio still holds the page, so
+# every Back button and report link that writes it keeps working.
+NAV_TABS = [('Traces', 'Traces'), ('Splice Report', 'Splice Report'),
+            ('Uni', 'Unidirectional'), ('Splice Report FEC', 'Splice Report FEC'),
+            ('Secret Sauce', 'Secret Sauce'), ('Viewer', 'Viewer')]
+# FQA Builder and Field Capture belong to OTDR Suite App (Robert
+# 2026-09-28); the App's launcher exports OTDR_SUITE_EDITION.
+if os.environ.get('OTDR_SUITE_EDITION'):
+    NAV_TABS += [('FQA Builder', 'FQA Builder'), ('Field Capture', 'Field Capture')]
+# The tab lit while a page with no tab of its own is open.
+NAV_TAB_OF = {'Viewer FEC': 'Viewer'}
+NAV_HEIGHT_PX = 48
+# Narrower than this, the whole bar does not fit on one line: the items hide
+# and a double arrow, centered, drops them down as a list (Robert
+# 2026-10-01).  The bar's items measure about 1,350 px with their gaps.
+NAV_MENU_BELOW_PX = 1360
 
-    # Update nudge FIRST — above the tools, so a stale always-on machine sees
-    # it before it starts working (the footer's manual check is still there).
-    _render_update_nudge()
+_TOP_NAV_CSS = '''<style>
+:root{--nav-bg:%(bg)s;--nav-fg:%(fg)s;--nav-hi:%(hi)s;--nav-line:%(line)s}
+[data-testid="stHeader"],[data-testid="stSidebar"],
+[data-testid="stSidebarCollapsedControl"],[data-testid="stExpandSidebarButton"]{display:none !important}
+[data-testid="stMainBlockContainer"]{padding-top:calc(%(h)dpx + 1.25rem) !important}
+.st-key-top_nav{position:fixed;top:0;left:0;right:0;z-index:1000;height:%(h)dpx;
+  padding:0 max(16px, calc((100vw - 1500px) / 2));flex-wrap:nowrap !important;
+  background:var(--nav-bg);backdrop-filter:saturate(180%%) blur(20px);
+  border-bottom:1px solid var(--nav-line)}
+.st-key-analysis_mode_box,.st-key-theme_box{justify-content:center}
+.st-key-analysis_mode_box>[data-testid="stElementContainer"],
+.st-key-theme_box>[data-testid="stElementContainer"]{flex:0 0 auto !important;width:auto !important}
+.st-key-nav_logo button span[data-testid="stIconMaterial"]{font-size:22px !important}
+.st-key-top_nav p,.st-key-top_nav span{color:var(--nav-fg);font-size:13px;letter-spacing:-.01em}
+.st-key-top_nav button[data-testid^="stBaseButton-"]{background:transparent !important;border:none !important;
+  box-shadow:none !important;border-radius:0 !important;min-height:%(h)dpx;padding:0 6px !important;color:var(--nav-fg) !important}
+.st-key-top_nav button[data-testid^="stBaseButton-"]:hover p,
+.st-key-top_nav button[data-testid^="stBaseButton-"]:hover span{color:var(--nav-hi) !important}
+.st-key-top_nav button[data-testid="stBaseButton-primary"]{box-shadow:inset 0 -2px 0 var(--otdr-accent,#3b82f6) !important}
+.st-key-top_nav button[data-testid="stBaseButton-primary"] p{color:var(--nav-hi) !important;font-weight:600}
+.st-key-nav_logo button p{color:var(--nav-hi) !important;font-weight:700;font-size:15px !important}
+.st-key-nav_logo button span{color:#22c55e !important}
+.st-key-nav_update_ready button p,.st-key-nav_update_ready button span{color:#22c55e !important;font-weight:600}
+.st-key-nav_tick{display:none}
+/* The narrow-window menu.  One set of tabs and switches: a narrow window
+   only lays them out differently, so no switch is ever drawn twice.  The
+   arrow is a checkbox's label; the tick is lost when the page changes (the
+   box is drawn anew), so picking a tab closes the list. */
+.st-key-top_nav>[data-testid="stElementContainer"]:has(#nav_menu_cb){display:none}
+#nav_menu_cb{display:none}
+.nav-menu-arrow{display:flex;align-items:center;justify-content:center;width:44px;height:%(h)dpx;
+  cursor:pointer;color:var(--nav-fg);opacity:.65;transition:opacity .15s,transform .2s}
+.nav-menu-arrow:hover{opacity:1}
+#nav_menu_cb:checked+.nav-menu-arrow{transform:rotate(180deg)}
+@media (max-width:%(menu_px)dpx){
+  .st-key-top_nav>[data-testid="stElementContainer"]:has(#nav_menu_cb){display:block;
+    position:absolute;top:0;left:50%%;transform:translateX(-50%%);width:auto !important}
+  .st-key-top_nav>*:not(:has(#nav_menu_cb)){display:none !important}
+  .st-key-top_nav:has(#nav_menu_cb:checked){height:auto;max-height:100vh;overflow-y:auto;
+    flex-direction:column;align-items:center !important;justify-content:flex-start !important;
+    gap:4px !important;padding-top:%(h)dpx;padding-bottom:16px}
+  .st-key-top_nav:has(#nav_menu_cb:checked)>*:not(:has(#nav_menu_cb)){display:flex !important;
+    flex:0 0 auto !important;height:auto !important;justify-content:center}
+  .st-key-top_nav:has(#nav_menu_cb:checked) button[data-testid^="stBaseButton-"]{min-height:36px}
+}
+.st-key-top_nav [data-testid="stPopover"] button{background:transparent !important;border:none !important;box-shadow:none !important;color:var(--nav-fg) !important}
+.st-key-analysis_mode_box,.st-key-theme_box{flex-wrap:nowrap !important;gap:8px !important}
+/* Nothing above the bar takes room: theme styles, the theme scripts and the
+   bar itself all sit out of the page's flow, so the page starts right under
+   the bar instead of under a column of empty gaps. */
+[data-testid="stVerticalBlock"]>*:has(~[data-testid="stLayoutWrapper"]>.st-key-top_nav),
+[data-testid="stLayoutWrapper"]:has(>.st-key-top_nav),
+[data-testid="stLayoutWrapper"]:has(>.st-key-nav_tick){position:absolute !important;
+  left:0;width:0 !important;height:0;overflow:visible}
+</style>'''
 
-    # ── Trace folders: the A and B directions, for every tool ───────────────
-    # Robert 2026-09-26: the "Load Span (Both Directions)" box and its "Load
-    # into all tools" button are gone; an A-direction and a B-direction folder
-    # loader sits in their place.  These two boxes ARE the shared A/B slots
-    # the Viewer and the Splice Report read (view_dir_a_input /
-    # view_dir_b_input), so there is nothing to push: picking a folder is
-    # loading it.  Drawn on every page, so the choice also survives a trip
-    # between tools (a widget Streamlit does not draw loses its state).
-    # Keyed widgets, no value= (key + value on a written widget is the
-    # Streamlit footgun); a Browse writes the slot BEFORE its box is drawn.
-    st.markdown('##### Trace Folders')
-    st.session_state.setdefault('view_dir_a_input', trace_server.CONFIG.get('dir_a') or '')
-    st.session_state.setdefault('view_dir_b_input', trace_server.CONFIG.get('dir_b') or '')
 
-    def _trace_folders_changed():
-        # A new span invalidates the previous deep-link target and report
-        # grids, exactly as the old span loader did: a stale click would
-        # re-fire against the new folders.
-        for _k in ('viewer_target', 'sr_result', 'sr_dirs', 'uni_result',
-                   'sr_site_src'):
-            st.session_state.pop(_k, None)
-        st.session_state['sr_input_mode'] = 'Two folders (A + B)'
-        st.session_state.pop('sr_input_mode_saved', None)     # _seed_box
+def _nav_go(target):
+    """A tab's on_click: runs before anything draws, so nav_radio may be
+    written (no widget owns it any more)."""
+    st.session_state['nav_radio'] = target
+    st.session_state['nav_picks'] = st.session_state.get('nav_picks', 0) + 1
 
-    # The tech pressed Allow, or Clear Report and Traces, in a pop-up (see
-    # _clear_traces above the sidebar).  Done HERE, on the run that follows,
-    # because the boxes must be emptied in the same run that draws them and
-    # before they are drawn: a value written in an earlier run reaches the
-    # server and never the browser.
-    if st.session_state.pop('_clear_traces_go', False):
-        _clear_traces()
-    # Files dropped on the Viewer's FILES panel point the trace server at a
-    # staged folder from inside the page (trace_server.drop_end stamps
-    # CONFIG['dropped_at']).  Checked HERE, on every page and before the boxes
-    # are drawn, so the next run of ANY tool picks up the drop: a tech who
-    # drops files and then clicks Splice Report ran the report on the old
-    # span while the Viewer showed the new one (click-through audit
-    # 2026-09-29), because only the Viewer page looked.  A hub rerun must
-    # not put the old paths back, so the drop's folders become the boxes'.
-    # A new span, as a Browse is: the old report grids go, and so does a
-    # pending "back from the Viewer" restore, which would put the old span
-    # back on the way out.
-    _drop_at = trace_server.CONFIG.get('dropped_at') or 0
-    if _drop_at > st.session_state.get('view_drop_seen', 0):
-        st.session_state['view_drop_seen'] = _drop_at
-        st.session_state['view_dir_a_input'] = trace_server.CONFIG.get('dir_a') or ''
-        st.session_state['view_dir_b_input'] = trace_server.CONFIG.get('dir_b') or ''
-        # The Viewer that took the drop already shows these folders: its
-        # frame must not reload for them (see page_viewer).
-        st.session_state['_viewer_drop_dirs'] = (
-            trace_server.CONFIG.get('dir_a') or '', trace_server.CONFIG.get('dir_b') or '')
-        # Nor for the report link it was opened on, which goes below (see
-        # page_viewer): the frame keeps the whole address it had.
-        if '_viewer_q' in st.session_state:
-            st.session_state['_viewer_drop_q'] = st.session_state['_viewer_q']
-        st.session_state.pop('_panel_restore', None)
-        st.session_state.pop('_ss_nav_folder', None)
-        _trace_folders_changed()
-    # Back from the Viewer tab after a click that pointed the A box at the
-    # folder the Viewer had to read: the tech's own A and B come back.  No
-    # report is dropped, it is the same span.
-    if ('_panel_restore' in st.session_state
-            and st.session_state.get('nav_radio') not in ('Viewer', 'Viewer FEC')):
-        (st.session_state['view_dir_a_input'],
-         st.session_state['view_dir_b_input']) = st.session_state.pop('_panel_restore')
-        st.session_state.pop('_ss_nav_folder', None)
-    # A drop's staged folder shows as what was dropped (demo list #31).
-    _label_drop_boxes()
 
-    for _side, _lbl in (('a', 'A'), ('b', 'B')):
+def _render_update_menu():
+    """Far right of the top bar: the build this copy runs, and the update
+    check that was the sidebar footer, in a small menu.  The label turns
+    green when a newer update is published."""
+    _appv, _engv = _app_version(), _engine_version()
+    try:
+        _nudge = _update_state()
+    except Exception:
+        _nudge = None
+    _cur = _parse_engine_version(_appv, _engv)
+    if _nudge:
+        label, key = f'Update {_nudge[0]} Ready', 'nav_update_ready'
+    elif _cur is None:
+        label, key = 'Dev Build', 'nav_update'
+    else:
+        label, key = f'Version {_cur}', 'nav_update'
+    with st.container(key=key, width=170, horizontal=True,
+                      horizontal_alignment='right'):
+        with st.popover(label, icon=':material/system_update_alt:'):
+            if _appv == 'dev' and _engv == 'dev':
+                st.caption(f'{PRODUCT_NAME} · dev')
+            else:
+                st.caption(f'{PRODUCT_NAME} · app {_appv} · engine: {_engv}')
+            if st.button('🔄 Check for Updates', key='upd_check',
+                         use_container_width=True):
+                st.session_state['upd_latest'] = _latest_manifest_version()
+                st.session_state['upd_checked'] = True
+            if st.session_state.get('upd_checked'):
+                _latest = st.session_state.get('upd_latest')
+                if _latest is None:
+                    st.warning('Could not reach the update server. Check the '
+                               'connection and try again.')
+                elif _cur is not None and _latest <= _cur:
+                    st.success(f'Up to date: engine {_cur} is the latest.')
+                elif _cur is None:
+                    st.info(f'Latest published update: {_latest} · running: dev '
+                            'checkout (updates apply to installed builds only).')
+                else:
+                    st.info(f'Update {_latest} is available (running {_cur}).')
+                    if _cache_pinned():
+                        _render_cache_pinned_notice()
+                    elif _needs_install():
+                        _render_install_notice(_latest, _cur)
+                    elif getattr(sys, 'frozen', False):
+                        if st.button('⬇ Update & Restart Now', key='upd_restart',
+                                     type='primary', use_container_width=True):
+                            if _relaunch_and_exit():
+                                _render_restart_watchdog()
+                    else:
+                        st.caption('Restart the app to apply. Updates install '
+                                   'at launch.')
+
+
+def _render_top_nav(page):
+    dark = st.session_state.get('ui_theme') == 'dark'
+    colors = (dict(bg='rgba(22,22,23,.94)', fg='rgba(232,232,237,.82)',
+                   hi='#ffffff', line='rgba(255,255,255,.08)') if dark else
+              dict(bg='rgba(250,250,252,.94)', fg='rgba(0,0,0,.78)',
+                   hi='#000000', line='rgba(0,0,0,.10)'))
+    st.markdown(_TOP_NAV_CSS % dict(colors, h=NAV_HEIGHT_PX, menu_px=NAV_MENU_BELOW_PX)
+                + _MODE_SWITCH_CSS,
+                unsafe_allow_html=True)
+    lit = NAV_TAB_OF.get(page, page)
+    with st.container(key='top_nav', horizontal=True,
+                      horizontal_alignment='distribute',
+                      vertical_alignment='center', gap='small'):
+        # The narrow-window arrow (hidden while the bar fits).  Streamlit
+        # keeps the same checkbox from run to run, tick and all, unless what
+        # holds it changes: the wrapper swaps between two tags on every tab
+        # pick, so the box is drawn new and a pick closes the list.
+        _wrap = 'span' if st.session_state.get('nav_picks', 0) % 2 else 'div'
+        st.markdown(
+            f'<{_wrap} class="nav-menu-wrap">'
+            '<input type="checkbox" id="nav_menu_cb">'
+            '<label for="nav_menu_cb" class="nav-menu-arrow" title="Menu">'
+            '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" '
+            'stroke="currentColor" stroke-width="2" stroke-linecap="round" '
+            'stroke-linejoin="round"><path d="M7 6l5 5 5-5"/><path d="M7 13l5 5 5-5"/>'
+            f'</svg></label></{_wrap}>', unsafe_allow_html=True)
+        with st.container(key='nav_logo', width=150):
+            st.button(PRODUCT_NAME, key='nav_logo_btn', type='tertiary',
+                      icon=':material/show_chart:', on_click=_nav_go,
+                      args=('Traces',))
+        for _label, _target in NAV_TABS:
+            st.button(_label, key=f'nav_tab_{_target}',
+                      type='primary' if _target == lit else 'tertiary',
+                      on_click=_nav_go, args=(_target,))
+        _render_analysis_mode_control(compact=True)
+        _render_theme_control(st, compact=True)
+        _render_update_menu()
+
+
+# The A and B boxes are drawn on the Traces tab only, and Streamlit forgets
+# a widget's state on any run that does not draw it.  So each box is written
+# back to itself before anything draws, and a copy no widget owns
+# ({key}_saved, as _seed_box keeps) brings it back if a run was cut short
+# before that: the bar's Analysis Mode and Theme switches rerun mid-run.
+_TRACE_BOXES = ('view_dir_a_input', 'view_dir_b_input')
+for _k in _TRACE_BOXES:
+    if _k in st.session_state:
+        st.session_state[_k] = st.session_state[_k]
+    elif _k + '_saved' in st.session_state:
+        st.session_state[_k] = st.session_state[_k + '_saved']
+
+st.session_state.setdefault('nav_radio', 'Traces')
+page = st.session_state['nav_radio']
+_render_top_nav(page)
+
+# Update nudge FIRST, right under the bar, so a stale always-on machine sees
+# it before it starts working (the update menu's manual check is still there).
+_render_update_nudge()
+
+# ── Trace folders: the A and B directions, for every tool ───────────────
+# Robert 2026-09-26: an A-direction and a B-direction folder loader.  These
+# two boxes ARE the shared A/B slots the Viewer and the Splice Report read
+# (view_dir_a_input / view_dir_b_input), so picking a folder is loading it.
+# They are drawn on the Traces tab only now (see _TRACE_BOXES above).
+# Keyed widgets, no value= (key + value on a written widget is the
+# Streamlit footgun); a Browse writes the slot BEFORE its box is drawn.
+st.session_state.setdefault('view_dir_a_input', trace_server.CONFIG.get('dir_a') or '')
+st.session_state.setdefault('view_dir_b_input', trace_server.CONFIG.get('dir_b') or '')
+
+
+def _trace_folders_changed():
+    # A new span invalidates the previous deep-link target and report
+    # grids, exactly as the old span loader did: a stale click would
+    # re-fire against the new folders.
+    for _k in ('viewer_target', 'sr_result', 'sr_dirs', 'uni_result',
+               'sr_site_src'):
+        st.session_state.pop(_k, None)
+    st.session_state['sr_input_mode'] = 'Two folders (A + B)'
+    st.session_state.pop('sr_input_mode_saved', None)     # _seed_box
+
+
+# The tech pressed Allow, or Clear Report and Traces, in a pop-up (see
+# _clear_traces).  Done HERE, on the run that follows, because the boxes must
+# be emptied in the same run that draws them and before they are drawn: a
+# value written in an earlier run reaches the server and never the browser.
+if st.session_state.pop('_clear_traces_go', False):
+    _clear_traces()
+# Files dropped on the Viewer's FILES panel point the trace server at a
+# staged folder from inside the page (trace_server.drop_end stamps
+# CONFIG['dropped_at']).  Checked HERE, on every page and before the boxes
+# are drawn, so the next run of ANY tool picks up the drop: a tech who
+# drops files and then clicks Splice Report ran the report on the old
+# span while the Viewer showed the new one (click-through audit
+# 2026-09-29), because only the Viewer page looked.  A hub rerun must
+# not put the old paths back, so the drop's folders become the boxes'.
+# A new span, as a Browse is: the old report grids go, and so does a
+# pending "back from the Viewer" restore, which would put the old span
+# back on the way out.
+_drop_at = trace_server.CONFIG.get('dropped_at') or 0
+if _drop_at > st.session_state.get('view_drop_seen', 0):
+    st.session_state['view_drop_seen'] = _drop_at
+    st.session_state['view_dir_a_input'] = trace_server.CONFIG.get('dir_a') or ''
+    st.session_state['view_dir_b_input'] = trace_server.CONFIG.get('dir_b') or ''
+    # The Viewer that took the drop already shows these folders: its
+    # frame must not reload for them (see page_viewer).
+    st.session_state['_viewer_drop_dirs'] = (
+        trace_server.CONFIG.get('dir_a') or '', trace_server.CONFIG.get('dir_b') or '')
+    # Nor for the report link it was opened on, which goes below (see
+    # page_viewer): the frame keeps the whole address it had.
+    if '_viewer_q' in st.session_state:
+        st.session_state['_viewer_drop_q'] = st.session_state['_viewer_q']
+    st.session_state.pop('_panel_restore', None)
+    st.session_state.pop('_ss_nav_folder', None)
+    _trace_folders_changed()
+# Back from the Viewer tab after a click that pointed the A box at the
+# folder the Viewer had to read: the tech's own A and B come back.  No
+# report is dropped, it is the same span.
+if ('_panel_restore' in st.session_state
+        and st.session_state.get('nav_radio') not in ('Viewer', 'Viewer FEC')):
+    (st.session_state['view_dir_a_input'],
+     st.session_state['view_dir_b_input']) = st.session_state.pop('_panel_restore')
+    st.session_state.pop('_ss_nav_folder', None)
+# A drop's staged folder shows as what was dropped (demo list #31).
+_label_drop_boxes()
+for _k in _TRACE_BOXES:
+    _keep_box(_k)
+
+with st.container(key='nav_tick'):
+    _follow_viewer_folders()          # the Viewer's own folder changes reach the boxes
+
+# Secret Sauce takes ONE folder holding both directions: build it from the
+# A and B folders whenever that pair changes, as the span loader did.
+_pa, _pb = _panel_boxes()
+if _pa and _pa == st.session_state.get('_ss_nav_folder'):
+    # A pair click put the Secret Sauce folder itself in the A box (the
+    # Viewer reads the pair from it; see _handle_nav).  It IS the folder
+    # the report on the way back was run on: building another one from it
+    # and B would move Secret Sauce off its own report.
+    pass
+elif (_pa and _pb and os.path.isdir(_pa) and os.path.isdir(_pb)
+        and st.session_state.get('_ss_from_ab') != (_pa, _pb)):
+    st.session_state['_ss_from_ab'] = (_pa, _pb)
+    try:
+        _take_panel_ss_folder(_pa, _pb)
+    except Exception as _exc:
+        report_error('trace folders: Secret Sauce folder', _exc)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  PAGE: Traces
+# ═════════════════════════════════════════════════════════════════════════
+def page_traces():
+    """The Traces tab: the A and B folders every tool reads (what the
+    sidebar's Trace Folders block was), how many fibers each holds, and
+    Clear Traces."""
+    st.markdown('#### Traces')
+    st.caption('Pick the A-direction and B-direction folders once. Every tool '
+               'reads these two.')
+    _cols = st.columns(2, gap='large')
+    for _col, _side, _lbl in ((_cols[0], 'a', 'A'), (_cols[1], 'b', 'B')):
         _key = f'view_dir_{_side}_input'
-        if st.button(f'📁 {_lbl}-Direction Folder', use_container_width=True,
-                     key=f'side_browse_{_side}'):
-            _p = pick_folder(f'Choose the {_lbl}-direction folder')
-            if _p:
-                st.session_state[_key] = _p
-                _trace_folders_changed()
-            elif _p is None:
-                st.session_state['_picker_unavailable'] = True
-        st.text_input(f'{_lbl} Folder', key=_key, label_visibility='collapsed',
-                      placeholder=f'{_lbl}-Direction Folder Path',
-                      on_change=_trace_folders_changed)
+        with _col:
+            if st.button(f'📁 {_lbl}-Direction Folder', use_container_width=True,
+                         key=f'side_browse_{_side}'):
+                _p = pick_folder(f'Choose the {_lbl}-direction folder')
+                if _p:
+                    st.session_state[_key] = _p
+                    _trace_folders_changed()
+                elif _p is None:
+                    st.session_state['_picker_unavailable'] = True
+            st.text_input(f'{_lbl} Folder', key=_key, label_visibility='collapsed',
+                          placeholder=f'{_lbl}-Direction Folder Path',
+                          on_change=_trace_folders_changed)
     if st.session_state.get('_picker_unavailable'):
         st.caption('⚠ The folder picker isn\'t available in this build. '
                    'Paste the folder paths instead.')
 
-    # Asks first (the pop-up is drawn below the sidebar): a click here clears
-    # nothing until the tech presses Allow.
-    _ask_clear_traces = st.button('Clear Traces', key='side_clear_traces',
-                                  use_container_width=True)
-    _follow_viewer_folders()          # the Viewer's own folder changes reach the boxes
+    try:
+        dir_a, dir_b, _notes = _panel_dirs()
+        na = len(trace_server.list_fibers(dir_a)) if dir_a and os.path.isdir(dir_a) else 0
+        nb = len(trace_server.list_fibers(dir_b)) if dir_b and os.path.isdir(dir_b) else 0
+        _cols[0].caption(f'A: {na} fibers')
+        _cols[1].caption(f'B: {nb} fibers')
+        for _k, _t in _notes:
+            (st.warning if _k == 'warning' else st.caption)(_t)
+    except Exception as _exc:
+        report_error('traces tab: fiber counts', _exc)
 
-    # Secret Sauce takes ONE folder holding both directions: build it from the
-    # A and B folders whenever that pair changes, as the span loader did.
-    _pa, _pb = _panel_boxes()
-    if _pa and _pa == st.session_state.get('_ss_nav_folder'):
-        # A pair click put the Secret Sauce folder itself in the A box (the
-        # Viewer reads the pair from it; see _handle_nav).  It IS the folder
-        # the report on the way back was run on: building another one from it
-        # and B would move Secret Sauce off its own report.
-        pass
-    elif (_pa and _pb and os.path.isdir(_pa) and os.path.isdir(_pb)
-            and st.session_state.get('_ss_from_ab') != (_pa, _pb)):
-        st.session_state['_ss_from_ab'] = (_pa, _pb)
-        try:
-            _take_panel_ss_folder(_pa, _pb)
-        except Exception as _exc:
-            report_error('sidebar trace folders: Secret Sauce folder', _exc)
-    st.divider()
-
-    st.markdown('##### Select Tool')
-    # FQA Builder and Field Capture belong to OTDR Suite App (Robert
-    # 2026-09-28): the regular Suite lists the four trace tools.  The App's
-    # launcher exports OTDR_SUITE_EDITION; this one does not.  The two pages
-    # and their files stay in the tree, so an update's file set is unchanged.
-    _tools = ['Viewer', 'Splice Report', 'Splice Report FEC', 'Viewer FEC',
-              'Unidirectional', 'Secret Sauce']
-    if os.environ.get('OTDR_SUITE_EDITION'):
-        _tools += ['FQA Builder', 'Field Capture']
-    page = st.radio('Tool', _tools,
-                    key='nav_radio', label_visibility='collapsed')
-    st.divider()
-
-    # The Analysis switch sits right under the Tool list, on every page.
-    # Below rather than above so the Tool radio stays the sidebar's first
-    # radio -- six tests (and any tech's muscle memory) address it that way.
-    _render_analysis_mode_control()
-    st.divider()
-
-
-# A report can be minutes of engine time, so Clear Traces asks before it acts.
-if _ask_clear_traces:
-    _confirm_clear_traces()
+    # Asks first: a click here clears nothing until the tech presses Allow.
+    if st.button('Clear Traces', key='side_clear_traces'):
+        _confirm_clear_traces()
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -3533,9 +3733,10 @@ def page_viewer(fec=False):
     the same Viewer, opened in FEC mode (?fec=1), which it cannot leave."""
     port = ensure_trace_server()
 
-    with st.sidebar:
-        # The A/B folder boxes are the sidebar's Trace Folders loader, drawn
-        # on every page above the tool list; the Viewer reads the same slots.
+    with st.container():
+        # The A/B folder boxes are on the Traces tab; the Viewer reads the
+        # same slots.  Only a problem with them draws here (the fiber counts
+        # are on the Traces tab).
         # A drop on the Viewer's own FILES panel has already reached them:
         # the Trace Folders block checks CONFIG['dropped_at'] on every page.
 
@@ -3564,13 +3765,6 @@ def page_viewer(fec=False):
         trace_server.set_dirs(dir_a or None, dir_b or None)
         for w in warn:
             st.warning(w)
-
-        na = len(trace_server.list_fibers(dir_a)) if dir_a else 0
-        nb = len(trace_server.list_fibers(dir_b)) if dir_b else 0
-        st.caption(f'A: {na} fibers · B: {nb} fibers')
-        for _k, _t in _notes:
-            if _k == 'caption' and 'both directions' in _t:
-                st.caption(_t)
 
     # If the tech arrived here by clicking a Duplicate Check pair, offer a
     # one-click route back to the report (the sidebar radio also works, but an
@@ -3741,11 +3935,11 @@ document.getElementById("vpop2").addEventListener("click", function(){
     st.markdown(
         '<style>'
         '[data-testid="stMainBlockContainer"]'
-        '{padding:3.75rem 0.75rem 0.75rem 0.75rem;max-width:none}'
+        f'{{padding:{NAV_HEIGHT_PX}px 0.75rem 0.75rem 0.75rem !important;max-width:none}}'
         '[data-testid="stElementContainer"]:has(> iframe[src^="'
         f'http://127.0.0.1:{port}/"])'
-        '{height:max(560px, calc(100vh - 4.5rem)) !important;'
-        'flex:0 0 max(560px, calc(100vh - 4.5rem)) !important}'
+        f'{{height:max(560px, calc(100vh - {NAV_HEIGHT_PX}px - 2rem)) !important;'
+        f'flex:0 0 max(560px, calc(100vh - {NAV_HEIGHT_PX}px - 2rem)) !important}}'
         '</style>', unsafe_allow_html=True)
     st_iframe(f'http://127.0.0.1:{port}/?{urlencode(q)}', height=760, scrolling=False)
 
@@ -3792,7 +3986,7 @@ def page_duplicate_check():
         st.caption('Traces: ' + ('the A and B folders' if _pa and _pb
                                  and folder not in (_pa, _pb)
                                  else f"the {'A' if folder == _pa else 'B'} folder")
-                   + ' loaded in the left panel.')
+                   + ' loaded on the Traces tab.')
         if _renamed:
             st.caption(_renamed_note(_renamed))
     else:
@@ -6584,7 +6778,7 @@ def _sr_span_inputs(span):
         dir_a, dir_b = _panel
         mode = None
         if dir_a and dir_b:
-            st.caption('Traces: the A and B folders loaded in the left panel.')
+            st.caption('Traces: the A and B folders loaded on the Traces tab.')
         else:
             st.caption(f"Traces: only the {'A' if dir_a else 'B'} folder is "
                        f"loaded in the left panel. Load the "
@@ -6617,7 +6811,7 @@ def _sr_span_inputs(span):
                 if _d:
                     st.code(_d, language=None)
                 else:
-                    st.caption('Pick it under **Trace Folders** in the sidebar.')
+                    st.caption('Pick it on the **Traces** tab.')
     elif mode == two:
         _seed_box(k_a)
         _seed_box(k_b)
@@ -7718,7 +7912,7 @@ def page_unidirectional():
             folder = _pa or _pb
         _uni_pside = 'a' if folder == _pa else 'b'
         st.caption(f"Traces: the {'A' if folder == _pa else 'B'} folder loaded "
-                   'in the left panel.')
+                   'on the Traces tab.')
     else:
         c1, c2 = st.columns([1, 2])
         with c1:
@@ -8459,7 +8653,9 @@ if page != 'Viewer':
     # drop (see page_viewer) has nothing left to keep.
     st.session_state.pop('_viewer_drop_q', None)
 try:
-    if page == 'Viewer':
+    if page == 'Traces':
+        page_traces()
+    elif page == 'Viewer':
         page_viewer()
     elif page == 'Splice Report':
         page_splice_report()
@@ -8480,51 +8676,8 @@ except Exception as _exc:
     raise
 _after_page(page)
 
-# ─── Sidebar footer: build identity + one-click update ────────────────────
-# Rendered LAST so it sits at the bottom of the sidebar, below any page-
-# specific widgets.  "app build N (date)" identifies the frozen exe (CI stamp);
-# "engine: ..." identifies the code the launcher chose at boot (bundled vs a
-# verified signed update) — so the boss can confirm a tech runs the latest of
-# BOTH.  Dev runs collapse to a plain "dev".
-# Light / Dark switch, on every page, above the build line.
-_render_theme_control(st.sidebar)
-_appv, _engv = _app_version(), _engine_version()
-if _appv == 'dev' and _engv == 'dev':
-    st.sidebar.caption('OTDR Suite · dev'.replace('OTDR Suite', PRODUCT_NAME))
-else:
-    st.sidebar.caption(f'OTDR Suite · app {_appv} · engine: {_engv}'
-                       .replace('OTDR Suite', PRODUCT_NAME))
-
-
-if st.sidebar.button('🔄 Check for Updates', key='upd_check',
-                     use_container_width=True):
-    st.session_state['upd_latest'] = _latest_manifest_version()
-    st.session_state['upd_checked'] = True
-if st.session_state.get('upd_checked'):
-    _latest = st.session_state.get('upd_latest')
-    _cur = _parse_engine_version(_appv, _engv)
-    if _latest is None:
-        st.sidebar.warning('Could not reach the update server. Check the '
-                           'connection and try again.')
-    elif _cur is not None and _latest <= _cur:
-        st.sidebar.success(f'Up to date: engine {_cur} is the latest.')
-    elif _cur is None:
-        st.sidebar.info(f'Latest published update: {_latest} · running: dev '
-                        'checkout (updates apply to installed builds only).')
-    else:
-        st.sidebar.info(f'Update {_latest} is available (running {_cur}).')
-        if _cache_pinned():
-            _render_cache_pinned_notice(sidebar=True)
-        elif _needs_install():
-            _render_install_notice(_latest, _cur, sidebar=True)
-        elif getattr(sys, 'frozen', False):
-            if st.sidebar.button('⬇ Update & Restart Now', key='upd_restart',
-                                 type='primary', use_container_width=True):
-                if _relaunch_and_exit():
-                    _render_restart_watchdog(sidebar=True)
-        else:
-            st.sidebar.caption('Restart the app to apply. Updates install '
-                               'at launch.')
+# The build line, the update check and the Theme switch are in the top bar
+# now (_render_top_nav).
 
 # Rollout ping: when the build identity changed since the last run (the
 # launcher applied a verified update, or a fresh install's first boot), tell
