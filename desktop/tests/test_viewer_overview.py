@@ -334,7 +334,8 @@ def test_popout_viewer_links_back_to_its_report():
     assert "'hub_url':" in src and "'hub_port': None" in src
     app = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
     assert app.count('window.top.name = "otdr_hub"') == 2, 'both pop-out buttons name the hub tab'
-    nav = app[app.index('def _handle_nav():'):][:3000]
+    _at = app.index('def _handle_nav():')
+    nav = app[_at:app.index('\ndef ', _at + 1)]      # the whole function
     assert "'uni': 'Unidirectional'" in nav and "'sr': 'Splice Report'" in nav
     assert 'srfr' not in nav
     assert "trace_server.CONFIG['hub_port']" in app
