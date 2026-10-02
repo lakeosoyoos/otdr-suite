@@ -300,4 +300,4 @@ def test_a_queued_selection_does_not_outlive_a_clear_or_the_fibers_box():
     assert 'await applyFileSelection(w);' in sel and 'reportJsError(' in sel   # one bad load does not stop the queue
     # and a pick goes with its trace before the load draws behind it
     ap = _body('applyFileSelection')
-    assert ap.index('prunePick();') < ap.index('await loadOverview(tasks);')
+    assert ap.index('prunePick();') < ap.index('await loadOverview(tasks, ld);')

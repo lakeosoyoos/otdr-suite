@@ -635,6 +635,11 @@
      both. */
   table.fr-table thead th.fr-rowlab,
   table.fr-table tfoot td.fr-rowlab { z-index: 6; }
+  /* Only the fiber column stays put sideways, in the body and the footer.
+     The P/F, λ and Dir. headers were pinned too, all at left 0, so a table
+     scrolled sideways (a report link's column, #39) showed "Dir." over the
+     fiber names.  They scroll with their columns, under the fiber header. */
+  table.fr-table thead tr:first-child > th.fr-rowlab ~ th.fr-rowlab { left: auto; z-index: 5; }
   table.fr-table tbody tr { height: 22px; }
   table.fr-table th, table.fr-table td {
     text-align: center; white-space: nowrap; border: 1px solid #c9d5e1;
@@ -654,6 +659,10 @@
   table.fr-table td.fr-hit { outline: 2px solid var(--accent); outline-offset: -2px;
                              background: #dbeaf9; transition: background .6s, outline-color .6s; }
   table.fr-table td.fr-hit.fading { background: transparent; outline-color: transparent; }
+  /* A report link's column: its header, the same way. */
+  table.fr-table th.fr-evhdr.fr-hit { outline: 2px solid var(--accent); outline-offset: -2px;
+                                      transition: outline-color .6s; }
+  table.fr-table th.fr-evhdr.fr-hit.fading { outline-color: transparent; }
   table.fr-table th.fr-evhdr:hover { background: #d4e2f2; }
   /* The visible way into the span menu: a header has no row, so it asks. */
   table.fr-table th.fr-evhdr .fr-evmenu {
@@ -1054,6 +1063,11 @@ let gHoverKey = null;                  // the trace nearest the cursor, if one i
 let gTraceClick = null;                // trace under the mouse at mousedown, until mouseup
 let gTableExport = null;               // set by the grid: {table, rows(), headExtra} for the Report
 let gExportDpr = 0;                    // the Report draws the chart at this scale; 0 = the screen's
+// A load in flight shows how far it has got, and the box shows what it asked
+// for (see beginLoad).  Each entry: {fibers, dirs, done, total}.
+const gLoadsInFlight = new Set();
+let gTableBusy = false;                // the event table waits on its server step
+let gTableGoKm = null;                 // a report link's km: the table column to scroll to
 let gBase = null;                      // the chart without its overlay (keepBase)
 let gBaseImg = null;                   // that copy's canvas, reused
 // The shared Viewer state (see pushViewerState).
@@ -2310,8 +2324,8 @@ async function loadInfo() {
   // completely plausible and is wrong by however much cable is missing.  Say
   // so wherever it is drawn (frameWarn).
   gFrameWarn = frameWarnText(nB);
-  setReadout(`A: ${gInfo.dir_a_name} (${nA} fibers)   ` +
-             `B: ${gInfo.dir_b_name} (${nB} fibers)` +
+  setReadout(`A: ${gInfo.dir_a_name} (${nA} fiber${nA === 1 ? '' : 's'})   ` +
+             `B: ${gInfo.dir_b_name} (${nB} fiber${nB === 1 ? '' : 's'})` +
              (gAnalysisMode === 'fr' ? '   ·   FastReporter analysis' : ''));
   return true;
 }
@@ -2422,10 +2436,17 @@ function placeReadout() {
   el.style.left = left + 'px';
   el.style.maxWidth = Math.max(60, box.offsetLeft - left - 10) + 'px';
 }
+// A load's progress leads the line while it runs ("Loading 312 of 864
+// traces…", then "Building the table…" while the table waits on the
+// server).  It is not a plain note: a whole span takes 40 s or more, and a
+// blank line looked like a hang.
+let gReadoutLast = ['', {}];
+function refreshReadout() { setReadout(gReadoutLast[0], gReadoutLast[1]); }
 function setReadout(s, extra = {}) {
   s = String(s || '');
+  gReadoutLast = [s, extra];
   const el = document.getElementById('readout');
-  const parts = [];
+  const parts = [[progressNote(), 'ro-prog']];
   if (READOUT_FAIL_START.test(s)) parts.push([s, 'ro-fail']);
   else {
     // A load readout ends in loadFailNote()'s ", could not load F12 A: ..."
@@ -2612,13 +2633,15 @@ async function addFibers() {
   }
   if (overview) {
     gLoadFailures = plan.gaps.slice();
-    const ok = await loadOverview(tasks);
+    const ld = beginLoad(tasks);
+    let ok;
+    try { ok = await loadOverview(tasks, ld); } finally { endLoad(ld); }
     if (epoch !== gLoadEpoch) return;  // cleared or replaced meanwhile
     syncFileMarks();                 // what the box loaded is selected in FILES
     renderChips();
     if (gAutoFit) fit();
     draw();
-    renderEventTable();
+    await buildTable();
     setReadout(`${gTraces.length} traces loaded in overview (~${OVERVIEW_PTS} pts each` +
                `, spikes preserved)` +
                (capped ? `, capped at ${MAX_TRACES}` : '') +
@@ -2627,18 +2650,22 @@ async function addFibers() {
     return;
   }
   gLoadFailures = plan.gaps.slice();
-  setReadout(`loading ${tasks.length} trace${tasks.length===1?'':'s'}…`);
+  const ld = tasks.length ? beginLoad(tasks) : null;
   // Throttle the fan-out so the single-threaded trace server stays responsive.
   const BATCH = 6;
-  for (let i = 0; i < tasks.length; i += BATCH) {
-    await Promise.all(tasks.slice(i, i + BATCH).map(t => loadOne(t.key, t.f, t.d)));
-    if (epoch !== gLoadEpoch) return;  // cleared or replaced meanwhile
-  }
+  try {
+    for (let i = 0; i < tasks.length; i += BATCH) {
+      const batch = tasks.slice(i, i + BATCH);
+      await Promise.all(batch.map(t => loadOne(t.key, t.f, t.d)));
+      loadStep(ld, batch.length);
+      if (epoch !== gLoadEpoch) return;  // cleared or replaced meanwhile
+    }
+  } finally { if (ld) endLoad(ld); }
   syncFileMarks();
   renderChips();
   if (gAutoFit) fit();
   draw();
-  renderEventTable();
+  await buildTable();
   setReadout(`${gTraces.length} trace${gTraces.length===1?'':'s'} loaded` +
              (capped ? `, capped at ${MAX_TRACES}; narrow the fiber range for more` : '') +
              loadFailNote() + absentTail);
@@ -2763,7 +2790,7 @@ const OVERVIEW_PTS = 2000;
 // Whole-cable bulk load: ONE request, decimated server-side.  Chunked so the
 // canvas fills in progressively instead of showing nothing for ~30 s while
 // 1152 SOR files are parsed on first visit to a folder.
-async function loadOverview(tasks) {
+async function loadOverview(tasks, ld = null) {
   const CHUNK = 144;                       // one ribbon-group per request
   let done = 0;
   // Every key is on its way from now on, so a second Enter or Add during
@@ -2826,7 +2853,8 @@ async function loadOverview(tasks) {
       return false;
     }
     done += slice.length;
-    setReadout(`loading ${done}/${tasks.length} traces…`);
+    if (ld) loadStep(ld, slice.length);
+    else setReadout(`loading ${done}/${tasks.length} traces…`);
     loadProgress(done, tasks.length);
     // draw() early-returns on `!gView`, and gView is null on a cold page and
     // again after Clear All.  fit() -- the only thing that fills it -- runs in
@@ -2864,6 +2892,67 @@ function loadProgress(done, total) {
   if (hint) hint.textContent = `loading ${done} of ${total} traces…`;
 }
 
+// ─── A load in flight ─────────────────────────────────────────────────
+// A whole span (864 traces both ways) used to load with a blank status line,
+// "add a trace to see events" under the chart, and a Fibers box and Dir
+// buttons that followed the chunks as they landed: "1-144", "1-288", A→,
+// and only then the full range and A + B.  While a load runs the line counts
+// it, the hint says it is loading (loadProgress counts there too), and the
+// box and the buttons show what was asked for (what is loaded plus what is
+// on its way).  A new load epoch (Clear All, a new FILES selection) drops
+// the older loads' asks with their keys (newLoadEpoch).  `tasks` are {f, d}.
+function beginLoad(tasks) {
+  const ld = { fibers: new Set(tasks.map(t => t.f)), dirs: new Set(tasks.map(t => t.d)),
+               done: 0, total: tasks.length };
+  gLoadsInFlight.add(ld);
+  const hint = document.getElementById('event-hint');
+  if (hint && !gTraces.some(t => t.visible)) hint.textContent = 'loading traces…';
+  syncFiberBox();
+  refreshReadout();
+  return ld;
+}
+// The status line's count (progressNote); the event panel's hint counts
+// too (loadProgress).
+function loadStep(ld, n) {
+  ld.done = Math.min(ld.total, ld.done + n);
+  refreshReadout();
+}
+function endLoad(ld) {
+  gLoadsInFlight.delete(ld);
+  refreshReadout();
+}
+function progressNote() {
+  if (gLoadsInFlight.size) {
+    let done = 0, total = 0;
+    for (const ld of gLoadsInFlight) { done += ld.done; total += ld.total; }
+    return `Loading ${done} of ${total} trace${total === 1 ? '' : 's'}…`;
+  }
+  return gTableBusy ? 'Building the table…' : '';
+}
+// The table step, said before it starts: the line paints "Building the
+// table…" first (a frame, or 50 ms in a hidden tab, where frames stop), then
+// the table is built.  A table that waits on the server keeps the line up
+// until it paints (tableSettled).
+async function buildTable() {
+  gTableBusy = true;
+  refreshReadout();
+  await new Promise(res => {
+    let done = false;
+    const go = () => { if (!done) { done = true; res(); } };
+    requestAnimationFrame(() => setTimeout(go, 0));
+    setTimeout(go, 50);
+  });
+  renderEventTable();
+}
+function tableSettled() {
+  if (gTableBusy) { gTableBusy = false; refreshReadout(); }
+  tableGoKm();
+}
+function tableStepEnd(wasBusy) {
+  if (gTableBusy !== wasBusy) refreshReadout();
+  if (!gTableBusy) tableGoKm();
+}
+
 let gLoadFailures = [];            // per-addFibers() failure notes for the readout
 // The traces being fetched right now.  A load plans what is missing and then
 // awaits its fetches, so a second Add (a double-click, Enter then Add) used to
@@ -2884,6 +2973,7 @@ let gLoadEpoch = 0;
 function newLoadEpoch() {
   gLoadEpoch++;
   gLoadingKeys.clear();
+  gLoadsInFlight.clear();            // their asks no longer count (syncFiberBox)
 }
 // fetch() that retries a THROWN fetch (connection refused/reset: "Failed to
 // fetch") a few times with a short backoff.  An HTTP error is an answer from
@@ -3010,8 +3100,13 @@ async function putBackRemovedFiles() {
   // refused at MAX_DETAIL_TRACES, so they come back as overview traces.
   if (gTraces.length) {
     const tasks = keys.map(key => { const [d, f] = splitFileKey(key); return { key, f, d }; });
-    if (gTraces.length + tasks.length > MAX_DETAIL_TRACES) await loadOverview(tasks);
-    else for (const t of tasks) await loadOne(t.key, t.f, t.d);
+    // Counted on the status line like any other load, and the Fibers box
+    // and Dir buttons show what is coming back from the start (beginLoad).
+    const ld = beginLoad(tasks);
+    try {
+      if (gTraces.length + tasks.length > MAX_DETAIL_TRACES) await loadOverview(tasks, ld);
+      else for (const t of tasks) { await loadOne(t.key, t.f, t.d); loadStep(ld, 1); }
+    } finally { endLoad(ld); }
     syncFileMarks();
     renderChips();
     if (gAutoFit) fit();
@@ -3160,14 +3255,21 @@ async function applyViewerState(s, keysToo = true) {
 function syncFiberBox() {
   const box = document.getElementById('fiber-input');
   if (document.activeElement === box) return;
-  // Nor while a load is landing: the first chunk is A's alone, and the box
-  // read "1-144" with the Dir on "A →", so a Clear All there left the next
-  // load to fetch A only (audit 2026-10-01).  The load syncs both when it
-  // settles.
-  if (gLoadingKeys.size) return;
-  box.value = fiberRangeText(gTraces.map(t => t.fiber));
-  if (!gTraces.length) return;
+  // While a load runs, what it asked for counts as loaded (see beginLoad):
+  // the box and the buttons say where the load is going from the start.
+  const fibers = gTraces.map(t => t.fiber);
   const dirs = new Set(gTraces.map(t => t.src || t.dir));
+  for (const ld of gLoadsInFlight) {
+    fibers.push(...ld.fibers);
+    ld.dirs.forEach(d => dirs.add(d));
+  }
+  // A load landing that did not say what it asked for (no beginLoad) is
+  // waited for: the first chunk is A's alone, and the box read "1-144" with
+  // the Dir on "A →", so a Clear All there left the next load to fetch A
+  // only (audit 2026-10-01).  The load syncs both when it settles.
+  if (gLoadingKeys.size && !gLoadsInFlight.size) return;
+  box.value = fiberRangeText(fibers);
+  if (!dirs.size) return;
   setAddDir(dirs.size === 1 ? [...dirs][0] : 'both');
 }
 
@@ -3509,13 +3611,13 @@ function renderFibersView(list, esc) {
       + ` data-fkey="${r.fiber}">`
       + `<span class="file-vis"${t ? ` style="color:${t.color};text-shadow:0 0 1px #333"` : ''}>${t ? '●' : ''}</span>`
       + `<span class="file-num">${r.fiber}</span>`
-      + `<span title="${esc(r.a.join(', '))}">${esc(r.a.join(', ') || '-')}</span>`
-      + `<span title="${esc(r.b.join(', '))}">${esc(r.b.join(', ') || '-')}</span>`
+      + `<span title="${esc(r.a.join(', '))}">${esc(r.a.join(', ') || '---')}</span>`
+      + `<span title="${esc(r.b.join(', '))}">${esc(r.b.join(', ') || '---')}</span>`
       + `<span class="fib-pair${pair.ok ? '' : ' bad'}" title="${why}">${pair.text}</span></div>`;
   }).join('') : '<span id="chip-empty">no folders loaded</span>';
   const full = rows.filter(r => fiberState(r) === 'selected').length;
   document.getElementById('files-count').textContent =
-    rows.length ? `${full} of ${rows.length} fibers selected` : '';
+    rows.length ? `${full} of ${rows.length} fiber${rows.length === 1 ? '' : 's'} selected` : '';
 }
 
 // Select these fibres' files, in place of the selection.
@@ -4276,21 +4378,25 @@ async function applyFileSelection(want) {
   const capped = tasks.length > room;
   tasks = tasks.slice(0, room);
   gLoadFailures = [];
-  if (tasks.length) setReadout(`loading ${tasks.length} trace${tasks.length === 1 ? '' : 's'}…`);
-  if (overview) {
-    await loadOverview(tasks);
-  } else {
-    for (let i = 0; i < tasks.length; i += 6) {
-      await Promise.all(tasks.slice(i, i + 6).map(x => loadOne(x.key, x.f, x.d)));
-      if (epoch !== gLoadEpoch) break;
+  const ld = tasks.length ? beginLoad(tasks) : null;
+  try {
+    if (overview) {
+      await loadOverview(tasks, ld);
+    } else {
+      for (let i = 0; i < tasks.length; i += 6) {
+        const batch = tasks.slice(i, i + 6);
+        await Promise.all(batch.map(x => loadOne(x.key, x.f, x.d)));
+        loadStep(ld, batch.length);
+        if (epoch !== gLoadEpoch) break;
+      }
     }
-  }
+  } finally { if (ld) endLoad(ld); }
   if (epoch !== gLoadEpoch) return;   // cleared or replaced meanwhile
   syncFileMarks();                    // what the cap cut off is not selected
   renderChips();
   if (gAutoFit || drop.length) fit();
   draw();
-  renderEventTable();
+  await buildTable();
   setReadout(`${gTraces.length} trace${gTraces.length === 1 ? '' : 's'} loaded`
     + (overview ? ` in overview (~${OVERVIEW_PTS} pts each, spikes preserved)` : '')
     + (capped ? `, capped at ${MAX}` : '')
@@ -4614,7 +4720,7 @@ function updateMarkerReadout() {
   // A and B read from the axis zero (A's first event).  The gap between them
   // is a length, so it is never shifted.
   const z = axisZeroKm();
-  const at = v => (v == null ? '-' : dist(v - z));
+  const at = v => (v == null ? '---' : dist(v - z));
   let html = `<div><span class="mr-a">A</span>: ${at(a)}` +
              ` &nbsp; <span class="mr-b">B</span>: ${at(b)}</div>`;
 
@@ -4633,7 +4739,7 @@ function updateMarkerReadout() {
       for (const { t } of cap.shown) {
         const va = traceDbAtDispKm(t, a);
         const vb = traceDbAtDispKm(t, b);
-        let dloss = '-', slope = '-';
+        let dloss = '---', slope = '---';
         if (va != null && vb != null) {
           // Signal descends with loss; loss over the span (upstream→downstream).
           // A mirrored B runs right to left on the chart, so its upstream end
@@ -4646,13 +4752,13 @@ function updateMarkerReadout() {
             ? (isFlipped(t) ? vhi - vlo : vlo - vhi) : null;
           if (d != null) {
             dloss = d.toFixed(3);
-            slope = dkm > 1e-6 ? (d / dkm).toFixed(3) : '-';
+            slope = dkm > 1e-6 ? (d / dkm).toFixed(3) : '---';
           }
         }
         const arrow = t.dir === 'a' ? 'A→B' : 'B→A';
         html += `<tr><td><span style="color:${t.color};text-shadow:0 0 1px #333">■</span> F${t.fiber} ${arrow}</td>` +
-                `<td>${va == null ? '-' : va.toFixed(3)}</td>` +
-                `<td>${vb == null ? '-' : vb.toFixed(3)}</td>` +
+                `<td>${va == null ? '---' : va.toFixed(3)}</td>` +
+                `<td>${vb == null ? '---' : vb.toFixed(3)}</td>` +
                 `<td>${dloss}</td><td>${slope}</td></tr>`;
       }
       if (cap.more) html += `<tr><td colspan="5" class="hint">+${cap.more} more traces</td></tr>`;
@@ -5419,6 +5525,44 @@ function gridGoCell(g, fi, which, col, opts = {}) {
   setTimeout(() => td.classList.add('fading'), 1500);
   setTimeout(() => td.classList.remove('fr-hit', 'fading'), 2200);
 }
+// A report link (?fiber=354&km=44.099, a report cell click) zoomed the chart
+// to the event and left the table on its first column.  Once the table is up,
+// it goes to the column whose event is nearest the km (within half a km, in
+// the chart's frame, as the headers' own zoom clicks are), brings that
+// fiber's row into view when others are loaded too, and flashes the header.
+const TABLE_GO_TOL_KM = 0.5;
+function tableGoKm() {
+  const go = gTableGoKm;
+  if (!go) return;
+  gTableGoKm = null;
+  const host = document.getElementById('event-tbody-wrap');
+  const heads = host ? [...host.querySelectorAll('th.fr-evhdr[data-km]')] : [];
+  let th = null, best = TABLE_GO_TOL_KM;
+  for (const h of heads) {
+    const d = Math.abs(+h.dataset.km - go.km);
+    if (d <= best) { best = d; th = h; }
+  }
+  if (!th) return;
+  if (new Set(gTraces.map(t => t.fiber)).size > 1 && gGridGoTo) {
+    const t = gTraces.find(x => x.visible && x.fiber === go.fiber);
+    if (t) gGridGoTo(t, null);
+  }
+  const scroller = th.closest('table') && th.closest('table').parentElement;
+  if (!scroller) return;
+  // The fiber column stays put and covers the left edge.
+  const sr = scroller.getBoundingClientRect(), cr = th.getBoundingClientRect();
+  const lab = th.closest('thead').querySelector('th.fr-rowlab');
+  const leadR = lab ? Math.max(sr.left, lab.getBoundingClientRect().right) : sr.left;
+  if (cr.left < leadR + 8 || cr.right > sr.right - 8) {
+    // centered in what the labels leave
+    scroller.scrollLeft += (cr.left + cr.right) / 2 - (leadR + sr.right) / 2;
+  }
+  th.classList.remove('fr-hit', 'fading');
+  th.classList.add('fr-hit');
+  setTimeout(() => th.classList.add('fading'), 1500);
+  setTimeout(() => th.classList.remove('fr-hit', 'fading'), 2200);
+}
+
 // The two A+B tables' Minimum and Maximum cells, like the one-direction
 // table's (#274): the number is one fibre's, so a click picks that row (the
 // Average row for a loss, the direction's row for a reflectance), centres it,
@@ -5882,6 +6026,12 @@ function frameWarnText(nB) {
     : '';
 }
 function renderEventTable() {
+  // Busy again below only when the mode's table waits on the server; the
+  // other tables are built by the time this returns, and the status line
+  // and a report link's column follow just after (tableStepEnd).
+  const wasBusy = gTableBusy;
+  gTableBusy = false;
+  queueMicrotask(() => tableStepEnd(wasBusy));
   const host = document.getElementById('event-tbody-wrap');
   const hint = document.getElementById('event-hint');
   host.innerHTML = '';
@@ -6493,9 +6643,9 @@ function renderVirtualEventList(rows, host) {
         `<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${r.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${r.fiber} ${r.arrow}</td>` +
         `<td>${r.num}</td>` +
         `<td>${kmFt(r.km)}</td>` +
-        `<td>${r.loss == null ? '-' : r.loss.toFixed(3)}</td>` +
-        `<td>${r.refl == null ? '-' : r.refl.toFixed(2)}</td>` +
-        `<td>${r.slope == null ? '-' : r.slope.toFixed(3)}</td>` +
+        `<td>${r.loss == null ? '---' : r.loss.toFixed(3)}</td>` +
+        `<td>${r.refl == null ? '---' : r.refl.toFixed(2)}</td>` +
+        `<td>${r.slope == null ? '---' : r.slope.toFixed(3)}</td>` +
         `<td>${r.isEnd ? 'END' : (r.isRefl ? 'reflective' : 'non-refl')}</td>`;
       tb.appendChild(tr);
     }
@@ -6791,9 +6941,10 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     gShowGainers ? '' : 'gainers hidden',
   ].filter(Boolean).join(' · ');
 
-  const fmt  = v => (v == null || isNaN(v)) ? '-' : v.toFixed(3);
-  const fmtK = v => (v == null || isNaN(v)) ? '-' : v.toFixed(4);
-  const fmtR = v => (v == null || isNaN(v) || v === 0) ? '-' : v.toFixed(1);
+  // An empty cell is '---', as in the A+B tables and FastReporter's own.
+  const fmt  = v => (v == null || isNaN(v)) ? '---' : v.toFixed(3);
+  const fmtK = v => (v == null || isNaN(v)) ? '---' : v.toFixed(4);
+  const fmtR = v => (v == null || isNaN(v) || v === 0) ? '---' : v.toFixed(1);
   const lossCell = (v, isBreak, attrs = '') => {
     let cls = '';
     if (v != null && !isNaN(v)) {
@@ -6995,7 +7146,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
       `<td class="${pfClass(fail)}" title="following `
       + `${gateLabel()}, this is OUR verdict, not FastReporter's`
       + `">${pfMark(fail)}</td>`,
-      `<td>${t.data.wavelength_nm || '-'}</td>`,
+      `<td>${t.data.wavelength_nm || '---'}</td>`,
       `<td>${arrow(t)}</td>`,
     ];
     cols.forEach((c, i) => {
@@ -7013,9 +7164,9 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
                + `<td>${cellText(fmtR(e ? e.reflection : null))}</td>`);
       if (showSec && i < cols.length - 1) {
         const s = section(ti, i);
-        cells.push(`<td class="fr-sec">${cellText(s ? fmtK(s.len) : '-')}</td>`
-                 + `<td class="fr-sec">${cellText(s ? fmt(s.loss) : '-')}</td>`
-                 + `<td class="fr-sec">${cellText(s ? fmt(s.att) : '-')}</td>`);
+        cells.push(`<td class="fr-sec">${cellText(s ? fmtK(s.len) : '---')}</td>`
+                 + `<td class="fr-sec">${cellText(s ? fmt(s.loss) : '---')}</td>`
+                 + `<td class="fr-sec">${cellText(s ? fmt(s.att) : '---')}</td>`);
       }
     });
     const statArrs = [splice, connLoss, connRefl];
@@ -7073,7 +7224,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
       // `isBreak` is false here — evLoss already drops End-of-Fiber events, so
       // an aggregate is never a break.
       // Reflectance down the column too, over every reading the column prints
-      // (fmtR prints a 0 as "-", so a 0 is no reading here either).  Plain:
+      // (fmtR prints a 0 as "---", so a 0 is no reading here either).  Plain:
       // the reflectance verdict is per trace, never on a summary.
       const rs = c.ev.map(e => e ? e.reflection : null).filter(r => r != null && !isNaN(r) && r !== 0);
       const r = rs.length ? fn(rs) : null;
@@ -7090,7 +7241,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
         const ss = traces.map((_t, ti) => section(ti, i)).filter(Boolean);
         const pick = k => ss.map(s => s[k]).filter(v => v != null && !isNaN(v));
         const [pl, pa] = [pick('loss'), pick('att')];
-        cells.push(`<td class="fr-sec">${cellText('-')}</td>`
+        cells.push(`<td class="fr-sec">${cellText('---')}</td>`
                  + `<td class="fr-sec">${cellText(fmt(pl.length ? fn(pl) : null))}</td>`
                  + `<td class="fr-sec">${cellText(fmt(pa.length ? fn(pa) : null))}</td>`);
       }
@@ -7376,12 +7527,17 @@ function renderFrBidiGrid(traces, host, hint) {
   }
   if (!pairs.length) return false;
   const seq = ++gFrTableSeq;
+  gTableBusy = true;                       // "Building the table…" until it paints
   hint.textContent = `FastReporter table: reading ${pairs.length} fiber pair${pairs.length === 1 ? '' : 's'}…`;
   fetch(`/api/fr_table?fibers=${pairs.map(p => p.fiber).join(',')}`)
     .then(r => r.json())
-    .then(res => { if (seq === gFrTableSeq) paintFrBidiGrid(pairs, singles, res || {}, host, hint); })
+    .then(res => {
+      if (seq !== gFrTableSeq) return;
+      try { paintFrBidiGrid(pairs, singles, res || {}, host, hint); } finally { tableSettled(); }
+    })
     .catch(e => {
       if (seq !== gFrTableSeq) return;
+      tableSettled();
       gTableKm = null; draw();             // no table: every event, as before
       hint.textContent = `FastReporter table unavailable (${(e && e.message) || 'fetch failed'})`;
     });
@@ -8079,6 +8235,7 @@ function renderSuiteBidiGrid(traces, host, hint) {
     singles.length = 0;
   }
   const seq = ++gSuiteTableSeq;
+  gTableBusy = true;                       // "Building the table…" until it paints
   hint.textContent = oneDir
     ? `${PRODUCT_NAME} table: reading ${pairs.length} fiber${pairs.length === 1 ? '' : 's'} from one direction…`
     : `${PRODUCT_NAME} table: reading ${pairs.length} fiber pair${pairs.length === 1 ? '' : 's'}…`;
@@ -8092,6 +8249,7 @@ function renderSuiteBidiGrid(traces, host, hint) {
       + `${esc(why)}. The traces and their own events still show above; `
       + `switch to FastReporter mode for FastReporter's table.</div>`;
     hint.textContent = `${PRODUCT_NAME} table unavailable`;
+    tableSettled();
   };
   const ask = () => fetch(`/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`)
     .then(r => r.json())
@@ -8109,7 +8267,7 @@ function renderSuiteBidiGrid(traces, host, hint) {
         noTable(res.error || 'The report has no table for these fibers');
         return;
       }
-      paintSuiteBidiGrid(pairs, singles, res, host, hint);
+      try { paintSuiteBidiGrid(pairs, singles, res, host, hint); } finally { tableSettled(); }
     })
     .catch(e => {
       if (seq !== gSuiteTableSeq) return;
@@ -10775,10 +10933,17 @@ async function applyTarget(t) {
     if (t.replace) clearAll();
     document.getElementById('fiber-input').value = String(fiber);
     setAddDir(t.dir || 'both');
+    gTableGoKm = null;               // not the last link's column
     await addFibers();
     const km = parseFloat(t.km);
-    // FEC links point at a panel connector on a 5 km shot: zoom in close.
-    if (!isNaN(km)) zoomToKm(linkDispKm(km, t.src, t.dir || 'both', fiber), gFecMode ? 0.3 : 2.5);
+    if (!isNaN(km)) {
+      // FEC links point at a panel connector on a 5 km shot: zoom in close.
+      zoomToKm(linkDispKm(km, t.src, t.dir || 'both', fiber), gFecMode ? 0.3 : 2.5);
+      // The table goes to the same event: its column, now or when the
+      // table paints (a table from the server lands after this).
+      gTableGoKm = { km: linkDispKm(km, t.src, t.dir || 'both', fiber), fiber: +fiber };
+      if (!gTableBusy) tableGoKm();
+    }
     return;
   }
   await autoloadDefault();

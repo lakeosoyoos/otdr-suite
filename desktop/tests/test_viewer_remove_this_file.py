@@ -71,10 +71,15 @@ function fileAfterRemove(keys, removed) {
 function selectAfterRemove(next) { if (next && !gSelectedFiles.size) nexts.push(next); }
 function renderChips() {} function fit() {} function draw() {} function renderEventTable() {}
 function unloadEmptiedSides() {} function setReadout(t) { readout = t; }
-async function loadOverview(tasks) {
+async function loadOverview(tasks, ld) {
   tasks.forEach(function (t) { overview.push(t.key); gTraces.push({ key: t.key, fiber: t.f }); });
+  if (ld) loadStep(ld, tasks.length);
   return true;
 }
+var loads = [];
+function beginLoad(tasks) { var ld = { done: 0, total: tasks.length, ended: false }; loads.push(ld); return ld; }
+function loadStep(ld, n) { ld.done = Math.min(ld.total, ld.done + n); }
+function endLoad(ld) { ld.ended = true; }
 async function loadOne(key, f) { gTraces.push({ key: key, fiber: f }); }
 function fibersOnChart() {
   var s = {}; gTraces.forEach(function (t) { s[t.fiber] = 1; }); return Object.keys(s).length;
@@ -93,6 +98,7 @@ _CASES = r"""
   out.again = gTraces.length;
   await putBackRemovedFiles();
   out.back = [gTraces.length, gRemovedFiles.size, overview.sort(), readout];
+  out.backLoads = loads.map(function (ld) { return [ld.done, ld.total, ld.ended]; });
   // the last file on the chart: FastReporter's next file
   gTraces = [{ key: 'a-5', fiber: 5 }]; syncFileMarks(); nexts = [];
   removeOnly(['a-5'], 'F5 A→B');
@@ -133,6 +139,13 @@ def test_put_back_returns_them_to_the_chart_next_to_a_whole_cable(res):
     assert n == 864 and removed == 0
     assert overview == ['a-200', 'a-300', 'b-300']
     assert 'put back in the list, the chart and the reports' in readout
+
+
+@needs_jsc
+def test_put_back_is_counted_like_any_other_load(res):
+    """The put-back shows on the status line and in the Fibers box while it
+    loads (beginLoad), as an Add does, and the count ends when it lands."""
+    assert res['backLoads'] == [[3, 3, True]]
 
 
 @needs_jsc

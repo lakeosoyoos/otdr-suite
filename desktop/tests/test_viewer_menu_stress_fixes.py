@@ -99,6 +99,10 @@ function traceColor() { return 0; }
 function dataBounds() { return null; }
 function syncFileMarks() {} function renderChips() {} function fit() {} function draw() {}
 function renderEventTable() {} function setReadout() {} function clearFileSelection() {}
+// The status line's count (viewer/polish-load-and-slips): not what these cases check.
+var gLoadsInFlight = new Set();
+function beginLoad() { return {}; } function loadStep() {} function endLoad() {}
+async function buildTable() { renderEventTable(); }
 """
 
 _LOAD_CASES = r"""
@@ -220,8 +224,12 @@ def test_chart_keys_wait_behind_the_summary_report():
 
 
 def test_box_and_dir_wait_for_the_load_to_settle():
+    # A load that says what it asked for (beginLoad) shows that from the
+    # start; any other landing load is waited for.  A new epoch drops the
+    # older loads' asks, so a Clear All mid-load leaves nothing of them.
     f = _js_func('syncFiberBox')
-    assert f.index('if (gLoadingKeys.size) return;') < f.index('setAddDir(')
+    assert f.index('if (gLoadingKeys.size && !gLoadsInFlight.size) return;') < f.index('setAddDir(')
+    assert 'gLoadsInFlight.clear();' in _js_func('newLoadEpoch')
 
 
 def test_an_empty_table_while_loading_says_loading():
