@@ -310,6 +310,8 @@ _MODE_SWITCH_CSS = (
     'box-shadow:0 0 0 2px #22c55e,0 0 8px 2px rgba(34,197,94,.55)}'
     '.st-key-analysis_mode_box .mode-off,.st-key-theme_box .mode-off{display:inline-block;'
     'padding:0 4px;text-align:center;overflow-wrap:normal;word-break:keep-all}'
+    # The name not in use picks its side when clicked (MODE_NAME_CLICK_JS).
+    '.st-key-analysis_mode_box .mode-off,.st-key-theme_box .mode-off{cursor:pointer}'
     '.st-key-analysis_mode_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child,'
     '.st-key-theme_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child'
     '{background-color:var(--otdr-accent,#2c5b8a) !important}'
@@ -2723,10 +2725,57 @@ def _install_title_keep():
         pass
 
 
+# Clicking a name beside a sidebar switch (Dark | Light, FR Mode | OTDR
+# Mode) did nothing: the names are text, and only the knob is the switch.
+# This makes a click on the name not in use click the switch, so the switch
+# itself does the rest, exactly as a click on the knob.  The switches stay
+# keyless (see _render_theme_control) and nothing new runs in Python.  One
+# listener on the page, put back by each load of this frame, which leaves
+# it working whatever Streamlit redraws.  The name's side, not a flip, picks
+# the knob's place, so a second click before the run lands does nothing.
+MODE_NAME_CLICK_JS = """
+<script>
+(function () {
+  var w; try { w = window.parent; void w.document; } catch (e) { return; }
+  var d = w.document;
+  if (w.__otdrModeNameClick) d.removeEventListener('click', w.__otdrModeNameClick);
+  w.__otdrModeNameClick = function (e) {
+    var t = e.target;
+    var name = t && t.closest && t.closest('.mode-off');
+    if (!name) return;
+    var box = name.closest('.st-key-theme_box, .st-key-analysis_mode_box');
+    var sw = box && box.querySelector('[data-testid="stCheckbox"] input[type="checkbox"]');
+    if (!sw || sw.disabled) return;
+    // The name left of the switch wants the knob left (off), the name
+    // right of it wants the knob right (on).
+    var left = !!(name.compareDocumentPosition(sw) & 4);
+    if (sw.checked === left) sw.click();
+  };
+  d.addEventListener('click', w.__otdrModeNameClick);
+})();
+</script>
+"""
+
+
+def _install_mode_name_click():
+    """Render the script above out of the page's flow, as the theme clear
+    does (best effort, never fatal)."""
+    try:
+        box = st.container(key='mode_name_click')
+        box.markdown('<style>[data-testid="stLayoutWrapper"]:has(> .st-key-mode_name_click)'
+                     '{position:absolute;width:0;height:0;overflow:hidden}</style>',
+                     unsafe_allow_html=True)
+        with box:
+            st_components_html(MODE_NAME_CLICK_JS, height=0)
+    except Exception:
+        pass
+
+
 _install_sidebar_drag_fix()
 _install_hub_drop_catch()
 _install_theme_pick_clear()
 _install_title_keep()
+_install_mode_name_click()
 
 # No "Deploy" button in the header (Robert, 2026-09-29): it is Streamlit's
 # developer menu and means nothing to a tech.  New builds turn the whole
