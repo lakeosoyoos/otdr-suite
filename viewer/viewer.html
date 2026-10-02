@@ -5963,6 +5963,14 @@ function warnFor(reflective, leg) {
   const g = gateFor(reflective, leg);
   return (w > 0 && w < g && g < GATE_OFF) ? w : null;
 }
+// A direction's own loss in the two-direction tables.  A splice is judged on
+// its Average alone (Robert 2026-10-02: the bidirectional loss box "can't flag
+// one direction of a fiber even if the loss is greater"), so its A->B / B->A
+// cells are never red or yellow for loss, whatever they read.  A connector
+// keeps its one-direction gate (the boss, 2026-09-29: "we have to see them
+// separately"), and the report's own flag on a direction still shows.
+function legGateFor(reflective) { return reflective ? gateFor(true, true) : null; }
+function legWarnFor(reflective) { return reflective ? warnFor(true, true) : null; }
 function clearsAt(loss, gate) {
   if (loss == null || isNaN(loss) || gate == null) return false;
   return Math.round(Math.abs(loss) * 1000) / 1000 >= gate - 1e-9;
@@ -7833,16 +7841,17 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const rawKm = m => Math.round(m / 1000 * 1e4) / 1e4;
 
   // ── Rows: A→B, B→A, Average per fibre ──
-  // Each row on its own, as FR judges it: the Average at the bidirectional
-  // gates, a direction row at the single-direction gates plus reflectance
-  // (FR grades reflectance per direction, never on the Average).  A launch
+  // Each row on its own: the Average at the bidirectional gates, a direction
+  // row on its reflectance (FR grades reflectance per direction, never on the
+  // Average) and a connector's loss; a splice's loss on its Average alone
+  // (see legGateFor).  A launch
   // level or a synthesised leg is not a reading and is never judged.
   const cellFails = (x, which) => {
     if (which === 'avg') return clearsAt(x.row.loss, gateFor(isRefl(x), false));
     if (legReflFails(x, which)) return true;
     const leg = x.row[which];
     if (!legOk(leg) || gainerHidden(leg.loss)) return false;
-    return clearsAt(leg.loss, gateFor(isRefl(x), true));
+    return clearsAt(leg.loss, legGateFor(isRefl(x)));
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c.ev[fi], which));
   const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));
@@ -7851,7 +7860,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     if (cellFails(x, which)) return false;
     if (which === 'avg') return clearsAt(x.row.loss, warnFor(isRefl(x), false));
     const leg = x.row[which];
-    return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, warnFor(isRefl(x), true));
+    return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, legWarnFor(isRefl(x)));
   };
   // What the cell filters keep: failures, warnings, or both.  A splice's
   // loss is judged on the Average row alone (the boss, 2026-09-29: "we only
@@ -7965,8 +7974,8 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
         cells.push(typeCell(c, leg.synthetic ? '' : kind(leg))
                  + (gainerHidden(leg.loss) ? `<td${at}></td>`
                     : lossCell(leg.loss, !legOk(leg), at,
-                               gated ? gateFor(isRefl(x), true) : null,
-                               judged ? warnFor(isRefl(x), true) : null))
+                               gated ? legGateFor(isRefl(x)) : null,
+                               judged ? legWarnFor(isRefl(x)) : null))
                  + reflCell(x, which));
       }
       if (showSec && i < cols.length - 1) {
@@ -8509,8 +8518,9 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
 
   // ── Verdicts ──
   // The report's flag first.  A loss is also judged at the report's gates,
-  // row by row: the Average at the bidirectional gate, a direction at the
-  // single-direction gate.  The two ends take the report's verdict only.
+  // row by row: the Average at the bidirectional gate, a connector's
+  // direction at its one-direction gate; a splice's direction is not judged
+  // on loss (see legGateFor).  The two ends take the report's verdict only.
   const lossFails = (c, x, which) => {
     if (which === 'avg') {
       return !!x.flag || (!c.isEnd && clearsAt(x.loss, gateFor(!!x.reflective, false)));
@@ -8522,7 +8532,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
                             && legOk(leg) && clearsAt(leg.loss, oneGate));
     }
     return !!leg.flag
-        || (!c.isEnd && legOk(leg) && clearsAt(leg.loss, gateFor(!!x.reflective, true)));
+        || (!c.isEnd && legOk(leg) && clearsAt(leg.loss, legGateFor(!!x.reflective)));
   };
   const reflFlagged = (x, which) => which !== 'avg' && !!(x[which] && x[which].flag_refl);
   const cellFails = (c, x, which) => lossFails(c, x, which) || reflFlagged(x, which);
@@ -8530,7 +8540,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     if (oneDir || c.isEnd || lossFails(c, x, which)) return false;
     if (which === 'avg') return clearsAt(x.loss, warnFor(!!x.reflective, false));
     const leg = x[which];
-    return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, warnFor(!!x.reflective, true));
+    return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, legWarnFor(!!x.reflective));
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c, c.ev[fi], which));
   const rowFails = have.map((_p, fi) => LEGS.some(w => legFails(fi, w)));
