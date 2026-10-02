@@ -133,7 +133,7 @@ def test_marker_pitch_and_stated_ior_agree():
     pitch, the input `measure_fr_exact_loss` already indexes on.  The reader
     now carries that key on every file with a proprietary block: pinned by
     the marker vote where three markers exist, and the stated-IOR pitch
-    itself where they don't (29 of the 119 fixtures, 689 of the 864 ZAYO
+    itself where they don't (29 of the 119 fixtures, 689 of the 864 432-fiber BETA span
     BETA 432 files).  Which one answers is never visible in a result: on a
     file with the vote the two agree to 5e-14 relative, which is float
     rounding in a median-of-candidates and 0.00005 ppm against the 18.58 ppm

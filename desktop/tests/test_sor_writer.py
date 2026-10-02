@@ -485,7 +485,7 @@ def test_set_identifiers_writes_both_sides_and_still_round_trips():
     """GenParams for every reader that speaks Bellcore, the proprietary stream
     for FastReporter -- one edit, both copies, one answer."""
     src = make_sor()
-    out = W.set_identifiers(src, operator='R. Colbert', customer='Lumen (edited)')
+    out = W.set_identifiers(src, operator='R. Colbert', customer='customer L (edited)')
     assert W.roundtrip_ok(out)
     assert W.read_identifiers(out)['operator'] == 'R. Colbert'
     _, bl = W.split(out)

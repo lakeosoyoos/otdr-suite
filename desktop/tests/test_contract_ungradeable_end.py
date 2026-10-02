@@ -4,7 +4,7 @@ A panel connector is normally graded on the average of its two views: the
 reading taken AT that end, and the other direction's view of the same
 connector a reel length back from its own end of fiber.  When the far side is
 patched into a recovery reel, every far reading at that end carries the reel
-with it (NCT, 2026-09-12, on span 27's Lavina end):
+with it (the prime contractor, 2026-09-12, on span 27's Lavina end):
 
     every far-end shot at Lavina terminates into the reel, which adds ~1.2 dB
     that is not in the fiber [...] Suppressing them would hide that a reshoot
@@ -18,7 +18,7 @@ There is NO per-cell third state: at an ungradeable end a connector is graded
 on its near reading and either flags or does not.  "Not gradeable" is a
 statement about the END, and it lives in the report's threshold table.
 
-The gate sits at 0.45 dB, between the two populations measured against NCT's
+The gate sits at 0.45 dB, between the two populations measured against the prime contractor's
 own published verdicts:
 
     graded bidirectionally   0.074  0.074  0.285  0.428
@@ -34,11 +34,11 @@ from conftest import SPLICEREPORT_DIR
 sys.path.insert(0, str(SPLICEREPORT_DIR))
 import splicereportmatchexfo as E  # noqa: E402
 
-IIG = "AWS / IIG MT.1085"
+CONTRACT_PROFILE = "AWS / IIG MT.1085"
 GATE = 0.45
 
 # far-minus-near medians measured on the four spans we hold, with the verdict
-# NCT's own reviews record for that end.
+# the prime contractor's own reviews record for that end.
 MEASURED = [
     ("span 25 Clyde Park", 0.074, False),
     ("span 27 Rapelje", 0.074, False),
@@ -80,7 +80,7 @@ def test_off_no_end_is_ever_ungradeable():
 
 
 def test_the_gate_separates_every_end_we_have_measured():
-    """The load-bearing test: 8 of 8 against NCT's own published verdicts."""
+    """The load-bearing test: 8 of 8 against the prime contractor's own published verdicts."""
     before = _on(GATE)
     try:
         for name, gap, ungradeable in MEASURED:
@@ -91,7 +91,7 @@ def test_the_gate_separates_every_end_we_have_measured():
 
 def test_the_margin_either_side_of_the_gate():
     """Pin how much room the gate actually has.  It is not much: if a future
-    span lands between these two numbers the rule needs NCT's own guard, not
+    span lands between these two numbers the rule needs the prime contractor's own guard, not
     a guess."""
     graded = max(g for _, g, u in MEASURED if not u)
     near_only = min(g for _, g, u in MEASURED if u)
@@ -170,9 +170,9 @@ def test_the_note_is_silent_with_the_switch_off():
 def test_profile_carries_the_switch_and_the_whitelist_allows_it():
     app = importlib.import_module('app')  # engine imported first, on purpose
     assert "PANEL_UNGRADEABLE_GAP_DB" in app._PROFILE_ENGINE_KEYS
-    assert app.CUSTOMER_PROFILES[IIG]["engine"]["PANEL_UNGRADEABLE_GAP_DB"] == 0.45
-    assert app._engine_extras_from_profile(IIG)["PANEL_UNGRADEABLE_GAP_DB"] == 0.45
+    assert app.CUSTOMER_PROFILES[CONTRACT_PROFILE]["engine"]["PANEL_UNGRADEABLE_GAP_DB"] == 0.45
+    assert app._engine_extras_from_profile(CONTRACT_PROFILE)["PANEL_UNGRADEABLE_GAP_DB"] == 0.45
     for name, prof in app.CUSTOMER_PROFILES.items():
-        if name == IIG:
+        if name == CONTRACT_PROFILE:
             continue
         assert "PANEL_UNGRADEABLE_GAP_DB" not in (prof.get("engine") or {}), name

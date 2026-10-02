@@ -5,10 +5,10 @@ The Viewer deliberately does not retype the engine's numbers — it reads them,
 so that a cell flagged in the grid is flagged in the Viewer and vice versa.
 It read them out of `splicereportmatchexfo.py`'s SOURCE, which is a half-truth:
 app.py's CUSTOMER_PROFILES rewrite those same constants per customer by pushing
-`--overrides` into the engine subprocess (Zayo 0.100, AWS / IIG 0.200), and
+`--overrides` into the engine subprocess (customer Z 0.100, the contract profile 0.200), and
 a source parse cannot see a value that only exists at run time in another
 process.  So the Viewer judged every run at 0.160 whatever the report
-did.  Under IIG that is a 40 mdB band — 0.160 up to 0.200 — where a cell the
+did.  Under the contract profile that is a 40 mdB band — 0.160 up to 0.200 — where a cell the
 report left clean reads as over-threshold in the Viewer.
 
 The gates travel as an `thresholds` block on the run's own manifest, and three
@@ -36,7 +36,7 @@ from conftest import (
     FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, REPO_ROOT,
 )
 
-IIG = "AWS / IIG MT.1085"
+CONTRACT_PROFILE = "AWS / IIG MT.1085"
 TS = import_trace_server()
 
 
@@ -99,7 +99,7 @@ def test_the_manifest_reports_the_applied_gate_not_the_requested_one(tmp_path):
 
 # ── 2. The Viewer follows the run, and falls back when there is none ─────
 def test_viewer_gate_follows_the_pushed_run():
-    """The bug, in one assertion: a run that graded at IIG's 0.200 must make
+    """The bug, in one assertion: a run that graded at the contract profile's 0.200 must make
     the Viewer grade at 0.200."""
     _push({"REBURN_THRESHOLD": 0.200,
                        "UNI_BEND_THRESHOLD": 0.250,
@@ -108,7 +108,7 @@ def test_viewer_gate_follows_the_pushed_run():
 
 
 def test_the_forty_millibel_disagreement_band_is_closed():
-    """0.17 dB under IIG: unflagged in the report (0.200 gate), and the
+    """0.17 dB under the contract profile: unflagged in the report (0.200 gate), and the
     Viewer used to call it over threshold at 0.160.  Walk the band and
     require the two verdicts to agree at every step."""
     _push({"REBURN_THRESHOLD": 0.200})
@@ -117,7 +117,7 @@ def test_the_forty_millibel_disagreement_band_is_closed():
         loss = mdb / 1000.0
         # The engine gates on the value it PRINTS (round-then-test); the
         # Viewer's clearsGate() does the same, so compare that way here.
-        assert round(loss, 3) < gate, f"{loss:.3f} dB must stay clean under IIG"
+        assert round(loss, 3) < gate, f"{loss:.3f} dB must stay clean under the contract profile"
     assert round(0.200, 3) >= gate, "0.200 itself still flags"
 
 
@@ -158,9 +158,9 @@ def test_an_unusable_pushed_gate_falls_back_rather_than_flagging_everything():
 # ── 3. End to end: the report's own manifest drives the Viewer ───────────
 def test_report_manifest_drives_the_viewer_gate(tmp_path):
     """The whole path in one test, minus the Streamlit line: run the engine
-    under the IIG contract threshold, hand its manifest to the trace server
+    under the contract threshold, hand its manifest to the trace server
     the way the report grid does, and read the gate the Viewer is served."""
-    ov = {"REBURN_THRESHOLD": 0.200}               # IIG's bidir splice loss
+    ov = {"REBURN_THRESHOLD": 0.200}               # the contract profile's bidir splice loss
     rc, man, err = run_splicereport(
         FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, tmp_path / "r.xlsx",
         overrides=ov)
@@ -213,8 +213,8 @@ def test_both_report_grids_push_their_gates():
         assert "set_thresholds" in s[i:i + 900], anchor
 
 
-def test_the_iig_profile_reaches_the_viewer(tmp_path):
-    """The reported bug, end to end and with nothing hand-typed: take the IIG
+def test_the_contract_profile_reaches_the_viewer(tmp_path):
+    """The reported bug, end to end and with nothing hand-typed: take the contract profile
     profile's overrides the way the hub builds them for a real run, run the
     engine with exactly those, and require the gate the Viewer is served to
     equal the gate the profile asked for.
@@ -225,11 +225,11 @@ def test_the_iig_profile_reaches_the_viewer(tmp_path):
     """
     import app as hub
 
-    ov = hub._overrides_from_settings(hub._otdr_settings_from_profile(IIG))
+    ov = hub._overrides_from_settings(hub._otdr_settings_from_profile(CONTRACT_PROFILE))
     want = ov["REBURN_THRESHOLD"]
     assert want != TS._source_thresholds()["reburn"] if hasattr(
         TS, "_source_thresholds") else True, (
-        "IIG must differ from the baseline or this test proves nothing")
+        "the contract profile must differ from the baseline or this test proves nothing")
 
     rc, man, err = run_splicereport(
         FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, tmp_path / "r.xlsx",
