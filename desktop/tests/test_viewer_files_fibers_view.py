@@ -115,7 +115,8 @@ def test_a_fibre_is_selected_when_all_its_files_are(rules):
 
 def test_the_tabs_along_the_foot_and_their_memory():
     assert ('<div id="files-tabs"><button data-view="files" class="active">Files</button>'
-            '<button data-view="fibers">Fibers</button></div>') in SRC
+            '<button data-view="fibers">Fibers</button>'
+            '<button data-view="meas" hidden') in SRC        # Measurements: a dropped .olts
     assert "localStorage.getItem('otdr_viewer_files_tab') === 'fibers'" in SRC
     tabs = SRC.split("document.getElementById('files-tabs').addEventListener('click', (ev) => {", 1)[1].split('\n});', 1)[0]
     assert "localStorage.setItem('otdr_viewer_files_tab', gFilesView);" in tabs
@@ -155,7 +156,7 @@ def test_ctrl_a_select_same_and_remove_still_see_every_file_from_the_fibers_tab(
     assert "gInfo['files_' + d]" in name and '`F${f}`' in name
     # and the Files tab's arrow keys stand down while the Fibers tab has them
     kd = SRC.split("filesList.addEventListener('keydown', (ev) => {", 1)[1].split('\n});', 1)[0]
-    assert "if (gFilesView === 'fibers') return;" in kd
+    assert "if (gFilesView !== 'files') return;" in kd     # not on Fibers, nor Measurements
 
 
 def test_a_remove_on_the_fibers_tab_selects_the_whole_next_fibre():
