@@ -2936,6 +2936,133 @@ def _removed_fibers(dirs):
     return out or set()
 
 
+# A report is saved under the folders it ran on, by path only, and the session
+# keeps it until a box changes.  A folder that filled up after the run (a tech
+# copying in the rest of a span, a SharePoint folder still syncing) kept the
+# old report on screen with nothing said, in this session and in every new one
+# (2026-10-02 click audit: 24 fibers in the report, 240 in the left panel).
+# So every run records what its folders held (`_trace_files` on the result, so
+# it rides the disk cache too) and the page compares that with them now.
+_TRACE_SIG_EXTS = ('.sor', '.json', '.trc', '.bdr')
+
+
+def _trace_files_sig(folder):
+    """(signature, fibers) for the trace files in `folder` now, or None.
+
+    The signature covers every trace file's path, size and time, as
+    folder_intake.find_otdr_files lists them; `fibers` is what the left panel
+    counts (trace_server.list_fibers).  A report page asks on every rerun, so
+    only the listing is read each time (a few ms for 1152 x 2 files); the
+    sizes and times are read file by file only when the listing or a
+    folder's time moves.  On Windows the listing carries each file's size
+    and time at no extra cost (os.scandir), so a file copied over another
+    in place, which leaves the folder's time alone, is seen there too."""
+    import hashlib
+    try:
+        import folder_intake as fi
+        skip = fi.SKIP_DIRS
+    except Exception:
+        skip = {'SecretSauce_reports', '__MACOSX'}
+    try:
+        names, stamps, todo = [], [], [folder]
+        while todo:
+            d = todo.pop()
+            stamps.append((d, os.stat(d).st_mtime_ns))
+            with os.scandir(d) as it:
+                for e in it:
+                    if e.is_dir(follow_symlinks=False):
+                        if e.name not in skip:
+                            todo.append(e.path)
+                    elif e.name.startswith('.'):
+                        continue
+                    elif e.name.lower().endswith(_TRACE_SIG_EXTS):
+                        if os.name == 'nt':
+                            s = e.stat()
+                            names.append((e.path, s.st_size, s.st_mtime_ns))
+                        else:
+                            names.append((e.path,))
+        quick = (tuple(sorted(stamps)), tuple(sorted(names)))
+        cache = _rerun_caches().setdefault('trace_sig', {})
+        hit = cache.get(folder)
+        if hit and hit[0] == quick:
+            return hit[1]
+        rows = []
+        for p, *_known in quick[1]:
+            s = os.stat(p)
+            rows.append((os.path.relpath(p, folder), s.st_size, s.st_mtime_ns))
+        sig = hashlib.sha1(repr(rows).encode('utf-8')).hexdigest()[:16]
+        got = (sig, len(trace_server.list_fibers(folder)))
+        _remember(cache, folder, (quick, got))
+        return got
+    except Exception:
+        return None
+
+
+def _trace_files_record(*sides):
+    """What a run's folders hold when it starts, for its result: one
+    [folder, label, signature, fibers] per (folder, label) given."""
+    out = []
+    for folder, label in sides:
+        if folder and os.path.isdir(folder):
+            got = _trace_files_sig(folder)
+            if got:
+                out.append([folder, label, got[0], got[1]])
+    return out
+
+
+def _folders_changed_text(rec, again='Run the report again'):
+    """The line over a report whose folders changed after it ran, or None.
+
+    `rec` is the report's `_trace_files` (_trace_files_record).  A report
+    from before it was recorded has none: unknown, nothing is said.  A folder
+    that cannot be read now says nothing either."""
+    if not isinstance(rec, list):
+        return None
+    changed = []
+    for ent in rec:
+        try:
+            folder, label, sig, then = ent
+        except (TypeError, ValueError):
+            continue
+        now = _trace_files_sig(folder) if folder and os.path.isdir(folder) else None
+        if now is None or now[0] == sig:
+            continue
+        changed.append((label, then, now[1]))
+    if not changed:
+        return None
+
+    def fibers(n):
+        return f"{n} fiber{'s' if n != 1 else ''}"
+    labels = [lb for lb, _t, _n in changed if lb]
+    if len(labels) == len(changed) == 2:
+        which = f'The {labels[0]} and {labels[1]} folders'
+    elif len(labels) == len(changed) == 1:
+        which = f'The {labels[0]} folder'
+    else:
+        which = 'The folder' if len(changed) == 1 else 'The folders'
+    counted = [(lb, t, n) for lb, t, n in changed if isinstance(t, int)]
+    moved = [(lb, t, n) for lb, t, n in counted if t != n]
+    counts = ''
+    if moved and len({(t, n) for _lb, t, n in counted}) == 1:
+        _lb, t, n = moved[0]
+        counts = f' ({fibers(t)} then, {n} now)'
+    elif moved:
+        counts = ' (' + '; '.join(f'{lb}: {fibers(t)} then, {n} now'
+                                  for lb, t, n in moved) + ')'
+    grew = len(counted) == len(changed) and all(n > t for _lb, t, n in counted)
+    return (f'{which} changed since this report was made{counts}. '
+            + (f'{again} to include them.' if grew
+               else f'{again} to read the files there now.'))
+
+
+def _folders_changed_note(res, again='Run the report again'):
+    """Say over the report on screen when its folders changed after it ran.
+    Draws nothing when they did not, so that page is as it was."""
+    text = _folders_changed_text((res or {}).get('_trace_files'), again)
+    if text:
+        st.warning(text)
+
+
 def _take_panel_ss_folder(dir_a, dir_b):
     """Build (or find) the left panel's Secret Sauce folder and put it where
     the page, Clear Report and Clear Traces look for it.  Returns what
@@ -4146,6 +4273,10 @@ def page_duplicate_check():
         # What this run leaves out, for the note over its report.  Only a run
         # on the left panel's folders leaves anything out (_run_folder).
         st.session_state['ss_run_removed'] = _removed_now(_pa, _pb)
+        # ...and what the folders the tech gave hold (_folders_changed_note).
+        st.session_state['ss_run_files'] = (
+            _trace_files_record((_pa, 'A'), (_pb, 'B')) if (_pa or _pb)
+            else _trace_files_record((src_folder, None)))
         st.session_state.pop('ss_result', None)        # clear any prior result
         st.session_state.pop('ss_pairs_result', None)
         st.rerun()
@@ -4210,6 +4341,7 @@ def page_duplicate_check():
         # Stash the folder so the in-app pair links can point the viewer at it.
         manifest['_folder'] = st.session_state.pop('ss_run_folder', None) or folder
         manifest['_viewer_removed'] = st.session_state.pop('ss_run_removed', None)
+        manifest['_trace_files'] = st.session_state.pop('ss_run_files', None)
         if manifest.get('mode') == 'pairs':
             st.session_state['ss_pairs_result'] = manifest
             # Cache to disk so "← Back" from the Viewer (which reset session_state
@@ -4230,6 +4362,7 @@ def page_duplicate_check():
             st.session_state['ss_pairs_result'] = cached
     if pres and pres.get('ok') and pres.get('mode') == 'pairs':
         _viewer_removed_report_note('ss', pres, _pa, _pb, again='Run the analysis again')
+        _folders_changed_note(pres, again='Run the analysis again')
         _clear_report_button('ss')
         _render_pairs_report(pres)
         return
@@ -4244,6 +4377,7 @@ def page_duplicate_check():
             st.session_state['ss_result'] = cached
     if res and res.get('ok'):
         _viewer_removed_report_note('ss', res, _pa, _pb, again='Run the analysis again')
+        _folders_changed_note(res, again='Run the analysis again')
         _clear_report_button('ss')
         c = res.get('counts', {})
         st.success(f"Done: {c.get('sor',0)} SOR · {c.get('trc',0)} TRC · "
@@ -7397,6 +7531,9 @@ def page_splice_report():
                                                   overrides=overrides,
                                                   show=sr_show,
                                                   viewer_table=_viewer_table_path(_da, _db)),
+                          # What its folders hold, for the line over its
+                          # report when they change (_folders_changed_note).
+                          'files': _trace_files_record((_da, 'A'), (_db, 'B')),
                           # The files removed in the Viewer this run leaves
                           # out, for the note over its report.
                           'removed': _removed_now(_da, _db)})
@@ -7449,6 +7586,7 @@ def page_splice_report():
             else:
                 _rk, _dk = _sr_result_slot(_p, _run['span'])
                 manifest['_viewer_removed'] = _run.get('removed')
+                manifest['_trace_files'] = _run.get('files')
                 st.session_state[_rk] = manifest
                 # Disk cache (same idea as Secret Sauce's pairs_cache.json):
                 # a cell-click into the Viewer is a URL nav that WIPES
@@ -7531,6 +7669,7 @@ def page_splice_report():
     if _follow[0] == 1:
         _viewer_removed_report_note(_p, res, *(_sd or (None, None)),
                                     again='Generate the report again')
+        _folders_changed_note(res, again='Generate the report again')
     _clear_report_button(_p)
     for _n, _r, _d, _t in shown:
         _render_sr_result(_p, _r, span=_n, n_spans=len(shown), dirs=_d,
@@ -8259,6 +8398,9 @@ def page_unidirectional():
         st.session_state['uni_out_xlsx'] = out_xlsx
         # What this run leaves out, for the note over its report.
         st.session_state['uni_run_removed'] = _removed_now(folder)
+        # ...and what the folder the tech gave holds (_folders_changed_note).
+        st.session_state['uni_run_files'] = _trace_files_record(
+            (src_folder, _uni_pside.upper() or None))
         st.session_state.pop('uni_result', None)
         st.rerun()
 
@@ -8294,6 +8436,7 @@ def page_unidirectional():
             return
         manifest['_folder'] = folder
         manifest['_viewer_removed'] = st.session_state.pop('uni_run_removed', None)
+        manifest['_trace_files'] = st.session_state.pop('uni_run_files', None)
         st.session_state['uni_result'] = manifest
         # Disk cache: a grid-cell click into the Viewer is a URL nav that
         # wipes session_state — this is how "← Back" re-shows the report
@@ -8320,6 +8463,7 @@ def page_unidirectional():
     if not (res and res.get('ok') and res.get('_folder') == folder):
         return
     _viewer_removed_report_note('uni', res, folder)
+    _folders_changed_note(res)
     _clear_report_button('uni')
     u = res.get('uni') or {}
     # The fiber count NEVER appears without its denominator: a 480-fiber
@@ -8743,6 +8887,10 @@ def page_splice_report_fec():
     if st.button('Run FEC Report', type='primary', disabled=bool(_stale)):
         out_xlsx = os.path.join(_dest, 'FEC_OOS.xlsx')
         st.session_state['fec_pending_cmd'] = fec_cmd(dir_a, dir_b, out_xlsx, gates)
+        # What the two folders hold, for the line over the report when they
+        # change after it ran (_folders_changed_note).
+        st.session_state['fec_run_files'] = _trace_files_record(
+            (dir_a, 'A end'), (dir_b, 'B end'))
         st.session_state.pop('fec_result', None)
         st.rerun()
 
@@ -8770,6 +8918,7 @@ def page_splice_report_fec():
                          {'returncode': proc.returncode}, log=proc.stderr)
             return
         manifest['_dirs'] = [dir_a, dir_b]
+        manifest['_trace_files'] = st.session_state.pop('fec_run_files', None)
         st.session_state['fec_result'] = manifest
         # A row click into Viewer FEC is a URL nav that wipes session_state:
         # this is how the page shows the report again on the way back.
@@ -8792,6 +8941,7 @@ def page_splice_report_fec():
             pass
     if not (res and res.get('ok') and res.get('_dirs') == [dir_a, dir_b]):
         return
+    _folders_changed_note(res)
     fec = res.get('fec') or {}
     sides = fec.get('sides') or []
     st.success('Done: ' + ' · '.join(
