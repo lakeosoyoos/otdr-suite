@@ -6659,7 +6659,39 @@ def olts_load(name, body):
             'customer': parsed['customer'], 'company': parsed['company'],
             'fibers': len(parsed['fibers']), 'wavelengths': parsed['wavelengths'],
             'status': _olts_status(parsed), 'orl_fails': fails,
-            'orl_min': {str(wl): olts_orl_min(parsed, wl) for wl in parsed['wavelengths']}}
+            'orl_min': {str(wl): olts_orl_min(parsed, wl) for wl in parsed['wavelengths']},
+            'rows': _olts_measurement_rows(parsed)}
+
+
+def _olts_measurement_rows(parsed):
+    """One row per fiber for the Viewer's Measurements tab (FastReporter's
+    Measurements panel): every value rounded as it prints, so a sort orders
+    what the tech reads.  `wl` holds each wavelength's values."""
+    graded = _olts_status(parsed) != ''
+    power = _olts_powers(parsed)
+    out = []
+    for f in parsed['fibers']:
+        per, fail, have_ab, have_ba = {}, False, False, False
+        for r in f['rows']:
+            fa = graded and _olts_orl_fail(parsed, r, 'orl_a')
+            fb = graded and _olts_orl_fail(parsed, r, 'orl_b')
+            fail = fail or fa or fb
+            have_ab = have_ab or r['loss_ab'] is not None
+            have_ba = have_ba or r['loss_ba'] is not None
+            per[str(r['wl_nm'])] = {
+                'loss_ab': _olts_r(r['loss_ab'], 2), 'loss_ba': _olts_r(r['loss_ba'], 2),
+                'loss_avg': _olts_r(r['loss_avg'], 2), 'orl_a': _olts_r(r['orl_a'], 2),
+                'orl_b': _olts_r(r['orl_b'], 2), 'orl_a_fail': fa, 'orl_b_fail': fb,
+                'ref_ab': power.get((f.get('ref'), r['wl_nm']), (None, None))[0],
+                'ref_ba': power.get((f.get('ref'), r['wl_nm']), (None, None))[1]}
+        km = None if f['length_m'] is None else f['length_m'] / 1000.0
+        out.append({'id': f['id'], 'type': 'OLTS',
+                    'dir': 'Bidir' if have_ab and have_ba else 'A->B' if have_ab else 'B->A',
+                    'pf': ('fail' if fail else 'pass') if graded else '',
+                    'length_km': _olts_r(km, 3), 'wl': per,
+                    'when': _olts_when(f['when']).replace(', ', ' '),
+                    'when_ts': f['when'].timestamp() if f['when'] else None})
+    return out
 
 
 def _olts_rows(parsed):
@@ -6690,6 +6722,13 @@ def _olts_status(parsed):
     return 'Pass'
 
 
+def _olts_powers(parsed):
+    """{(reference key, wavelength): (Ref. A->B, Ref. B->A)} in dBm, rounded
+    as FastReporter's FasTesT table prints them."""
+    return {(ref['key'], r['wl_nm']): (_olts_r(r.get('power_ab'), 2), _olts_r(r.get('power_ba'), 2))
+            for ref in parsed['references'] for r in ref['rows']}
+
+
 def _olts_local(dt):
     """A UTC datetime in this machine's time, without a zone (Excel's kind)."""
     return dt.astimezone().replace(tzinfo=None) if dt else None
@@ -6712,11 +6751,11 @@ def _olts_cal(s):
 
 _OLTS_HEAD = ['Identifier', 'Wavelength (nm)', 'Loss Average (dB)', 'Loss Margin (dB)',
               'Loss A->B (dB)', 'Loss B->A (dB)', 'ORL A (dB)', 'ORL B (dB)',
-              'Length (km)', 'Date/Time']
+              'Ref. A->B (dBm)', 'Ref. B->A (dBm)', 'Length (km)', 'Date/Time']
 
 
 def _olts_r(v, nd):
-    return None if v is None or v != v else round(v, nd)
+    return None if v is None or v != v else round(v, nd) + 0.0      # no -0.00
 
 
 def _olts_xlsx(parsed, path):
@@ -6745,14 +6784,17 @@ def _olts_xlsx(parsed, path):
 
     header(ws, 1, _OLTS_HEAD)
     ws.row_dimensions[1].height = 30
-    fmts = [None, '0', '0.00', None, '0.00', '0.00', '0.00', '0.00', '0.000', when_fmt]
+    fmts = [None, '0', '0.00', None, '0.00', '0.00', '0.00', '0.00', '0.00', '0.00', '0.000',
+            when_fmt]
+    power = _olts_powers(parsed)
     row = 1
     for f, r in _olts_rows(parsed):
         row += 1
         km = None if f['length_m'] is None else f['length_m'] / 1000.0
+        p_ab, p_ba = power.get((f.get('ref'), r['wl_nm']), (None, None))
         vals = [f['id'], r['wl_nm'], _olts_r(r['loss_avg'], 2), '---',
                 _olts_r(r['loss_ab'], 2), _olts_r(r['loss_ba'], 2),
-                _olts_r(r['orl_a'], 2), _olts_r(r['orl_b'], 2), _olts_r(km, 3),
+                _olts_r(r['orl_a'], 2), _olts_r(r['orl_b'], 2), p_ab, p_ba, _olts_r(km, 3),
                 _olts_local(f['when'])]
         for c, v in enumerate(vals, start=1):
             cell = ws.cell(row=row, column=c, value=v)
@@ -6766,7 +6808,7 @@ def _olts_xlsx(parsed, path):
                 ws.cell(row=row, column=c).font = red if _olts_orl_fail(parsed, r, side) else green
     ws.auto_filter.ref = f'A1:{get_column_letter(len(_OLTS_HEAD))}{row}'
     ws.freeze_panes = 'B2'
-    for c, w in enumerate((16, 12, 12, 11, 11, 11, 10, 10, 11, 22), start=1):
+    for c, w in enumerate((16, 12, 12, 11, 11, 11, 10, 10, 11, 11, 11, 22), start=1):
         ws.column_dimensions[get_column_letter(c)].width = w
 
     js = wb.create_sheet('Job')
