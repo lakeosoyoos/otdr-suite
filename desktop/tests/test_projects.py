@@ -152,7 +152,7 @@ def _start_project(folder):
     at = run_streamlit().run()
     _button(at, "📂 Open Recent Project").click().run()
     at.text_input(key="home_folder").set_value(str(folder)).run()
-    _button(at, "Open this folder").click().run()
+    _button(at, "Open This Folder").click().run()
     assert not at.exception, list(at.exception)
     return at
 
@@ -240,7 +240,7 @@ def test_a_missing_work_folder_is_an_error_on_home(home_on, settings_dir, tmp_pa
     at = run_streamlit().run()
     _button(at, "📂 Open Recent Project").click().run()
     at.text_input(key="home_folder").set_value(str(tmp_path / "nope")).run()
-    _button(at, "Open this folder").click().run()
+    _button(at, "Open This Folder").click().run()
     assert any("Could not open that work folder" in e.value for e in at.error)
 
 
@@ -326,7 +326,7 @@ def _setup(kind_label):
 def test_new_project_from_traces_fills_in_and_lands_on_status(home_on, settings_dir, span_dir, tmp_path):
     at = _setup("📁 Start New Project")
     assert any("## New Project" in m.value for m in at.markdown)
-    assert _button(at, "Create project").disabled        # nothing loaded yet
+    assert _button(at, "Create Project").disabled        # nothing loaded yet
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
     assert any("A 24 fibers, B 24 fibers" in s.value for s in at.success)
@@ -337,9 +337,9 @@ def test_new_project_from_traces_fills_in_and_lands_on_status(home_on, settings_
     assert site_a not in ("", "A") and site_b not in ("", "B")
     assert any(f"**{site_a} → {site_b}**" in s.value for s in at.success)
     at.text_input(key="setup_parent").set_value(str(tmp_path / "Projects")).run()
-    assert _button(at, "Create project").disabled          # no customer yet
+    assert _button(at, "Create Project").disabled          # no customer yet
     at.selectbox(key="setup_customer").set_value("Lumen").run()
-    _button(at, "Create project").click().run()
+    _button(at, "Create Project").click().run()
     assert not at.exception, list(at.exception)
     work = tmp_path / "Projects" / name
     # The first shoot, in its own dated folder (the .sor files say 2026-05-06).
@@ -365,7 +365,7 @@ def test_new_project_from_a_production_sheet_fills_the_job_form(home_on, setting
     assert " to " in name
     at.text_input(key="setup_parent").set_value(str(tmp_path / "P")).run()
     at.selectbox(key="setup_customer").set_value("Zayo").run()
-    _button(at, "Create project").click().run()
+    _button(at, "Create Project").click().run()
     assert not at.exception, list(at.exception)
     assert at.session_state["otdr_profile"] == "Zayo"          # the customer's profile
     assert any("No FQA form set up for Zayo" in i.value for i in at.info)
@@ -409,7 +409,7 @@ def test_an_existing_project_folder_is_not_overwritten(home_on, settings_dir, sp
     (work / f"{name}.otdrproj").write_text("{}", encoding="utf-8")
     at.text_input(key="setup_parent").set_value(str(tmp_path / "P")).run()
     at.selectbox(key="setup_customer").set_value("Lumen").run()
-    _button(at, "Create project").click().run()
+    _button(at, "Create Project").click().run()
     assert any("already a project" in e.value for e in at.error)
     assert (work / f"{name}.otdrproj").read_text(encoding="utf-8") == "{}"
 
@@ -463,7 +463,7 @@ def test_audit_walks_open_items_in_order_and_fills_one_in(home_on, settings_dir,
     assert any("Audit Project" in m.value for m in at.markdown)
     assert _heading(at) == "### 1.01  Bldg 1 (A end) site address"
     at.text_input(key="aud_site_a.address").set_value("123 Main St").run()
-    _button(at, "Save and continue").click().run()
+    _button(at, "Save and Continue").click().run()
     assert not at.exception, list(at.exception)
     assert at.session_state["fqa_job"]["site_a"]["address"] == "123 Main St"
     # Filled in, so the audit moved on to the next open item.
@@ -473,17 +473,17 @@ def test_audit_walks_open_items_in_order_and_fills_one_in(home_on, settings_dir,
 def test_audit_skip_moves_on_and_the_summary_lists_what_was_skipped(home_on, settings_dir, span_dir):
     at = _audit(home_on, span_dir)
     first = _heading(at)
-    _button(at, "Skip for now ⏭").click().run()
+    _button(at, "Skip for Now ⏭").click().run()
     assert _heading(at) != first
     # Skip everything that is left; the summary names what was skipped.
     for _ in range(80):
-        if not any(b.label == "Skip for now ⏭" for b in at.button):
+        if not any(b.label == "Skip for Now ⏭" for b in at.button):
             break
-        _button(at, "Skip for now ⏭").click().run()
+        _button(at, "Skip for Now ⏭").click().run()
     assert any("skipped" in i.value for i in at.info)
-    _button(at, "Go through the skipped ones again").click().run()
+    _button(at, "Go Through the Skipped Ones Again").click().run()
     assert _heading(at) == first
-    _button(at, "Exit audit").click().run()
+    _button(at, "Exit Audit").click().run()
     assert any(b.key == "ps_audit_start" for b in at.button)
 
 
@@ -492,8 +492,8 @@ def test_audit_marks_a_hand_check_done(home_on, settings_dir, span_dir):
     for _ in range(80):
         if _heading(at).startswith("### 4.03"):
             break
-        _button(at, "Skip for now ⏭").click().run()
-    _button(at, "The file names follow the convention").click().run()
+        _button(at, "Skip for Now ⏭").click().run()
+    _button(at, "The File Names Follow the Convention").click().run()
     assert at.session_state["project_manual"]["4.03"] is True
     assert not _heading(at).startswith("### 4.03")
 
@@ -604,7 +604,7 @@ def test_export_is_a_tab_of_the_project_screen(home_on, settings_dir, span_dir):
     at = _start_project(span_dir)
     assert "Export Project" in [t.label for t in at.tabs]
     assert not any(b.key in ("fx_export", "bar_audit") for b in at.button)
-    assert at.radio(key="ps_export_mode").options[0].startswith("Without traces")
+    assert at.radio(key="ps_export_mode").options[0].startswith("Without Traces")
     assert "Choose another folder…" in at.selectbox(key="ps_export_where").options
 
 
@@ -687,14 +687,14 @@ def test_one_new_project_screen_takes_a_sheet_traces_or_both(home_on, settings_d
                                      "3 · The Traces", "4 · Customer")]
     assert order == sorted(order)
     at.selectbox(key="setup_customer").set_value("Lumen").run()
-    assert _button(at, "Create project").disabled         # customer, but no sheet or traces
+    assert _button(at, "Create Project").disabled         # customer, but no sheet or traces
     at.text_input(key="setup_prod_path").set_value(sheet).run()
     at.text_input(key="setup_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="setup_tr_b").set_value(str(span_dir / "B")).run()
     at.text_input(key="setup_parent").set_value(str(tmp_path / "P")).run()
     name = at.text_input(key="setup_name").value
     assert name == "Flagler to Bethune"                    # the sheet names it first
-    _button(at, "Create project").click().run()
+    _button(at, "Create Project").click().run()
     assert not at.exception, list(at.exception)
     work = tmp_path / "P" / name
     assert (work / "Production" / "Span 4 Production Sheet.xlsx").is_file()

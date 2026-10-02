@@ -225,7 +225,7 @@ def _new_project(at, span_dir, tmp_path):
     at.selectbox(key="setup_customer").set_value("Lumen").run()
     # "<A site> to <B site>", as read from the traces (no site name written here).
     name = at.text_input(key="setup_name").value
-    next(b for b in at.button if b.label == "Create project").click().run()
+    next(b for b in at.button if b.label == "Create Project").click().run()
     assert not at.exception, list(at.exception)
     return tmp_path / "Projects" / name
 
@@ -247,7 +247,7 @@ def test_the_project_screen_has_the_overview_and_six_tabs(settings_dir, span_dir
     at = run_streamlit().run()
     next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
     at.text_input(key="home_folder").set_value(str(work)).run()
-    next(b for b in at.button if b.label == "Open this folder").click().run()
+    next(b for b in at.button if b.label == "Open This Folder").click().run()
     at.text_input(key="ps_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="ps_tr_b").set_value(str(span_dir / "B")).run()
     at.text_input(key="ps_tr_label").set_value("reshoot").run()
@@ -410,7 +410,7 @@ def test_each_shoot_row_runs_in_a_tool_and_the_final_does_not_move_it(settings_d
     at = run_streamlit().run()
     next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
     at.text_input(key="home_folder").set_value(str(work)).run()
-    next(b for b in at.button if b.label == "Open this folder").click().run()
+    next(b for b in at.button if b.label == "Open This Folder").click().run()
     at.text_input(key="ps_tr_a").set_value(str(span_dir / "A")).run()
     at.text_input(key="ps_tr_b").set_value(str(span_dir / "B")).run()
     at.text_input(key="ps_tr_label").set_value("reshoot").run()
@@ -449,7 +449,7 @@ def test_in_a_project_reports_are_saved_to_the_job_with_no_choice(settings_dir, 
     at = run_streamlit().run()
     next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
     at.text_input(key="home_folder").set_value(str(work)).run()
-    next(b for b in at.button if b.label == "Open this folder").click().run()
+    next(b for b in at.button if b.label == "Open This Folder").click().run()
     for page in ("Splice Report", "Unidirectional", "Secret Sauce"):
         goto(at, page)
         assert not at.exception, list(at.exception)
@@ -754,7 +754,7 @@ def test_owner_recents_fill_the_boxes_and_saving_puts_an_owner_on_top(settings_d
     at = run_streamlit().run()
     next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
     at.text_input(key="home_folder").set_value(str(work)).run()
-    next(b for b in at.button if b.label == "Open this folder").click().run()
+    next(b for b in at.button if b.label == "Open This Folder").click().run()
     at.selectbox(key="own_recent").set_value(1).run()
     assert at.text_input(key="own_name").value == "Lee Example"
     assert at.text_input(key="own_email").value == "lee@example.com"

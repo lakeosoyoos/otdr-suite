@@ -241,7 +241,7 @@ def test_real_splice_report_on_a_small_job_leaves_the_distances_blank(tmp_path):
                          get_manifest=lambda a, b: manifest)
     assert r['distances_m'] is None and r['method'] == METHOD_NONE
     assert r['closures_found_m'] == []
-    assert any('under 80 fibres' in w and 'left to the tech' in w
+    assert any('under 80 fibers' in w and 'left to the tech' in w
                for w in r['warnings']), r['warnings']
     assert r['span_length_m'] == pytest.approx(manifest['span_km'] * 1000)
 
@@ -253,7 +253,7 @@ def test_an_event_job_manifest_is_never_mapped():
     m['event_job'] = True
     r = splice_distances_from_manifest(m, _sheet([10000, 20000]))
     assert r['distances_m'] is None and r['method'] == METHOD_NONE
-    assert 'under 80 fibres' in r['warnings'][-1]
+    assert 'under 80 fibers' in r['warnings'][-1]
 
 
 # ── the hub side: which manifest the FQA Builder gets ─────────────────────
