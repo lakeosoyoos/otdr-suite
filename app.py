@@ -3178,8 +3178,6 @@ _TOP_NAV_CSS = '''<style>
   cursor:pointer;color:var(--nav-fg);opacity:.65;transition:opacity .15s,transform .2s}
 .nav-menu-arrow:hover{opacity:1}
 #nav_menu_cb:checked+.nav-menu-arrow{transform:rotate(180deg)}
-/* A narrow window hides the orange Update: the arrow wears its color. */
-.st-key-top_nav:has(.st-key-nav_update_ready) .nav-menu-arrow{color:#f97316;opacity:1}
 @media (max-width:%(menu_px)dpx){
   .st-key-top_nav>[data-testid="stElementContainer"]:has(#nav_menu_cb){display:block;
     position:absolute;top:0;left:50%%;transform:translateX(-50%%);width:auto !important}
