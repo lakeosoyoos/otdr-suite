@@ -142,7 +142,8 @@ def _jsc(tmp_path, body):
         _const("DRAWER_COLOR"),
         _fn("lowerBound"), _fn("niceTicks"), _fn("drawGrid"), _fn("labelHit"),
         _opt_fn("chartLabels"), _opt_fn("eventNumberSpots"), _opt_fn("drawLabelTip"),
-        _fn("drawEventMarkers"), _fn("drawerColumnSummary"), _fn("layoutDrawerTags"),
+        _fn("drawEventMarkers"), _fn("drawerColumnSummary"), _fn("drawerCellFailed"),
+        _fn("layoutDrawerTags"),
         _fn("drawPairing"),
         body,
     ])
@@ -248,7 +249,7 @@ function trace(dir, fiber) {
 var have = [], cells = [];
 for (var f = 0; f < 3; f++) {
   have.push({fiber: f + 1, ta: trace('a', f + 1), tb: trace('b', f + 1)});
-  cells.push({fi: f, avg: 0.116, km: 30, avgFail: false, avgWarn: false,
+  cells.push({fi: f, avg: 0.116, km: 30, avgFail: true, avgWarn: false,
               legs: {a: {km: 30, loss: 0.175, hollow: false, fail: false, warn: false},
                      b: {km: 25, loss: 0.058, hollow: false, fail: false, warn: false}}});
 }

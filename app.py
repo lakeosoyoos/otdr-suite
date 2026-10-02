@@ -1670,12 +1670,23 @@ st.set_page_config(page_title='OTDR Suite', layout='wide',
 # Light / Dark: every new session starts Dark, and the session's choice is
 # applied before anything draws.  Streamlit sends the theme at the START of a
 # run, so when this run changed it the page on screen still has the old one:
-# rerun once to paint the right one.
+# rerun once to paint the right one.  Fail-safe (boss, 2026-10-01): at most
+# one such rerun per theme change, so a Streamlit that does not keep the
+# setting draws the page in whatever theme it has instead of rerunning for
+# ever; and a theme error leaves Streamlit's own look rather than no page.
 if 'ui_theme' not in st.session_state:
     st.session_state['ui_theme'] = THEME_DEFAULT
-if apply_streamlit_theme(st.session_state['ui_theme']):
+try:
+    _theme_changed = apply_streamlit_theme(st.session_state['ui_theme'])
+except Exception:
+    _theme_changed = False
+if _theme_changed and st.session_state.get('_theme_rerun_for') != st.session_state['ui_theme']:
+    st.session_state['_theme_rerun_for'] = st.session_state['ui_theme']
     st.rerun()
-st.markdown(theme_css_vars(), unsafe_allow_html=True)
+try:
+    st.markdown(theme_css_vars(), unsafe_allow_html=True)
+except Exception:
+    pass
 try:
     trace_server.CONFIG['theme'] = st.session_state['ui_theme']
 except Exception:
@@ -2481,21 +2492,30 @@ _handle_nav()
 # switch: once a browser has chosen Light or Dark there, Streamlit keeps it
 # and ignores the theme the hub sends, so the switch does nothing.  ("Use
 # system setting" removes Streamlit's entry instead, so it never blocks.)  The menu is hidden below; this clears a pick already made, once,
-# and reloads so the hub's theme takes.  Streamlit stores its own theme as
-# "Custom Theme", which is left alone.
+# and reloads so the hub's theme takes.  Only that pick is removed: an
+# entry {"name": "Light"} or {"name": "Dark"}.  Everything else is left
+# alone, above all what Streamlit writes by itself on every page load
+# ("Custom Theme" up to 1.50, a bare "System"/"Light"/"Dark" from 1.6x on,
+# which the hub's theme beats anyway).  Removing that one reloaded the page
+# for ever on the 1.64 build (boss, 2026-10-01, run 1416), so the reload
+# also happens at most once per window.
 THEME_PICK_CLEAR_JS = """
 <script>
 (function () {
   var w; try { w = window.parent; void w.document; } catch (e) { return; }
   try {
+    var ss = null; try { ss = w.sessionStorage; } catch (e) {}
+    if (ss && ss.getItem('otdrThemePickCleared')) return;
     var ls = w.localStorage, gone = false;
     for (var i = ls.length - 1; i >= 0; i--) {
       var k = ls.key(i);
       if (!k || k.indexOf('stActiveTheme') !== 0) continue;
       var v = null; try { v = JSON.parse(ls.getItem(k)); } catch (e) {}
-      if (!v || v.name !== 'Custom Theme') { ls.removeItem(k); gone = true; }
+      if (v && typeof v === 'object' && (v.name === 'Light' || v.name === 'Dark')) {
+        ls.removeItem(k); gone = true;
+      }
     }
-    if (gone) w.location.reload();
+    if (gone && ss) { ss.setItem('otdrThemePickCleared', '1'); w.location.reload(); }
   } catch (e) { /* no storage: nothing was picked */ }
 })();
 </script>
@@ -2820,6 +2840,9 @@ def _clear_traces():
         st.session_state[_k] = ''
     st.session_state.pop('_drop_box_a', None)
     st.session_state.pop('_drop_box_b', None)
+    # Unidirectional's own upload is kept in a slot, not in its uploader.
+    st.session_state.pop('uni_upload', None)
+    st.session_state.pop('uni_both_side', None)
     # What the pages' own boxes kept goes too (_seed_box): Streamlit drops
     # the writes above on a page that is not drawn, and the old folders
     # would come back from the kept copy.  Unidirectional's landmarks and
@@ -7499,6 +7522,135 @@ def _uni_site_inputs(folder):
     return site_a.strip(), site_b.strip()
 
 
+def _flat_upload(sdir, n, dupes):
+    """(folder, n, dupes): the staged upload with every trace at the top level.
+    A zip keeps its own folders (A side/, B side/), and the engine reads
+    only the folder it is given, so a zip of two direction folders ran on
+    no files at all.  A name that two of the zip's folders both hold is
+    placed once and listed in `dupes`, never dropped in silence."""
+    import folder_intake as fi
+    files = fi.find_otdr_files(sdir)
+    if all(os.path.dirname(f) == sdir for f in files):
+        return sdir, n, dupes
+    flat = sdir.rstrip(os.sep) + '_flat'
+    seen, dupes = set(), list(dupes or [])
+    for f in files:
+        name = os.path.basename(f).lower()
+        if name in seen:
+            dupes.append(os.path.basename(f))
+        seen.add(name)
+    fi.materialize_all(files, flat)
+    return flat, len(fi.find_otdr_files(flat)), dupes
+
+
+def _uni_upload_box(box_folder):
+    """The Unidirectional page's drop zone.  Returns the upload in use,
+    {'dir', 'n', 'dupes', 'box'}, or None.
+
+    Each upload REPLACES the one before (Robert 2026-10-01).  A Streamlit
+    uploader adds every new drop to the files it already holds, so a second
+    set of traces ran together with the first.  So the upload is staged and
+    kept in a slot no widget owns, and the uploader is drawn again under a
+    new key, empty, for the next drop.  Typing or browsing to another folder
+    forgets the upload, as does Clear upload."""
+    gen = int(st.session_state.get('uni_drop_gen', 0))
+    dropped = st.file_uploader(
+        '…or drag & drop the shots here (.sor / .json / .trc files, a whole '
+        'folder, or a .zip)',
+        type=['sor', 'json', 'trc', 'zip'], accept_multiple_files=True,
+        key=f'uni_drop_{gen}')
+    if dropped:
+        sdir, n, dupes = _stage_dropped(dropped)
+        sdir, n, dupes = _flat_upload(sdir, n, dupes)
+        st.session_state['uni_upload'] = {'dir': sdir, 'n': n, 'dupes': dupes,
+                                          'box': box_folder}
+        st.session_state['uni_drop_gen'] = gen + 1
+        st.rerun()
+    up = st.session_state.get('uni_upload')
+    if up and (up.get('box') != box_folder or not os.path.isdir(up.get('dir') or '')):
+        st.session_state.pop('uni_upload', None)
+        up = None
+    return up
+
+
+def _shot_sites(folder):
+    """(origin, far) for the traces in `folder`, in the order the shot ran:
+    the stored GenParams pair, turned round when the file's own direction
+    stamp says B to A (the engine's uni_shot_direction, read off the first
+    trace).  ('', '') when nothing is readable."""
+    import folder_intake as fi
+    files = fi.find_otdr_files(folder)
+    sor = [p for p in files if p.lower().endswith('.sor')]
+    trc = [p for p in files if p.lower().endswith('.trc')]
+    if sor:
+        loc_a, loc_b = _sor_locations(sor[0])
+        first = sor[0]
+    elif trc:
+        loc_a, loc_b = fi.trc_header(trc[0], _first_chunk_only=True).get(
+            'loc_stored') or ('', '')
+        first = trc[0]
+    else:
+        return ('', '')
+    try:
+        with open(first, 'rb') as fh:
+            stamp = trace_server.read_direction(fh.read())
+    except Exception:
+        stamp = None
+    return (loc_b, loc_a) if stamp == 'b' else (loc_a, loc_b)
+
+
+def _uni_pick_direction(folder):
+    """The folder this report runs on, for the page's own upload.  An
+    upload that holds both directions (the A and B shots together, loose or
+    in one zip) is split the way the left panel splits such a folder
+    (_split_panel_folder: the files' own direction stamps say which side is
+    A), and the tech picks the direction: A by default.  Only the picked
+    direction is analysed, so the other side is not reported as missing.  A
+    one-direction upload comes back as it is.  A folder typed into the box
+    is not split here: it keeps the Direction pick it always had."""
+    split = _split_panel_folder(folder)
+    if not split:
+        return folder
+    labels = {}
+    for side in ('a', 'b'):
+        origin, far = _shot_sites(split[side])
+        sites = f'{origin} → {far}, ' if origin and far else ''
+        labels[side] = (f"{side.upper()} direction ({sites}"
+                        f"{_count(split[side + '_count'], 'file')})")
+    # Kept in a slot no widget owns, with the folder it was picked for.
+    _was = st.session_state.get('uni_both_side')
+    side = _was[1] if isinstance(_was, tuple) and _was[0] == folder else 'a'
+    opts = [labels['a'], labels['b']]
+    pick = st.radio('Run On', opts, horizontal=True,
+                    index=0 if side == 'a' else 1)
+    side = 'b' if pick == labels['b'] else 'a'
+    st.session_state['uni_both_side'] = (folder, side)
+    st.caption('These traces hold both directions. This report reads one '
+               'direction at a time: pick the one to run.'
+               + (f" Not read: {', '.join(split['ignored'])}."
+                  if split.get('ignored') else ''))
+    return split[side]
+
+
+def _uni_end_cell(entries, ribbon_fibers):
+    """The Cable End cell of one ribbon, exactly as the workbook prints it
+    (uni_format_end_cell in splicereportmatchexfo, which the hub cannot
+    import: it would load an engine's reader into the hub).  `entries` are
+    (fiber, end reflectance or None) for the ribbon's fibers that reach the
+    end.  Every fiber of the ribbon there: the strongest reflectance
+    ('REFL-45.8dB', or 'end' when none is stored).  Some broke upstream:
+    the fibers that do reach it, then that tag.  test_uni_end_cells holds
+    the two copies to the same text."""
+    if not entries:
+        return ''
+    members = sorted(f for f, _ in entries)
+    refls = [v for _, v in entries if v is not None]
+    tag = f"REFL{max(refls):.1f}dB" if refls else "end"
+    if set(members) >= set(ribbon_fibers):
+        return tag
+    return ','.join(f"F{f}" for f in members) + " " + tag
+
+
 def page_unidirectional():
     st.markdown('#### Unidirectional')
 
@@ -7573,17 +7725,18 @@ def page_unidirectional():
             elif not os.path.exists(_typed):
                 st.warning(f'Not found: {_typed}. Paste a folder of `.sor` / '
                            '`.json` / `.trc` shots, or a .zip of them.')
-        _dropped = st.file_uploader(
-            '…or drag & drop the shots here (.sor / .json / .trc files, a whole '
-            'folder, or a .zip)',
-            type=['sor', 'json', 'trc', 'zip'], accept_multiple_files=True,
-            key='uni_drop')
+        _dropped = _uni_upload_box(
+            (st.session_state.get('uni_folder_input') or '').strip())
+    _from_upload = False
     if _dropped:
-        _sdir, _sn, _sdupes = _stage_dropped(_dropped)
+        _sdir, _sn, _sdupes = _dropped['dir'], _dropped['n'], _dropped['dupes']
         if _sn:
-            st.caption(f'📥 {_sn} trace file(s) staged from the drop, used as '
-                       'the input.')
+            _from_upload = True
+            st.caption(f'📥 {_sn} trace file(s) from the upload, used as the '
+                       'input. A new upload replaces them.')
             folder = _sdir
+            st.button('Clear upload', key='uni_upload_clear',
+                      on_click=lambda: st.session_state.pop('uni_upload', None))
         else:
             st.warning('The drop contained no readable `.sor` / `.json` / `.trc` files.')
         if _sdupes:
@@ -7628,6 +7781,11 @@ def page_unidirectional():
     _remove_legacy_caches(folder)
     src_folder = folder
     folder, _foreign = _exclude_foreign_files(folder)
+    if _from_upload:
+        # Both directions in one upload, loose or zipped: the tech picks one.
+        # After the foreign-file audit, so a stray from another job is not
+        # taken for a second direction.
+        folder = _uni_pick_direction(folder)
 
     # If a prior run reported multiple GenParams directions in this folder,
     # offer the pick list (default stays "most populous").
@@ -7906,20 +8064,26 @@ def page_unidirectional():
                 if not cell:
                     html.append("<td style='padding:3px 6px;border:1px solid #eef2f6'></td>")
                     continue
+                if gc.get('kind') == 'end':
+                    # Cable End: the workbook's one cell for the ribbon, not
+                    # a line per fiber (432 lines made every row ~150 px
+                    # tall).  It opens the fiber with the strongest end
+                    # reflectance, or the ribbon's first fiber at the end.
+                    _top = min(cell, key=lambda c: (c['loss'] is None,
+                                                    -(c['loss'] or 0), c['fiber']))
+                    shown = [(_top, _uni_end_cell(
+                        [(c['fiber'], c['loss']) for c in cell],
+                        range(f0, min(f0 + rs, max_f + 1))))]
+                else:
+                    shown = [(c, f"F{c['fiber']}" + (' ✕ broke' if c['loss'] is None
+                                                     else f" {c['loss']:.3f}"))
+                             for c in sorted(cell, key=lambda x: x['fiber'])]
                 links = []
-                for c in sorted(cell, key=lambda x: x['fiber']):
+                for c, text in shown:
                     color = _KIND_COLOR.get(c['kind'], '#000000')
-                    if c['kind'] == 'end':
-                        # Cable End cell: the fiber's stored end reflectance.
-                        loss = (' end' if c['loss'] is None
-                                else f" REFL{c['loss']:.1f}dB")
-                    else:
-                        loss = (' ✕ broke' if c['loss'] is None
-                                else f" {c['loss']:.3f}")
                     _km = round(c['km'] + off, 4)
                     links.append(_cell_markup(
-                        _uni_popout, c['fiber'], _km, _uni_dir, color, '',
-                        f"F{c['fiber']}{loss}",
+                        _uni_popout, c['fiber'], _km, _uni_dir, color, '', text,
                         href=(f"?nav=viewer&fiber={c['fiber']}&km={_km}"
                               f"&dir={_uni_dir}&sra={_fq}&src=uni{_uni_pq}")))
                 html.append("<td style='padding:3px 6px;border:1px solid #eef2f6;"

@@ -2050,6 +2050,7 @@ class Handler(BaseHTTPRequestHandler):
                                   data.get('fibers') if data.get('fibers') == 'all'
                                   else list(data.get('fibers') or []),
                                   ior=data.get('ior'),
+                                  backscatter=data.get('backscatter'),
                                   fields=dict(data.get('fields') or {}),
                                   dest_name=data.get('dest_name'),
                                   span=dict(data.get('span') or {}),
@@ -3860,10 +3861,11 @@ def fxdparams_offsets(body: bytes) -> dict:
     p += 4 * npw                            # points per width
     group_index = p
     p += 4                                  # group index
+    backscatter = p                         # uint16, -tenths of a dB (830 = -83.0)
     p += 2 + 4 + 2                          # backscatter, averages, avg time
     acq_range, acq_range_dist = p, p + 4
     return {'acq_offset': acq_offset, 'acq_offset_dist': acq_offset_dist,
-            'group_index': group_index,
+            'group_index': group_index, 'backscatter': backscatter,
             'acq_range': acq_range, 'acq_range_dist': acq_range_dist}
 
 
@@ -4247,6 +4249,123 @@ def set_ior(data: bytes, new_ior: float, proprietary: bool = True) -> bytes:
                 b.body = _prop_rebuild(hdr, decs, tail)
                 b.scaled_fields = n_scaled
                 break
+    return build(mv, bl)
+
+
+# ─── backscatter (FR's Summary > Test Settings > Backscatter) ─────────────
+#
+# WHAT A BACKSCATTER EDIT ACTUALLY TOUCHES -- read off two files FastReporter 3
+# saved after its Backscatter cell was edited (2026-10-01: an end-launch shot
+# -83 -> -73, two reflective events; a 17-event splice shot -83 -> -80.5),
+# diffed block by block and record by record against the untouched originals:
+#
+#   FxdParams   backscatter uint16, tenths of a dB with the sign dropped
+#               (830 -> 730).  Nothing else in the block.
+#   KeyEvents   every REFLECTIVE event's reflectance + delta (mdB);
+#               non-reflective events stay 0; the summary's ORL (positive
+#               mdB) - delta.  Times, losses, markers untouched.
+#   Proprietary Rbs = the new value; every non-NaN event Reflectance + delta;
+#               TotalOrl's magnitude - delta (the sign is the file's own: one
+#               file stored -28.877, the other +32.911); every
+#               PeakReflectionToRbs set to NaN.
+#   DataPts and the RawSamples payload are byte-identical: the trace does not
+#   move.  On FR's screen the trace pixels were identical before and after;
+#   only the injection-level bar beside the dB axis moved.
+#
+# Reflectance and ORL are both measured AGAINST the backscatter level, so
+# every one of them moves by exactly the change, which is what FR wrote.
+# The second file also came back with its SupParams supplier blanked and some
+# event times one unit off: that is FR re-saving the file, not the edit (the
+# first file had neither), so it is not reproduced here.
+BACKSCATTER_MIN_DB, BACKSCATTER_MAX_DB = -100.0, -40.0
+_FR_NAN = b'\x00\x00\x00\x00\x00\x00\xf8\xff'     # the NaN bytes FR writes
+
+
+def read_backscatter(data: bytes):
+    """The file's backscatter coefficient in dB: EXFO's float64 `Rbs` when
+    the proprietary block has one, else the FxdParams field; None if unset."""
+    mv, bl = split(data)
+    for b in bl:
+        if b.name.startswith(b'ExfoNewProprietaryBlock'):
+            _, chunks, _ = _prop_chunks(b.body)
+            stream = b''.join(d for _, d in chunks)
+            hits = [v for r, v in _prop_typed(stream)
+                    if r['name'] == 'Rbs' and r['tc'] == 3 and v == v]
+            if len(hits) == 1:
+                return hits[0]
+    fx = _find(bl, b'FxdParams').body
+    raw = struct.unpack_from('<H', fx, fxdparams_offsets(fx)['backscatter'])[0]
+    # the Splice Report reader's sanity band: 0 is unset, 2000+ is not a dB
+    return -raw / 10.0 if 0 < raw < 2000 else None
+
+
+def set_backscatter(data: bytes, new_db: float) -> bytes:
+    """Return a new file with the backscatter coefficient changed to `new_db`
+    (dB, negative), and every reflectance and the ORL moved with it, the way
+    FastReporter writes it.  Rounded to 0.1 dB: the Bellcore field holds
+    tenths."""
+    new_db = round(float(new_db), 1)
+    if not (BACKSCATTER_MIN_DB <= new_db <= BACKSCATTER_MAX_DB):
+        raise ValueError('backscatter %.1f dB is outside the sane band %.0f to %.0f dB'
+                         % (new_db, BACKSCATTER_MIN_DB, BACKSCATTER_MAX_DB))
+    old_db = read_backscatter(data)
+    if old_db is None:
+        raise ValueError('this file records no backscatter coefficient; refusing')
+    delta = new_db - old_db
+    delta_mdb = int(round(delta * 1000))
+    mv, bl = split(data)
+
+    fx = _find(bl, b'FxdParams')
+    body = bytearray(fx.body)
+    struct.pack_into('<H', body, fxdparams_offsets(fx.body)['backscatter'],
+                     int(round(-new_db * 10)))
+    fx.body = bytes(body)
+
+    kev = _find(bl, b'KeyEvents')
+    if len(kev.body) > 2:                        # 2 = no events and no summary
+        evs, summary = _kev_parse(kev.body)
+        for e in evs:
+            if e['refl'] != 0:                   # 0 = a non-reflective event
+                e['refl'] += delta_mdb
+        if summary[3]:                           # 0 = no ORL measured
+            summary[3] = min(65535, max(0, summary[3] - delta_mdb))
+        kev.body = _kev_build(evs, summary)
+
+    for b in bl:
+        if not b.name.startswith(b'ExfoNewProprietaryBlock'):
+            continue
+        hdr, chunks, tail = _prop_chunks(b.body)
+        decs = [d for _, d in chunks]
+        lens = [len(d) for d in decs]
+        stream = b''.join(decs)
+        lo, hi = _rawsamples_span(stream)
+        raw_before = stream[lo:hi] if lo is not None else b''
+        s = bytearray(stream)
+        n_rbs = 0
+        for r, v in _prop_typed(stream):
+            if r['tc'] != 3 or r['size'] != 8:
+                continue
+            if r['name'] == 'Rbs':
+                struct.pack_into('<d', s, r['pay'], new_db)
+                n_rbs += 1
+            elif v != v:                         # NaN: not measured, stays so
+                continue
+            elif r['name'] == 'Reflectance':
+                struct.pack_into('<d', s, r['pay'], v + delta)
+            elif r['name'] == 'TotalOrl' and v:
+                struct.pack_into('<d', s, r['pay'], v + delta if v < 0 else v - delta)
+            elif r['name'] == 'PeakReflectionToRbs':
+                s[r['pay']:r['pay'] + 8] = _FR_NAN
+        if n_rbs > 1:
+            raise ValueError('expected one proprietary Rbs record, found %d' % n_rbs)
+        s = bytes(s)
+        if lo is not None and s[lo:hi] != raw_before:
+            raise ValueError('RawSamples payload changed; refusing to write')
+        out, p = [], 0
+        for ln in lens:
+            out.append(s[p:p + ln]); p += ln
+        b.body = _prop_rebuild(hdr, out, tail)
+        break
     return build(mv, bl)
 
 
@@ -4959,11 +5078,11 @@ def trace_settings(direction, fiber, dir_a=None, dir_b=None):
     """What the edit dialog pre-fills: the file's IOR and identifiers, and
     FastReporter's Test Parameters / Test Settings panel for the file.
 
-    Returns {'filename', 'editable', 'why', 'ior', 'identifiers', 'panel',
-    'dest_default'} - a JSON file, or a .sor that does not round-trip, is
-    reported as not editable with the reason, rather than 404ing.  The panel
-    is read even then: it is what the OTDR was told, and showing it does not
-    need the file to rebuild.
+    Returns {'filename', 'editable', 'why', 'ior', 'backscatter',
+    'identifiers', 'panel', 'dest_default'} - a JSON file, or a .sor that
+    does not round-trip, is reported as not editable with the reason, rather
+    than 404ing.  The panel is read even then: it is what the OTDR was told,
+    and showing it does not need the file to rebuild.
     """
     d = (dir_a or CONFIG['dir_a']) if direction == 'a' else (dir_b or CONFIG['dir_b'])
     if direction not in ('a', 'b') or not d:
@@ -4972,7 +5091,7 @@ def trace_settings(direction, fiber, dir_a=None, dir_b=None):
     if path is None:
         raise ValueError('no file for fiber %s' % fiber)
     out = {'filename': os.path.basename(path), 'editable': False, 'why': '',
-           'ior': None, 'identifiers': {}, 'panel': None,
+           'ior': None, 'backscatter': None, 'identifiers': {}, 'panel': None,
            'dest_default': _dest_default(d),
            # The FULL path the default resolves to.  The dialog shows this, so
            # a tech sees a temp staging path BEFORE saving instead of hunting
@@ -4993,6 +5112,7 @@ def trace_settings(direction, fiber, dir_a=None, dir_b=None):
             out['why'] = 'this file does not rebuild byte-exact; refusing to edit it'
             return out
         out['ior'] = read_ior(raw)
+        out['backscatter'] = read_backscatter(raw)
         out['direction'] = read_direction(raw)
         # FR's records first, GenParams over them: GenParams is what every
         # reader of ours speaks, and the two agree on every real file seen.
@@ -5007,10 +5127,12 @@ def trace_settings(direction, fiber, dir_a=None, dir_b=None):
 
 
 def edit_traces(direction, fibers, ior=None, fields=None, dest_name=None,
-                dir_a=None, dir_b=None, span=None, new_direction=None):
+                dir_a=None, dir_b=None, span=None, new_direction=None,
+                backscatter=None):
     """Write edited COPIES of one fiber's file or every file in a direction.
 
     `fibers` is 'all' or a list of fiber numbers.  `ior` None = unchanged.
+    `backscatter` (dB) None = unchanged; reflectances and ORL move with it.
     `fields` maps identifier names (ALL_STRINGS) to new text; blank = unchanged.
     `span` is {'start_km', 'end_km'} in the direction's raw frame (the span
     store's frame); each fiber snaps to its own event, as the store promises.
@@ -5030,11 +5152,17 @@ def edit_traces(direction, fibers, ior=None, fields=None, dest_name=None,
         if not (_IOR_SANE_MIN <= ior <= _IOR_SANE_MAX):
             raise ValueError('IOR %.5f is outside the sane band %.2f-%.2f'
                              % (ior, _IOR_SANE_MIN, _IOR_SANE_MAX))
+    if backscatter is not None:
+        backscatter = round(float(backscatter), 1)
+        if not (BACKSCATTER_MIN_DB <= backscatter <= BACKSCATTER_MAX_DB):
+            raise ValueError('backscatter %.1f dB is outside the sane band %.0f to %.0f dB'
+                             % (backscatter, BACKSCATTER_MIN_DB, BACKSCATTER_MAX_DB))
     span = {k: float(v) for k, v in (span or {}).items()
             if k in ('start_km', 'end_km') and v is not None}
     if new_direction is not None and new_direction not in ('a', 'b'):
         raise ValueError("new_direction must be 'a' or 'b'")
-    if ior is None and not fields and not span and new_direction is None:
+    if ior is None and backscatter is None and not fields and not span \
+            and new_direction is None:
         raise ValueError('nothing to change')
     all_fibers = [n for n, _ in list_fibers(d)]
     if fibers == 'all':
@@ -5064,6 +5192,8 @@ def edit_traces(direction, fibers, ior=None, fields=None, dest_name=None,
             out = raw
             if ior is not None:
                 out = set_ior(out, ior)
+            if backscatter is not None:
+                out = set_backscatter(out, backscatter)
             if fields:
                 out = set_identifiers(out, **fields)
             if span:
