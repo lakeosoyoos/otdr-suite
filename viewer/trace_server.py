@@ -374,6 +374,128 @@ def set_settings(mapping, failed=False):
     CONFIG['settings_failed'] = bool(failed)
 
 
+
+# ─── The Viewer's own state, shared by every Viewer window ───────────────
+# What the tech has on the chart, what they removed from the FILES list and
+# the Dir buttons lived only in the page.  The hub draws its Viewer afresh on
+# every visit, so a trip to the Splice Report and back came back to an empty
+# chart, and the pop-out beside the hub never saw a Remove or a load made in
+# the hub (Robert 2026-10-01: "traces should still be in viewer when we switch
+# back to it", "we also need to make sure we are updating the pop out").  So
+# every Viewer window posts its state here when it changes and reads it back:
+# a window that opens takes it, and a window already open follows the newer
+# one (/api/mode serves `state_ver`).  The folders it was made on go with it,
+# so a state is only taken while the same folders are loaded.
+VIEWER_STATE = {'ver': 0, 'by': '', 'dir_a': '', 'dir_b': '',
+                'keys': [], 'removed': [], 'add_dir': 'both'}
+_VIEWER_STATE_LOCK = threading.Lock()
+_STATE_KEY_RE = re.compile(r'^[ab]-\d{1,6}$')
+VIEWER_STATE_MAX_KEYS = 20000
+
+
+def viewer_state():
+    with _VIEWER_STATE_LOCK:
+        return {**VIEWER_STATE, 'keys': list(VIEWER_STATE['keys']),
+                'removed': list(VIEWER_STATE['removed'])}
+
+
+def _state_keys(v):
+    if not isinstance(v, list):
+        return []
+    out = [k for k in v if isinstance(k, str) and _STATE_KEY_RE.match(k)]
+    return list(dict.fromkeys(out))[:VIEWER_STATE_MAX_KEYS]
+
+
+def set_viewer_state(data):
+    """Take one window's state ({'by', 'keys', 'removed', 'add_dir'}) for
+    the folders loaded now; returns the new version."""
+    data = data if isinstance(data, dict) else {}
+    add_dir = data.get('add_dir') if data.get('add_dir') in ('a', 'b', 'both') else 'both'
+    with _VIEWER_STATE_LOCK:
+        VIEWER_STATE.update({
+            'ver': VIEWER_STATE['ver'] + 1,
+            'by': str(data.get('by') or '')[:40],
+            'dir_a': CONFIG.get('dir_a') or '', 'dir_b': CONFIG.get('dir_b') or '',
+            'keys': _state_keys(data.get('keys')),
+            'removed': _state_keys(data.get('removed')),
+            'add_dir': add_dir,
+        })
+        return VIEWER_STATE['ver']
+
+
+def gate_sig():
+    """One string that changes whenever the gates the Viewer judges by do:
+    a Customer Profile picked in the hub, a setting changed, a report run.
+    /api/mode serves it, so an open Viewer re-reads its gates within one poll
+    instead of at the next load (Robert 2026-10-01: the loss box still read
+    0.160 after picking a profile with a 0.100 gate, until traces loaded)."""
+    return json.dumps([engine_thresholds(), gate_source(), flags_off(),
+                       _settings_arg()], sort_keys=True, default=str)
+
+
+
+# ── Files removed in the Viewer are left out of every report ──
+# Robert 2026-10-01: a Viewer Remove takes the files out of the Splice
+# Report, Unidirectional and Duplicate Check too, and the Viewer's own table
+# is the whole span run again without them ("it might be safer to rerun the
+# entire span").  Every run is given the folder as it is, or -- when files
+# of it were removed -- a copy without them (links, not copies, where the
+# disk allows), named like the folder so reports still name it.
+_REMOVED_STAGE = {}                   # (folder, removed, sig) -> staged folder
+_REMOVED_STAGE_MAX = 32
+
+
+def _norm_dir(p):
+    return os.path.normcase(os.path.normpath(p)) if p else ''
+
+
+def removed_names(folder):
+    """File names in `folder` the tech removed in the Viewer: none unless the
+    shared state was made on the folders loaded now and `folder` is one."""
+    st = viewer_state()
+    if not st['removed'] or not folder:
+        return []
+    cur = (_norm_dir(CONFIG.get('dir_a')), _norm_dir(CONFIG.get('dir_b')))
+    if (_norm_dir(st['dir_a']), _norm_dir(st['dir_b'])) != cur:
+        return []
+    f = _norm_dir(folder)
+    out = set()
+    for side, d in (('a', cur[0]), ('b', cur[1])):
+        if not d or d != f:
+            continue
+        want = {int(k[2:]) for k in st['removed'] if k[0] == side}
+        out.update(os.path.basename(p) for n, p in list_fibers(folder) if n in want)
+    return sorted(out)
+
+
+def without_removed(folder):
+    """`folder`, or a copy of it without the files removed in the Viewer."""
+    gone = removed_names(folder)
+    if not gone:
+        return folder
+    key = (_norm_dir(folder), tuple(gone), json.dumps(_folder_sig(folder), default=str))
+    hit = _REMOVED_STAGE.get(key)
+    if hit and os.path.isdir(hit):
+        return hit
+    skip = {g.lower() for g in gone}
+    dest = os.path.join(tempfile.mkdtemp(prefix='otdr_removed_'),
+                        os.path.basename(os.path.normpath(folder)) or 'traces')
+    os.makedirs(dest, exist_ok=True)
+    for fn in os.listdir(folder):
+        src = os.path.join(folder, fn)
+        if fn.lower() in skip or not os.path.isfile(src):
+            continue
+        dst = os.path.join(dest, fn)
+        try:
+            os.link(src, dst)
+        except OSError:
+            shutil.copy2(src, dst)
+    _REMOVED_STAGE[key] = dest
+    while len(_REMOVED_STAGE) > _REMOVED_STAGE_MAX:
+        _REMOVED_STAGE.pop(next(iter(_REMOVED_STAGE)))
+    return dest
+
+
 def flags_off():
     """True while the hub's Settings box is down (Robert 2026-09-28: "Viewer
     shouldn't show any flags if the settings box or connector launch knobs
@@ -1522,6 +1644,8 @@ class Handler(BaseHTTPRequestHandler):
             'gate_source': gate_source(),
             # the Settings box is down: the Viewer flags nothing (flags_off)
             'flags_off': flags_off(),
+            # the same fingerprint /api/mode serves (gate_sig)
+            'gate_sig': gate_sig(),
             # The report's end-connector reflectance verdicts (set_end_refl).
             # The report's verdicts, or -- opened on its own -- the ones the
             # server's own report run found (end_verdicts), None while pending.
@@ -1569,7 +1693,16 @@ class Handler(BaseHTTPRequestHandler):
                                                else 'suite'),
                              'dir_a': CONFIG.get('dir_a') or '',
                              'dir_b': CONFIG.get('dir_b') or '',
-                             'theme': 'dark' if CONFIG.get('theme') == 'dark' else 'light'})
+                             'theme': 'dark' if CONFIG.get('theme') == 'dark' else 'light',
+                             # the shared Viewer state's version (viewer_state)
+                             'state_ver': VIEWER_STATE['ver'],
+                             # the gates, so a profile picked in the hub
+                             # reaches an open Viewer (gate_sig)
+                             'gate_sig': gate_sig()})
+            return
+
+        if u.path == '/api/viewer_state':
+            self._send_json(viewer_state())
             return
 
         if u.path == '/api/report_defaults':
@@ -2048,6 +2181,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({'ok': True, **out})
             return
 
+        if u.path == '/api/viewer_state':
+            if not self._origin_is_local():
+                self._refuse_foreign()
+                return
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
+            except (ValueError, TypeError) as e:
+                self._send_json({'error': str(e)}, status=400)
+                return
+            self._send_json({'ok': True, 'ver': set_viewer_state(data)})
+            return
         if u.path == '/api/trace_edit':
             if not self._origin_is_local():
                 self._refuse_foreign()
@@ -3159,6 +3304,8 @@ def _end_verdict_key():
     a, b = CONFIG.get('dir_a'), CONFIG.get('dir_b')
     if not a or not b:
         return None
+    # without the files removed in the Viewer: a Remove runs the span again
+    a, b = without_removed(a), without_removed(b)
     mode = CONFIG.get('analysis_mode') if CONFIG.get('analysis_mode') in ('suite', 'fr') else 'suite'
     return (mode, a, _folder_sig(a), b, _folder_sig(b), _settings_arg())
 
@@ -3300,6 +3447,9 @@ def _report_suite_table():
             _SUITE_TABLE_FILE.clear()
             _SUITE_TABLE_FILE[path] = hit
         table = hit[1]
+        # made without the files removed in the Viewer, as every run is now:
+        # a report run before a Remove is not the table on screen any more
+        a, b = without_removed(a), without_removed(b)
         if not (_same_folder(table.get('dir_a'), a)
                 and _same_folder(table.get('dir_b'), b)):
             return None
@@ -3363,6 +3513,7 @@ def _one_direction_table(direction):
     folder = CONFIG.get('dir_a' if direction == 'a' else 'dir_b')
     if not folder:
         return None, False, 'no folder for that direction'
+    folder = without_removed(folder)
     key = (folder, (_folder_sig(folder), tuple(_trace_folder_sig(folder) or ())),
            direction, _settings_arg())
     with _UNI_TABLES_LOCK:

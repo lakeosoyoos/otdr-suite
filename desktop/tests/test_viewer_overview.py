@@ -172,7 +172,7 @@ def test_a_files_panel_selection_gets_the_same_two_regimes():
     html = open(VIEWER_HTML, encoding='utf-8').read()
     fn = html.split('async function applyFileSelection(want) {', 1)[1].split('\n}', 1)[0]
     assert 'const MAX = 48;' not in fn
-    assert 'const overview = tasks.length > MAX_DETAIL_TRACES;' in fn
+    assert 'const overview = tasks.length > MAX_DETAIL_TRACES\n    || gTraces.length + tasks.length > MAX_DETAIL_TRACES;' in fn
     assert 'const MAX = overview ? MAX_OVERVIEW_FIBERS * 2 : MAX_DETAIL_TRACES;' in fn
     assert 'await loadOverview(tasks);' in fn
     assert 'loadOne(x.key, x.f, x.d)' in fn          # detail path kept

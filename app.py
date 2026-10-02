@@ -2660,6 +2660,32 @@ def _panel_ss_folder(dir_a, dir_b):
     return fi.materialize_combined(placed, dest), renamed
 
 
+def _run_folder(folder):
+    """The folder a report runs on: `folder`, or a copy of it without the
+    files the tech removed in the Viewer (Robert 2026-10-01: a Viewer Remove
+    takes them out of the Splice Report, Unidirectional and Duplicate Check
+    too).  Never raises: a copy that cannot be made runs the folder as is."""
+    if not folder:
+        return folder
+    try:
+        return trace_server.without_removed(folder)
+    except Exception as exc:
+        report_error('report folder without removed files', exc, {'folder': folder})
+        return folder
+
+
+def _viewer_removed_note(*folders):
+    """Say on a report page how many files removed in the Viewer it leaves out."""
+    try:
+        n = sum(len(trace_server.removed_names(f)) for f in folders if f)
+    except Exception:
+        return
+    if n:
+        st.caption(f"{n} file{'s' if n != 1 else ''} removed in the Viewer "
+                   f"{'are' if n != 1 else 'is'} left out of this report. "
+                   'Put them back from the Viewer’s Files list (right-click).')
+
+
 def _take_panel_ss_folder(dir_a, dir_b):
     """Build (or find) the left panel's Secret Sauce folder and put it where
     the page, Clear Report and Clear Traces look for it.  Returns what
@@ -3779,7 +3805,8 @@ def page_duplicate_check():
             # trace swapped on disk since the sidebar built the folder gets a
             # new folder now (see _panel_ss_folder).
             try:
-                folder, _renamed = _take_panel_ss_folder(_pa, _pb)
+                folder, _renamed = _take_panel_ss_folder(_run_folder(_pa),
+                                                         _run_folder(_pb))
             except Exception as _exc:
                 report_error('secret sauce: A and B folder', _exc,
                              {'dir_a': _pa, 'dir_b': _pb})
@@ -3788,10 +3815,11 @@ def page_duplicate_check():
                            'still being copied in, try again when that is done.')
                 return
         else:
-            folder = _pa or _pb
+            folder = _run_folder(_pa or _pb)
+        _viewer_removed_note(_pa, _pb)
         st.caption('Traces: ' + ('the A and B folders' if _pa and _pb
                                  and folder not in (_pa, _pb)
-                                 else f"the {'A' if folder == _pa else 'B'} folder")
+                                 else f"the {'A' if _pa else 'B'} folder")
                    + ' loaded in the left panel.')
         if _renamed:
             st.caption(_renamed_note(_renamed))
@@ -6585,6 +6613,7 @@ def _sr_span_inputs(span):
         mode = None
         if dir_a and dir_b:
             st.caption('Traces: the A and B folders loaded in the left panel.')
+            _viewer_removed_note(dir_a, dir_b)
         else:
             st.caption(f"Traces: only the {'A' if dir_a else 'B'} folder is "
                        f"loaded in the left panel. Load the "
@@ -7064,7 +7093,8 @@ def page_splice_report():
             out_xlsx = _unused_report_path(os.path.join(_sr_dest, _name),
                                            [q['out'] for q in queue])
             queue.append({'span': _n, 'dirs': (_da, _db), 'out': out_xlsx,
-                          'cmd': splicereport_cmd(_da, _db, out_xlsx, _sa, _sb,
+                          'cmd': splicereport_cmd(_run_folder(_da), _run_folder(_db),
+                                                  out_xlsx, _sa, _sb,
                                                   contract=_contract,
                                                   overrides=overrides,
                                                   show=sr_show,
@@ -7719,6 +7749,7 @@ def page_unidirectional():
         _uni_pside = 'a' if folder == _pa else 'b'
         st.caption(f"Traces: the {'A' if folder == _pa else 'B'} folder loaded "
                    'in the left panel.')
+        _viewer_removed_note(folder)
     else:
         c1, c2 = st.columns([1, 2])
         with c1:
@@ -7861,7 +7892,7 @@ def page_unidirectional():
     if _run_uni:
         out_xlsx = _unused_report_path(
             os.path.join(_uni_dest, 'unidirectional_events.xlsx'))
-        st.session_state['uni_pending_cmd'] = uni_cmd(folder, out_xlsx,
+        st.session_state['uni_pending_cmd'] = uni_cmd(_run_folder(folder), out_xlsx,
                                                       direction=dir_choice,
                                                       landmarks=landmarks,
                                                       overrides=uni_overrides,
