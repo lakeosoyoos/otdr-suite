@@ -781,3 +781,40 @@ def test_a_shoots_run_in_starts_the_fec_tools(hub, tmp_path, monkeypatch):
     hub._run_shoot_in("Viewer FEC", sh)
     assert ss["nav_radio"] == "Viewer FEC"
     assert (ss["view_dir_a_input"], ss["view_dir_b_input"]) == (sh["a"], sh["b"])
+
+
+def test_a_shoots_b_run_on_unidirectional_opens_the_viewer_on_b(settings_dir, span_dir,
+                                                                  tmp_path):
+    """A shoot's Run In… Unidirectional run on its B folder opens the Viewer
+    with B's files in the B slot, as a run on the page's own folder does
+    (main #553).  Before #553 every such run said dir=a and put B's files in
+    the A slot, listed as A->B; a shoot names no left panel, so its side comes
+    from the files' own direction stamps."""
+    import re
+    from urllib.parse import parse_qsl
+    from conftest import finish_engine_run
+    at = run_streamlit().run()
+    work = _new_project(at, span_dir, tmp_path)
+    # A new project has no Reports folder yet, and the Unidirectional engine
+    # does not make the folder it writes to (the Splice Report's does).
+    (work / "Reports").mkdir(exist_ok=True)
+    at = run_streamlit().run()
+    next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
+    at.text_input(key="home_folder").set_value(str(work)).run()
+    next(b for b in at.button if b.label == "Open This Folder").click().run()
+    at.button(key="run_unidirectional_2026-05-06").click().run()
+    assert not at.exception, list(at.exception)
+    (run_on,) = [r for r in at.main.radio if r.label == "Run On"]
+    run_on.set_value("B folder").run()
+    next(b for b in at.main.button if b.label == "Run Unidirectional Report").click().run()
+    finish_engine_run(at, "uni")
+    assert not at.exception and not at.error, (list(at.exception), [e.value for e in at.error])
+    grid = next(f.proto.srcdoc for f in at.get("iframe") if "class='vc'" in (f.proto.srcdoc or ""))
+    assert set(re.findall(r"data-dir='(\w)'", grid)) == {"b"}
+    next(r for r in at.main.radio if r.label == "Cell Clicks Open In").set_value(
+        "This tab (Viewer page)").run()
+    hrefs = re.findall(r"href='\?(nav=viewer[^']*)'", "\n".join(m.value for m in at.main.markdown))
+    assert hrefs, "no cell to click in the grid"
+    shoot_b = str(work / "Traces" / "2026-05-06" / "B")
+    for q in (dict(parse_qsl(h, keep_blank_values=True)) for h in hrefs):
+        assert q["dir"] == "b" and q["srb"] == shoot_b and "sra" not in q
