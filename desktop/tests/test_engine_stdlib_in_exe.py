@@ -32,6 +32,7 @@ KNOWN_IN_EXE = {
     'webbrowser', 'xml', 'zipfile', 'zlib', 'zoneinfo',
     # OTDR Suite App's own engine code (2026-10-02), each with its reason:
     'ctypes',     # desktop/launcher.py imports it: PyInstaller bundles it
+    'msvcrt',     # desktop/launcher.py imports it; built into Python on Windows
     'inspect',    # Streamlit (collect_all) imports it
     'posixpath',  # pathlib imports it
     'pwd',        # POSIX only, behind os.name != 'nt' (never on Windows)
