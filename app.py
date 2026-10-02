@@ -1032,17 +1032,18 @@ def _fmt_clock(ts):
 def _deadline_note(running):
     """The sentence the sidebar adds while reports still run, or '' once the
     hour has passed.  Leading space: it follows another sentence."""
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
     due, deadline = _update_due(running)
     if due:
         return ''
     return (f' Reports keep working until {_fmt_clock(deadline)}, then pause '
-            'until ' + PRODUCT_NAME + ' is updated.')
+            'until ' + _pn + ' is updated.')
 
 
 # Shown on a report page while this copy is behind but the hour has not come.
 UPDATE_HEADS_UP_MSG = (
     'Update {latest} is available (running {running}). Reports keep working '
-    'until {when}. After that, ' + PRODUCT_NAME + ' needs to update before it runs '
+    'until {when}. After that, OTDR Suite needs to update before it runs '
     'another report.'
 )
 
@@ -1050,7 +1051,7 @@ UPDATE_HEADS_UP_MSG = (
 # tech's first question — "why won't it let me?" — or the next move is a phone
 # call, not a restart.
 STALE_BLOCK_MSG = (
-    '🔒 **Report generation is paused: ' + PRODUCT_NAME + ' needs a restart.**\n\n'
+    '🔒 **Report generation is paused: OTDR Suite needs a restart.**\n\n'
     'This session is running **engine {running}**, but **engine {latest}** '
     'has been published. Different engines can print different numbers for '
     'the same traces, so reports are held until this copy is up to date.\n\n'
@@ -1062,15 +1063,21 @@ STALE_BLOCK_MSG = (
 # files this exe cannot download (see _needs_install).  Telling the tech to
 # restart here is an instruction that can never work.
 INSTALL_BLOCK_MSG = (
-    '🔒 **Report generation is paused: ' + PRODUCT_NAME + ' needs a fresh install.**\n\n'
+    '🔒 **Report generation is paused: OTDR Suite needs a fresh install.**\n\n'
     'This session is running **engine {running}**, but **engine {latest}** '
-    'has been published, and it adds files this copy of ' + PRODUCT_NAME + ' cannot '
+    'has been published, and it adds files this copy of OTDR Suite cannot '
     'download on its own, so Update & Restart will not apply it. Different '
     'engines can print different numbers for the same traces, so reports are '
     'held until this copy is up to date.\n\n'
-    '**Nothing is lost.** Finish what you are doing, close ' + PRODUCT_NAME + ' '
+    '**Nothing is lost.** Finish what you are doing, close OTDR Suite '
     'completely, then download and run the installer: {url}'
 )
+# The product's name where the tech reads it (the App: "OTDR App").  A second
+# assignment, as INSTALLER_URL's below, so the literals stay readable to the
+# tests that lift them.
+UPDATE_HEADS_UP_MSG, STALE_BLOCK_MSG, INSTALL_BLOCK_MSG = (
+    m.replace('OTDR Suite', PRODUCT_NAME)
+    for m in (UPDATE_HEADS_UP_MSG, STALE_BLOCK_MSG, INSTALL_BLOCK_MSG))
 
 
 def _report_gate(key):
@@ -1092,6 +1099,7 @@ def _report_gate(key):
     returns None and the report runs.  A tech in a truck with no signal must
     still be able to work; blocking on a FAILED CHECK would be an outage of
     our own making."""
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
     try:
         stale = _update_state()
     except Exception:
@@ -1118,7 +1126,7 @@ def _report_gate(key):
             if _relaunch_and_exit():
                 _render_restart_watchdog()
             else:
-                st.error(f'Couldn\'t start the restart. Close {PRODUCT_NAME} '
+                st.error(f'Couldn\'t start the restart. Close {_pn} '
                          'completely and open it again to pick up the update.')
     else:
         st.caption('Restart the app to apply. Updates install at launch.')
@@ -1258,6 +1266,7 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
     If the parent is ever unreachable, `say` still writes the in-iframe
     caption, which is what the strip is for.
     """
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
     return """
 <div id="wd" style="font-family:sans-serif;font-size:13px;color:#000000"></div>
 <script>
@@ -1366,7 +1375,7 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
 })();
 </script>
 """.replace('__HEALTH__', RESTART_HEALTH_PATH) \
-   .replace('OTDR Suite', PRODUCT_NAME) \
+   .replace('OTDR Suite', _pn) \
    .replace('__TIMEOUT_MS__', str(int(timeout_s) * 1000))
 
 
@@ -1404,10 +1413,11 @@ def _cache_pinned():
 
 
 def _render_cache_pinned_notice(sidebar=False):
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
     target = st.sidebar if sidebar else st
     target.warning(
         'Updates cannot be kept on this computer. Files this app downloads '
-        f'keep disappearing, so {PRODUCT_NAME} is running the copy that came with '
+        f'keep disappearing, so {_pn} is running the copy that came with '
         'its installer. To get the newest version, download and run the '
         f'installer again: {INSTALLER_URL}')
 
@@ -1451,11 +1461,12 @@ def _needs_install():
 
 
 def _render_install_notice(latest, running, sidebar=False):
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
     target = st.sidebar if sidebar else st
     target.warning(
         f'Update {latest} needs a fresh install (running {running}). It adds '
-        f'files this copy of {PRODUCT_NAME} cannot download on its own, so Update '
-        f'& restart will not apply it. Close {PRODUCT_NAME} completely, then '
+        f'files this copy of {_pn} cannot download on its own, so Update '
+        f'& restart will not apply it. Close {_pn} completely, then '
         f'download and run the installer: {INSTALLER_URL}')
 
 
@@ -1469,6 +1480,7 @@ def _render_update_nudge():
     only ONE manifest fetch happens per recheck window (3 s cap).  Every
     failure is swallowed by _nudge_check: equal, older or unreachable renders
     nothing at all."""
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
     if 'upd_restart_blocked' not in st.session_state:
         blocked = os.path.exists(_restart_marker_path())
         if blocked:
@@ -1478,9 +1490,9 @@ def _render_update_nudge():
                 pass
         st.session_state['upd_restart_blocked'] = blocked
     if st.session_state['upd_restart_blocked']:
-        st.error(f'The update didn\'t start: the previous {PRODUCT_NAME} is still '
+        st.error(f'The update didn\'t start: the previous {_pn} is still '
                  'running. Close it completely (or reboot), then start '
-                 f'{PRODUCT_NAME} again.')
+                 f'{_pn} again.')
 
     if _cache_pinned():
         _render_cache_pinned_notice()
@@ -1506,7 +1518,7 @@ def _render_update_nudge():
             if _relaunch_and_exit():
                 _render_restart_watchdog()
             else:
-                st.error(f'Couldn\'t start the restart. Close {PRODUCT_NAME} and '
+                st.error(f'Couldn\'t start the restart. Close {_pn} and '
                          'open it again to pick up the update.')
     else:
         st.caption('Restart the app to apply. Updates install at launch.')
@@ -1564,11 +1576,11 @@ def _blocked_by_policy(text):
 
 _POLICY_HEADLINE = 'Windows blocked a file that came with this app.'
 _POLICY_BODY = (
-    f'A security policy on this computer stopped {PRODUCT_NAME} from loading one '
+    'A security policy on this computer stopped OTDR Suite from loading one '
     'of its own files. This is set by the computer, not by the app, so '
     'repairing or re-downloading will not clear it.')
 _POLICY_STEPS = (
-    f'Install the newest version of {PRODUCT_NAME} first: it is digitally signed, '
+    'Install the newest version of OTDR Suite first: it is digitally signed, '
     'and older versions were not, which is the usual reason a policy stops '
     'one. If it still happens after that, this has to be allowed by whoever '
     'manages security settings on your computers.')
@@ -1578,7 +1590,12 @@ _POLICY_FOR_IT = (
     '  Applications and Services Logs\n'
     '    Microsoft > Windows > CodeIntegrity > Operational\n\n'
     'That entry names the exact file and the policy that stopped it. Please '
-    f'allow {PRODUCT_NAME}, published by Robert Colbert, to run.')
+    'allow OTDR Suite, published by Robert Colbert, to run.')
+# The product's name (the App: "OTDR App"); globals().get, because a test
+# runs these _POLICY lines on their own.
+_POLICY_BODY, _POLICY_STEPS, _POLICY_FOR_IT = (
+    m.replace('OTDR Suite', globals().get('PRODUCT_NAME', 'OTDR Suite'))
+    for m in (_POLICY_BODY, _POLICY_STEPS, _POLICY_FOR_IT))
 
 
 def _policy_block_caption(exc):
@@ -1595,7 +1612,8 @@ def _policy_block_caption(exc):
 def _engine_policy_block_page(exc):
     """The boot-time version: Windows blocked a file, so say that, and do NOT
     offer the repair — it rewrites engine files, and the blocked one is not."""
-    st.set_page_config(page_title=PRODUCT_NAME, layout='centered')
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
+    st.set_page_config(page_title=_pn, layout='centered')
     st.title('Windows Blocked Part of This App')
     st.error(_POLICY_HEADLINE)
     st.write(_POLICY_BODY)
@@ -1618,8 +1636,9 @@ def _engine_file_missing_page(exc):
     button.  The button schedules the repair and restarts; the launcher does
     the work at boot, where nothing is holding the files open.
     """
-    st.set_page_config(page_title=PRODUCT_NAME, layout='centered')
-    st.title(f'{PRODUCT_NAME} Needs to Repair Itself')
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
+    st.set_page_config(page_title=_pn, layout='centered')
+    st.title(f'{_pn} Needs to Repair Itself')
     st.error('A file this app needs is missing from this computer.')
     st.write(
         'The app checks its own files at every start, and one of them is no '
@@ -1642,7 +1661,7 @@ def _engine_file_missing_page(exc):
         if _relaunch_and_exit():
             _render_restart_watchdog()
         else:
-            st.error(f'Close {PRODUCT_NAME} and open it again to finish the repair.')
+            st.error(f'Close {_pn} and open it again to finish the repair.')
     with st.expander('Details'):
         st.code(f'{type(exc).__name__}: {exc}\n\nengine: {HERE}')
     st.stop()
@@ -1657,6 +1676,7 @@ def _engine_damaged_notice(stderr, key):
     from under a run that had already started.  What the tech would otherwise
     read is "Secret Sauce did not return a result" over a Python traceback in
     an expander, which tells them nothing they can act on."""
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
     text = stderr or ''
     if 'ModuleNotFoundError' not in text and 'ImportError' not in text:
         return False
@@ -1681,7 +1701,7 @@ def _engine_damaged_notice(stderr, key):
         if _relaunch_and_exit():
             _render_restart_watchdog()
         else:
-            st.error(f'Close {PRODUCT_NAME} and open it again to finish the repair.')
+            st.error(f'Close {_pn} and open it again to finish the repair.')
     with st.expander('Details'):
         st.code(text[-4000:] or '(no output)')
     return True
@@ -3789,10 +3809,11 @@ def demo_project(root=None):
 
 def _render_home(msg):
     """The two-choice start screen.  No sidebar: nothing in it applies yet."""
+    _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
     st.markdown('<style>[data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"]'
                 '{display:none}</style>', unsafe_allow_html=True)
     _render_update_nudge()
-    st.markdown(f"<h2 style='text-align:center'>🔬 {PRODUCT_NAME}</h2>", unsafe_allow_html=True)
+    st.markdown(f"<h2 style='text-align:center'>🔬 {_pn}</h2>", unsafe_allow_html=True)
     # One column, three choices stacked, all the same blue (Robert, 2026-09-24).
     _l, mid, _r = st.columns([1, 2, 1])
     with mid:
@@ -14757,9 +14778,10 @@ _sidebar_footer = st.sidebar.container(key='sidebar_footer')
 _render_theme_control(_sidebar_footer)
 _appv, _engv = _app_version(), _engine_version()
 if _appv == 'dev' and _engv == 'dev':
-    _sidebar_footer.caption(f'{PRODUCT_NAME} · dev')
+    _sidebar_footer.caption('OTDR Suite · dev'.replace('OTDR Suite', PRODUCT_NAME))
 else:
-    _sidebar_footer.caption(f'{PRODUCT_NAME} · app {_appv} · engine: {_engv}')
+    _sidebar_footer.caption(f'OTDR Suite · app {_appv} · engine: {_engv}'
+                            .replace('OTDR Suite', PRODUCT_NAME))
 
 
 if os.environ.get('OTDR_SUITE_NO_UPDATE'):
