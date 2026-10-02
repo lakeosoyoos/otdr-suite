@@ -606,6 +606,11 @@
      below.  Pinning the strip is the point: FR prints it at the bottom of the
      table, which on 2,304 rows means nobody ever sees it. */
   .fr-scroll { overflow: auto; flex: 1; min-height: 0; }
+  /* A table that has to come from the server again stays up, dimmed, under
+     this note until the new one paints (holdOldTable). */
+  #event-tbody-wrap > .tbl-updating { flex: none; padding: 2px 12px; font-size: 11px;
+                                      color: var(--text-sec); font-style: italic; }
+  #event-tbody-wrap.tbl-stale > :not(.tbl-updating) { opacity: .5; }
   /* the one-direction fibres' own table, under the A+B one */
   .onedir-box { flex: 0 1 auto; max-height: 45%; min-height: 0; display: flex;
                 flex-direction: column; border-top: 2px solid #b0bdcc; }
@@ -1068,6 +1073,12 @@ let gExportDpr = 0;                    // the Report draws the chart at this sca
 const gLoadsInFlight = new Set();
 let gTableBusy = false;                // the event table waits on its server step
 let gTableGoKm = null;                 // a report link's km: the table column to scroll to
+// The tables the server builds (FastReporter's, the Splice Report's), kept
+// for the traces that asked for them: kind -> {key, res, pending}.  See
+// serverTableKey.
+const gServerTables = new Map();
+let gTableLive = null;                 // the server-built table on screen, see endVerdictsLanded
+let gHeldNodes = [];                   // the last table, held up while the next one is built
 let gBase = null;                      // the chart without its overlay (keepBase)
 let gBaseImg = null;                   // that copy's canvas, reused
 // The shared Viewer state (see pushViewerState).
@@ -1079,6 +1090,10 @@ let gStatePushT = null;
 let gStateApplying = 0;                // applying another window's state
 let gStateLoad = null;                 // that state's load, while it runs
 let gGateSig = null;                    // the gates' fingerprint (gate_sig)
+// The removed files the server's runs leave out, as this window last sent
+// or took them (sorted, comma-joined).  The Splice Report table kept for the
+// traces follows it (renderSuiteBidiGrid).
+let gServerRemovedSig = '';
 const MARKER_HIT_PX = 6;               // grab radius for dragging a marker
 
 // ─── Display transforms (stacked mode flips B to A's km frame + offsets Y) ─
@@ -2945,8 +2960,98 @@ async function buildTable() {
   renderEventTable();
 }
 function tableSettled() {
+  dropOldTable();
   if (gTableBusy) { gTableBusy = false; refreshReadout(); }
   tableGoKm();
+}
+
+// ─── The server-built tables, kept ─────────────────────────────────────
+// A whole span's FastReporter table took a minute or more to come back, and
+// every repaint of the event panel asked for it again: the end-connector
+// verdicts landing a moment after it painted threw the finished table away,
+// left the area blank under "Building the table…" and asked for the same
+// rows a second time.  The rows depend only on the files (the loaded trace
+// objects: a re-loaded or edited trace is a new object), the mode and the
+// folders, so the answer is kept for exactly those, and a second ask while
+// the first is on its way waits for it.
+const gTraceStamps = new WeakMap();
+let gTraceStampN = 0;
+function traceStamp(t) {
+  if (!t) return 0;
+  let n = gTraceStamps.get(t);
+  if (!n) { n = ++gTraceStampN; gTraceStamps.set(t, n); }
+  return n;
+}
+// `extra`: whatever else the table's answer follows (the Splice Report's
+// follows the report run's settings, see renderSuiteBidiGrid).
+function serverTableKey(kind, pairs, extra = '') {
+  return [kind, gAnalysisMode, (gInfo && gInfo.dir_a) || '', (gInfo && gInfo.dir_b) || '', extra,
+          pairs.map(p => `${p.fiber}:${traceStamp(p.ta)}:${traceStamp(p.tb)}`).join(',')].join('|');
+}
+function keptServerTable(kind, key) {
+  const k = gServerTables.get(kind);
+  return k && k.key === key && k.res ? k.res : null;
+}
+// The answer for `key`, asked once: `keep(res)` says whether it may serve
+// the next repaint (an answer still pending, or an error, is asked again).
+function askServerTable(kind, key, url, keep) {
+  const k = gServerTables.get(kind);
+  if (k && k.key === key && k.pending) return k.pending;
+  const entry = { key, res: null, pending: null };
+  entry.pending = fetch(url).then(r => r.json()).then(res => {
+    res = res || {};
+    if (gServerTables.get(kind) === entry) {
+      entry.pending = null;
+      if (keep(res)) entry.res = res; else gServerTables.delete(kind);
+    }
+    return res;
+  }, e => {
+    if (gServerTables.get(kind) === entry) gServerTables.delete(kind);
+    throw e;
+  });
+  gServerTables.set(kind, entry);
+  return entry.pending;
+}
+// A table that has to come from the server again (a mode switch, other
+// traces) leaves the last one on screen, dimmed, under a note, until the new
+// one paints (tableSettled): never a blank area, and never a stale table
+// without the note.  `prev`: [node, scrollTop, scrollLeft] of what was there.
+function holdOldTable(host, prev) {
+  const note = document.createElement('div');
+  note.className = 'tbl-updating';
+  note.textContent = 'Updating the table…';
+  host.appendChild(note);
+  gHeldNodes = [note];
+  for (const [n] of prev) {
+    host.appendChild(n);
+    gHeldNodes.push(n);
+  }
+  // back where the tech had scrolled it (re-attached, it starts at the top)
+  for (const [n, top, left] of prev) {
+    if (top) n.scrollTop = top;
+    if (left) n.scrollLeft = left;
+  }
+  host.classList.add('tbl-stale');
+}
+function dropOldTable() {
+  const host = document.getElementById('event-tbody-wrap');
+  if (!host) return;
+  for (const n of gHeldNodes) if (n.parentNode === host) host.removeChild(n);
+  gHeldNodes = [];
+  host.classList.remove('tbl-stale');
+}
+// The end-connector verdicts change only the end marks, the P/F column and
+// the drawer's marks of a server-built table: the one on screen takes them
+// in place (refreshVerdicts).  It cannot when a filter decides which rows
+// and columns show; the panel is laid out again then, from the kept answer.
+function endVerdictsLanded() {
+  // Mid-load the table is not built yet: the load builds it when it ends,
+  // with these.  Built now it was a table of the traces loaded so far,
+  // thrown away a few seconds later.
+  if (gLoadsInFlight.size) return;
+  const live = gTableLive;
+  if (live && live.scroller.parentNode === live.host && live.refreshVerdicts()) return;
+  renderEventTable();
 }
 function tableStepEnd(wasBusy) {
   if (gTableBusy !== wasBusy) refreshReadout();
@@ -3187,8 +3292,7 @@ function pushViewerState() {
     const removed = [...gRemovedFiles];
     const sig = stateSig(keys, removed, gAddDir);
     if (sig === gStateSig) return;
-    const removedMoved = !gStateSig
-      || JSON.parse(gStateSig)[1].join() !== [...removed].sort().join();
+    const removedSig = [...removed].sort().join(',');
     gStateSig = sig;
     try {
       const r = await fetch('/api/viewer_state', { method: 'POST',
@@ -3197,7 +3301,12 @@ function pushViewerState() {
       if (j && j.ver) gStateVer = Math.max(gStateVer, j.ver);
       // The table is the span run again without the removed files (the
       // server's run follows this state), so ask for it again now the
-      // server has it: a table asked for before this landed is the old run.
+      // server has it: a table asked for before this landed is the old run
+      // (its kept answer is keyed by the removed files the server had).
+      // Only when they moved: a load or a Dir change keeps the table on
+      // screen, which is built once (see serverTableKey).
+      const removedMoved = removedSig !== gServerRemovedSig;
+      gServerRemovedSig = removedSig;
       if (removedMoved && gTraces.length) renderEventTable();
     } catch (e) { gStateSig = ''; }    // the next change tries again
   }, 300);
@@ -3222,6 +3331,7 @@ async function applyViewerState(s, keysToo = true) {
   try {
     gRemovedFiles.clear();
     (s.removed || []).forEach(k => gRemovedFiles.add(k));
+    gServerRemovedSig = [...gRemovedFiles].sort().join(',');
     const want = new Set((s.keys || []).filter(k => !gRemovedFiles.has(k)));
     gStateSig = stateSig(keysToo ? [...want] : gTraces.map(t => t.key),
                          [...gRemovedFiles], s.add_dir || 'both');
@@ -6003,19 +6113,28 @@ function wireEventSettings() {
 
 // Opened on its own, the server runs the report on the folders for the end-
 // connector verdicts; they land a little after the traces, then the table
-// repaints with them.
+// takes them (endVerdictsLanded).
+// One question at a time.  The trace server answers one request at a time,
+// so while a whole span's table held it (a minute or more) every tick queued
+// another question; they were all answered together once the table was, and
+// each one laid the panel out again and asked for the whole table again.
 let gEndPoll = null;
+let gEndAsking = false;
 function pollEndVerdicts() {
   if (gEndPoll) return;
-  gEndPoll = setInterval(async () => {
+  const poll = setInterval(async () => {
+    if (gEndAsking || gEndPoll !== poll) return;
+    gEndAsking = true;
     let v;
     try { v = await (await fetch('/api/end_verdicts')).json(); } catch (e) { return; }
-    if (v.end_pending) return;
-    clearInterval(gEndPoll); gEndPoll = null;
+    finally { gEndAsking = false; }
+    if (v.end_pending || gEndPoll !== poll) return;
+    clearInterval(poll); gEndPoll = null;
     gInfo.end_refl = v.end_refl; gInfo.panel_span = v.panel_span;
     gEndRefl = Array.isArray(v.end_refl) ? v.end_refl : [];
-    renderEventTable();
+    endVerdictsLanded();
   }, 3000);
+  gEndPoll = poll;
 }
 function frameWarnText(nB) {
   if (gFecMode) return '   FEC mode: each end is graded on its own; A and B are not paired.';
@@ -6034,7 +6153,14 @@ function renderEventTable() {
   queueMicrotask(() => tableStepEnd(wasBusy));
   const host = document.getElementById('event-tbody-wrap');
   const hint = document.getElementById('event-hint');
+  // What is up now, held while a table that waits on the server is built
+  // (holdOldTable); a note already there is made again.
+  const prev = [...host.childNodes].filter(n => n.className !== 'tbl-updating')
+    .map(n => [n, Number(n.scrollTop) || 0, Number(n.scrollLeft) || 0]);
   host.innerHTML = '';
+  host.classList.remove('tbl-stale');
+  gHeldNodes = [];
+  gTableLive = null;
   gGridGoTo = null;
   gTableExport = null;
   gDrawerMarks = [];                 // the drawer waits for the mode's table
@@ -6058,11 +6184,13 @@ function renderEventTable() {
   // OTDR Suite mode, FastReporter's in FastReporter mode.  The
   // single-direction grid stands in when nothing is paired.
   if (gFecMode && renderFecGrid(visible, host, hint)) return;
-  if (gAnalysisMode === 'suite') {
-    if (renderSuiteBidiGrid(visible, host, hint)) return;
-  } else if (renderFrBidiGrid(visible, host, hint)) return;
-  renderFastReporterGrid(visible, host, hint);
-  return;
+  const server = gAnalysisMode === 'suite'
+    ? renderSuiteBidiGrid(visible, host, hint) : renderFrBidiGrid(visible, host, hint);
+  if (!server) {
+    renderFastReporterGrid(visible, host, hint);
+    return;
+  }
+  if (gTableBusy && prev.length) holdOldTable(host, prev);
 }
 
 // ── FEC mode table ──────────────────────────────────────────────────────
@@ -7527,10 +7655,17 @@ function renderFrBidiGrid(traces, host, hint) {
   }
   if (!pairs.length) return false;
   const seq = ++gFrTableSeq;
+  // The same traces' table is laid out again, not asked for again.
+  const key = serverTableKey('fr', pairs);
+  const kept = keptServerTable('fr', key);
+  if (kept) {
+    paintFrBidiGrid(pairs, singles, kept, host, hint);
+    return true;
+  }
   gTableBusy = true;                       // "Building the table…" until it paints
   hint.textContent = `FastReporter table: reading ${pairs.length} fiber pair${pairs.length === 1 ? '' : 's'}…`;
-  fetch(`/api/fr_table?fibers=${pairs.map(p => p.fiber).join(',')}`)
-    .then(r => r.json())
+  askServerTable('fr', key, `/api/fr_table?fibers=${pairs.map(p => p.fiber).join(',')}`,
+                 res => !res.error)
     .then(res => {
       if (seq !== gFrTableSeq) return;
       try { paintFrBidiGrid(pairs, singles, res || {}, host, hint); } finally { tableSettled(); }
@@ -7643,20 +7778,25 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // engine reads KeyEvents, the table FR's block, so the two differ by a
   // hair).  A launch connector is a launch-level row, which the loss rules
   // never judge; the report grades its reflectance, so it is judged here.
-  const endBad = { a: new Set(), b: new Set() };
-  gEndRefl.forEach(v => {
-    const fi = have.findIndex(p => String(p.fiber) === String(v.fiber));
-    const which = v.dir === 'A' ? 'a' : 'b';
-    if (fi < 0) return;
-    let best = null, bestD = 0.5;
-    cols.forEach(c => {
-      const x = c.ev[fi], leg = x && x.row[which];
-      if (!leg || leg.synthetic || leg.refl == null) return;
-      const d = Math.abs(leg.refl - v.refl);
-      if (d <= bestD) { best = x; bestD = d; }
+  // Worked out again when the verdicts land after the table (refreshVerdicts).
+  const endBadNow = () => {
+    const bad = { a: new Set(), b: new Set() };
+    gEndRefl.forEach(v => {
+      const fi = have.findIndex(p => String(p.fiber) === String(v.fiber));
+      const which = v.dir === 'A' ? 'a' : 'b';
+      if (fi < 0) return;
+      let best = null, bestD = 0.5;
+      cols.forEach(c => {
+        const x = c.ev[fi], leg = x && x.row[which];
+        if (!leg || leg.synthetic || leg.refl == null) return;
+        const d = Math.abs(leg.refl - v.refl);
+        if (d <= bestD) { best = x; bestD = d; }
+      });
+      if (best) bad[which].add(best);
     });
-    if (best) endBad[which].add(best);
-  });
+    return bad;
+  };
+  let endBad = endBadNow();
   const legReflFails = (x, which) => {
     if (endBad[which].has(x)) return true;
     const leg = x.row[which];
@@ -7734,7 +7874,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // verdicts, FR's transplanted legs as hollow rings (see drawPairing).  In
   // OTDR Suite mode this table only stands in for the report's, and the
   // drawer keeps the files' own events.
-  let marks = null;
+  let marks = null, markCols = null;
   if (gAnalysisMode === 'fr') {
     const drawerLeg = (x, w) => {
       const leg = x.row[w];
@@ -7742,13 +7882,13 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       return { km: rawKm(leg.pos_m), loss: leg.loss, hollow: !legOk(leg),
                fail: cellFails(x, w), warn: cellWarns(x, w) };
     };
-    marks = { mode: 'fr', have, goCell: () => {},
-      cols: cols.map((c, i) => ({ i, title: `Event ${i + 1}`, km: c.km, cells: keepCol[i]
+    markCols = () => cols.map((c, i) => ({ i, title: `Event ${i + 1}`, km: c.km, cells: keepCol[i]
         ? c.ev.map((x, fi) => x && { fi, avg: x.row.loss, km: c.km,
                                      avgFail: cellFails(x, 'avg'), avgWarn: cellWarns(x, 'avg'),
                                      legs: { a: drawerLeg(x, 'a'), b: drawerLeg(x, 'b') } })
                .filter(Boolean)
-        : [] })) };
+        : [] }));
+    marks = { mode: 'fr', have, goCell: () => {}, cols: markCols() };
   }
   const showSec = gShowSections && !collapse;
 
@@ -8041,6 +8181,18 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     showSpanMenu(ev.clientX, ev.clientY, tr.dataset.dir, +td.dataset.km,
                  tr.dataset.fiber, tr.dataset.src);
   });
+  // End verdicts landing later move only the end marks, the P/F column and
+  // the drawer's marks (see endVerdictsLanded): the rows on screen are
+  // painted again, the rest stays.  A filter or the one-direction fibres'
+  // table below follow the verdicts too, so those lay the panel out again.
+  gTableLive = { host, scroller, refreshVerdicts: () => {
+    if (cellFilterOn() || gFlaggedOnly || singles.length) return false;
+    endBad = endBadNow();
+    if (marks) marks.cols = markCols();
+    paintRows();
+    draw();
+    return true;
+  } };
 }
 
 // ─── Declaring the span ───────────────────────────────────────────────
@@ -8235,6 +8387,21 @@ function renderSuiteBidiGrid(traces, host, hint) {
     singles.length = 0;
   }
   const seq = ++gSuiteTableSeq;
+  // The same traces' table, from the same report run, is laid out again,
+  // not asked for again.  The run follows the server's settings and
+  // folders, all of which /api/list reports (its end verdicts aside: they
+  // come from that same run), and the files removed in the Viewer, which the
+  // run leaves out (gServerRemovedSig: the shared state, the same in every
+  // Viewer window).
+  const listSig = JSON.stringify(Object.assign({}, gInfo || {},
+    { end_refl: null, panel_span: null, end_pending: null }));
+  const key = serverTableKey('suite', pairs,
+                             `${oneDir || ''}|${listSig}|${gServerRemovedSig}`);
+  const kept = keptServerTable('suite', key);
+  if (kept) {
+    paintSuiteBidiGrid(pairs, singles, kept, host, hint);
+    return true;
+  }
   gTableBusy = true;                       // "Building the table…" until it paints
   hint.textContent = oneDir
     ? `${PRODUCT_NAME} table: reading ${pairs.length} fiber${pairs.length === 1 ? '' : 's'} from one direction…`
@@ -8251,8 +8418,9 @@ function renderSuiteBidiGrid(traces, host, hint) {
     hint.textContent = `${PRODUCT_NAME} table unavailable`;
     tableSettled();
   };
-  const ask = () => fetch(`/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`)
-    .then(r => r.json())
+  const ask = () => askServerTable('suite', key,
+    `/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`,
+    res => !res.pending && !res.error)
     .then(res => {
       if (seq !== gSuiteTableSeq) return;
       gSuitePoll = null;
@@ -8391,8 +8559,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     return { km: leg.km, loss: leg.loss, hollow: !!leg.grey,
              fail: cellFails(c, x, w), warn: lossWarns(c, x, w) };
   };
-  const marks = { mode: 'suite', single: !!oneDir, have, goCell: () => {},
-    cols: cols.map((c, i) => ({ i, title: c.title, km: c.viewKm, cells: keepCol[i]
+  const markCols = () => cols.map((c, i) => ({ i, title: c.title, km: c.viewKm, cells: keepCol[i]
       ? c.ev.map((x, fi) => x && { fi, avg: x.loss,
                                    km: x.km != null ? toView(x.km + launchA, oneDir && legOf(have[fi])) : c.viewKm,
                                    // A one-direction table has no Average: its tag carries that
@@ -8400,7 +8567,8 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
                                    avgFail: lossFails(c, x, oneDir || 'avg'), avgWarn: lossWarns(c, x, oneDir || 'avg'),
                                    legs: { a: drawerLeg(c, x, 'a'), b: drawerLeg(c, x, 'b') } })
              .filter(Boolean)
-      : [] })) };
+      : [] }));
+  const marks = { mode: 'suite', single: !!oneDir, have, goCell: () => {}, cols: markCols() };
 
   // What the report said about a cell, for its tooltip: the row's own
   // reason first (an end connector's rows are judged one by one), then the
@@ -8696,6 +8864,16 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     showSpanMenu(ev.clientX, ev.clientY, tr.dataset.dir, +td.dataset.km,
                  tr.dataset.fiber, tr.dataset.src);
   });
+  // The end verdicts landing (see endVerdictsLanded) can move a connector's
+  // one-direction gate (gateFor stands it down on a panel tie): the rows on
+  // screen and the drawer's marks are judged again, the rest stays.
+  gTableLive = { host, scroller, refreshVerdicts: () => {
+    if (cellFilterOn() || gFlaggedOnly || singles.length) return false;
+    marks.cols = markCols();
+    paintRows();
+    draw();
+    return true;
+  } };
 }
 
 // ─── Editing a trace's settings (the boss's "IOR is wrong, correct it in
