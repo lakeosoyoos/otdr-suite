@@ -72,7 +72,7 @@ def test_the_boxes_repaint_the_panel_as_the_tech_types():
     assert "el.addEventListener('input'" in live and "setTimeout(() => apply(false), 400)" in live
     assert "el.addEventListener('change', () => { clearTimeout(timer); apply(true); });" in live
     wire = _fn(vw, 'wireEventSettings')
-    assert 'liveBox(lossEl,' in wire and 'liveBox(loEl, onBand);' in wire and 'liveBox(hiEl, onBand);' in wire
+    assert 'liveBox(lossEl,' in wire and 'liveBox(reflEl,' in wire
     assert wire.count('renderEventTable();') == 2 and wire.count('renderFilesPanel();') == 2
     # the FR-mode two-direction table judges mid-span reflectance only on a typed band
     assert 'if (gReflOverride == null) return false;' in vw
@@ -83,7 +83,18 @@ def test_the_loss_box_is_named_for_what_it_grades():
     """Robert 2026-10-01: the box reads "Bidirectional Loss" -- the gate on
     a two-direction load's Average; one direction loaded, "Unidirectional Loss"."""
     vw = _viewer_src()
-    assert '<span id="set-loss-name">Bidirectional Loss</span> &ge; <input id="set-loss"' in vw
+    assert '<span id="loss-op">Bidirectional Loss &ge;</span> <input id="set-loss"' in vw
+    assert "if (op) op.textContent = lossBoxName() + ' ≥';" in _fn(vw, 'syncGateUI')
+    assert ("return (gSourceReport === 'uni' || oneDirOnly()) ? 'Unidirectional Loss' : 'Bidirectional Loss';"
+            in _fn(vw, 'lossBoxName'))
+
+
+def test_the_reflectance_box_is_one_number():
+    """Robert 2026-10-02: one Reflectance box, showing its number; anything
+    above it is flagged (box -80, a -75 dB reflection is flagged)."""
+    vw = _viewer_src()
+    assert '<span id="refl-op">Reflectance &ge;</span> <input id="set-refl" type="number"' in vw
+    assert 'set-refl-lo' not in vw and 'set-refl-hi' not in vw
     sync = _fn(vw, 'syncGateUI')
-    assert "? 'Unidirectional Loss' : 'Bidirectional Loss';" in sync
-    assert "(gSourceReport === 'uni' || oneDirOnly())" in sync
+    assert "if (gReflOverride == null) box.value = String(reflFloor());" in sync
+    assert 'return gReflOverride != null ? 0 : Number(gThresholds.refl_ceil);' in _fn(vw, 'reflCeil')

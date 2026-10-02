@@ -153,7 +153,7 @@ def _compute_pair_metrics_batch(files, interior_start, interior_end, min_samples
     # error into the cross term — catastrophic cancellation.  On a pristine
     # span (true pair σ ~0.01) that error DOMINATES: σ collapsed to 0.0000
     # for high-injection-offset pairs and the σ-outlier tier confirmed 67
-    # numerical artifacts as duplicates (Lumen Border LAM/BEY, 2026-07-23).
+    # numerical artifacts as duplicates (the Border job LAM/BEY, 2026-07-23).
     # Centered values span ~±1 dB, so the same identity is exact to ~1e-8.
     M64 = M_raw.astype(np.float64)
     del M_raw
@@ -485,7 +485,7 @@ _ALLDUPS_MIN_HIGHR_FRAC = 0.5
 # Uniqueness (twin) gate — ALL regimes.  A true duplicate is
 # UNIQUELY close to its twin: its pair σ sits far below its σ to every
 # other file.  Ribbon-family members (same tube position in adjacent
-# ribbons: Δ24/Δ48 ladders like Lumen Border 146-194-218-242) share helix
+# ribbons: Δ24/Δ48 ladders like the Border job 146-194-218-242) share helix
 # micro-structure on pristine cables and land at σ ~0.009 / r ~0.99
 # against SEVERAL partners at once — no unique twin, so they are cable
 # geometry, not duplication.  A flagged pair must have pair-σ ≤ this
@@ -1384,7 +1384,7 @@ def _speckle_competence(files, interior_start, interior_end, hp_width=None,
                    'Weak duplicates can be missed here.')
     else:
         message = (f'Duplicates NOT MEASURED. Shot at {pulse_txt} over '
-                   f'{span_m:,.0f} m: the fibre fingerprint is {fp_r:.3f} of the '
+                   f'{span_m:,.0f} m: the fiber fingerprint is {fp_r:.3f} of the '
                    f'trace noise band and this folder\'s own spread reaches '
                    f'{p99:.2f}, so a genuine re-shoot would read about {pred:.2f} '
                    f'against a confirm bar of {bar:.2f} (ratio {ratio:.2f}; needs '
@@ -1776,7 +1776,7 @@ def _event_fallback_section_html(fb):
         'verdict: no row here is a confirmed duplicate, none of them changed any '
         'likelihood on this report, and a pair low in the list is not cleared. '
 'Across the three panels an outside auditor '
-        'has scored, this ranking marked 97 of their 107 flagged fibres in the '
+        'has scored, this ranking marked 97 of their 107 flagged fibers in the '
         'direction the duplication was committed. Going the other way it marks far '
         'fewer, which may simply mean there is nothing there to find. Either way, '
         'if the port log clears the top rows, read that as <b>no answer here</b> '
@@ -1995,7 +1995,7 @@ def _near_splice(files, pairs):
         if pp is not None:
             P[f.get('name')] = pp
     if len(P) < _NEAR_SPLICE_MIN_FILES:
-        return _no('%d fibre(s) with a panel port and a trace to measure, fewer '
+        return _no('%d fiber(s) with a panel port and a trace to measure, fewer '
                    'than %d' % (len(P), _NEAR_SPLICE_MIN_FILES))
     pulses = [p['pulse_m'] for p in P.values() if p['pulse_m']]
     pulse_m = float(np.median(pulses)) if pulses else 0.0
@@ -2005,7 +2005,7 @@ def _near_splice(files, pairs):
     ws = max(_NEAR_SPLICE_SCAN_WIN_M, 5.0 * pulse_m)
     offsets = np.arange(pg + ws + gs, _NEAR_SPLICE_SEARCH_M + 1e-9, 1.0)
     if offsets.size == 0 or pg + _NEAR_SPLICE_MIN_BEFORE_M + g >= _NEAR_SPLICE_SEARCH_M:
-        return _no('a %.1f m pulse leaves no fibre to measure within %.0f m of '
+        return _no('a %.1f m pulse leaves no fiber to measure within %.0f m of '
                    'the panel port' % (pulse_m, _NEAR_SPLICE_SEARCH_M))
     names = list(P)
     S = np.array([
@@ -2017,7 +2017,7 @@ def _near_splice(files, pairs):
     with np.errstate(all='ignore'):
         med = np.nanmedian(S, axis=0)
     if not np.isfinite(med).any():
-        return _no('no fibre reaches past the search window')
+        return _no('no fiber reaches past the search window')
     # The scan's median is a plateau as wide as its gap either side of the
     # splice.  Take the middle of it, not the first maximum, so a fibre whose
     # splice sits a metre or two off the folder median stays clear of both
@@ -2045,11 +2045,11 @@ def _near_splice(files, pairs):
                 break
     if n_refl > _NEAR_SPLICE_EVENT_SHARE * len(names):
         return _no('the step %.0f m past the panel port is a reflective event on '
-                   '%d fibre(s): a connector, not a splice' % (o, n_refl))
+                   '%d fiber(s): a connector, not a splice' % (o, n_refl))
     blen = o - g - pg
     if blen < _NEAR_SPLICE_MIN_BEFORE_M:
         return _no('the step %.0f m past the panel port leaves only %.0f m of '
-                   'fibre before it outside the connector dead zone' % (o, blen))
+                   'fiber before it outside the connector dead zone' % (o, blen))
     spots_m = np.array(_NEAR_SPLICE_SPOTS_M, dtype=float)
     loss, rows = {}, []
     for n in names:
@@ -2092,13 +2092,13 @@ def _near_splice(files, pairs):
     L = np.array([loss[n] for n in names], dtype=float)
     fin = np.isfinite(L)
     if fin.sum() < _NEAR_SPLICE_MIN_FILES or not sig > 0:
-        return _no('too few fibres reach far enough past the splice')
+        return _no('too few fibers reach far enough past the splice')
     frac = float(np.mean(np.abs(L[fin]) > _NEAR_SPLICE_STEP_NOISE * sig))
     med_l = float(np.median(L[fin]))
     if frac < _NEAR_SPLICE_MIN_FRAC:
         return _no('no shared splice within %.0f m of the panel port (the strongest '
                    'step, %.0f m past it, clears %gx the %.3f dB noise on %.0f%% of '
-                   'fibres; %.0f%% needed)'
+                   'fibers; %.0f%% needed)'
                    % (_NEAR_SPLICE_SEARCH_M, o, _NEAR_SPLICE_STEP_NOISE, sig,
                       100 * frac, 100 * _NEAR_SPLICE_MIN_FRAC))
     diffs = []
@@ -2121,11 +2121,11 @@ def _near_splice(files, pairs):
            'before_m': (pg, o - g), 'after_m': (o + g, o + g + _NEAR_SPLICE_AFTER_M)}
     out['beyond_4sd_pct'] = _near_splice_same_pct(out, 4.0 * sd2)
     out['summary'] = ('Splice %.0f m past the panel port, measurable on %.0f%% of '
-                      'fibres. Two shots of one fibre agree within %.3f dB (1 sd). '
+                      'fibers. Two shots of one fiber agree within %.3f dB (1 sd). '
                       'See the Near splice sheet.' % (o, 100 * frac, sd2))
     out['note'] = ('Near splice: usable - a splice %.0f m past the panel port carries '
-                   'a measurable loss on %.0f%% of %d fibres (median %+.3f dB). One '
-                   'shot measures it to %.3f dB, so two shots of one fibre agree '
+                   'a measurable loss on %.0f%% of %d fibers (median %+.3f dB). One '
+                   'shot measures it to %.3f dB, so two shots of one fiber agree '
                    'within %.3f dB (1 sd) and differ by more than 4 sd in %.2f%% of '
                    'cases. It is glass, so a re-plug cannot change it. Evidence '
                    'against a pair, never for one.'
@@ -4688,7 +4688,7 @@ def _analyze_sor(folder):
     #     folder                  files    pairs   ev-capped  eligible  refuted
     #     A-F West 145-288          264   34,716          0         0        0
     #     A-F East 1-144            288   41,328          0         0        0
-    #     LAMBEY (Lumen border)     432   93,096          0         0        0
+    #     LAMBEY (the Border job)     432   93,096          0         0        0
     #     BKF<->DEL (LONGS)         864  372,816          0         0        0
     #     TULORO                    864  372,816          0         0        0
     #     MILTOP                  1,146  656,085          0         0        0
@@ -4843,7 +4843,7 @@ def _analyze_sor(folder):
     # A pair acquired by two different physical OTDRs is two independent
     # acquisitions — it can only be "the same data" at raw-identity grade,
     # and the raw-identity short-circuit below fires regardless of this
-    # cap.  (Lumen Border LAMBEY170/241: serials 1876272 vs 1978245, 84
+    # cap.  (the Border job LAMBEY170/241: serials 1876272 vs 1978245, 84
     # min apart, 3.4 dB injection delta, r 0.992 on a pristine span —
     # and the SAME two fibers from the OPPOSITE end read σ 0.05, five
     # times the flag level.  Different boxes -> different fibers.)
@@ -4998,7 +4998,7 @@ def _analyze_sor(folder):
     if competence_detail is not None:
         _cd = competence_detail
         print(f"Speckle competence: {_cd['status']}, ratio {_cd['ratio']:.2f} "
-              f"(predicted same-fibre r {_cd['pred_same_r']:.3f} vs bar "
+              f"(predicted same-fiber r {_cd['pred_same_r']:.3f} vs bar "
               f"{_cd['bar']:.3f}; sigma_band {_cd['sigma_band_db']:.4f} dB, "
               f"fingerprint term {_cd['fingerprint_term']:.4f}, diagnostic null "
               f"p50 {_cd['null_p50']:+.3f} p99 {_cd['null_p99']:+.3f} over "
@@ -5086,8 +5086,8 @@ def _analyze_sor(folder):
     print(port_length['note'])
     fill_ins = _fill_ins(files)
     if fill_ins:
-        print('Shot out of order: %d fibre(s) in %d run(s) shot more than %.0f min '
-              'after both neighbouring fibres.'
+        print('Shot out of order: %d fiber(s) in %d run(s) shot more than %.0f min '
+              'after both neighboring fibers.'
               % (sum(len(r['names']) for r in fill_ins), len(fill_ins),
                  _FILL_IN_FAR_S / 60.0))
 
@@ -5659,7 +5659,7 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
     _fi = analysis.get('fill_ins') or []
     if _fi:
         rows.append(('Shot out of order',
-                     '%d fibre(s) shot after both neighbouring fibres. See the '
+                     '%d fiber(s) shot after both neighboring fibers. See the '
                      'Shot out of order sheet.' % sum(len(r['names']) for r in _fi)))
     for i, (k, v) in enumerate(rows, start=4):
         c1 = ws.cell(row=i, column=1, value=k); c1.font = BASE_BOLD
@@ -5915,9 +5915,9 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
         _put_row(ws, 2, ['Measured from the trace, not the event table: the level %.0f to %.0f m '
                          'past the panel port minus the level %.0f to %.0f m past it, attenuation '
                          'removed. Noise %.4f dB per shot, from the same windows at %d splice-free '
-                         'stretches. Two shots of one fibre differ by more than 4 sd in %.2f%% of '
+                         'stretches. Two shots of one fiber differ by more than 4 sd in %.2f%% of '
                          'cases. The splice is glass, so a re-plug cannot change it. A large '
-                         'difference is evidence that two files are different fibres; a small '
+                         'difference is evidence that two files are different fibers; a small '
                          'one proves nothing.'
                          % (_ns['after_m'][0], _ns['after_m'][1], _ns['before_m'][0],
                             _ns['before_m'][1], _ns['noise_db'], _ns['n_spots'],
@@ -5937,7 +5937,7 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
             if (p['a'], p['b']) not in seen:
                 listed.append((p, 'mating likelihood top 20'))
         diff_hdr = ['Difference (dB)', 'Difference (sd)',
-                    'Shots of One Fibre That Differ This Much (%)']
+                    'Shots of One Fiber That Differ This Much (%)']
         if listed:
             _put_row(ws, r, ['Pairs Listed Elsewhere in This Report'], BASE_BOLD)
             r += 1
@@ -5950,9 +5950,9 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
                                  _l(p['a']), _l(p['b'])]
                          + _diff_cells(loss.get(p['a']), loss.get(p['b'])), BASE)
             r += 2
-        _put_row(ws, r, ['Every Fibre Against the Next Fibre Number'], BASE_BOLD)
+        _put_row(ws, r, ['Every Fiber Against the Next Fiber Number'], BASE_BOLD)
         r += 1
-        _put_row(ws, r, ['File', 'Meter', 'Shot At', 'Splice Loss (dB)', 'Next Fibre',
+        _put_row(ws, r, ['File', 'Meter', 'Shot At', 'Splice Loss (dB)', 'Next Fiber',
                          'Time Gap (s)'] + diff_hdr, HDR_FONT, hdr_fill)
         by_group = {}
         for f in files:
@@ -6206,13 +6206,13 @@ def build_xlsx_sor(folder, title, out_xlsx, meta=None):
                       x['before'], _shot_at(x['before_at']),
                       x['after'], _shot_at(x['after_at']),
                       round(x['minutes_later'], 1)] for x in _fi]
-        _write_table(ws, ['Fibre(s)', 'Shot At', 'Fibre Before', 'Shot At',
-                          'Fibre After', 'Shot At', 'Minutes After Both Neighbours'],
+        _write_table(ws, ['Fiber(s)', 'Shot At', 'Fiber Before', 'Shot At',
+                          'Fiber After', 'Shot At', 'Minutes After Both Neighbors'],
                      rows_data, col_widths=[36, 20, 22, 20, 22, 20, 18])
         ws.cell(row=len(rows_data) + 3, column=1,
                 value=('Each of these was shot more than %.0f minutes after both '
-                       'neighbouring fibres, while those neighbours were shot back to '
-                       'back. The fibre was skipped and shot later, so its port had to '
+                       'neighboring fibers, while those neighbors were shot back to '
+                       'back. The fiber was skipped and shot later, so its port had to '
                        'be found again. This is where to check the port log. It is not '
                        'a duplicate finding.' % (_FILL_IN_FAR_S / 60.0)))
     wb.save(out_xlsx)

@@ -58,7 +58,9 @@ def test_hovering_a_number_shows_the_arrow_and_clicking_it_goes_to_the_cell():
 
 
 def test_the_grid_scrolls_the_row_into_the_window_paints_and_marks_the_cell():
-    goto = SRC.split("gGridGoTo = (t, e) => {", 1)[1].split("\n  };", 1)[0]
+    # the FastReporter grid's (the FEC table's own comes earlier in the file)
+    fr = SRC.split('function renderFastReporterGrid(', 1)[1]
+    goto = fr.split("gGridGoTo = (t, e) => {", 1)[1].split("\n  };", 1)[0]
     assert "shown.indexOf(ti)" in goto                       # hidden by flagged-only → no-op
     assert "paintRows(k);" in goto     # the body is virtual, and it must hold THIS row
     assert 'td[data-km="${e.dist_km}"]' in goto              # the event's own raw km
@@ -87,8 +89,10 @@ def test_right_clicking_a_number_opens_the_span_menu_for_that_event():
 
 def test_right_clicking_a_file_removes_it_from_the_list_and_the_viewer():
     fn = SRC.split("function showFileDirMenu(", 1)[1].split("\nasync function ", 1)[0]
-    # The label carries the count: one row alone, or the whole marked set.
-    assert '<button data-remove="1">Remove ${marked > 1 ? marked + \' Marked Files\' : \'File\'}' in fn
+    # The label carries the count: the whole marked set, or this one file
+    # (and its fibre) alone (test_viewer_remove_this_file).
+    assert '<button data-remove="1">Remove ${marked} Marked Files from Viewer</button>' in fn
+    assert '<button data-remove="1">Remove This File (${fileLabel})</button>' in fn
     assert "removeFile(k, fiber)" in fn
     rm = SRC.split("function removeFile(", 1)[1].split("\n}", 1)[0]
     assert "gRemovedFiles.add(key);" in rm and "removeTrace(key);" in rm

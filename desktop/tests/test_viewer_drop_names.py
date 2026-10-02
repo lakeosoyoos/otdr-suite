@@ -151,22 +151,22 @@ def test_the_hub_boxes_name_the_drop_and_the_tools_still_run_on_it():
     out = _drop(A_NAMES + B_NAMES, folders)
     at.sidebar.radio[0].set_value('Splice Report').run()
     assert not at.exception, at.exception
-    assert _box(at, 'A folder').value == 'A side (dropped)'
-    assert _box(at, 'B folder').value == 'B side (dropped)'
+    assert _box(at, 'A Folder').value == 'A side (dropped)'
+    assert _box(at, 'B Folder').value == 'B side (dropped)'
     # The Splice Report runs on the staged folders behind the names.
     assert any('the A and B folders loaded in the left panel' in c.value for c in at.caption)
     assert (TS.CONFIG['dir_a'], TS.CONFIG['dir_b']) == (out['dir_a'], out['dir_b'])
     # A new session seeded from the trace server shows the names as well.
     at2 = run_streamlit().run()
     assert not at2.exception, at2.exception
-    assert _box(at2, 'A folder').value == 'A side (dropped)'
-    assert _box(at2, 'B folder').value == 'B side (dropped)'
+    assert _box(at2, 'A Folder').value == 'A side (dropped)'
+    assert _box(at2, 'B Folder').value == 'B side (dropped)'
     # A folder typed over the name is that folder again.
     other = os.path.join(os.environ['TMPDIR'], 'picked_a')
     os.makedirs(other)
-    _box(at, 'A folder').input(other).run()
+    _box(at, 'A Folder').input(other).run()
     assert not at.exception, at.exception
-    assert _box(at, 'A folder').value == other
+    assert _box(at, 'A Folder').value == other
 
 
 def test_a_link_back_with_the_staged_path_shows_the_name():
@@ -178,7 +178,7 @@ def test_a_link_back_with_the_staged_path_shows_the_name():
     at.session_state['view_dir_a_input'] = out['dir_a']
     at.run()
     assert not at.exception, at.exception
-    assert _box(at, 'A folder').value == 'A side (dropped)'
+    assert _box(at, 'A Folder').value == 'A side (dropped)'
 
 
 def test_the_hub_label_rule():
@@ -201,7 +201,7 @@ def _js_func(name):
 
 
 _STUBS = r"""
-const DROP_EXTS = ['.sor', '.json', '.trc', '.zip'];
+const DROP_EXTS = ['.sor', '.json', '.trc', '.zip', '.olts'];
 const DROP_BATCH_FILES = 32, DROP_BATCH_BYTES = 4 * 1024 * 1024;
 var gDropFolder = new WeakMap(), gDropInFlight = false, gAutoFit = true;
 var gRemovedFiles = new Set(), gTraces = [], gInfo = null, gLoadFailures = [];
@@ -273,7 +273,8 @@ _CASES = r"""
 @pytest.fixture(scope='module')
 def page(tmp_path_factory):
     funcs = '\n'.join(_js_func(n) for n in ('_parentName', '_dropOk', '_dropBatches',
-                                            'handleFilesDrop', 'folderLabel', 'reportJob'))
+                                            'handleFilesDrop', 'isOltsFile', 'folderLabel',
+                                            'reportJob'))
     path = tmp_path_factory.mktemp('drop_names') / 'drop.js'
     path.write_text(_STUBS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
@@ -314,21 +315,22 @@ def test_the_report_names_the_drop_never_its_staging_folder(page):
     assert page['job_picked'] == 'SPAN-1'      # a picked folder "A": its parent, as before
 
 
-def test_the_chart_takes_a_drop_like_the_files_panel():
-    boot = SRC.split('// The chart and the event table under it take the same drop.', 1)[1].split('})();', 1)[0]
-    assert "document.getElementById('main')" in SRC.split('// The chart and the event table under it take the same drop.', 1)[1][:200]
-    main = boot.split("main.addEventListener('drop'", 1)[1].split('});', 1)[0]
-    assert 'handleFilesDrop(ev.dataTransfer)' in main and '_dragHasFiles(ev)' in main
-    assert "main.addEventListener('dragover'" in boot
-    assert '#canvas-wrap.dragging' in SRC
-
-
-def test_a_file_dragged_over_the_viewer_or_the_hub_lights_the_files_panel():
-    """Robert 2026-10-01: show the tech that a drop will be taken."""
-    assert '<div id="drop-sign">' in SRC
-    assert "if (_dragHasFiles(ev)) showDropSign('drag');" in SRC
-    # a drop anywhere on the Viewer loads, as the sign says
-    assert "if (_dragHasFiles(ev)) handleFilesDrop(ev.dataTransfer);\n    else hideDropSign();" in SRC
-    assert "if (d && d.type === 'otdr-drag') { showDropSign('drag'); return; }" in SRC
-    app = open(APP_PATH, encoding='utf-8').read()
-    assert "postMessage({ type: 'otdr-drag' }" in app
+def test_only_the_files_panel_takes_a_drop():
+    """Robert 2026-10-01: a drop does nothing anywhere but the FILES panel,
+    where the sign lights up; the rest of the Viewer refuses it and the panel
+    shows where to go."""
+    boot = SRC.split('// Only the FILES panel takes a drop', 1)[1].split('})();', 1)[0]
+    panel = boot.split("panel.addEventListener('drop'", 1)[1].split('});', 1)[0]
+    assert 'handleFilesDrop(ev.dataTransfer)' in panel
+    over = boot.split("window.addEventListener('dragover'", 1)[1].split('});', 1)[0]
+    assert "dropEffect = 'none'" in over and 'ev.preventDefault()' in over
+    assert "showDropSign('hint')" in over and 'panel.contains(ev.target)' in over
+    drop = boot.split("window.addEventListener('drop'", 1)[1].split('});', 1)[0]
+    assert 'ev.preventDefault()' in drop and 'handleFilesDrop' not in drop
+    # the chart and the event table no longer take a drop of their own
+    assert "main.addEventListener('drop'" not in SRC
+    assert "dropEffect = 'copy'" in boot.split("const take", 1)[1].split('};', 1)[0]
+    # a drag over the hub page around the Viewer only shows the hint
+    assert "if (d && d.type === 'otdr-drag') { showDropSign('hint'); return; }" in SRC
+    assert "'otdr-drop'" not in SRC
+    assert '<div id="drop-sign">' in SRC and '#drop-sign.hint' in SRC

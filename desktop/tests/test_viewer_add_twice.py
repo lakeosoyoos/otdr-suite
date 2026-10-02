@@ -45,7 +45,8 @@ def _const(name):
 
 _STUBS = r"""
 var gSelNext = null, gAddDir = 'both', gTraces = [], gLoadFailures = [], gStoredDir = {};
-var gRemovedFiles = new Set(), gAutoFit = true, gLoadingKeys = new Set();
+var gRemovedFiles = new Set(), gAutoFit = true, gLoadingKeys = new Set(), gStateLoad = null;
+var gLoadEpoch = 0;
 var gInfo = { dir_a: '/a', dir_b: '/b', fibers_a: [353, 354], fibers_b: [353, 354] };
 var box = { value: '354' };
 var document = { getElementById: function () { return box; } };
@@ -66,6 +67,8 @@ function nextColor() { return 0; }
 function traceColor() { return 0; }
 function syncFileMarks() {} function renderChips() {} function fit() {} function draw() {}
 function renderEventTable() {} function setReadout() {}
+function beginLoad() { return {}; } function loadStep() {} function loadProgress() {} function endLoad() {}
+async function buildTable() { renderEventTable(); }
 async function loadOverview() { throw new Error('not in this test'); }
 """
 

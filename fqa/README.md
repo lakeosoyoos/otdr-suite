@@ -1,12 +1,12 @@
 # FQA Builder
 
-Builds the Lumen **Site Survey / Fiber Quality Assurance** submittal
+Builds the customer **Site Survey / Fiber Quality Assurance** submittal
 package for a span from that span's ZeroDB **production sheet**.
 
 Standalone — it does not need traces, the hub, or any other tool in the
 suite to be useful. Point it at a production sheet and it fills the
 cover page, the Fiber Assignment Table, the Event Log and the Exception
-Reporting tab of the Lumen form.
+Reporting tab of the customer form.
 
 ```bash
 streamlit run fqa/app.py --server.port 8514 --server.maxUploadSize 512
@@ -48,17 +48,17 @@ from all three places gaps hide: the job facts nobody typed, the
 production sheet the crew left half-filled, and measurements never taken.
 Each line says where the gap is, what is missing and what the field is.
 
-Items are split into the ones Lumen will send the package back for and
+Items are split into the ones the customer will send the package back for and
 the ones worth a look. In the app the list is live — it shrinks as you
 fill the boxes above it, so it is something to work through rather than a
 verdict at the end.
 
-## The template is Lumen's form, not a copy of it
+## The template is the customer's form, not a copy of it
 
-`templates/FQA_Site_Survey_v1_1.xlsm` is Lumen's form **revision 1.1**
+`templates/FQA_Site_Survey_v1_1.xlsm` is the customer's form **revision 1.1**
 (published 2025-11-14) with one span's values and site photos taken out.
 
-49 of its 65 zip parts are byte-identical to the package Lumen issued —
+49 of its 65 zip parts are byte-identical to the package the customer issued —
 the VBA, the Microsoft sensitivity label, all four customXml parts, the
 styles, the data validation, the printer settings and the comments. The
 package this tool writes is that file with values patched into cells.
@@ -69,15 +69,15 @@ Only four things differ from the issued file:
 
 | Difference | Why |
 |---|---|
-| five sheets' bytes | the span's values cleared out. Each sheet keeps Lumen's own XML declaration and namespace prefixes: left to itself, ElementTree renames them `ns1`, `ns2` and drops unused ones, which leaves prefixes in `mc:Ignorable` undeclared, and Excel for Mac then refuses the file as corrupt |
+| five sheets' bytes | the span's values cleared out. Each sheet keeps the customer's own XML declaration and namespace prefixes: left to itself, ElementTree renames them `ns1`, `ns2` and drops unused ones, which leaves prefixes in `mc:Ignorable` undeclared, and Excel for Mac then refuses the file as corrupt |
 | `calcChain.xml` dropped | forced: a stale chain makes Excel offer to repair the file, and it rebuilds the chain silently when absent. Its entry in `[Content_Types].xml` and its relationship in `xl/_rels/workbook.xml.rels` go with it, so nothing points at a missing part |
 | `workbook.xml` | `fullCalcOnLoad` set, so the Submittal Checklist recalculates instead of showing cached answers |
 | 4 images, 2 drawings | one customer's ILA site photos; the Pictures tab is where the tech puts their own |
 
-`test_the_package_is_lumens_form_part_for_part` and
+`test_the_package_is_the_customers_form_part_for_part` and
 `test_the_writer_never_changes_a_cell_style` hold that down.
 
-**Any revision of the Lumen form is accepted** as a template. Two are in
+**Any revision of the customer form is accepted** as a template. Two are in
 circulation — this one, which carries a Version History tab, and an older
 7-tab one without it — and their layouts are identical for every cell
 this tool writes. A template that is not 1.1 is not refused; it shows up
@@ -89,7 +89,7 @@ patched inside the .xlsm zip rather than through openpyxl, which cannot
 round-trip the form's VBA, customXml, sensitivity label, comments or
 printer settings.
 
-When Lumen publishes a new revision, build a fresh template from a
+When the customer publishes a new revision, build a fresh template from a
 package made on it:
 
 ```bash

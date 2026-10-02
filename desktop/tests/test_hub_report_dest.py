@@ -24,7 +24,7 @@ def test_one_shared_save_row_with_a_native_browse_button():
     assert 'def _report_dest_row(key, default_dir):' in SRC
     body = SRC.split('def _report_dest_row(key, default_dir):', 1)[1].split('\ndef ', 1)[0]
     assert "pick_folder('Choose where to save the reports')" in body
-    assert "st.text_input('Save reports to', key=key, placeholder=default_dir" in body
+    assert "st.text_input('Save Reports To', key=key, placeholder=default_dir" in body
     assert 'return default_dir' in body
 
 
@@ -38,8 +38,7 @@ def test_the_chosen_folder_is_what_the_engines_are_handed():
     assert "out_dir = _ss_dest" in SRC
     # Wrapped in _unused_report_path since 2026-09-29 (a rerun gets
     # "name (2).xlsx" instead of writing over the last report): same folder.
-    assert ("out_xlsx = _unused_report_path(\n"
-            "            os.path.join(_uni_dest, 'unidirectional_events.xlsx'))") in SRC
+    assert "out_xlsx = _unused_report_path(os.path.join(_uni_dest, _report_file_name(" in SRC
     assert re.search(r"out_xlsx = _unused_report_path\(os\.path\.join\(_sr_dest,", SRC)
     # The old next-to-the-traces defaults are gone.
     assert "os.path.join(src_folder, 'SecretSauce_reports')" not in SRC

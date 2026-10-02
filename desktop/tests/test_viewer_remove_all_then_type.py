@@ -201,19 +201,19 @@ def _box(at, label):
 
 def test_the_hub_boxes_empty_when_the_viewer_lets_go(_clean_server):
     at = run_streamlit().run()
-    _box(at, 'A folder').input(str(FIXTURE_SPLICE_A_DIR)).run()
-    _box(at, 'B folder').input(str(FIXTURE_SPLICE_B_DIR)).run()
+    _box(at, 'A Folder').input(str(FIXTURE_SPLICE_A_DIR)).run()
+    _box(at, 'B Folder').input(str(FIXTURE_SPLICE_B_DIR)).run()
     assert not at.exception, at.exception
     TS.unload_sides('ab')                       # every file removed in the Viewer
     at.run()                                    # the run the fragment asks for
     assert not at.exception, at.exception
-    assert (_box(at, 'A folder').value, _box(at, 'B folder').value) == ('', '')
+    assert (_box(at, 'A Folder').value, _box(at, 'B Folder').value) == ('', '')
     # one side only: the other box keeps its folder
-    _box(at, 'A folder').input(str(FIXTURE_SPLICE_A_DIR)).run()
-    _box(at, 'B folder').input(str(FIXTURE_SPLICE_B_DIR)).run()
+    _box(at, 'A Folder').input(str(FIXTURE_SPLICE_A_DIR)).run()
+    _box(at, 'B Folder').input(str(FIXTURE_SPLICE_B_DIR)).run()
     TS.unload_sides('b')
     at.run()
-    assert (_box(at, 'A folder').value, _box(at, 'B folder').value) == (str(FIXTURE_SPLICE_A_DIR), '')
+    assert (_box(at, 'A Folder').value, _box(at, 'B Folder').value) == (str(FIXTURE_SPLICE_A_DIR), '')
 
 
 def test_the_hub_runs_itself_when_the_viewer_moves_the_folders():
@@ -234,7 +234,7 @@ def test_the_status_line_keeps_clear_of_the_marker_readout(tmp_path):
     js = r"""
     var M = { l: 56, r: 16, t: 12, b: 36 };
     var ro = { style: { left: '', transform: '', maxWidth: '' } };
-    var mk = { style: { display: 'none' }, offsetLeft: 455 };
+    var mk = { style: { display: 'none' }, offsetLeft: 455, dataset: {} };
     var document = { getElementById: function (id) { return id === 'readout' ? ro : mk; } };
     var out = {};
     placeReadout(); out.off = [ro.style.left, ro.style.transform, ro.style.maxWidth];

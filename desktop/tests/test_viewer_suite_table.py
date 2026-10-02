@@ -407,7 +407,9 @@ def test_the_run_asks_for_the_table_in_suite_mode_only():
 def test_the_hub_asks_every_report_for_its_table_and_hands_it_over():
     cmd = APP.split("def splicereport_cmd(", 1)[1].split("\ndef ", 1)[0]
     assert "common += ['--viewer-table', viewer_table]" in cmd
-    assert "viewer_table=_viewer_table_path(_da, _db))})" in APP
+    # the run's command ends on the table path (2026-10-02: the run's
+    # removed set follows the command in the same dict)
+    assert "viewer_table=_viewer_table_path(_da, _db))," in APP
     assert APP.count("trace_server.set_suite_table(res.get('viewer_table'))") == 1
     # the uni grid has no A+B table, and a cleared report takes its own away
     assert APP.count("trace_server.set_suite_table(None)") == 2
@@ -418,16 +420,18 @@ def test_the_hub_asks_every_report_for_its_table_and_hands_it_over():
 
 def test_the_table_follows_the_analysis_mode():
     body = _fn('renderEventTable')
-    assert ("if (gAnalysisMode === 'suite') {\n"
-            "    if (renderSuiteBidiGrid(visible, host, hint)) return;\n"
-            "  } else if (renderFrBidiGrid(visible, host, hint)) return;\n"
-            "  renderFastReporterGrid(visible, host, hint);") in body
+    assert ("const server = gAnalysisMode === 'suite'\n"
+            "    ? renderSuiteBidiGrid(visible, host, hint) : renderFrBidiGrid(visible, host, hint);\n"
+            "  if (!server) {\n"
+            "    renderFastReporterGrid(visible, host, hint);") in body
     ask = _fn('renderSuiteBidiGrid')
     # a load from one direction asks for that direction's table (Robert
     # 2026-09-30: "it has to work for one direction OR bidi, equally"); a
     # mix of lone A and lone B traces still has no Suite table
     assert "if (dirs.size !== 1) return false;" in ask
-    assert "fetch(`/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`)" in ask
+    # asked once for the traces on screen (askServerTable, test_viewer_fr_table_once)
+    assert "`/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`," in ask
+    assert "askServerTable('suite', key," in ask
     # the report may still be running: the table waits for it ...
     assert "if (res.pending) {" in ask and "gSuitePoll = setTimeout(ask, 3000);" in ask
     assert "if (seq !== gSuiteTableSeq) return;" in ask
@@ -441,7 +445,7 @@ def test_the_table_follows_the_analysis_mode():
     # its place (Robert 2026-09-30: "Error, no FR stand-in")
     assert "renderFrBidiGrid" not in ask and "renderFastReporterGrid" not in ask
     assert "noTable(res.error || 'The report has no table for these fibers');" in ask
-    assert "OTDR Suite table could not be built." in ask
+    assert "table could not be built." in ask      # the App: "OTDR App table ..."
     assert "switch to FastReporter mode for FastReporter's table." in ask
     assert 'gSuiteNote' not in VIEWER
 
@@ -459,9 +463,10 @@ def test_the_suite_table_is_the_report_s_columns_and_three_rows_per_fibre():
     # three rows per fibre, as in the FastReporter table
     assert "['a', 'b', 'avg']" in body
     assert "which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average'" in body
-    # no sections, and no Sections switch to go with them
-    assert "fr-sec" not in body and "secOf" not in body
-    assert "if (secLab) secLab.style.display = 'none';" in body
+    # Sections, behind the Sections Off switch (Robert 2026-10-02; pinned in
+    # test_viewer_suite_sections.py); the switch shows when the table has them
+    assert "secOf" in body and "fr-sec" in body
+    assert "if (secLab) secLab.style.display = anySec ? '' : 'none';" in body
     assert "if (secLab) secLab.style.display = '';" in _fn('suiteTableReset')
     # a leg the report measured on the silent side is grey
     assert "if (leg && leg.grey) cls.push('fr-synth');" in body

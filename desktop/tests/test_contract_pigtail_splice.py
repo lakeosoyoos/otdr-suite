@@ -8,7 +8,7 @@ iOLM's own element list does, and types them:
     Position 0.0   Connector  Loss 0.047  Verdict Pass
     Position 3.8   Splice     Loss 0.455  Verdict Fail
 
-which is NCT's "near 0.047 / pigtail 0.455" on span 17 fiber 397, to the
+which is the prime contractor's "near 0.047 / pigtail 0.455" on span 17 fiber 397, to the
 millidecibel.  Their rule going forward (2026-09-12): the pigtail is graded
 as a SPLICE, against the splice limit, "with the connector graded separately".
 
@@ -30,7 +30,7 @@ sys.path.insert(0, str(SPLICEREPORT_DIR))
 import json_reader as J           # noqa: E402
 import splicereportmatchexfo as E  # noqa: E402
 
-IIG = "AWS / IIG MT.1085"
+CONTRACT_PROFILE = "AWS / IIG MT.1085"
 WINDOW = 50.0
 
 
@@ -189,10 +189,10 @@ def test_switch_ships_off():
 def test_profile_carries_the_switch_and_the_whitelist_allows_it():
     app = importlib.import_module('app')  # engine imported first, on purpose
     assert "PIGTAIL_SPLICE_WINDOW_M" in app._PROFILE_ENGINE_KEYS
-    assert app.CUSTOMER_PROFILES[IIG]["engine"]["PIGTAIL_SPLICE_WINDOW_M"] == 50.0
-    assert app._engine_extras_from_profile(IIG)["PIGTAIL_SPLICE_WINDOW_M"] == 50.0
+    assert app.CUSTOMER_PROFILES[CONTRACT_PROFILE]["engine"]["PIGTAIL_SPLICE_WINDOW_M"] == 50.0
+    assert app._engine_extras_from_profile(CONTRACT_PROFILE)["PIGTAIL_SPLICE_WINDOW_M"] == 50.0
     for name, prof in app.CUSTOMER_PROFILES.items():
-        if name == IIG:
+        if name == CONTRACT_PROFILE:
             continue
         assert "PIGTAIL_SPLICE_WINDOW_M" not in (prof.get("engine") or {}), name
 

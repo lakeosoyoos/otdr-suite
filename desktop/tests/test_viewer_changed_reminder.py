@@ -1,4 +1,4 @@
-"""Leaving the Viewer with its loss / Refl Band box changed (Robert 2026-10-01).
+"""Leaving the Viewer with its loss / Reflectance box changed (Robert 2026-10-01).
 
   "so if we leave viewer to go to splice report or uni we need a window that
    reminds the tech they had changed the setting"
@@ -18,7 +18,7 @@ TS = import_trace_server()
 VIEWER = (REPO_ROOT / "viewer" / "viewer.html").read_text(encoding="utf-8")
 TITLE = "Thresholds Carried Over from Previous Tool"
 CHANGED = {'loss_name': 'Bidirectional Loss', 'loss': 0.15, 'loss_report': 0.16,
-           'refl': [-70, 0], 'refl_report': [-80, 0]}
+           'refl': -70, 'refl_report': -80}
 
 
 @pytest.fixture(autouse=True)
@@ -35,14 +35,14 @@ def _clean():
 def test_the_server_files_only_a_real_change():
     TS.set_viewer_changed(CHANGED)
     assert TS.viewer_changed() == {'loss_name': 'Bidirectional Loss', 'loss': 0.15,
-                                   'loss_report': 0.16, 'refl': [-70.0, 0.0],
-                                   'refl_report': [-80.0, 0.0]}
+                                   'loss_report': 0.16, 'refl': -70.0,
+                                   'refl_report': -80.0}
     TS.set_viewer_changed({'loss': None, 'refl': None})
     assert TS.viewer_changed() is None
-    TS.set_viewer_changed({'loss': 'x', 'refl': ['a', 0]})      # junk is not a change
+    TS.set_viewer_changed({'loss': 'x', 'refl': 'a'})      # junk is not a change
     assert TS.viewer_changed() is None
-    TS.set_viewer_changed({'refl': [-60, -50]})
-    assert TS.viewer_changed()['refl'] == [-60.0, -50.0]
+    TS.set_viewer_changed({'refl': -60})
+    assert TS.viewer_changed()['refl'] == -60.0
     TS.set_viewer_changed(None)
     assert TS.viewer_changed() is None
 
@@ -51,9 +51,9 @@ def test_the_lines_read_plainly():
     import app as hub
     assert hub._viewer_change_lines(CHANGED) == [
         'Bidirectional Loss: 0.150 dB (the report uses 0.160 dB)',
-        'Refl Band: -70 to 0 dB (the report uses -80 to 0 dB)']
-    assert hub._viewer_change_lines({'refl': [0, 0], 'refl_report': [-80, 0]}) == [
-        'Refl Band: off (the report uses -80 to 0 dB)']
+        'Reflectance: -70 dB (the report uses -80 dB)']
+    assert hub._viewer_change_lines({'refl': 0, 'refl_report': -80}) == [
+        'Reflectance: off (the report uses -80 dB)']
     assert hub._viewer_change_lines(None) == []
 
 
@@ -81,7 +81,7 @@ def test_leaving_the_viewer_with_a_change_says_so(to):
     said = _said(_open(at, to))
     assert "You changed these in the Viewer:" in said
     assert "<li>Bidirectional Loss: 0.150 dB (the report uses 0.160 dB)</li>" in said
-    assert "<li>Refl Band: -70 to 0 dB (the report uses -80 to 0 dB)</li>" in said
+    assert "<li>Reflectance: -70 dB (the report uses -80 dB)</li>" in said
     assert f"<b>{to}</b> flags at its OTDR Settings" in said
 
 

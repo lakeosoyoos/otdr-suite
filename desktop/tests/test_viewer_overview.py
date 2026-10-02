@@ -172,9 +172,9 @@ def test_a_files_panel_selection_gets_the_same_two_regimes():
     html = open(VIEWER_HTML, encoding='utf-8').read()
     fn = html.split('async function applyFileSelection(want) {', 1)[1].split('\n}', 1)[0]
     assert 'const MAX = 48;' not in fn
-    assert 'const overview = tasks.length > MAX_DETAIL_TRACES;' in fn
+    assert 'const overview = tasks.length > MAX_DETAIL_TRACES\n    || gTraces.length + tasks.length > MAX_DETAIL_TRACES;' in fn
     assert 'const MAX = overview ? MAX_OVERVIEW_FIBERS * 2 : MAX_DETAIL_TRACES;' in fn
-    assert 'await loadOverview(tasks);' in fn
+    assert 'await loadOverview(tasks, ld);' in fn
     assert 'loadOne(x.key, x.f, x.d)' in fn          # detail path kept
     # and the readout no longer sends the tech to the Fibers box for a cable
     assert 'use the Fibers box for a whole cable' not in html
@@ -218,11 +218,10 @@ def test_viewer_flag_defaults_track_the_engine():
 
     html = open(VIEWER_HTML, encoding='utf-8').read()
     assert f'uni_bend: {const("UNI_BEND_THRESHOLD"):.3f}' in html
-    # the Refl Band boxes start on the report's mid-span band
+    # the Reflectance box starts on the report's mid-span floor
     assert f'refl_floor: {const("MIDSPAN_REFL_WARN_DB"):.1f}' in html
     assert f'refl_ceil: {const("MIDSPAN_REFL_CEIL_DB"):.1f}' in html
-    assert f'id="set-refl-lo" type="number" step="1" max="0" value="{const("MIDSPAN_REFL_WARN_DB"):.0f}"' in html
-    assert f'id="set-refl-hi" type="number" step="1" max="0" value="{const("MIDSPAN_REFL_CEIL_DB"):.0f}"' in html
+    assert f'id="set-refl" type="number" step="1" max="0" value="{const("MIDSPAN_REFL_WARN_DB"):.0f}"' in html
 
 
 def test_flagging_scope_is_documented_not_reimplemented():
@@ -266,7 +265,11 @@ def test_fiber_colours_toggle_off_to_fastreporter_blue_and_black():
     mid gray (FR3's #0000f7 / #000 toned down), and the choice is remembered."""
     html = open(VIEWER_HTML, encoding='utf-8').read()
     assert "const FR_COLORS = { a: '#7b96d8', b: '#8a8a8a' }" in html
-    assert 'id="cb-colors" checked' in html
+    # Off by default (Robert 2026-10-01): only a saved '1' turns the colors on.
+    assert '<input type="checkbox" id="cb-colors">' in html
+    assert 'id="cb-colors" checked' not in html
+    assert "let gFiberColors = false;" in html
+    assert "localStorage.getItem('otdr_viewer_fiber_colors') === '1'" in html
     fn = html[html.index('function nextColor('):][:700]
     assert '!gFiberColors' in fn and "startsWith('b-') ? FR_COLORS.b : FR_COLORS.a" in fn
     tog = html[html.index('function setFiberColors('):][:600]
@@ -327,7 +330,8 @@ def test_popout_viewer_links_back_to_its_report():
     assert "'hub_url':" in src and "'hub_port': None" in src
     app = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
     assert app.count('window.top.name = "otdr_hub"') == 2, 'both pop-out buttons name the hub tab'
-    nav = app[app.index('def _handle_nav():'):][:3000]
+    _at = app.index('def _handle_nav():')
+    nav = app[_at:app.index('\ndef ', _at + 1)]      # the whole function
     assert "'uni': 'Unidirectional'" in nav and "'sr': 'Splice Report'" in nav
     assert 'srfr' not in nav
     assert "trace_server.CONFIG['hub_port']" in app

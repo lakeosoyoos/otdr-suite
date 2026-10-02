@@ -51,7 +51,8 @@ REPORT_ROUTES = ('/api/report_begin', '/api/report_image', '/api/report', '/api/
 ACTIONS = ('report_error', 'span_decl_set', 'drop_begin', 'drop_file', 'drop_files', 'drop_end',
            'pick_folder_native', 'report_begin', 'report_put_image', 'write_viewer_report',
            'open_report', 'find_originals', 'locate_originals', 'rename_files', 'edit_traces',
-           'unload_sides', 'set_viewer_changed')
+           'unload_sides', 'set_viewer_state', 'olts_load', 'write_olts_report',
+           'set_viewer_changed')
 
 
 def foreign_status(port, path, body, origin=FOREIGN):

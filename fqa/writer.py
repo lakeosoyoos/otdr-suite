@@ -1,10 +1,10 @@
 """
-Filling the Lumen FQA Site Survey workbook
+Filling the FQA Site Survey workbook
 ==========================================
 
 Every cell address in this file was read off real submitted packages --
 Span 4 Flagler to Bethune (Titanium, 1152ct) and the two Cle Elum 144f
-packages -- and they agree, because the form is a controlled Lumen
+packages -- and they agree, because the form is a controlled customer
 document (Version History tab: v1.1, published 2025-11-14).  The
 addresses are therefore constants of the form, not of a span, and they
 are written down here once.
@@ -43,7 +43,7 @@ from .fat import FatRow
 from .job_facts import JobFacts
 from .xlsx_patch import Cell, Formula, WorkbookPatch
 
-# The revision of the Lumen form this cell map was read off.  Two are in
+# The revision of the customer form this cell map was read off.  Two are in
 # circulation: this one, which carries a Version History tab, and an older
 # 7-tab one without it.  Their layouts are identical for every cell we
 # write -- checked row by row -- but "identical everywhere I looked" is
@@ -130,7 +130,7 @@ EXC_TEXT = 'G'
 
 @dataclass
 class Exception_:
-    """One row of the Exception Reporting tab: a fibre Lumen must be told
+    """One row of the Exception Reporting tab: a fibre the customer must be told
     about.  `event` is the Event Log event number the issue sits at, or
     None when it is not at a splice."""
     fiber: object
@@ -257,7 +257,7 @@ def _row_formulas(row: int) -> list[Cell]:
     Building the template blanks these columns on every row -- it has to,
     or a short span prints 'DEL ROW' down the page -- so each row we
     actually use has to have them put back.  They are copied verbatim
-    from Lumen's own rows:
+    from the customer's own rows:
 
       B   the event number, counting on from the row above until the 'x'
           in AL makes the row Site Z
@@ -272,7 +272,7 @@ def _row_formulas(row: int) -> list[Cell]:
     which is how the form is meant to behave.
 
     Missing this was not visible in a spot check of the cells we write --
-    only in a sweep of every cell Lumen's own package fills.
+    only in a sweep of every cell the customer's own package fills.
     """
     prev = row - 1
     b = ('IF(AL18="x", "Site Z",1)' if row == EVENT_FIRST_ROW else
@@ -384,7 +384,7 @@ def _exception_cells(rows: list[Exception_]) -> list[Cell]:
     for i in range(EXC_FIRST_ROW, EXC_LAST_ROW + 1):
         idx = i - EXC_FIRST_ROW
         item = rows[idx] if idx < len(rows) else None
-        # The fibre and event columns are text in Lumen's own packages --
+        # The fibre and event columns are text in the customer's own packages --
         # a fibre number can read '195' or '195/196' or 'F195', so the
         # column has to hold both and it holds them as text.
         cells += [
@@ -429,7 +429,7 @@ def write_fqa(template_path: str, out_path: str, build: FqaBuild,
     Returns the list of sheets that were written, so a caller can say what
     it changed rather than claiming the whole workbook.
 
-    `require_version` is normally None: every revision of the Lumen form
+    `require_version` is normally None: every revision of the customer form
     is accepted, and which one it was comes back through the completeness
     audit rather than stopping the build.  Set it only where a caller has
     a reason to demand one exact revision.
@@ -447,7 +447,7 @@ def write_fqa(template_path: str, out_path: str, build: FqaBuild,
     if missing:
         raise ValueError(
             f'{template_path} is missing the tab(s) {", ".join(missing)}. '
-            f'It does not look like a Lumen FQA Site Survey form')
+            f'It does not look like the FQA Site Survey form')
 
     if require_version is not None:
         found = form_version(template_path)
@@ -455,7 +455,7 @@ def write_fqa(template_path: str, out_path: str, build: FqaBuild,
             raise ValueError(
                 f'{os.path.basename(template_path)} is revision '
                 f'{found or "an older one with no Version History tab"}; '
-                f'this tool writes the Lumen form revision {require_version}. '
+                f'this tool writes the customer form revision {require_version}. '
                 f'To adopt a different revision, build a template from a '
                 f'package made on it: python -m fqa.make_template')
 

@@ -138,6 +138,9 @@ def _jsc(tmp_path, body):
         PRELUDE,
         _const("X_LABEL_GAP_PX"), _const("Y_LABEL_GAP_PX", required=False),
         _const("EVENT_NUM_H", required=False),
+        _const("Y_TITLE", required=False), _const("Y_TITLE_PAD", required=False),
+        _const("M", required=False),
+        _opt_fn("yTitleFit"),
         _const("DRAWER_DETAIL_MAX"), _const("DRAWER_TICK_MAX"), _const("DRAWER_LANES"),
         _const("DRAWER_COLOR"),
         _fn("lowerBound"), _fn("niceTicks"), _fn("drawGrid"), _fn("labelHit"),
@@ -304,4 +307,5 @@ def test_draw_resets_the_pool_and_shows_the_tip():
     fn = _fn("draw")
     assert fn.index("gLabelHits = [];") < fn.index("chartLabels(r);") < fn.index("drawGrid(r);")
     assert "for (const t of numOrder)" in fn
-    assert "if (gMouse && !hovered) drawLabelTip();" in fn
+    assert "drawOverlay(r);" in fn
+    assert "if (gMouse && !hovered) drawLabelTip();" in _fn("drawOverlay")

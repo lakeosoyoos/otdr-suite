@@ -4,7 +4,7 @@ main b4b30bb, a 24-fibre bidirectional span, 2026-09-29).
 
 1. A .zip in each box: the Viewer read 24 + 24 fibers, but the Splice Report
    said "Pick both an A and a B folder" with no Generate button and the
-   Unidirectional page ignored it.  Its own "…or paste a folder path" box
+   Unidirectional page ignored it.  Its own "…or Paste a Folder Path" box
    ignored a pasted .zip too, with nothing said.
 2. One folder holding BOTH directions in the A box: the Viewer listed every
    B file under the A file's key (and opened the A file for either), and the
@@ -45,7 +45,7 @@ def _plain_folder_sites():
     if not _SITES:
         at = _open(_hub(A, B), 'Splice Report')
         _SITES.update(_sites(at))
-        assert set(_SITES) == {'A-direction ILA / site', 'B-direction ILA / site'}
+        assert set(_SITES) == {'A-Direction ILA / Site', 'B-Direction ILA / Site'}
         assert len(set(_SITES.values())) == 2 and 'A' not in _SITES.values()
     return dict(_SITES)
 
@@ -59,9 +59,9 @@ def _box(at, label):
 def _hub(a='', b=''):
     at = run_streamlit(default_timeout=180).run()
     if a:
-        _box(at, 'A folder').input(a).run()
+        _box(at, 'A Folder').input(a).run()
     if b:
-        _box(at, 'B folder').input(b).run()
+        _box(at, 'B Folder').input(b).run()
     assert not at.exception, at.exception
     return at
 
@@ -132,8 +132,10 @@ def mixed(tmp_path):
 
 @pytest.fixture
 def dest(tmp_path, monkeypatch):
-    """Where the runs below save: never the tech's Downloads folder."""
+    """Where the runs below save: never the tech's Downloads folder.  Its
+    own settings folder, so the runs are in OTDR Suite mode."""
     monkeypatch.setenv('OTDR_CACHE_DIR', str(tmp_path / 'cache'))
+    monkeypatch.setenv('OTDR_SETTINGS_DIR', str(tmp_path / 'settings'))
     out = tmp_path / 'saved reports'
     out.mkdir()
     return str(out)
@@ -172,10 +174,10 @@ def test_the_viewer_and_the_splice_report_read_the_zips_the_same(zips):
 def test_unidirectional_runs_on_a_zip_in_the_panel(zips, dest):
     at = _open(_hub(zips[0]), 'Unidirectional')
     assert 'Choose the folder' not in _texts(at.main.info)
-    assert not [t for t in at.main.text_input if 'paste a folder' in t.label]
+    assert not [t for t in at.main.text_input if 'Paste a Folder' in t.label]
     at.session_state['uni_report_dest'] = dest
     at.run()
-    next(b for b in at.main.button if b.label == 'Run unidirectional report').click().run()
+    next(b for b in at.main.button if b.label == 'Run Unidirectional Report').click().run()
     finish_engine_run(at, 'uni')
     assert not at.exception, at.exception
     ran_on = at.session_state['uni_result']['_folder']
@@ -184,17 +186,17 @@ def test_unidirectional_runs_on_a_zip_in_the_panel(zips, dest):
 
 def test_unidirectional_reads_a_zip_pasted_in_its_own_box(zips):
     at = _open(_hub(), 'Unidirectional')
-    next(t for t in at.main.text_input if 'paste a folder' in t.label).input(zips[0]).run()
+    next(t for t in at.main.text_input if 'Paste a Folder' in t.label).input(zips[0]).run()
     assert not at.exception, at.exception
     assert 'Choose the folder' not in _texts(at.main.info)
-    assert any(b.label == 'Run unidirectional report' for b in at.main.button)
+    assert any(b.label == 'Run Unidirectional Report' for b in at.main.button)
     assert '.zip' in _texts(at.main.caption)
 
 
 def test_unidirectional_says_so_when_the_pasted_path_is_not_there(tmp_path):
     at = _open(_hub(), 'Unidirectional')
     gone = str(tmp_path / 'nowhere.zip')
-    next(t for t in at.main.text_input if 'paste a folder' in t.label).input(gone).run()
+    next(t for t in at.main.text_input if 'Paste a Folder' in t.label).input(gone).run()
     assert 'Not found' in _texts(at.main.warning)
 
 
@@ -208,7 +210,7 @@ def test_the_splice_reports_one_folder_box_takes_a_zip_of_both_directions(tmp_pa
     at = _open(_hub(), 'Splice Report')
     next(r for r in at.main.radio if r.label == 'Select Traces').set_value(
         'One folder / zip (both directions)').run()
-    next(t for t in at.main.text_input if t.label == 'Folder (both directions)').input(
+    next(t for t in at.main.text_input if t.label == 'Folder (Both Directions)').input(
         str(both)).run()
     assert not at.exception, at.exception
     assert 'Auto-split by direction' in _texts(at.main.caption)
@@ -256,7 +258,7 @@ def test_both_boxes_full_leaves_the_folders_alone_and_says_why(mixed):
 def test_a_secret_sauce_pair_folder_is_not_split(mixed):
     seen = _click({'nav': 'viewer', 'fibers': '1,2', 'dir': 'a',
                    'ssfolder': mixed, 'pa': '', 'pb': ''})
-    assert _box(seen, 'A folder').value == mixed
+    assert _box(seen, 'A Folder').value == mixed
     assert _server()[0] == mixed
 
 
@@ -270,10 +272,10 @@ def test_a_uni_cell_in_this_tab_keeps_both_folders_and_the_uni_gate(side):
     url = _viewer_url(seen)
     assert '&src=uni' in url
     assert f'&dir={side}' in url
-    assert _box(seen, 'A folder').value == A and _box(seen, 'B folder').value == B
+    assert _box(seen, 'A Folder').value == A and _box(seen, 'B Folder').value == B
     assert f'A: {N_A} fibers · B: {N_B} fibers' in _texts(seen.sidebar.caption)
     _back(seen, 'Unidirectional')
-    assert _box(seen, 'A folder').value == A and _box(seen, 'B folder').value == B
+    assert _box(seen, 'A Folder').value == A and _box(seen, 'B Folder').value == B
     assert next(r for r in seen.main.radio if r.label == 'Run On').value == (
         'A folder' if side == 'a' else 'B folder')
 
@@ -289,9 +291,9 @@ def test_the_uni_grid_link_says_which_panel_folder_it_ran_on(dest):
     next(r for r in at.main.radio if r.label == 'Run On').set_value('B folder').run()
     at.session_state['uni_report_dest'] = dest
     at.run()
-    next(b for b in at.main.button if b.label == 'Run unidirectional report').click().run()
+    next(b for b in at.main.button if b.label == 'Run Unidirectional Report').click().run()
     finish_engine_run(at, 'uni')
-    next(r for r in at.main.radio if r.label == 'Cell clicks open in').set_value(
+    next(r for r in at.main.radio if r.label == 'Cell Clicks Open In').set_value(
         'This tab (Viewer page)').run()
     grid = _texts(at.main.markdown)
     assert '?nav=viewer&fiber=' in grid, 'no flagged cell to click in the grid'
@@ -318,13 +320,13 @@ def _uni_report_on_a(tmp_path, monkeypatch):
 
 
 def _click_choice(at):
-    return next(r for r in at.main.radio if r.label == 'Cell clicks open in').value
+    return next(r for r in at.main.radio if r.label == 'Cell Clicks Open In').value
 
 
 def test_the_click_choice_survives_a_trip_to_another_tool(tmp_path, monkeypatch):
     _uni_report_on_a(tmp_path, monkeypatch)
     at = _open(_hub(A), 'Unidirectional')
-    next(r for r in at.main.radio if r.label == 'Cell clicks open in').set_value(
+    next(r for r in at.main.radio if r.label == 'Cell Clicks Open In').set_value(
         'This tab (Viewer page)').run()
     _open(at, 'Viewer')
     _open(at, 'Unidirectional')
@@ -334,10 +336,10 @@ def test_the_click_choice_survives_a_trip_to_another_tool(tmp_path, monkeypatch)
 def test_the_click_choice_and_save_folder_ride_a_this_tab_click(tmp_path, monkeypatch):
     _uni_report_on_a(tmp_path, monkeypatch)
     at = _open(_hub(A), 'Unidirectional')
-    next(r for r in at.main.radio if r.label == 'Cell clicks open in').set_value(
+    next(r for r in at.main.radio if r.label == 'Cell Clicks Open In').set_value(
         'This tab (Viewer page)').run()
     keep = str(tmp_path / 'my reports')
-    next(t for t in at.main.text_input if t.label == 'Save reports to').input(keep).run()
+    next(t for t in at.main.text_input if t.label == 'Save Reports To').input(keep).run()
     assert not at.exception, at.exception
     seen = _click({'nav': 'viewer', 'fiber': '3', 'km': '1.0', 'dir': 'a',
                    'sra': A, 'src': 'uni', 'pa': A, 'pb': '', 'pside': 'a',
@@ -345,14 +347,14 @@ def test_the_click_choice_and_save_folder_ride_a_this_tab_click(tmp_path, monkey
     _back(seen, 'Unidirectional')
     assert _click_choice(seen) == 'This tab (Viewer page)'
     assert next(t for t in seen.main.text_input
-                if t.label == 'Save reports to').value == keep
+                if t.label == 'Save Reports To').value == keep
 
 
 def test_a_second_splice_report_does_not_overwrite_the_first(dest):
     at = _open(_hub(A, B), 'Splice Report')
-    site_a, site_b = (_sites(at)[k] for k in ('A-direction ILA / site',
-                                              'B-direction ILA / site'))
-    name = f'{site_a}_to_{site_b}_SpliceReport'
+    site_a, site_b = (_sites(at)[k] for k in ('A-Direction ILA / Site',
+                                              'B-Direction ILA / Site'))
+    name = f'{site_a}_to_{site_b}_SpliceReport_OTDR_0.160'
     first = os.path.join(dest, name + '.xlsx')
     with open(first, 'wb') as fh:
         fh.write(b'the report before')
@@ -369,15 +371,20 @@ def test_a_second_splice_report_does_not_overwrite_the_first(dest):
 
 
 def test_a_second_unidirectional_report_does_not_overwrite_the_first(dest):
-    first = os.path.join(dest, 'unidirectional_events.xlsx')
+    at = _open(_hub(A), 'Unidirectional')
+    name = '{}_to_{}_Uni_OTDR_0.250'.format(*(
+        next(t for t in at.main.text_input if t.label == l).value
+        for l in ('A-End Site', 'B-End Site')))
+    first = os.path.join(dest, name + '.xlsx')
     with open(first, 'wb') as fh:
         fh.write(b'the report before')
-    at = _open(_hub(A), 'Unidirectional')
     at.session_state['uni_report_dest'] = dest
     at.run()
-    next(b for b in at.main.button if b.label == 'Run unidirectional report').click().run()
+    next(b for b in at.main.button if b.label == 'Run Unidirectional Report').click().run()
     finish_engine_run(at, 'uni')
     assert not at.exception, at.exception
     with open(first, 'rb') as fh:
         assert fh.read() == b'the report before'
-    assert os.path.isfile(os.path.join(dest, 'unidirectional_events (2).xlsx'))
+    second = os.path.join(dest, name + ' (2).xlsx')
+    assert os.path.isfile(second)
+    assert at.session_state['uni_result']['out'] == second

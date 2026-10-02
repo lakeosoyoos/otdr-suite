@@ -291,7 +291,7 @@ def test_one_direction_connector_lives_in_the_otdr_table():
     import app as hub
     rows = {r[0]: r for r in hub.OTDR_ROWS}
     row = rows['unidir_connector_loss']
-    assert row[1] == 'Connector loss (1 direction)'
+    assert row[1] == 'Connector Loss (1 Direction)'
     assert row[2] == 0.649 and row[4] is True
     assert hub._OTDR_KEY_TO_ENGINE_GLOBAL['unidir_connector_loss'] == 'LAUNCH_CONN_UNI_MIN_DB'
     assert 'unidir_connector_loss' in hub.OTDR_DEFAULT_APPLY
@@ -307,12 +307,12 @@ def test_one_direction_connector_lives_in_the_otdr_table():
 
 def test_profiles_keep_their_one_direction_connector_value():
     """Profiles still declare the gate in their "conn" block; the move must
-    not change what any profile sends.  IIG turns it off."""
+    not change what any profile sends.  The contract profile turns it off."""
     import app as hub
     for name, prof in hub.CUSTOMER_PROFILES.items():
         want = (prof.get('conn') or {}).get('LAUNCH_CONN_UNI_MIN_DB')
         got = hub._overrides_from_settings(
             hub._otdr_settings_from_profile(name))['LAUNCH_CONN_UNI_MIN_DB']
         assert got == (0.649 if want is None else float(want)), name
-    iig = hub._otdr_settings_from_profile('AWS / IIG MT.1085')
-    assert iig['unidir_connector_loss']['apply'] is False
+    cp = hub._otdr_settings_from_profile('AWS / IIG MT.1085')
+    assert cp['unidir_connector_loss']['apply'] is False

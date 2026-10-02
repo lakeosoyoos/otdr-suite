@@ -108,7 +108,7 @@ def test_one_pass_of_the_page_draws_the_panel_and_ends():
         assert job["state"] == "running" and job["proc"].poll() is None
         assert took < 6, f"the page pass took {took:.1f}s of an 8 s run"
         assert any("s elapsed" in i.value for i in at.info)
-        assert any(b.label == "Cancel run" for b in at.button)
+        assert any(b.label == "Cancel Run" for b in at.button)
     finally:
         _kill(at)
 
@@ -138,8 +138,8 @@ def test_the_page_draws_no_report_under_a_run_but_keeps_its_sidebar():
         assert not at.exception, list(at.exception)
         assert "sr_job" in at.session_state
         labels = [b.label or "" for b in at.main.button]
-        assert labels[-1] == "Cancel run", labels
-        assert any("Check for updates" in (b.label or "")
+        assert labels[-1] == "Cancel Run", labels
+        assert any("Check for Updates" in (b.label or "")
                    for b in at.sidebar.button)
         assert any("OTDR Suite" in c.value for c in at.sidebar.caption)
     finally:
@@ -164,11 +164,11 @@ def test_cancel_stops_the_engine():
     try:
         at.run()
         proc = at.session_state["sr_job"]["proc"]
-        next(b for b in at.button if b.label == "Cancel run").click().run()
+        next(b for b in at.button if b.label == "Cancel Run").click().run()
         assert not at.exception, list(at.exception)
         assert "sr_job" not in at.session_state
         assert proc.poll() is not None, "Cancel left the engine running"
-        assert any("Run cancelled." in i.value for i in at.info)
+        assert any("Run canceled." in i.value for i in at.info)
     finally:
         _kill(at)
 
@@ -227,7 +227,7 @@ def _panel(state, poll, tail=("reading fiber 12",), now=100.0):
 DRAWN = [("info", "⏳ Generating the splice report: 41s elapsed. You can leave "
                   "this open or keep working; cancel below if needed."),
          ("caption", "current step · reading fiber 12"),
-         ("button", "Cancel run")]
+         ("button", "Cancel Run")]
 
 
 def test_a_redraw_on_its_own_draws_waits_then_asks_for_the_next():
@@ -295,8 +295,8 @@ def test_the_driver_does_not_rerun_the_page_to_move_the_count():
 def test_all_three_report_pages_use_the_same_panel():
     assert SRC.count("run_engine_live(") >= 4      # the def + three pages
     assert SRC.count("_engine_live_panel(") == 2   # the def + the one call
-    assert "'Cancel run'" in _fn_code("_engine_live_panel")
-    assert SRC.count("'Cancel run'") == 1
+    assert "'Cancel Run'" in _fn_code("_engine_live_panel")
+    assert SRC.count("'Cancel Run'") == 1
 
 
 @pytest.mark.parametrize("page, prefix", [

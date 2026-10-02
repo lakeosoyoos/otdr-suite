@@ -27,7 +27,9 @@ def test_fastreporter_mode_uses_fr_s_bidirectional_layout_for_a_pair():
     the Suite's in OTDR Suite mode (that one: test_viewer_suite_table.py).
     Nothing paired falls through to the single-direction grid either way."""
     body = _fn('renderEventTable')
-    guard = "} else if (renderFrBidiGrid(visible, host, hint)) return;"
+    guard = ("const server = gAnalysisMode === 'suite'\n"
+             "    ? renderSuiteBidiGrid(visible, host, hint) : renderFrBidiGrid(visible, host, hint);\n"
+             "  if (!server) {")
     assert guard in body
     after = body[body.index(guard) + len(guard):]
     assert after.lstrip().startswith('renderFastReporterGrid(visible, host, hint);'), after[:120]
@@ -39,7 +41,8 @@ def test_fastreporter_mode_uses_fr_s_bidirectional_layout_for_a_pair():
 
 def test_the_fr_grid_is_fr_s_bidirectional_table():
     body = _fn('paintFrBidiGrid')
-    assert "fetch(`/api/fr_table?fibers=${pairs.map(p => p.fiber).join(',')}`)" in _fn('renderFrBidiGrid')
+    # asked once for the traces on screen (askServerTable, test_viewer_fr_table_once)
+    assert "askServerTable('fr', key, `/api/fr_table?fibers=${pairs.map(p => p.fiber).join(',')}`," in _fn('renderFrBidiGrid')
     # three rows per fibre, in FR's order
     assert "['a', 'b', 'avg']" in body and "w === 'avg'" in body
     assert "which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average'" in body

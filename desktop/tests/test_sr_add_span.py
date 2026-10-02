@@ -46,7 +46,7 @@ def test_add_span_opens_span_2_boxes_and_the_generate_label_counts_spans():
     assert "view_dir_a_input" in keys and "sr2_dir_a" not in keys
     _button(at, "Generate Splice Report")
 
-    _button(at, "➕ Add span…").click().run()
+    _button(at, "➕ Add Span…").click().run()
     assert not at.exception, list(at.exception)
     keys = {w.key for w in at.text_input}
     assert {"sr2_dir_a", "sr2_dir_b", "sr2_site_a", "sr2_site_b"} <= keys
@@ -60,14 +60,14 @@ def test_add_span_opens_span_2_boxes_and_the_generate_label_counts_spans():
     assert any("Span 2 needs" in i.value for i in at.info)
     # The button chains: under span 2 it offers span 3; only the LAST span
     # can be removed.
-    _button(at, "➕ Add span…")
-    _button(at, "✖ Remove span 2")
+    _button(at, "➕ Add Span…")
+    _button(at, "✖ Remove Span 2")
 
 
 def test_span_2_with_folders_enables_generate_and_remove_drops_it():
     at = _page(view_dir_a_input=str(FIXTURE_SPLICE_A_DIR),
                view_dir_b_input=str(FIXTURE_SPLICE_B_DIR))
-    _button(at, "➕ Add span…").click().run()
+    _button(at, "➕ Add Span…").click().run()
     at.session_state["sr2_dir_a"] = str(FIXTURE_SPLICE_A_DIR)
     at.session_state["sr2_dir_b"] = str(FIXTURE_SPLICE_B_DIR)
     at.run()
@@ -76,10 +76,10 @@ def test_span_2_with_folders_enables_generate_and_remove_drops_it():
     # Same folders as span 1 → say so (the reports would be identical).
     assert any("same folders as span 1" in w.value for w in at.warning)
     # Span 3 chains on; removing it brings span 2's Remove back.
-    _button(at, "➕ Add span…").click().run()
+    _button(at, "➕ Add Span…").click().run()
     _button(at, "Generate Splice Reports (3 spans)")
-    _button(at, "✖ Remove span 3").click().run()
-    _button(at, "✖ Remove span 2").click().run()
+    _button(at, "✖ Remove Span 3").click().run()
+    _button(at, "✖ Remove Span 2").click().run()
     assert "sr2_dir_a" not in {w.key for w in at.text_input}
     _button(at, "Generate Splice Report")
 
@@ -104,13 +104,13 @@ def test_generate_queues_one_run_per_span_into_the_one_destination():
 
 def test_the_same_sites_twice_keep_both_files():
     page = _fn("page_splice_report")
-    assert "_span{_n}{_suffix}" in page
+    assert "f'span{_n}_SpliceReport'" in page
 
 
 # ── span 1 keeps the grid + Viewer; added spans are report-only ──────────
 def test_only_span_1_gets_the_grid_and_the_viewer():
     render = _fn("_render_sr_result")
-    i_dl = render.index("st.download_button('⬇ Excel report'")
+    i_dl = render.index("st.download_button('⬇ Excel Report'")
     i_tech = render.index("_render_tech_comparison(")
     i_gate = render.index("if span != 1:\n        return")
     i_grid = render.index("_render_clickable_grid(")

@@ -68,8 +68,8 @@ def _box(at, label):
 def _hub(a, b, tmp_path, monkeypatch):
     monkeypatch.setenv('OTDR_CACHE_DIR', str(tmp_path / 'cache'))
     at = run_streamlit(default_timeout=180).run()
-    _box(at, 'A folder').input(a).run()
-    _box(at, 'B folder').input(b).run()
+    _box(at, 'A Folder').input(a).run()
+    _box(at, 'B Folder').input(b).run()
     at.sidebar.radio[0].set_value('Secret Sauce').run()
     assert not at.exception, at.exception
     return at
@@ -149,7 +149,7 @@ def test_a_run_after_a_swap_runs_on_the_new_trace(tmp_path, monkeypatch):
     out.mkdir()
     at.session_state['ss_report_dest'] = str(out)
     at.run()
-    next(b_ for b_ in at.main.button if b_.label == 'Run analysis').click().run()
+    next(b_ for b_ in at.main.button if b_.label == 'Run Analysis').click().run()
     finish_engine_run(at, 'ss')
     assert not at.exception, at.exception
     ran_on = at.session_state['ss_result']['_folder']
@@ -165,10 +165,10 @@ def test_clear_traces_then_the_same_span_needs_a_fresh_run(tmp_path, monkeypatch
     at.run()
     assert 'ss_pairs_result' in at.session_state
     next(b_ for b_ in at.sidebar.button if b_.label == 'Clear Traces').click().run()
-    next(b_ for b_ in at.button if b_.label == 'Allow').click().run()
+    next(b_ for b_ in at.button if b_.key == 'clear_traces_allow').click().run()
     assert not at.exception, at.exception
-    _box(at, 'A folder').input(a).run()
-    _box(at, 'B folder').input(b).run()
+    _box(at, 'A Folder').input(a).run()
+    _box(at, 'B Folder').input(b).run()
     assert not at.exception, at.exception
     assert 'ss_pairs_result' not in at.session_state
 
