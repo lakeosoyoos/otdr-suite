@@ -73,12 +73,12 @@ function renderChips() {} function fit() {} function draw() {} function renderEv
 function unloadEmptiedSides() {} function setReadout(t) { readout = t; }
 async function loadOverview(tasks, ld) {
   tasks.forEach(function (t) { overview.push(t.key); gTraces.push({ key: t.key, fiber: t.f }); });
-  if (ld) loadProgress(ld, tasks.length);
+  if (ld) loadStep(ld, tasks.length);
   return true;
 }
 var loads = [];
 function beginLoad(tasks) { var ld = { done: 0, total: tasks.length, ended: false }; loads.push(ld); return ld; }
-function loadProgress(ld, n) { ld.done = Math.min(ld.total, ld.done + n); }
+function loadStep(ld, n) { ld.done = Math.min(ld.total, ld.done + n); }
 function endLoad(ld) { ld.ended = true; }
 async function loadOne(key, f) { gTraces.push({ key: key, fiber: f }); }
 function fibersOnChart() {

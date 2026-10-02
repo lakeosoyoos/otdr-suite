@@ -186,7 +186,7 @@ def test_the_progress_leads_the_line_and_is_not_a_plain_note():
         body = _js_func(SRC, name)
         assert 'beginLoad(tasks)' in body and 'endLoad(ld)' in body, name
         assert 'await buildTable();' in body and 'renderEventTable();' not in body, name
-    assert 'if (ld) loadProgress(ld, slice.length);' in _js_func(SRC, 'loadOverview')
+    assert 'if (ld) loadStep(ld, slice.length);' in _js_func(SRC, 'loadOverview')
     # both server-built tables hold the line until they paint
     assert 'gTableBusy = true;' in _js_func(SRC, 'renderFrBidiGrid')
     assert 'tableSettled();' in _js_func(SRC, 'renderFrBidiGrid')
@@ -195,15 +195,18 @@ def test_the_progress_leads_the_line_and_is_not_a_plain_note():
 
 
 def test_no_add_a_trace_hint_while_loading():
+    # main's wording (the menu stress fixes): the panel says it is loading
     body = _js_func(SRC, 'renderEventTable')
-    assert "hint.textContent = gLoadsInFlight.size ? '' : 'add a trace to see events';" in body
-    assert "hint.textContent = '';" in _js_func(SRC, 'beginLoad')
+    assert "gLoadingKeys.size ? 'loading traces…' : 'add a trace to see events'" in body
+    assert "hint.textContent = 'loading traces…';" in _js_func(SRC, 'beginLoad')
 
 
 def test_the_box_counts_what_is_on_its_way():
     fn = _js_func(SRC, 'syncFiberBox')
     assert 'for (const ld of gLoadsInFlight) {' in fn
     assert 'box.value = fiberRangeText(fibers);' in fn
+    # a new load epoch (Clear All, a new FILES selection) drops the old asks
+    assert 'gLoadsInFlight.clear();' in _js_func(SRC, 'newLoadEpoch')
 
 
 # ─── #39.2: a report link takes the table to its column ─────────────────────
@@ -297,3 +300,30 @@ def test_the_viewer_counts_say_one_fiber():
     assert "(${nA} fiber${nA === 1 ? '' : 's'})" in info
     assert "(${nB} fiber${nB === 1 ? '' : 's'})" in info
     assert "of ${rows.length} fiber${rows.length === 1 ? '' : 's'} selected" in SRC
+
+
+@needs_jsc
+def test_a_clear_all_mid_load_leaves_no_ask_in_the_box(tmp_path):
+    """With main's load epochs: a Clear All while a load is on its way stops
+    that load, and the box must not keep showing what it had asked for."""
+    prog = ('var gTraces = [], gLoadingKeys = new Set(), gLoadsInFlight = new Set(), gLoadEpoch = 0;\n'
+            'var gAddDir = "both", box = { value: "" };\n'
+            'var document = { activeElement: null, getElementById: function () { return box; } };\n'
+            'function setAddDir(d) { gAddDir = d; }\n'
+            + _js_func(SRC, 'fiberRangeText') + '\n' + _js_func(SRC, 'syncFiberBox') + '\n'
+            + _js_func(SRC, 'newLoadEpoch') + r"""
+var out = {};
+// a whole span both ways asked for; A's first chunk has landed
+gLoadsInFlight.add({ fibers: new Set([1, 2, 3, 4, 5]), dirs: new Set(['a', 'b']), done: 3, total: 10 });
+['a-4', 'a-5', 'b-1', 'b-2', 'b-3', 'b-4', 'b-5'].forEach(function (k) { gLoadingKeys.add(k); });
+gTraces = [{ fiber: 1, dir: 'a' }, { fiber: 2, dir: 'a' }, { fiber: 3, dir: 'a' }];
+syncFiberBox();
+out.mid = [box.value, gAddDir];
+newLoadEpoch(); gTraces = [];             // Clear All
+syncFiberBox();
+out.cleared = [box.value, gAddDir, gLoadsInFlight.size];
+print('OUT ' + JSON.stringify(out));
+""")
+    out = _jsc(prog, tmp_path, 'clear_mid.js')
+    assert out['mid'] == ['1-5', 'both']
+    assert out['cleared'] == ['', 'both', 0]

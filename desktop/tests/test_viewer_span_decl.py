@@ -179,7 +179,9 @@ def test_the_declaration_is_stored_in_the_directions_own_frame():
     """Raw km, not display km and not an event number: the mirror gets
     re-derived and events get renumbered by a re-analysis, but the metre a
     connector sits at does not move."""
-    fn = SRC[SRC.index("tb.addEventListener('contextmenu'"):][:600]
+    # the FastReporter grid's (the FEC table's own comes earlier in the file)
+    fr = SRC[SRC.index('function renderFastReporterGrid('):]
+    fn = fr[fr.index("tb.addEventListener('contextmenu'"):][:600]
     assert 'data-km' in fn
     grid = SRC[SRC.index('cells.push(lossCell(evLoss(e)'):][:400]
     assert 'data-km="${e.dist_km}"' in grid, 'must tag the RAW km, not dispKm'
