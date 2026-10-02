@@ -2768,7 +2768,13 @@ def _panel_traces():
     box loaded 24 + 24 fibers in the Viewer while the Splice Report asked for
     both folders and the Unidirectional page ignored them (2026-09-29)."""
     dir_a, dir_b, _notes = _panel_dirs()
-    return tuple(_d if _d and os.path.isdir(_d) else '' for _d in (dir_a, dir_b))
+    # A folder with no trace files is not loaded for a report: the Splice
+    # Report took one as loaded and failed on Generate (audit 2026-10-02).
+    # The Viewer still gets it, so its frame reloads to show 0 fibers.
+    _none = {t[:1] for k, t in _notes
+             if k == 'warning' and t[1:].startswith(': no trace files')}
+    return tuple(_d if _d and os.path.isdir(_d) and _s not in _none else ''
+                 for _s, _d in (('A', dir_a), ('B', dir_b)))
 
 
 def _show_panel_notes():
@@ -3654,7 +3660,18 @@ def _resolve_viewer_dir(raw_path):
     list.  Accepts a plain folder, a `.zip`, or a folder CONTAINING zip(s) —
     extracting and flattening as needed — so a zipped SOR span (even a single
     direction) can be viewed WITHOUT the bidirectional 'Load span' flow.
-    Returns (usable_dir, note_or_None).  Never raises."""
+    Returns (usable_dir, note_or_None).  Never raises.
+
+    A folder whose trace files are all in its subfolders is flattened the
+    same way, with the note 'traces read from its subfolders'.  Unzipping
+    SITE.zip leaves SITE/SITE/*.sor, and the outer folder
+    in a box loaded 0 fibers on every page with nothing said; the Splice
+    Report took it as loaded and only failed on Generate (audit 2026-10-02).
+    A folder with trace files of its own at the top is used as it is, its
+    subfolders unread, as before.  A folder with no trace files in it or in
+    its subfolders gets the note 'no trace files (.sor, .trc, .json) in that
+    folder'.  Which notes are captions and which are warnings:
+    _dir_note_is_caption."""
     import folder_intake as fi
     p = (raw_path or '').strip().strip('"')
     if not p:
@@ -3664,38 +3681,82 @@ def _resolve_viewer_dir(raw_path):
         return p, None
     is_zip = os.path.isfile(p) and p.lower().endswith('.zip')
     try:
-        has_inner_zip = os.path.isdir(p) and any(
-            f.lower().endswith('.zip') for f in os.listdir(p))
+        names = os.listdir(p) if os.path.isdir(p) else []
     except OSError:
-        has_inner_zip = False
-    if not (is_zip or has_inner_zip):
+        names = None              # unreadable: page_viewer says so
+    has_inner_zip = bool(names) and any(f.lower().endswith('.zip') for f in names)
+    # No trace file and no zip at the top: look in its subfolders, three
+    # levels down at most (SITE/SITE, span/A/SITE), so a
+    # folder typed by mistake (a whole drive, a home folder) is not walked
+    # end to end on every rerun.  The rules of find_otdr_files: no
+    # dot-files (the hub's own report caches are .json) and none of
+    # SKIP_DIRS.  Zips in subfolders are not opened.
+    nested = []
+    if names is not None and os.path.isdir(p) and not has_inner_zip and not any(
+            f.lower().endswith(fi.OTDR_EXTS) and not f.startswith('.') for f in names):
+        top = os.path.normpath(p)
+        for root, dirs, files in os.walk(top):
+            depth = 0 if root == top else os.path.relpath(root, top).count(os.sep) + 1
+            dirs[:] = [] if depth >= 3 else [d for d in dirs if d not in fi.SKIP_DIRS]
+            if depth:
+                nested += [os.path.join(root, f) for f in files
+                           if not f.startswith('.') and f.lower().endswith(fi.OTDR_EXTS)]
+        nested.sort()
+        if not nested:
+            return p, 'no trace files (.sor, .trc, .json) in that folder'
+    if not (is_zip or has_inner_zip or nested):
         return p, None            # nothing to extract; page_viewer validates/warns
+    note = 'traces read from its subfolders' if nested else 'viewing from .zip'
+    # Flattening keeps one file per name (materialize_all keeps the first):
+    # say so when two subfolders hold the same name, case aside as Windows
+    # sees it, rather than leave the others out unsaid.
+    first, clash = {}, []
+    for f in nested:
+        name = os.path.basename(f)
+        if name.lower() not in first:
+            first[name.lower()] = name
+        elif first[name.lower()] not in clash:
+            clash.append(first[name.lower()])
+    if clash:
+        note = (f"{note}, but {len(clash)} file name"
+                f"{'s are' if len(clash) != 1 else ' is'} in more than one "
+                f'subfolder and only one copy of each was loaded (for example '
+                f'{clash[0]})')
     # What the extraction was built from: the zip itself, or, for a folder,
     # every zip and trace file in it, each by path, size, mtime and inode, so
     # a zip replaced or overwritten in place is extracted again.
     try:
         if is_zip:
             _zsig = _files_sig([p])
+        elif nested:
+            _zsig = _files_sig(nested)
         else:
             _zsig = _files_sig(fi.zip_paths(p) + fi.find_otdr_files(p))
     except OSError:
         _zsig = None
+
+    def _usable(d):
+        # A flattened folder is built whole (_settle), so one that is there
+        # is the one to use even when its names give no fiber numbers: a
+        # zip's copy must list fibers, as it always had to.
+        if not (d and os.path.isdir(d)):
+            return False
+        return bool(os.listdir(d)) if nested else bool(trace_server.list_fibers(d))
     cached_sig, cached_dir = _VIEWER_DIR_CACHE.get(p) or (None, None)
-    if (_zsig is not None and cached_sig == _zsig
-            and cached_dir and os.path.isdir(cached_dir)
-            and trace_server.list_fibers(cached_dir)):
-        return cached_dir, 'viewing from .zip'
+    if _zsig is not None and cached_sig == _zsig and _usable(cached_dir):
+        return cached_dir, note
     # One folder per zip (and per version of it), named after both, so every
     # tool, every session and a restarted hub get the same folder for the same
     # zip: the report pages read these boxes too (_panel_dirs), and a report
     # is saved under the folders it ran on.
     final = _stable_dir('viewer_zip_', p, _zsig)
-    if final and os.path.isdir(final) and trace_server.list_fibers(final):
+    if _usable(final):
         _remember(_VIEWER_DIR_CACHE, p, (_zsig, final))
-        return final, 'viewing from .zip'
+        return final, note
     try:
         dest = tempfile.mkdtemp(prefix='viewer_zip_')
-        files = (fi.extract_zip(p, os.path.join(dest, 'unzipped')) if is_zip
+        files = (nested if nested
+                 else fi.extract_zip(p, os.path.join(dest, 'unzipped')) if is_zip
                  else fi.find_otdr_files_with_zips(p, os.path.join(dest, 'zips')))
         if not files:
             return p, None        # nothing extractable; fall through to the folder
@@ -3703,9 +3764,24 @@ def _resolve_viewer_dir(raw_path):
         # (extract_zip / find_otdr_files_with_zips may leave files in subfolders).
         flat = _settle(fi.materialize_all(files, os.path.join(dest, 'all')), final)
         _remember(_VIEWER_DIR_CACHE, p, (_zsig, flat))
-        return flat, 'viewing from .zip'
+        return flat, note
     except Exception as exc:                           # bad zip / IO
+        if nested:
+            return '', f'could not read its subfolders ({exc})'
         return '', f'could not read that .zip ({exc})'
+
+
+def _dir_note_is_caption(note):
+    """True for a _resolve_viewer_dir note that only says where the traces
+    were read from; every other note is a warning.  A page used to show any
+    note but 'could not ...' as a caption (audit 2026-10-02)."""
+    return note in ('viewing from .zip', 'traces read from its subfolders')
+
+
+def _dir_note_unusable(note):
+    """True for a _resolve_viewer_dir note that leaves nothing to load: a
+    zip or subfolders that could not be read, or no trace files at all."""
+    return bool(note) and note.startswith(('could not', 'no trace files'))
 
 
 # A folder in one of the left panel's boxes that holds BOTH directions:
@@ -3766,7 +3842,8 @@ def _split_panel_folder(folder):
 def _panel_dirs():
     """The left panel's two boxes, resolved: (dir_a, dir_b, notes).
 
-    Each box may hold a folder, a .zip or a folder of zips (_resolve_viewer_dir).
+    Each box may hold a folder, a .zip, a folder of zips or a folder whose
+    traces are in its subfolders (_resolve_viewer_dir).
     A box whose folder holds both directions is split into A and B when the
     other box is empty or names the same folder; with another folder in the
     other box nothing is split and a note says why.  `notes` is a list of
@@ -3776,11 +3853,11 @@ def _panel_dirs():
     out, notes = {}, []
     for side, raw in (('A', raw_a), ('B', raw_b)):
         d, note = _resolve_viewer_dir(raw)
-        if note and note.startswith('could not'):
-            notes.append(('warning', f'{side}: {note}'))
-            d = ''
-        elif note:
-            notes.append(('caption', f'{side}: {note}'))
+        if note:
+            notes.append(('caption' if _dir_note_is_caption(note) else 'warning',
+                          f'{side}: {note}'))
+            if note.startswith('could not'):
+                d = ''
         out[side] = d
     same = bool(raw_a and raw_b) and (os.path.normcase(os.path.abspath(raw_a))
                                       == os.path.normcase(os.path.abspath(raw_b)))
@@ -4048,6 +4125,12 @@ def page_duplicate_check():
     st.session_state.setdefault('ss_folder_input', '')
 
     _pa, _pb = _panel_traces()
+    # What is wrong with the left panel's boxes (a folder with no trace
+    # files, one not found), as on the other report pages; its captions
+    # stay off this page, as before (audit 2026-10-02).
+    for _kind, _text in _panel_dirs()[2]:
+        if _kind == 'warning':
+            st.warning(_text)
     _dropped = None
     if _pa or _pb:
         # Traces loaded in the left panel: the page draws no loader of its
@@ -6976,13 +7059,15 @@ def _sr_span_inputs(span):
 def _typed_trace_dir(raw, label):
     """A folder box on a report page, read the way the Viewer reads its own
     boxes: a .zip, or a folder of zips, becomes its extracted copy.  A zip
-    that cannot be read says so and gives ''."""
+    that cannot be read says so and gives '', and so does a folder with no
+    trace files (audit 2026-10-02)."""
     typed = (raw or '').strip().strip('"')
     if not typed:
         return ''
     d, note = _resolve_viewer_dir(typed)
-    if note and note.startswith('could not'):
+    if note and not _dir_note_is_caption(note):
         st.warning(f'{label} folder: {note}')
+    if _dir_note_unusable(note):
         return ''
     return d
 
@@ -8117,8 +8202,10 @@ def page_unidirectional():
         if folder:
             _typed = folder
             folder, _znote = _resolve_viewer_dir(folder)
-            if _znote and _znote.startswith('could not'):
+            if _znote and not _dir_note_is_caption(_znote):
                 st.warning(f'{_typed}: {_znote}')
+            elif _znote == 'traces read from its subfolders':
+                st.caption(f'Reading the traces from its subfolders: {_typed}')
             elif _znote:
                 st.caption(f'📦 Reading the traces from the .zip: {_typed}')
             elif not os.path.exists(_typed):
@@ -8637,7 +8724,7 @@ def _fec_folder_row(slot, label, placeholder):
     if not raw:
         return ''
     d, note = _resolve_viewer_dir(raw)
-    if note and note != 'viewing from .zip':
+    if note and not _dir_note_is_caption(note):
         st.warning(f'{label}: {note}')
     if not d or not os.path.isdir(d):
         st.warning(f'{label}: folder not found.')
