@@ -522,7 +522,7 @@ def test_every_tool_runs_on_the_left_panels_traces(settings_dir, span_dir):
         assert any("loaded in the left panel" in c.value for c in at.main.caption), name
         # The panel holds the traces: no folder picking on the page.
         labels = {b.label for b in at.main.button}
-        assert not {"📁 Browse for folder", "📂 A-direction folder"} & labels, name
+        assert not {"📁 Browse for Folder", "📁 A-Direction Folder"} & labels, name
         assert not [t for t in at.main.text_input
                     if t.key in ("uni_folder_input", "ss_folder_input", "view_dir_a_input")]
 

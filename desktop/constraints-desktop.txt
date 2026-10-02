@@ -12,7 +12,7 @@
 # test suite and a report comparison.  Windows only: the Mac de-risk build
 # runs Python 3.9 and cannot install these numpy/scipy versions.
 #
-# OTDR Suite App adds the six packages only it installs (its window:
+# OTDR App adds the six packages only it installs (its window:
 # pywebview, bottle, proxy-tools, pythonnet, clr-loader; the job QR code:
 # qrcode), taken from the green App build of 2026-10-01 (run 1240).
 altair==6.3.0

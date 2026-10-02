@@ -16,12 +16,12 @@
 ; AppVersion is passed by CI:  iscc /DAppVersion=1.0.<run_number> OTDRSuite.iss
 ; Falls back to a dev value for local compiles.
 
-; EDITION: this branch builds "OTDR Suite App", which installs BESIDE the
+; EDITION: this branch builds "OTDR App", which installs BESIDE the
 ; regular OTDR Suite.  Its own AppId (so neither installer upgrades or removes
 ; the other), its own folder, Start-menu entry and uninstall entry.  The
 ; regular edition is AppName "OTDR Suite", AppId B7E5B0E2-..., OTDRSuite-Setup.
-#define AppName     "OTDR Suite App"
-#define AppExeName  "OTDRSuite.exe"
+#define AppName     "OTDR App"
+#define AppExeName  "OTDRApp.exe"
 #ifndef AppVersion
   #define AppVersion "0.0.0-dev"
 #endif
@@ -34,6 +34,11 @@ AppPublisher=Lake Osoyoos
 AppPublisherURL=https://github.com/lakeosoyoos/otdr-suite
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
+; The product was "OTDR Suite App" before 2026-10-01.  An install made under
+; that name is upgraded into the new folder and Start-menu name rather than
+; kept in the old ones; [InstallDelete] below clears what the old name left.
+UsePreviousAppDir=no
+UsePreviousGroup=no
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
@@ -41,7 +46,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
 RestartApplications=no
 OutputDir=dist
-OutputBaseFilename=OTDRSuiteApp-Setup
+OutputBaseFilename=OTDRApp-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -57,10 +62,14 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 ; build so nothing orphaned remains.  {app} is our own install dir.
 [InstallDelete]
 Type: filesandordirs; Name: "{app}\*"
+; Left by an install under the old product name (same AppId).
+Type: filesandordirs; Name: "{autopf}\OTDR Suite App"
+Type: filesandordirs; Name: "{autoprograms}\OTDR Suite App"
+Type: files; Name: "{autodesktop}\OTDR Suite App.lnk"
 
 [Files]
-; The PyInstaller one-folder output (built into desktop/dist/OTDRSuite by CI).
-Source: "dist\OTDRSuite\*"; DestDir: "{app}"; \
+; The PyInstaller one-folder output (built into desktop/dist/OTDRApp by CI).
+Source: "dist\OTDRApp\*"; DestDir: "{app}"; \
   Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Tasks]
@@ -72,13 +81,14 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 
 ; ── File associations (per-user, HKA = HKCU under PrivilegesRequired=lowest)
 ; Double-clicking a .zfc (phone Field Capture package), .zdb (shared project)
-; or legacy .otdrproject runs OTDRSuite.exe "%1"; the launcher hands the path
+; or legacy .otdrproject runs OTDRApp.exe "%1"; the launcher hands the path
 ; to the hub.  Standard pattern: our own ProgID + OpenWithProgids entry, and
 ; the extension's default value.  Everything is removed on uninstall
 ; (uninsdeletekey on our ProgIDs, uninsdeletevalue on the extension values).
 [Registry]
-; OTDR Suite App owns these file types (Projects is an App feature; the
-; regular OTDR Suite never registers them).  App-only ProgIDs (OTDRSuiteApp.*)
+; OTDR App owns these file types (Projects is an App feature; the
+; regular OTDR Suite never registers them).  App-only ProgIDs (OTDRSuiteApp.*,
+; ids kept from the old product name; a person sees only the AppName text)
 ; so installing, upgrading or uninstalling either edition cannot touch the
 ; other's registry keys.
 Root: HKA; Subkey: "Software\Classes\.zfc"; ValueType: string; ValueName: ""; ValueData: "OTDRSuiteApp.zfc"; Flags: uninsdeletevalue

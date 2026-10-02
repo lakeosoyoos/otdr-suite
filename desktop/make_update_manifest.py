@@ -40,7 +40,7 @@ SIG_NAME = "update_manifest.json.sig"
 
 def build_manifest(version: int, commit: str, channel: str = "") -> bytes:
     """Return the canonical manifest bytes (sha-256 of every ENGINE_FILE).
-    `channel` marks a manifest for one edition (OTDR Suite App: "app"); that
+    `channel` marks a manifest for one edition (OTDR App: "app"); that
     edition's launcher refuses any other.  main's manifest carries none."""
     files = {}
     for rel in ENGINE_FILES:
@@ -66,7 +66,7 @@ def main() -> int:
     ap.add_argument("--commit", required=True)
     ap.add_argument("--out-dir", default=str(REPO_ROOT))
     ap.add_argument("--channel", default="",
-                    help='edition channel, e.g. "app" for OTDR Suite App')
+                    help='edition channel, e.g. "app" for OTDR App')
     args = ap.parse_args()
 
     key_hex = os.environ.get(SIGNING_KEY_ENV, "").strip()

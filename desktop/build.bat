@@ -3,7 +3,7 @@ REM ===========================================================================
 REM  OTDR Suite — Windows one-click build  (run on a clean Windows machine)
 REM ===========================================================================
 REM  Requires Python 3.11 (NOT 3.12+).  Produces:
-REM     dist\OTDRSuite\OTDRSuite.exe   + dist\OTDRSuite-Windows.zip
+REM     dist\OTDRApp\OTDRApp.exe   + dist\OTDRApp-Windows.zip
 REM  Includes a BOOT SELF-TEST (step 6): a green PyInstaller build that does
 REM  not actually launch is treated as a FAILED build.
 REM ===========================================================================
@@ -54,27 +54,27 @@ if errorlevel 1 (
 
 REM ── 5. Boot self-test — launch the exe, poll health, kill it ──────────────
 echo [build] Boot self-test: launching exe and polling /_stcore/health ...
-start "" "dist\OTDRSuite\OTDRSuite.exe"
+start "" "dist\OTDRApp\OTDRApp.exe"
 set "BOOT_OK="
 powershell -NoProfile -Command ^
   "$d=(Get-Date).AddSeconds(120); while((Get-Date) -lt $d){ try{ $r=Invoke-WebRequest -Uri 'http://127.0.0.1:8510/_stcore/health' -TimeoutSec 2 -UseBasicParsing; if($r.Content.Trim() -eq 'ok'){ exit 0 } }catch{}; Start-Sleep -Milliseconds 750 }; exit 1"
 if errorlevel 1 (
     echo [build] BOOT TEST FAILED — exe did not serve health=ok within 120s.
     echo         Check %%USERPROFILE%%\.otdrSuite\otdrsuite.log for the traceback.
-    taskkill /IM OTDRSuite.exe /F >nul 2>&1
+    taskkill /IM OTDRApp.exe /F >nul 2>&1
     exit /b 1
 )
 echo [build] Boot test PASSED — health=ok.
-taskkill /IM OTDRSuite.exe /F >nul 2>&1
+taskkill /IM OTDRApp.exe /F >nul 2>&1
 
 REM ── 6. Zip the dist folder ────────────────────────────────────────────────
 powershell -NoProfile -Command ^
-    "Compress-Archive -Path 'dist\OTDRSuite\*' -DestinationPath 'dist\OTDRSuite-Windows.zip' -Force"
+    "Compress-Archive -Path 'dist\OTDRApp\*' -DestinationPath 'dist\OTDRApp-Windows.zip' -Force"
 
 echo.
 echo [build] ===========================================================
 echo [build]  Build OK and boot-tested.
-echo [build]    EXE : %CD%\dist\OTDRSuite\OTDRSuite.exe
-echo [build]    ZIP : %CD%\dist\OTDRSuite-Windows.zip
+echo [build]    EXE : %CD%\dist\OTDRApp\OTDRApp.exe
+echo [build]    ZIP : %CD%\dist\OTDRApp-Windows.zip
 echo [build] ===========================================================
 endlocal

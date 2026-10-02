@@ -210,7 +210,8 @@ def test_spawn_os_name_beats_the_ambient_platform():
 def test_nudge_renders_above_the_page_radio():
     """It only works if it is the first thing in the sidebar — below the tool
     radio a tech scrolls past it."""
-    sidebar = APP_SRC.index("    st.markdown('## 🔬 OTDR Suite')")
+    # The App names the product through PRODUCT_NAME ("OTDR App").
+    sidebar = APP_SRC.index("    st.markdown(f'## 🔬 {PRODUCT_NAME}')")
     # The sidebar's own call (the home screen has another, with no sidebar).
     call = APP_SRC.index("\n    _render_update_nudge()", sidebar)
     radio = APP_SRC.index("page = st.radio(")

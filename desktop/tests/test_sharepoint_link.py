@@ -1,4 +1,4 @@
-"""SharePoint, one folder, through the person's own sign-in (OTDR Suite App).
+"""SharePoint, one folder, through the person's own sign-in (OTDR App).
 
 sharepoint_link.py talks to SharePoint's REST API with the cookies of a
 sign-in window.  Here a small HTTP server plays SharePoint over a folder tree

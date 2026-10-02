@@ -43,8 +43,8 @@ import urllib.error
 import webbrowser
 from pathlib import Path
 
-# ── Edition: OTDR Suite App ─────────────────────────────────────────────
-# This branch builds "OTDR Suite App", the app-window edition, so it installs
+# ── Edition: OTDR App ───────────────────────────────────────────────────
+# This branch builds "OTDR App", the app-window edition, so it installs
 # and runs BESIDE the regular OTDR Suite on one PC.  Nothing is shared: its own
 # app folder (settings, cache, locks, log), its own port, its own installer
 # identity (OTDRSuite.iss), and its own updates.  main's manifest carries
@@ -53,8 +53,11 @@ from pathlib import Path
 # the signed manifest), which CI publishes only from the app-release branch,
 # and takes only a manifest marked for the App (UPDATE_CHANNEL).  The regular
 # edition is APP_NAME "OTDRSuite", ".otdrSuite", PORT 8510, main's manifest,
-# no channel.
-EDITION      = "OTDR Suite App"
+# no channel.  EDITION is the product name a person sees (window title,
+# installer, the hub through OTDR_SUITE_EDITION); the folder, the env var
+# names and APP_NAME keep the old spelling so nothing installed moves
+# (Robert, 2026-10-01: the product is "OTDR App", no "Suite" anyone sees).
+EDITION      = "OTDR App"
 APP_NAME     = "OTDRSuiteApp"
 APP_DIR_NAME = ".otdrSuiteApp"
 HOST         = "127.0.0.1"
@@ -129,7 +132,7 @@ MANIFEST_URL      = FEED_URL_FMT.format(path=MANIFEST_PATH)
 MANIFEST_SIG_URL  = FEED_URL_FMT.format(path=MANIFEST_SIG_PATH)
 # The permanent installer link, beside the manifest; the hub's "fresh install
 # needed" notices point here.
-INSTALLER_URL     = FEED_URL_FMT.format(path="OTDRSuiteApp-Setup.exe")
+INSTALLER_URL     = FEED_URL_FMT.format(path="OTDRApp-Setup.exe")
 
 # ── Ed25519 update-signing PUBLIC key ────────────────────────────────────
 # The committed source ALWAYS keeps the placeholder below, so every build is
@@ -668,10 +671,10 @@ def _report_install_needed(reason: str):
         except Exception:
             who = "?"
         _post_slack(
-            ":arrow_down: *OTDR Suite needs a fresh install* — %s\n"
+            ":arrow_down: *%s needs a fresh install* — %s\n"
             "%s\n"
             "Update & restart cannot apply this one; the tech needs the "
-            "installer." % (who, reason))
+            "installer." % (EDITION, who, reason))
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(json.dumps({"build": build}), encoding="utf-8")
     except Exception:
