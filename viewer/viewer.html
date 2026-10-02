@@ -1128,14 +1128,29 @@ function effDir(src, fiber) {
 // opens a single direction; mirroring it about a reel origin with no A side
 // put it backward and ran its event table from the far end.
 let gHaveA = false;                // set in refreshMirrorFrame (renderChips)
-// FEC mode (Robert 2026-10-01): facility-entrance shots are short traces from
-// EACH END of a span, so A and B never see the same glass.  Nothing is
-// mirrored or paired: every trace is drawn the way it was shot, and the event
-// table grades each one's panel connector on its own (see renderFecGrid).
-// Only the hub's Viewer FEC tool turns it on, with a ?fec=1 address; the
-// Viewer tool has no switch for it (Robert 2026-10-01).
+// FEC mode: facility-entrance shots are short traces from EACH END of a
+// span, so A and B never see the same glass.  Nothing is mirrored or paired:
+// every trace is drawn the way it was shot, under the one-direction table,
+// as FastReporter shows them.  The Viewer tells FEC shots from the files
+// themselves (fecShots, set in loadInfo); there is no separate Viewer FEC
+// tool and no switch (Robert 2026-10-02: "load FECs in Viewer and not have a
+// separate viewer", "auto only").
 let gFecMode = false;
-try { gFecMode = new URLSearchParams(location.search).get('fec') === '1'; } catch (e) {}
+// FEC shots: every folder loaded is a short shot, no end-of-fiber event in
+// its traces (the server's frame_facts cable_end_known), so the cable's far
+// end is in no file and the two ends cannot be put on one frame.  A full
+// span (or a broken fiber: its break is an end event) knows its end.  One
+// side short and the other full stays a span, with the short-shot warning.
+function fecShots(info) {
+  const nA = (info.fibers_a || []).length, nB = (info.fibers_b || []).length;
+  if (!nA && !nB) return false;
+  return (!nA || info.cable_end_known_a === false) && (!nB || info.cable_end_known_b === false);
+}
+// The FEC table with the Combined With column and the FEC gates (renderFecGrid)
+// is parked: Robert 2026-10-02 picked "just FR layout for now".  true brings
+// it back in FEC mode, gates in the boxes and all.
+const FEC_COMBINED_TABLE = false;
+function fecTable() { return gFecMode && FEC_COMBINED_TABLE; }
 function isFlipped(t) { return !gFecMode && gStacked && gHaveA && t.dir === 'b'; }
 function yOffsetFor(t) { return (!gFecMode && gStacked && gHaveA && t.dir === 'b') ? -gStackSpacingDb : 0; }
 
@@ -2362,7 +2377,11 @@ async function loadInfo() {
     // Report's own in OTDR Mode, FastReporter's in FR Mode), so a new mode
     // lays it out again; before, it kept the old layout until Clear All.
     gAnalysisMode = gInfo.analysis_mode === 'fr' ? 'fr' : 'suite';
-    const modeMoved = gAnalysisMode !== wasMode;
+    // FEC shots in, or a span in after them: the frame and the table change
+    const wasFec = gFecMode;
+    gFecMode = fecShots(gInfo);
+    const modeMoved = gAnalysisMode !== wasMode || gFecMode !== wasFec;
+    if (gFecMode !== wasFec) refreshMirrorFrame();
     gLaunchA = Number(gInfo.launch_a_km) || 0;   // null (no reel) → 0
     gSpanDecl = gInfo.span_decl || { a: null, b: null };
     if (gInfo.thresholds) gThresholds = gInfo.thresholds;
@@ -2410,7 +2429,18 @@ async function loadInfo() {
 // Put the seeded gate in the box and name its source beside it.  Called
 // after /api/list and again whenever the source report changes.
 function syncGateUI() {
-  if (gFecMode) { syncFecGateUI(); return; }
+  if (fecTable()) { syncFecGateUI(); return; }
+  // The FEC table's gates leave the boxes when a span comes in after it
+  const hi = document.getElementById('set-refl-hi');
+  if (hi && hi.disabled) {
+    hi.disabled = false;
+    hi.title = '';
+    hi.value = gViewerSettings.reflHi;
+    const lo = document.getElementById('set-refl-lo');
+    if (lo) { lo.value = gViewerSettings.reflLo; lo.step = '1'; }
+    const op = document.getElementById('loss-op');
+    if (op) op.textContent = 'Loss ≥';
+  }
   const el = document.getElementById('set-loss');
   // Empty, not 1e9, when the report graded no loss at all — typing a number
   // still works and is picked up as an override, the usual escape hatch.
@@ -2481,7 +2511,7 @@ document.getElementById('btn-back').addEventListener('click', () => {
 // Report of an A-only load, and of a short shot loaded by itself and drawn
 // as shot, where nothing is aligned.
 function frameWarn() {
-  if (gFecMode) return gFrameWarn;    // Viewer FEC: its note, not a warning
+  if (gFecMode) return gFrameWarn;    // FEC shots: its note, not a warning
   return gFrameWarn && gTraces.some(t => t.visible && t.src === 'b' && isFlipped(t))
     ? gFrameWarn : '';
 }
@@ -6201,21 +6231,22 @@ function wireEventSettings() {
   if (lossEl) lossEl.addEventListener('change', () => {
     const v = parseFloat(lossEl.value);
     if (!Number.isFinite(v)) return;
-    if (gFecMode) { setFecGateOverride('loss', v); return; }
+    if (fecTable()) { setFecGateOverride('loss', v); return; }
     // Back to following the report when the tech types its value back in.
     gGateOverride = (Math.abs(v - reportGateDb()) < 1e-9) ? null : v;
     syncGateUI();
     renderEventTable();
   });
-  if (!gFecMode) {
-    bind('set-refl-lo', 'reflLo');
-    bind('set-refl-hi', 'reflHi');
-    return;
-  }
+  // FEC mode comes and goes with the folders loaded (fecShots), so the
+  // Refl Band's low end asks at each change whose gate it is.
+  bind('set-refl-hi', 'reflHi');
   const reflEl = document.getElementById('set-refl-lo');
   if (reflEl) reflEl.addEventListener('change', () => {
     const v = parseFloat(reflEl.value);
-    if (Number.isFinite(v)) setFecGateOverride('refl', v);
+    if (!Number.isFinite(v)) return;
+    if (fecTable()) { setFecGateOverride('refl', v); return; }
+    gViewerSettings.reflLo = v;
+    renderEventTable();
   });
 }
 
@@ -6245,11 +6276,10 @@ function pollEndVerdicts() {
   gEndPoll = poll;
 }
 function frameWarnText(nB) {
-  if (gFecMode) return '   FEC mode: each end is graded on its own; A and B are not paired.';
+  if (gFecMode) return '   FEC shots: each trace as shot; A and B are not paired.';
   return (nB && gInfo && gInfo.cable_end_known_b === false)
     ? '   ⚠ B never reaches the end of the fiber: cable length unknown, so A/B '
-      + 'cannot be aligned. Check B is the full-length shot, not the short shot. '
-      + 'For facility-entrance (FEC) shots, use the Viewer FEC tool.'
+      + 'cannot be aligned. Check B is the full-length shot, not the short shot.'
     : '';
 }
 function renderEventTable() {
@@ -6291,7 +6321,11 @@ function renderEventTable() {
   // B→A, Average), in the app's analysis mode: the Splice Report's own in
   // OTDR Suite mode, FastReporter's in FastReporter mode.  The
   // single-direction grid stands in when nothing is paired.
-  if (gFecMode && renderFecGrid(visible, host, hint)) return;
+  // FEC shots: every trace on its own, never paired (see fecShots).
+  if (gFecMode) {
+    if (!(fecTable() && renderFecGrid(visible, host, hint))) renderFastReporterGrid(visible, host, hint);
+    return;
+  }
   const server = gAnalysisMode === 'suite'
     ? renderSuiteBidiGrid(visible, host, hint) : renderFrBidiGrid(visible, host, hint);
   if (!server) {
@@ -10414,15 +10448,15 @@ async function reportPayload(opt, token, progress) {
     const sorted = [...vis].sort((a, b) => realFiber(a.fiber) - realFiber(b.fiber) || a.fiber - b.fiber
                                          || a.dir.localeCompare(b.dir));
     const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';
-    // Viewer FEC: the mode and the gates the FEC table was graded at, not
-    // the analysis mode's or the Viewer boxes' usual meaning.
-    const meta = [['Mode', gFecMode ? 'FEC' : gAnalysisMode === 'fr' ? 'FastReporter' : PRODUCT_NAME]];
+    // The FEC table: the mode and the gates it was graded at, not the
+    // analysis mode's or the Viewer boxes' usual meaning.
+    const meta = [['Mode', fecTable() ? 'FEC' : gAnalysisMode === 'fr' ? 'FastReporter' : PRODUCT_NAME]];
     if (vis.some(t => t.src === 'a') && folderLabel('a')) meta.push(['A folder', folderLabel('a')]);
     if (vis.some(t => t.src === 'b') && folderLabel('b')) meta.push(['B folder', folderLabel('b')]);
     const nf = new Set(vis.map(t => realFiber(t.fiber))).size;
     meta.push(['Fibers', `${fiberRanges(vis.map(t => realFiber(t.fiber)))} (${nf} fiber${nf === 1 ? '' : 's'})`]);
-    const fg = gFecMode ? fecGatesShown() : null;
-    if (gFecMode) {
+    const fg = fecTable() ? fecGatesShown() : null;
+    if (fecTable()) {
       const src = w => gFecOverride[w] != null ? 'overridden in this window' : 'customer profile';
       meta.push(['FEC loss gate', fg ? `fails ${fg.FEC_LOSS_STRICT ? '>' : '≥'} ${Number(fg.FEC_LOSS_GATE).toFixed(3)} dB, `
         + `connector + events within ${Number(fg.FEC_COMBINE_M).toFixed(0)} m (${src('loss')})` : 'not loaded']);

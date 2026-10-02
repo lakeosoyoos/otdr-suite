@@ -1,10 +1,13 @@
-"""Viewer FEC mode (Robert 2026-10-01).
+"""Viewer FEC mode (Robert 2026-10-01; in the Viewer itself 2026-10-02).
 
 FEC shots are short traces from each END of a span, so A and B never see the
-same glass.  In FEC mode the Viewer neither mirrors B nor pairs it with A, and
-its event table grades each trace's panel connector on its own with the
-Splice Report FEC tool's rule, through /api/fec_table -> the runner's
---fec-table (the server never imports the engine).
+same glass.  In FEC mode the Viewer neither mirrors B nor pairs it with A.
+The Viewer tells FEC shots from the files (no end-of-fiber event in any
+loaded folder: fecShots), and there is no separate Viewer FEC tool.  The
+table is FastReporter's one-direction table ("just FR layout for now"); the
+parked FEC table (FEC_COMBINED_TABLE) grades each trace's panel connector on
+its own with the Splice Report FEC tool's rule, through /api/fec_table -> the
+runner's --fec-table (the server never imports the engine).
 """
 import os
 import re
@@ -91,22 +94,80 @@ def test_fec_mode_has_its_own_table_ahead_of_the_pairing_grids():
     body = HTML[HTML.index('function renderEventTable() {'):]
     body = body[:body.index('\n}\n')]
     assert body.index('renderFecGrid') < body.index('renderSuiteBidiGrid')
+    # FR's one-direction table for now (Robert 2026-10-02), never a pairing
+    fec = body[body.index('if (gFecMode) {'):body.index('renderSuiteBidiGrid')]
+    assert 'renderFastReporterGrid(visible, host, hint);' in fec and 'return;' in fec
+    assert 'const FEC_COMBINED_TABLE = false;' in HTML
+    assert 'function fecTable() { return gFecMode && FEC_COMBINED_TABLE; }' in HTML
     assert "fetch(`/api/fec_table?fibers=" in HTML
     # the side is the folder a trace came from, never a pairing
     assert "t.src === 'b' ? 'B' : 'A'" in HTML
 
 
-def test_fec_mode_comes_only_from_the_viewer_fec_link():
-    """No switch on the gear (Robert 2026-10-01): only the Viewer FEC tool's
-    ?fec=1 address turns it on, so nothing is remembered between visits."""
+def test_fec_mode_comes_from_the_files_only():
+    """Robert 2026-10-02 "auto only": no switch, no address, nothing
+    remembered.  Each /api/list read decides it again."""
     assert 'id="set-fec"' not in HTML
     assert 'otdr_viewer_fec' not in HTML
-    assert "gFecMode = new URLSearchParams(location.search).get('fec') === '1';" in HTML
+    assert "get('fec')" not in HTML
     assert "'FEC mode'].filter(Boolean)" not in HTML
+    info = HTML[HTML.index('async function loadInfo() {'):]
+    info = info[:info.index('\n}\n')]
+    assert 'gFecMode = fecShots(gInfo);' in info
+    # FEC shots in (or a span in after them) lay the frame and table out again
+    assert 'const modeMoved = gAnalysisMode !== wasMode || gFecMode !== wasFec;' in info
+    assert 'if (gFecMode !== wasFec) refreshMirrorFrame();' in info
 
 
-def test_the_short_shot_warning_points_to_fec_mode():
-    assert 'For facility-entrance (FEC) shots, use the Viewer FEC tool.' in HTML
+def test_fec_shots_are_every_loaded_side_a_short_shot():
+    """Real fecShots under JavaScriptCore: FEC when every folder loaded has
+    no cable end; one side full keeps the span (and its short-shot warning)."""
+    if not os.path.exists(JSC):
+        pytest.skip('JavaScriptCore shell not available')
+    import json, tempfile
+    i = HTML.index('function fecShots(')
+    fn = HTML[i:HTML.index('\n}\n', i) + 3]
+    cases = [
+        ({'fibers_a': [1], 'fibers_b': [1], 'cable_end_known_a': False, 'cable_end_known_b': False}, True),
+        ({'fibers_a': [1], 'fibers_b': [], 'cable_end_known_a': False, 'cable_end_known_b': False}, True),
+        ({'fibers_a': [], 'fibers_b': [1], 'cable_end_known_a': False, 'cable_end_known_b': False}, True),
+        ({'fibers_a': [1], 'fibers_b': [1], 'cable_end_known_a': True, 'cable_end_known_b': False}, False),
+        ({'fibers_a': [1], 'fibers_b': [1], 'cable_end_known_a': False, 'cable_end_known_b': True}, False),
+        ({'fibers_a': [1], 'fibers_b': [1], 'cable_end_known_a': True, 'cable_end_known_b': True}, False),
+        ({'fibers_a': [1], 'fibers_b': [], 'cable_end_known_a': True, 'cable_end_known_b': False}, False),
+        ({'fibers_a': [], 'fibers_b': []}, False),
+        # an older server without the A fact: never FEC on a guess
+        ({'fibers_a': [1], 'fibers_b': [1], 'cable_end_known_b': False}, False),
+    ]
+    js = fn + f"print(JSON.stringify({json.dumps([c for c, _ in cases])}.map(fecShots)));\n"
+    with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as fh:
+        fh.write(js)
+    try:
+        p = subprocess.run([JSC, fh.name], capture_output=True, text=True)
+    finally:
+        os.unlink(fh.name)
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert json.loads(p.stdout.strip()) == [want for _, want in cases]
+
+
+def test_the_server_says_whether_each_side_reaches_the_cable_end(tmp_path):
+    """/api/list carries cable_end_known for A as well as B: full-span
+    fixtures know their end, so they are never FEC shots."""
+    _run("""
+        cap = []
+        h = object.__new__(T.Handler)
+        h.path = '/api/list'
+        h._send_json = lambda payload, status=200: cap.append(payload)
+        h.do_GET()
+        assert cap[0]['cable_end_known_a'] is True, cap[0].get('cable_end_known_a')
+        assert cap[0]['cable_end_known_b'] is True
+        print('OK')
+    """, tmp_path)
+
+
+def test_the_short_shot_warning_no_longer_names_a_viewer_fec_tool():
+    assert 'Viewer FEC tool' not in HTML
+    assert 'Check B is the full-length shot, not the short shot.' in HTML
 
 
 def test_fec_table_ends_with_min_max_average_that_pins():
@@ -403,9 +464,10 @@ def test_fec_gates_show_in_the_viewer_boxes_and_override_per_window():
     assert B[0] == 0.3 and B[1] == 1 and 'overridden in this window' in B[2]
     assert B[3] == '0.300' and B[4] == '(FEC gates overridden)'
     assert B[5] is None                              # the profile's value lets go
-    # the Viewer's boxes hand over to FEC's in FEC mode
-    assert 'if (gFecMode) { syncFecGateUI(); return; }' in HTML
-    assert "if (gFecMode) { setFecGateOverride('loss', v); return; }" in HTML
+    # the Viewer's boxes hand over to FEC's under the FEC table
+    assert 'if (fecTable()) { syncFecGateUI(); return; }' in HTML
+    assert "if (fecTable()) { setFecGateOverride('loss', v); return; }" in HTML
+    assert "if (fecTable()) { setFecGateOverride('refl', v); return; }" in HTML
     assert '<span id="loss-op">Loss &ge;</span> <input id="set-loss"' in HTML
     assert '&loss_gate=${gFecOverride.loss}' in HTML and '&refl_gate=${gFecOverride.refl}' in HTML
 
@@ -433,13 +495,13 @@ def test_a_box_override_reaches_the_engine_and_not_the_profile(tmp_path):
 def test_the_summary_report_states_fec_mode_and_its_gates():
     rp = HTML[HTML.index('async function reportPayload('):]
     rp = rp[:rp.index('\n}\n')]
-    assert "['Mode', gFecMode ? 'FEC' :" in rp
+    assert "['Mode', fecTable() ? 'FEC' :" in rp
     assert "meta.push(['FEC loss gate'," in rp and "meta.push(['FEC reflectance gate'," in rp
     # each gate names its own source: one box typed over leaves the other's
     assert "gFecOverride[w] != null ? 'overridden in this window' : 'customer profile'" in rp
     assert "(${src('loss')})" in rp and "(${src('refl')})" in rp
     # the Viewer boxes' Loss gate / Reflectance band only outside FEC mode
-    assert rp.index("if (gFecMode) {") < rp.index("meta.push(['Loss gate', gateLabel()]);")
+    assert rp.index("if (fecTable()) {") < rp.index("meta.push(['Loss gate', gateLabel()]);")
 
 
 def test_viewer_script_still_parses():

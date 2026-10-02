@@ -57,6 +57,7 @@ function pollEndVerdicts() {}
 function syncGateUI() {}
 function renderFilesPanel() {}
 function renderBackButton() {}
+function refreshMirrorFrame() {}
 function setReadout() {}
 function renderEventTable() { calls.table++; }
 function draw() { calls.draw++; }
@@ -118,7 +119,7 @@ _CASES = r"""
 
 @pytest.fixture(scope='module')
 def res(tmp_path_factory):
-    funcs = '\n'.join(_js_func(n) for n in ('loadInfo', 'pollAnalysisMode', 'frameWarnText'))
+    funcs = '\n'.join(_js_func(n) for n in ('loadInfo', 'pollAnalysisMode', 'frameWarnText', 'fecShots'))
     path = tmp_path_factory.mktemp('mode_switch') / 'mode.js'
     path.write_text(_STUBS + COPY_HELPERS_JS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
