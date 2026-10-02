@@ -172,9 +172,9 @@ def test_a_files_panel_selection_gets_the_same_two_regimes():
     html = open(VIEWER_HTML, encoding='utf-8').read()
     fn = html.split('async function applyFileSelection(want) {', 1)[1].split('\n}', 1)[0]
     assert 'const MAX = 48;' not in fn
-    assert 'const overview = tasks.length > MAX_DETAIL_TRACES;' in fn
+    assert 'const overview = tasks.length > MAX_DETAIL_TRACES\n    || gTraces.length + tasks.length > MAX_DETAIL_TRACES;' in fn
     assert 'const MAX = overview ? MAX_OVERVIEW_FIBERS * 2 : MAX_DETAIL_TRACES;' in fn
-    assert 'await loadOverview(tasks);' in fn
+    assert 'await loadOverview(tasks, ld);' in fn
     assert 'loadOne(x.key, x.f, x.d)' in fn          # detail path kept
     # and the readout no longer sends the tech to the Fibers box for a cable
     assert 'use the Fibers box for a whole cable' not in html
@@ -329,7 +329,8 @@ def test_popout_viewer_links_back_to_its_report():
     assert "'hub_url':" in src and "'hub_port': None" in src
     app = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
     assert app.count('window.top.name = "otdr_hub"') == 2, 'both pop-out buttons name the hub tab'
-    nav = app[app.index('def _handle_nav():'):][:3000]
+    _at = app.index('def _handle_nav():')
+    nav = app[_at:app.index('\ndef ', _at + 1)]      # the whole function
     assert "'uni': 'Unidirectional'" in nav and "'sr': 'Splice Report'" in nav
     assert 'srfr' not in nav
     assert "trace_server.CONFIG['hub_port']" in app

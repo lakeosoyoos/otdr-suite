@@ -161,7 +161,7 @@ def test_silent_side_transplant_is_machine_exact():
 #  THE ONE-SAMPLE AFTER-WINDOW — FastReporter's own rule for a transplanted
 #  window that runs into the silent direction's own next event
 # ══════════════════════════════════════════════════════════════════════════
-# Read off FR's stored cursors on the Zayo 432 .bdr set (2026-09-21).  When
+# Read off FR's stored cursors on the 432-fiber BETA span .bdr set (2026-09-21).  When
 # the silent direction's own proprietary list carries an event INSIDE the
 # projected inner window, FR does not abstain and does not fit across the
 # step: it pulls CursorB back to that event and SubCursorB with it, so the
@@ -271,7 +271,7 @@ def test_own_event_inside_the_window_reproduces_fr_on_the_sor_path():
 # ══════════════════════════════════════════════════════════════════════════
 # `exfo_res_m` was pinned only by a vote of three or more marker Lengths.  A
 # single-direction .sor with a handful of events rarely has three: 689 of
-# the 864 ZAYO BETA 432 files had no pitch at all.  measure_fr_exact_loss
+# the 864 432-fiber BETA span files had no pitch at all.  measure_fr_exact_loss
 # refuses without one, so on a customer's .sor pair the FR-exact silent-side
 # transplant never ran for those files and the legacy reconstruction
 # answered instead: 606 of 1,789 silent legs matched FastReporter (33.9%),
@@ -280,7 +280,7 @@ def test_own_event_inside_the_window_reproduces_fr_on_the_sor_path():
 # 2026-09-21 was therefore not the customer path.
 #
 # The stated IOR carries the same pitch, c x SamplingPeriod / (2 x Ior), and
-# on every file that has both the two agree to 1.2e-13 relative (864 Zayo
+# on every file that has both the two agree to 1.2e-13 relative (864 BETA
 # files) -- so the fallback is the same number, not an estimate.
 
 def test_a_sor_without_three_markers_still_carries_the_pitch():
@@ -322,8 +322,8 @@ def test_the_transplant_runs_on_a_sor_pair_without_marker_votes():
     _run(f"""
         B = {str(BDR_DIR)!r}
         FX = {str(REPO_ROOT / 'desktop/tests/fixtures')!r}
-        pa = FX + '/zayo_sor/ORPVL.ZYO-OR-DES-0048.1550.0017.sor'
-        pb = FX + '/zayo_sor/ZYO-OR-DES-0048.ORPVL.1550.0017.sor'
+        pa = FX + '/span432_sor/ORPVL.ZYO-OR-DES-0048.1550.0017.sor'
+        pb = FX + '/span432_sor/ZYO-OR-DES-0048.ORPVL.1550.0017.sor'
         ra = sr.parse_sor_full(pa, trim=False); rb = sr.parse_sor_full(pb, trim=False)
         for r, side in ((ra, 'a'), (rb, 'b')):
             r['_source'] = 'sor'; r['_span_side'] = side
@@ -348,7 +348,7 @@ def test_the_transplant_runs_on_a_sor_pair_without_marker_votes():
 # ══════════════════════════════════════════════════════════════════════════
 #  THE EVALUATION POINT and the MERGED own event
 # ══════════════════════════════════════════════════════════════════════════
-# The last 28 silent-side misses on the Zayo 432 .bdr set (after #259 and the
+# The last 28 silent-side misses on the 432-fiber BETA span .bdr set (after #259 and the
 # reach change) were all records with a clamped outer window, and FR's stored
 # loss sat a half-integer number of samples off our midpoint answer on every
 # one -- (mid - CursorA) - wa samples.  FastReporter never extrapolates a
@@ -407,8 +407,8 @@ def test_short_after_window_reproduces_fr_on_the_real_sor_pair():
     _run(f"""
         B = {str(BDR_DIR)!r}
         FX = {str(REPO_ROOT / 'desktop/tests/fixtures')!r}
-        ra = sr.parse_sor_full(FX + '/zayo_sor/ORPVL.ZYO-OR-DES-0048.1550.0017.sor', trim=False)
-        rb = sr.parse_sor_full(FX + '/zayo_sor/ZYO-OR-DES-0048.ORPVL.1550.0017.sor', trim=False)
+        ra = sr.parse_sor_full(FX + '/span432_sor/ORPVL.ZYO-OR-DES-0048.1550.0017.sor', trim=False)
+        rb = sr.parse_sor_full(FX + '/span432_sor/ZYO-OR-DES-0048.ORPVL.1550.0017.sor', trim=False)
         for r, side in ((ra, 'a'), (rb, 'b')):
             r['_source'] = 'sor'; r['_span_side'] = side
         d = sr.parse_bdr(B + '/ORPVL.ZYO-OR-DES-0048.1550.0017_1550.bdr')

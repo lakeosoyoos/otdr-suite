@@ -222,6 +222,28 @@
   .fiber-row.partial { box-shadow: inset 3px 0 0 #9fb3c8; background: #f1f4f7; }
   .fiber-row .fib-pair.bad { color: #b03a2e; }
   #files-list:focus .fiber-row.focus { outline: 1px dotted var(--accent); outline-offset: -2px; }
+  /* The Measurements tab: a dropped .olts, a row per fiber, as FastReporter's
+     Measurements panel lists them.  A click on a heading sorts by it. */
+  #files-list.meas { overflow: auto; }
+  .olts-bar { display: flex; align-items: center; gap: 6px; padding: 4px 8px; font-size: 11px;
+              border-bottom: 1px solid var(--border); background: var(--panel); }
+  .olts-bar .olts-file { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .olts-bar button { font-size: 11px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 3px;
+                     background: #fff; cursor: pointer; white-space: nowrap; }
+  table.olts-meas { border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; min-width: 100%; }
+  table.olts-meas th { position: sticky; top: 0; z-index: 1; background: #eef3f8; font-weight: 600; text-align: left;
+                       padding: 3px 6px; border-bottom: 1px solid var(--border); white-space: nowrap;
+                       cursor: pointer; user-select: none; }
+  table.olts-meas th:hover { color: var(--accent); }
+  table.olts-meas th.sorted { box-shadow: inset 0 -2px 0 var(--accent); }
+  table.olts-meas td { padding: 2px 6px; border-bottom: 1px solid #f0f3f7; white-space: nowrap; }
+  table.olts-meas td.num { text-align: right; }
+  table.olts-meas tbody tr { cursor: pointer; }
+  table.olts-meas tbody tr:hover { background: #eef3f8; }
+  table.olts-meas tbody tr.sel { background: #d4e6f7; box-shadow: inset 3px 0 0 var(--accent); }
+  table.olts-meas .olts-pf { text-align: center; font-weight: 700; }
+  .olts-pass { color: #1e7a46; }
+  .olts-fail { color: #b03a2e; font-weight: 700; }
   /* White behind the fiber rows (Robert, 2026-09-24); the headers keep the
      panel colour, and loaded / selected rows keep their own highlights. */
   #files-list { flex: 1; overflow-y: auto; min-height: 0; background: #ffffff; }
@@ -584,6 +606,11 @@
      below.  Pinning the strip is the point: FR prints it at the bottom of the
      table, which on 2,304 rows means nobody ever sees it. */
   .fr-scroll { overflow: auto; flex: 1; min-height: 0; }
+  /* A table that has to come from the server again stays up, dimmed, under
+     this note until the new one paints (holdOldTable). */
+  #event-tbody-wrap > .tbl-updating { flex: none; padding: 2px 12px; font-size: 11px;
+                                      color: var(--text-sec); font-style: italic; }
+  #event-tbody-wrap.tbl-stale > :not(.tbl-updating) { opacity: .5; }
   /* the one-direction fibres' own table, under the A+B one */
   .onedir-box { flex: 0 1 auto; max-height: 45%; min-height: 0; display: flex;
                 flex-direction: column; border-top: 2px solid #b0bdcc; }
@@ -613,6 +640,11 @@
      both. */
   table.fr-table thead th.fr-rowlab,
   table.fr-table tfoot td.fr-rowlab { z-index: 6; }
+  /* Only the fiber column stays put sideways, in the body and the footer.
+     The P/F, λ and Dir. headers were pinned too, all at left 0, so a table
+     scrolled sideways (a report link's column, #39) showed "Dir." over the
+     fiber names.  They scroll with their columns, under the fiber header. */
+  table.fr-table thead tr:first-child > th.fr-rowlab ~ th.fr-rowlab { left: auto; z-index: 5; }
   table.fr-table tbody tr { height: 22px; }
   table.fr-table th, table.fr-table td {
     text-align: center; white-space: nowrap; border: 1px solid #c9d5e1;
@@ -632,6 +664,10 @@
   table.fr-table td.fr-hit { outline: 2px solid var(--accent); outline-offset: -2px;
                              background: #dbeaf9; transition: background .6s, outline-color .6s; }
   table.fr-table td.fr-hit.fading { background: transparent; outline-color: transparent; }
+  /* A report link's column: its header, the same way. */
+  table.fr-table th.fr-evhdr.fr-hit { outline: 2px solid var(--accent); outline-offset: -2px;
+                                      transition: outline-color .6s; }
+  table.fr-table th.fr-evhdr.fr-hit.fading { outline-color: transparent; }
   table.fr-table th.fr-evhdr:hover { background: #d4e2f2; }
   /* The visible way into the span menu: a header has no row, so it asks. */
   table.fr-table th.fr-evhdr .fr-evmenu {
@@ -749,6 +785,11 @@
   html[data-theme="dark"] .file-row:hover { background: #1c1917; }
   html[data-theme="dark"] .file-row.loaded { background: #172554; }
   html[data-theme="dark"] #files-hd, html[data-theme="dark"] #files-tabs { background: #1c1917; }
+  html[data-theme="dark"] table.olts-meas th { background: #1c1917; }
+  html[data-theme="dark"] table.olts-meas td { border-bottom-color: #292524; }
+  html[data-theme="dark"] table.olts-meas tbody tr:hover { background: #292524; }
+  html[data-theme="dark"] table.olts-meas tbody tr.sel { background: #1e3a5f; }
+  html[data-theme="dark"] .olts-bar button { background: #0c0a09; color: var(--text); }
   html[data-theme="dark"] #files-tabs button.active { background: #0c0a09; color: var(--text); }
   html[data-theme="dark"] .file-row.selected, html[data-theme="dark"] .fiber-row.selected { background: #1e293b; }
   html[data-theme="dark"] .fiber-row:hover { background: #1c1917; }
@@ -874,7 +915,7 @@
       <span class="hint" id="event-hint">add a trace to see events</span>
       <span id="evt-settings">
         <label title="An event at or above this loss is flagged. Seeded from the report that opened this Viewer, so the two agree; edit to explore.">
-          Loss &ge; <input id="set-loss" type="number" step="0.005" min="0" value="0.160"> dB</label>
+          <span id="loss-op">Loss &ge;</span> <input id="set-loss" type="number" step="0.005" min="0" value="0.160"> dB</label>
         <span id="gate-src" class="gate-src" title="Which report's threshold this Viewer is judging by."></span>
         <label title="Reflectance band low end (engine UNI_REFL_FLOOR_DB). 0 turns the reflectance rule off.">
           Refl Band <input id="set-refl-lo" type="number" step="1" max="0" value="-80"></label>
@@ -890,8 +931,8 @@
   <div id="files-hd"><h2>Files</h2><span id="files-count"></span></div>
   <div id="files-cols"><span></span><span>File Name</span><span>Dir.</span></div>
   <div id="files-list" tabindex="0"><span id="chip-empty">no folders loaded</span></div>
-  <div id="files-tabs"><button data-view="files" class="active">Files</button><button data-view="fibers">Fibers</button></div>
-  <div id="files-drop-hint">drop .sor / .json / .trc files, a folder, or a .zip here</div>
+  <div id="files-tabs"><button data-view="files" class="active">Files</button><button data-view="fibers">Fibers</button><button data-view="meas" hidden title="the fibers of the .olts dropped here: click a heading to sort">Measurements</button></div>
+  <div id="files-drop-hint">drop .sor / .json / .trc / .olts files, a folder, or a .zip here</div>
   <div id="drop-sign"><div class="ds-big"></div><div class="ds-small"></div></div>
 </div>
 </div>
@@ -1027,8 +1068,32 @@ let gHoverKey = null;                  // the trace nearest the cursor, if one i
 let gTraceClick = null;                // trace under the mouse at mousedown, until mouseup
 let gTableExport = null;               // set by the grid: {table, rows(), headExtra} for the Report
 let gExportDpr = 0;                    // the Report draws the chart at this scale; 0 = the screen's
+// A load in flight shows how far it has got, and the box shows what it asked
+// for (see beginLoad).  Each entry: {fibers, dirs, done, total}.
+const gLoadsInFlight = new Set();
+let gTableBusy = false;                // the event table waits on its server step
+let gTableGoKm = null;                 // a report link's km: the table column to scroll to
+// The tables the server builds (FastReporter's, the Splice Report's), kept
+// for the traces that asked for them: kind -> {key, res, pending}.  See
+// serverTableKey.
+const gServerTables = new Map();
+let gTableLive = null;                 // the server-built table on screen, see endVerdictsLanded
+let gHeldNodes = [];                   // the last table, held up while the next one is built
 let gBase = null;                      // the chart without its overlay (keepBase)
 let gBaseImg = null;                   // that copy's canvas, reused
+// The shared Viewer state (see pushViewerState).
+const gClientId = Math.random().toString(36).slice(2, 10);
+let gStateVer = 0;                     // newest shared state this window has
+let gStateSig = '';
+let gStateReady = false;               // boot has taken the shared state
+let gStatePushT = null;
+let gStateApplying = 0;                // applying another window's state
+let gStateLoad = null;                 // that state's load, while it runs
+let gGateSig = null;                    // the gates' fingerprint (gate_sig)
+// The removed files the server's runs leave out, as this window last sent
+// or took them (sorted, comma-joined).  The Splice Report table kept for the
+// traces follows it (renderSuiteBidiGrid).
+let gServerRemovedSig = '';
 const MARKER_HIT_PX = 6;               // grab radius for dragging a marker
 
 // ─── Display transforms (stacked mode flips B to A's km frame + offsets Y) ─
@@ -1542,6 +1607,9 @@ window.addEventListener('resize', resizeCanvas);
   } catch (e) {}
   // resizeCanvas's own resize listener ran first, on the old panel width.
   window.addEventListener('resize', () => { if (want != null) { refit(); resizeCanvas(); } });
+  // The Measurements tab's columns want room: widened for it, not
+  // remembered, so the tech's own width comes back with the next drag.
+  window.filesPanelAtLeast = (w) => { if (panel.offsetWidth < clamp(w)) apply(w); };
 
   let startX = 0, startW = 0;
   bar.addEventListener('pointerdown', ev => {
@@ -1738,7 +1806,9 @@ function parseFibers(str) {
 // The browser gives bytes, not paths, so each file is POSTed to the local
 // trace server, which stages the drop into a temp folder, splits it into A
 // and B by filename prefix (the hub's rule) and points itself at it.
-const DROP_EXTS = ['.sor', '.json', '.trc', '.zip'];
+// An EXFO .olts (OLTS loss / ORL / length, no trace) is not loaded into the
+// chart: it goes to its own report dialog (see handleOltsDrop).
+const DROP_EXTS = ['.sor', '.json', '.trc', '.zip', '.olts'];
 // The folder each dropped file came from (its parent's name, '' for a file
 // dropped on its own), so a staged side can go by the folder the tech dropped
 // rather than its staging name (see trace_server.drop_name).
@@ -1901,9 +1971,16 @@ async function handleFilesDrop(dt) {
   try {
     files = Array.isArray(dt) ? dt.filter(_dropOk) : await _dropCollect(dt);
   } catch (e) { hideDropSign(); throw e; }
+  const olts = files.filter(isOltsFile);
+  if (olts.length) {
+    files = files.filter(f => !isOltsFile(f));
+    await handleOltsDrop(olts);
+    if (!files.length) return;
+    showDropSign('load', 'reading the files');
+  }
   if (!files.length) {
     hideDropSign();
-    setReadout('nothing dropped was a .sor / .json / .trc file or a .zip');
+    setReadout('nothing dropped was a .sor / .json / .trc / .olts file or a .zip');
     return;
   }
   showDropSign('load', `uploading 0 / ${files.length} files`);
@@ -2200,7 +2277,7 @@ function showDropSign(state, small = '', big = '') {
   el.querySelector('.ds-big').textContent =
     big || { drag: 'Drop to load', hint: 'Drop here', load: 'Loading…', done: 'Loaded' }[state];
   el.querySelector('.ds-small').textContent = small
-    || { drag: 'an A or B folder, .sor / .json / .trc files, or a .zip',
+    || { drag: 'an A or B folder, .sor / .json / .trc / .olts files, or a .zip',
          hint: 'drag the files onto this Files panel' }[state] || '';
   if (state !== 'load') {
     gDropSignTimer = setTimeout(hideDropSign, state === 'done' ? DROP_SIGN_DONE_MS : DROP_SIGN_DRAG_MS);
@@ -2230,6 +2307,7 @@ async function loadInfo() {
     gLaunchA = Number(gInfo.launch_a_km) || 0;   // null (no reel) → 0
     gSpanDecl = gInfo.span_decl || { a: null, b: null };
     if (gInfo.thresholds) gThresholds = gInfo.thresholds;
+    if (gInfo.gate_sig != null) gGateSig = gInfo.gate_sig;
     gEndRefl = Array.isArray(gInfo.end_refl) ? gInfo.end_refl : [];
     if (gInfo.end_pending) pollEndVerdicts();
     syncGateUI();
@@ -2261,8 +2339,8 @@ async function loadInfo() {
   // completely plausible and is wrong by however much cable is missing.  Say
   // so wherever it is drawn (frameWarn).
   gFrameWarn = frameWarnText(nB);
-  setReadout(`A: ${gInfo.dir_a_name} (${nA} fibers)   ` +
-             `B: ${gInfo.dir_b_name} (${nB} fibers)` +
+  setReadout(`A: ${gInfo.dir_a_name} (${nA} fiber${nA === 1 ? '' : 's'})   ` +
+             `B: ${gInfo.dir_b_name} (${nB} fiber${nB === 1 ? '' : 's'})` +
              (gAnalysisMode === 'fr' ? '   ·   FastReporter analysis' : ''));
   return true;
 }
@@ -2272,6 +2350,7 @@ async function loadInfo() {
 // Put the seeded gate in the box and name its source beside it.  Called
 // after /api/list and again whenever the source report changes.
 function syncGateUI() {
+  if (gFecMode) { syncFecGateUI(); return; }
   const el = document.getElementById('set-loss');
   // Empty, not 1e9, when the report graded no loss at all — typing a number
   // still works and is picked up as an override, the usual escape hatch.
@@ -2372,10 +2451,17 @@ function placeReadout() {
   el.style.left = left + 'px';
   el.style.maxWidth = Math.max(60, box.offsetLeft - left - 10) + 'px';
 }
+// A load's progress leads the line while it runs ("Loading 312 of 864
+// traces…", then "Building the table…" while the table waits on the
+// server).  It is not a plain note: a whole span takes 40 s or more, and a
+// blank line looked like a hang.
+let gReadoutLast = ['', {}];
+function refreshReadout() { setReadout(gReadoutLast[0], gReadoutLast[1]); }
 function setReadout(s, extra = {}) {
   s = String(s || '');
+  gReadoutLast = [s, extra];
   const el = document.getElementById('readout');
-  const parts = [];
+  const parts = [[progressNote(), 'ro-prog']];
   if (READOUT_FAIL_START.test(s)) parts.push([s, 'ro-fail']);
   else {
     // A load readout ends in loadFailNote()'s ", could not load F12 A: ..."
@@ -2460,6 +2546,18 @@ async function pollAnalysisMode() {
       draw();
       renderEventTable();
     } else if (m !== gAnalysisMode) await loadInfo();
+    // A Customer Profile picked in the hub (or any setting, or a report run)
+    // moves the gates: take them now, not at the next load.
+    else if (j && j.gate_sig != null && gGateSig != null && j.gate_sig !== gGateSig) {
+      await loadInfo();
+      if (gTraces.length) renderEventTable();
+    }
+    // Another window changed the shared state: follow it (not awaited, so a
+    // whole-cable load does not hold up the next poll).
+    if (gStateReady && !gStateApplying && j && j.state_ver > gStateVer) {
+      fetchViewerState().then(st => applyViewerState(st))
+        .catch(e => reportJsError((e && e.message) || String(e), e && e.stack));
+    }
   } catch (e) { /* server busy or restarting: the next tick asks again */ }
   finally { gModePollBusy = false; }
 }
@@ -2468,8 +2566,14 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) poll
 
 // ─── Add traces ───────────────────────────────────────────────────────
 async function addFibers() {
-  gSelNext = null;                   // the box (or a report jump) is the newer ask
+  // What was typed, read before anything waits: the box is rewritten from
+  // the chart as a load lands (syncFiberBox).
   const raw = document.getElementById('fiber-input').value;
+  // A restore still loading (another window's state, or the chart coming
+  // back after a trip to another tool) finishes first: an Add planned while
+  // it loads raced it, and a file could end up neither loaded nor failed.
+  if (gStateLoad) { try { await gStateLoad; } catch (e) {} }
+  gSelNext = null;                   // the box (or a report jump) is the newer ask
   const fibers = parseFibers(raw);
   if (!fibers.length) { setReadout('no valid fibers in input'); return; }
   const plan = planOrSay(fibers, gAddDir);
@@ -2485,6 +2589,11 @@ async function addFibers() {
     if (gTraces.some(t => t.key === key) || gRemovedFiles.has(key) || gLoadingKeys.has(key)) continue;
     tasks.push({ key, f, d });
   }
+  // Enter again, or Add, while the same fibers are still coming: that load
+  // finishes and draws the table itself.  Going on here drew the table of
+  // the part that had landed and said "288 traces loaded" mid-load.
+  if (!tasks.length && plan.pairs.some(({ f, d }) => gLoadingKeys.has(`${d}-${f}`))) return;
+  const epoch = gLoadEpoch;
   // Two regimes.
   //
   // DETAIL (<= MAX_DETAIL_TRACES): full resolution, one fetch per trace, the
@@ -2519,7 +2628,12 @@ async function addFibers() {
   // meant one direction of a 1728-fiber cable was capped while the SAME 1728
   // traces loaded fine as 864 A + 864 B, which is a difference the glass does
   // not have.
-  const overview = tasks.length > MAX_DETAIL_TRACES;
+  // Also when they join a chart already past the detail cap (a big partial
+  // load: fibres 1-100, then 101-105): a detail load there was refused,
+  // "already at the 48-trace limit" (Robert 2026-10-01: "add should
+  // definitely work after a big partial load").
+  const overview = tasks.length > MAX_DETAIL_TRACES
+    || gTraces.length + tasks.length > MAX_DETAIL_TRACES;
   const MAX_TRACES = overview ? MAX_OVERVIEW_FIBERS * dirs.length
                               : MAX_DETAIL_TRACES;
   let capped = false;
@@ -2534,12 +2648,15 @@ async function addFibers() {
   }
   if (overview) {
     gLoadFailures = plan.gaps.slice();
-    const ok = await loadOverview(tasks);
+    const ld = beginLoad(tasks);
+    let ok;
+    try { ok = await loadOverview(tasks, ld); } finally { endLoad(ld); }
+    if (epoch !== gLoadEpoch) return;  // cleared or replaced meanwhile
     syncFileMarks();                 // what the box loaded is selected in FILES
     renderChips();
     if (gAutoFit) fit();
     draw();
-    renderEventTable();
+    await buildTable();
     setReadout(`${gTraces.length} traces loaded in overview (~${OVERVIEW_PTS} pts each` +
                `, spikes preserved)` +
                (capped ? `, capped at ${MAX_TRACES}` : '') +
@@ -2548,17 +2665,22 @@ async function addFibers() {
     return;
   }
   gLoadFailures = plan.gaps.slice();
-  setReadout(`loading ${tasks.length} trace${tasks.length===1?'':'s'}…`);
+  const ld = tasks.length ? beginLoad(tasks) : null;
   // Throttle the fan-out so the single-threaded trace server stays responsive.
   const BATCH = 6;
-  for (let i = 0; i < tasks.length; i += BATCH) {
-    await Promise.all(tasks.slice(i, i + BATCH).map(t => loadOne(t.key, t.f, t.d)));
-  }
+  try {
+    for (let i = 0; i < tasks.length; i += BATCH) {
+      const batch = tasks.slice(i, i + BATCH);
+      await Promise.all(batch.map(t => loadOne(t.key, t.f, t.d)));
+      loadStep(ld, batch.length);
+      if (epoch !== gLoadEpoch) return;  // cleared or replaced meanwhile
+    }
+  } finally { if (ld) endLoad(ld); }
   syncFileMarks();
   renderChips();
   if (gAutoFit) fit();
   draw();
-  renderEventTable();
+  await buildTable();
   setReadout(`${gTraces.length} trace${gTraces.length===1?'':'s'} loaded` +
              (capped ? `, capped at ${MAX_TRACES}; narrow the fiber range for more` : '') +
              loadFailNote() + absentTail);
@@ -2616,6 +2738,22 @@ function planOrSay(fibers, addDir) {
   return null;
 }
 
+// A report link (or a pop-out jump) to fibers whose every file was removed
+// from the Viewer: say so and leave the chart as it is.  It loaded nothing
+// and said nothing, so the tech got a blank Viewer under the hub's "Jumped to
+// fiber 354" (2026-10-02 click audit).  True when it said so.
+function sayRemovedTarget(plan) {
+  if (!plan.pairs.length || !plan.pairs.every(({ f, d }) => gRemovedFiles.has(`${d}-${f}`)))
+    return false;
+  const fibers = [...new Set(plan.pairs.map(p => p.f))];
+  const names = fibers.slice(0, 3).map(f => 'F' + f).join(', ') +
+                (fibers.length > 3 ? ` (+${fibers.length - 3} more)` : '');
+  const one = fibers.length === 1;
+  setReadout('', { warn: `${names} ${one ? 'was' : 'were'} removed from the Viewer. ` +
+    `Right-click a file and choose Put Back to see ${one ? 'it' : 'them'} again.` });
+  return true;
+}
+
 // The ", could not load F12 A: ..." tail of a load readout: the first three
 // by name, then a count.  One copy for every load path.  The overview readout
 // used to print none of it, so a bad file just left the count one short.
@@ -2667,9 +2805,17 @@ const OVERVIEW_PTS = 2000;
 // Whole-cable bulk load: ONE request, decimated server-side.  Chunked so the
 // canvas fills in progressively instead of showing nothing for ~30 s while
 // 1152 SOR files are parsed on first visit to a folder.
-async function loadOverview(tasks) {
+async function loadOverview(tasks, ld = null) {
   const CHUNK = 144;                       // one ribbon-group per request
   let done = 0;
+  // Every key is on its way from now on, so a second Enter or Add during
+  // the load plans none of them again (gLoadingKeys).  Before, the overview
+  // never said so: a second Enter fetched all 864 traces a second time
+  // through the single-threaded server, 36 s for a 13 s load.
+  const epoch = gLoadEpoch;
+  for (const t of tasks) gLoadingKeys.add(t.key);
+  loadProgress(0, tasks.length);
+  try {
   // /api/traces serves ONE direction per request, and in A+B mode the task
   // list interleaves them — so group first and walk each direction's chunks.
   // Grouped rather than interleaved on purpose: the server is single-threaded,
@@ -2686,8 +2832,11 @@ async function loadOverview(tasks) {
     const spec = slice.map(t => t.f).join(',');
     try {
       const r = await fetch(`/api/traces?dir=${dir}&fibers=${spec}&maxpts=${OVERVIEW_PTS}`);
+      if (epoch !== gLoadEpoch) return false;   // cleared or replaced: push nothing
       if (!r.ok) { gLoadFailures.push(`bulk HTTP ${r.status}`); return false; }
       const payload = await r.json();
+      if (epoch !== gLoadEpoch) return false;
+      for (const t of slice) gLoadingKeys.delete(t.key);
       for (const data of (payload.traces || [])) {
         const key = `${dir}-${data.fiber}`;
         if (gTraces.some(t => t.key === key) || gRemovedFiles.has(key)) continue;
@@ -2719,7 +2868,9 @@ async function loadOverview(tasks) {
       return false;
     }
     done += slice.length;
-    setReadout(`loading ${done}/${tasks.length} traces…`);
+    if (ld) loadStep(ld, slice.length);
+    else setReadout(`loading ${done}/${tasks.length} traces…`);
+    loadProgress(done, tasks.length);
     // draw() early-returns on `!gView`, and gView is null on a cold page and
     // again after Clear All.  fit() -- the only thing that fills it -- runs in
     // addFibers() AFTER this loop returns, so every draw() below was a no-op:
@@ -2738,9 +2889,173 @@ async function loadOverview(tasks) {
     // Yield so the progress text paints and the tab stays responsive.
     draw();
     await new Promise(res => setTimeout(res, 0));
+    if (epoch !== gLoadEpoch) return false;
   }
   }
   return true;
+  } finally {
+    if (epoch === gLoadEpoch) for (const t of tasks) gLoadingKeys.delete(t.key);
+  }
+}
+
+// The readout shows no plain notes (Robert 2026-09-30), so the load's
+// "loading 288/864 traces" never showed and the event panel said "add a
+// trace to see events" for the whole 12-35 s of a cable load.  The panel's
+// hint counts instead, until the table replaces it.
+function loadProgress(done, total) {
+  const hint = document.getElementById('event-hint');
+  if (hint) hint.textContent = `loading ${done} of ${total} traces…`;
+}
+
+// ─── A load in flight ─────────────────────────────────────────────────
+// A whole span (864 traces both ways) used to load with a blank status line,
+// "add a trace to see events" under the chart, and a Fibers box and Dir
+// buttons that followed the chunks as they landed: "1-144", "1-288", A→,
+// and only then the full range and A + B.  While a load runs the line counts
+// it, the hint says it is loading (loadProgress counts there too), and the
+// box and the buttons show what was asked for (what is loaded plus what is
+// on its way).  A new load epoch (Clear All, a new FILES selection) drops
+// the older loads' asks with their keys (newLoadEpoch).  `tasks` are {f, d}.
+function beginLoad(tasks) {
+  const ld = { fibers: new Set(tasks.map(t => t.f)), dirs: new Set(tasks.map(t => t.d)),
+               done: 0, total: tasks.length };
+  gLoadsInFlight.add(ld);
+  const hint = document.getElementById('event-hint');
+  if (hint && !gTraces.some(t => t.visible)) hint.textContent = 'loading traces…';
+  syncFiberBox();
+  refreshReadout();
+  return ld;
+}
+// The status line's count (progressNote); the event panel's hint counts
+// too (loadProgress).
+function loadStep(ld, n) {
+  ld.done = Math.min(ld.total, ld.done + n);
+  refreshReadout();
+}
+function endLoad(ld) {
+  gLoadsInFlight.delete(ld);
+  refreshReadout();
+}
+function progressNote() {
+  if (gLoadsInFlight.size) {
+    let done = 0, total = 0;
+    for (const ld of gLoadsInFlight) { done += ld.done; total += ld.total; }
+    return `Loading ${done} of ${total} trace${total === 1 ? '' : 's'}…`;
+  }
+  return gTableBusy ? 'Building the table…' : '';
+}
+// The table step, said before it starts: the line paints "Building the
+// table…" first (a frame, or 50 ms in a hidden tab, where frames stop), then
+// the table is built.  A table that waits on the server keeps the line up
+// until it paints (tableSettled).
+async function buildTable() {
+  gTableBusy = true;
+  refreshReadout();
+  await new Promise(res => {
+    let done = false;
+    const go = () => { if (!done) { done = true; res(); } };
+    requestAnimationFrame(() => setTimeout(go, 0));
+    setTimeout(go, 50);
+  });
+  renderEventTable();
+}
+function tableSettled() {
+  dropOldTable();
+  if (gTableBusy) { gTableBusy = false; refreshReadout(); }
+  tableGoKm();
+}
+
+// ─── The server-built tables, kept ─────────────────────────────────────
+// A whole span's FastReporter table took a minute or more to come back, and
+// every repaint of the event panel asked for it again: the end-connector
+// verdicts landing a moment after it painted threw the finished table away,
+// left the area blank under "Building the table…" and asked for the same
+// rows a second time.  The rows depend only on the files (the loaded trace
+// objects: a re-loaded or edited trace is a new object), the mode and the
+// folders, so the answer is kept for exactly those, and a second ask while
+// the first is on its way waits for it.
+const gTraceStamps = new WeakMap();
+let gTraceStampN = 0;
+function traceStamp(t) {
+  if (!t) return 0;
+  let n = gTraceStamps.get(t);
+  if (!n) { n = ++gTraceStampN; gTraceStamps.set(t, n); }
+  return n;
+}
+// `extra`: whatever else the table's answer follows (the Splice Report's
+// follows the report run's settings, see renderSuiteBidiGrid).
+function serverTableKey(kind, pairs, extra = '') {
+  return [kind, gAnalysisMode, (gInfo && gInfo.dir_a) || '', (gInfo && gInfo.dir_b) || '', extra,
+          pairs.map(p => `${p.fiber}:${traceStamp(p.ta)}:${traceStamp(p.tb)}`).join(',')].join('|');
+}
+function keptServerTable(kind, key) {
+  const k = gServerTables.get(kind);
+  return k && k.key === key && k.res ? k.res : null;
+}
+// The answer for `key`, asked once: `keep(res)` says whether it may serve
+// the next repaint (an answer still pending, or an error, is asked again).
+function askServerTable(kind, key, url, keep) {
+  const k = gServerTables.get(kind);
+  if (k && k.key === key && k.pending) return k.pending;
+  const entry = { key, res: null, pending: null };
+  entry.pending = fetch(url).then(r => r.json()).then(res => {
+    res = res || {};
+    if (gServerTables.get(kind) === entry) {
+      entry.pending = null;
+      if (keep(res)) entry.res = res; else gServerTables.delete(kind);
+    }
+    return res;
+  }, e => {
+    if (gServerTables.get(kind) === entry) gServerTables.delete(kind);
+    throw e;
+  });
+  gServerTables.set(kind, entry);
+  return entry.pending;
+}
+// A table that has to come from the server again (a mode switch, other
+// traces) leaves the last one on screen, dimmed, under a note, until the new
+// one paints (tableSettled): never a blank area, and never a stale table
+// without the note.  `prev`: [node, scrollTop, scrollLeft] of what was there.
+function holdOldTable(host, prev) {
+  const note = document.createElement('div');
+  note.className = 'tbl-updating';
+  note.textContent = 'Updating the table…';
+  host.appendChild(note);
+  gHeldNodes = [note];
+  for (const [n] of prev) {
+    host.appendChild(n);
+    gHeldNodes.push(n);
+  }
+  // back where the tech had scrolled it (re-attached, it starts at the top)
+  for (const [n, top, left] of prev) {
+    if (top) n.scrollTop = top;
+    if (left) n.scrollLeft = left;
+  }
+  host.classList.add('tbl-stale');
+}
+function dropOldTable() {
+  const host = document.getElementById('event-tbody-wrap');
+  if (!host) return;
+  for (const n of gHeldNodes) if (n.parentNode === host) host.removeChild(n);
+  gHeldNodes = [];
+  host.classList.remove('tbl-stale');
+}
+// The end-connector verdicts change only the end marks, the P/F column and
+// the drawer's marks of a server-built table: the one on screen takes them
+// in place (refreshVerdicts).  It cannot when a filter decides which rows
+// and columns show; the panel is laid out again then, from the kept answer.
+function endVerdictsLanded() {
+  // Mid-load the table is not built yet: the load builds it when it ends,
+  // with these.  Built now it was a table of the traces loaded so far,
+  // thrown away a few seconds later.
+  if (gLoadsInFlight.size) return;
+  const live = gTableLive;
+  if (live && live.scroller.parentNode === live.host && live.refreshVerdicts()) return;
+  renderEventTable();
+}
+function tableStepEnd(wasBusy) {
+  if (gTableBusy !== wasBusy) refreshReadout();
+  if (!gTableBusy) tableGoKm();
 }
 
 let gLoadFailures = [];            // per-addFibers() failure notes for the readout
@@ -2751,6 +3066,20 @@ let gLoadFailures = [];            // per-addFibers() failure notes for the read
 // demo list #33).  A key in here is never planned again, and neither loadOne
 // nor loadOverview pushes a key that is already loaded, however loads overlap.
 const gLoadingKeys = new Set();
+// Which load the chart belongs to.  Clear All and a new FILES selection
+// each start a new one; a fetch that comes back for an older one pushes
+// nothing and stops its load.  Before (audit 2026-10-01)
+// Clear All in the middle of a 432-fiber load emptied the chart for a moment
+// and then the rest of the load kept landing: 720 of the 864 traces came
+// back, with the Fibers box reading "1-432".  The keys still on their way
+// belong to the old load, so they are let go at once and a load asked for
+// straight after the clear plans them again.
+let gLoadEpoch = 0;
+function newLoadEpoch() {
+  gLoadEpoch++;
+  gLoadingKeys.clear();
+  gLoadsInFlight.clear();            // their asks no longer count (syncFiberBox)
+}
 // fetch() that retries a THROWN fetch (connection refused/reset: "Failed to
 // fetch") a few times with a short backoff.  An HTTP error is an answer from
 // the server, so it comes straight back and is never retried.
@@ -2768,14 +3097,17 @@ async function fetchRetry(url, tries = 3) {
 async function loadOne(key, fiber, dir) {
   if (gLoadingKeys.has(key) || gTraces.some(t => t.key === key)) return;
   gLoadingKeys.add(key);
+  const epoch = gLoadEpoch;
   try {
     const r = await fetchRetry(`/api/trace?dir=${dir}&fiber=${fiber}`);
+    if (epoch !== gLoadEpoch) return;     // cleared or replaced: push nothing
     if (!r.ok) {
       console.warn('fail', key, r.status);
       gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: HTTP ${r.status}`);
       return;
     }
     const data = await r.json();
+    if (epoch !== gLoadEpoch) return;
     if (data.error) {
       console.warn('err', key, data.error);
       gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: ${data.error}`);
@@ -2792,7 +3124,7 @@ async function loadOne(key, fiber, dir) {
     console.warn(e);
     gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: ${e && e.message || 'fetch failed'}`);
   } finally {
-    gLoadingKeys.delete(key);
+    if (epoch === gLoadEpoch) gLoadingKeys.delete(key);
   }
 }
 
@@ -2812,7 +3144,29 @@ function removeFile(key, fiber) {
   const next = fileAfterRemove(fileRowKeys(), new Set([key]));
   gRemovedFiles.add(key);
   removeTrace(key);
-  const msg = `F${fiber} removed from the viewer (reopen the Viewer to list it again)`;
+  const msg = `F${fiber} removed from the viewer and its reports (right-click a file to put it back)`;
+  setReadout(msg);
+  selectAfterRemove(next, msg);
+  unloadEmptiedSides();
+}
+
+// Remove This File / Remove This Fiber: these files only, whatever else is
+// marked.  The rest of the chart stays on it and the Fibers box follows
+// ("1-199, 201-432"); only a Remove that empties the chart moves on to the
+// next file, as FastReporter does (selectAfterRemove).
+function removeOnly(keys, what) {
+  const listed = fileRowKeys();
+  keys = keys.filter(key => listed.includes(key));
+  if (!keys.length) return;
+  const next = fileAfterRemove(listed, new Set(keys));
+  keys.forEach(key => { gRemovedFiles.add(key); COLORS_USED.delete(key); });
+  gTraces = gTraces.filter(t => !gRemovedFiles.has(t.key));
+  syncFileMarks();
+  renderChips();
+  if (gAutoFit) fit();
+  draw();
+  renderEventTable();
+  const msg = `${what} removed from the viewer and its reports (right-click a file to put it back)`;
   setReadout(msg);
   selectAfterRemove(next, msg);
   unloadEmptiedSides();
@@ -2831,10 +3185,40 @@ function removeSelectedFiles() {
   draw();
   renderEventTable();
   const msg = `${keys.length} file${keys.length === 1 ? '' : 's'} removed from the viewer`
-    + ` (reopen the Viewer to list ${keys.length === 1 ? 'it' : 'them'} again)`;
+    + ` and its reports (right-click a file to put ${keys.length === 1 ? 'it' : 'them'} back)`;
   setReadout(msg);
   selectAfterRemove(next, msg);
   unloadEmptiedSides();
+}
+
+// Removed files stay out of the list, the chart and every report until the
+// tech puts them back here (a trip to another tool no longer lists them
+// again, now that the state is kept: see pushViewerState).
+async function putBackRemovedFiles() {
+  const keys = [...gRemovedFiles];
+  const n = keys.length;
+  if (!n) return;
+  gRemovedFiles.clear();
+  renderChips();
+  // With traces on the chart the files go back on it too, the way the chart
+  // is loaded: next to a whole cable (overview traces) a detail load is
+  // refused at MAX_DETAIL_TRACES, so they come back as overview traces.
+  if (gTraces.length) {
+    const tasks = keys.map(key => { const [d, f] = splitFileKey(key); return { key, f, d }; });
+    // Counted on the status line like any other load, and the Fibers box
+    // and Dir buttons show what is coming back from the start (beginLoad).
+    const ld = beginLoad(tasks);
+    try {
+      if (gTraces.length + tasks.length > MAX_DETAIL_TRACES) await loadOverview(tasks, ld);
+      else for (const t of tasks) { await loadOne(t.key, t.f, t.d); loadStep(ld, 1); }
+    } finally { endLoad(ld); }
+    syncFileMarks();
+    renderChips();
+    if (gAutoFit) fit();
+    draw();
+    renderEventTable();
+  }
+  setReadout(`${n} removed file${n === 1 ? '' : 's'} put back in the list, the chart and the reports`);
 }
 
 // FastReporter never leaves the list with nothing selected: after a Remove
@@ -2855,6 +3239,7 @@ async function selectAfterRemove(next, msg) {
 
 function clearAll() {
   gSelNext = null;                   // a FILES selection still queued is dropped too
+  newLoadEpoch();                    // and a load still landing stops (gLoadEpoch)
   gTraces = [];
   COLORS_USED.clear();
   clearFileSelection();
@@ -2879,6 +3264,96 @@ function renderChips() {
   refreshMirrorFrame();
   renderFilesPanel();
   syncFiberBox();
+  pushViewerState();
+}
+
+// ─── The state every Viewer window shares (trace_server.viewer_state) ──
+// What is on the chart, what was removed from the FILES list and the Dir
+// buttons go to the server whenever they change (renderChips is the one
+// choke point every add, remove and clear goes through).  A window that
+// opens takes them back (bootLoad), so a trip to another tool and back finds
+// the chart as it was; a window already open follows the newer state from
+// another one (pollAnalysisMode), so the hub's Viewer and the pop-out keep
+// each other up to date.  `gStateSig` is the last state this window sent or
+// took: the same state is never sent twice, so two windows cannot echo one
+// change back and forth.
+function stateSig(keys, removed, addDir) {
+  return JSON.stringify([[...keys].sort(), [...removed].sort(), addDir]);
+}
+function pushViewerState() {
+  if (!gStateReady || gStateApplying || !gInfo) return;
+  clearTimeout(gStatePushT);
+  gStatePushT = setTimeout(async () => {
+    if (gStateApplying || !gStateReady) return;
+    // The traces still on their way count: a tech who leaves for another
+    // tool in the middle of a cable load comes back to the whole cable, not
+    // the chunks that had landed (Robert 2026-10-02).
+    const keys = [...new Set([...gTraces.map(t => t.key), ...gLoadingKeys])];
+    const removed = [...gRemovedFiles];
+    const sig = stateSig(keys, removed, gAddDir);
+    if (sig === gStateSig) return;
+    const removedSig = [...removed].sort().join(',');
+    gStateSig = sig;
+    try {
+      const r = await fetch('/api/viewer_state', { method: 'POST',
+        body: JSON.stringify({ by: gClientId, keys, removed, add_dir: gAddDir }) });
+      const j = await r.json();
+      if (j && j.ver) gStateVer = Math.max(gStateVer, j.ver);
+      // The table is the span run again without the removed files (the
+      // server's run follows this state), so ask for it again now the
+      // server has it: a table asked for before this landed is the old run
+      // (its kept answer is keyed by the removed files the server had).
+      // Only when they moved: a load or a Dir change keeps the table on
+      // screen, which is built once (see serverTableKey).
+      const removedMoved = removedSig !== gServerRemovedSig;
+      gServerRemovedSig = removedSig;
+      if (removedMoved && gTraces.length) renderEventTable();
+    } catch (e) { gStateSig = ''; }    // the next change tries again
+  }, 300);
+}
+async function fetchViewerState() {
+  try { return await (await fetch('/api/viewer_state', { cache: 'no-store' })).json(); }
+  catch (e) { return null; }
+}
+// A state made on the folders loaded now (a state from before a drop or a
+// new folder belongs to the old span).
+function stateFits(s) {
+  return !!(s && gInfo && (s.dir_a || '') === (gInfo.dir_a || '')
+            && (s.dir_b || '') === (gInfo.dir_b || ''));
+}
+// Take a state: its removed files, its Dir and, unless `keysToo` is false,
+// its traces (loading the missing ones and dropping the rest).
+async function applyViewerState(s, keysToo = true) {
+  if (!s) return;
+  gStateVer = Math.max(gStateVer, s.ver || 0);
+  if (s.by === gClientId || !stateFits(s)) return;
+  gStateApplying++;
+  try {
+    gRemovedFiles.clear();
+    (s.removed || []).forEach(k => gRemovedFiles.add(k));
+    gServerRemovedSig = [...gRemovedFiles].sort().join(',');
+    const want = new Set((s.keys || []).filter(k => !gRemovedFiles.has(k)));
+    gStateSig = stateSig(keysToo ? [...want] : gTraces.map(t => t.key),
+                         [...gRemovedFiles], s.add_dir || 'both');
+    if (keysToo) {
+      if (want.size) {
+        // until the selection queue is empty: selectFiles returns at once
+        // when a load is already running and queues this one behind it
+        gStateLoad = (async () => {
+          await selectFiles(want);
+          while (gSelLoading) await new Promise(r => setTimeout(r, 100));
+        })();
+        try { await gStateLoad; } finally { gStateLoad = null; }
+      } else if (gTraces.length) clearAll();
+    }
+    setAddDir(s.add_dir || 'both');
+    renderFilesPanel();
+  } finally {
+    gStateApplying--;
+  }
+  // What the tech did while it loaded (a Put Back, a Remove) was held back
+  // with the echo; send it now if the page no longer matches what it took.
+  if (!gStateApplying) pushViewerState();
 }
 
 // The Fibers box says what is loaded, however it got there: a FILES-panel
@@ -2890,9 +3365,21 @@ function renderChips() {
 function syncFiberBox() {
   const box = document.getElementById('fiber-input');
   if (document.activeElement === box) return;
-  box.value = fiberRangeText(gTraces.map(t => t.fiber));
-  if (!gTraces.length) return;
+  // While a load runs, what it asked for counts as loaded (see beginLoad):
+  // the box and the buttons say where the load is going from the start.
+  const fibers = gTraces.map(t => t.fiber);
   const dirs = new Set(gTraces.map(t => t.src || t.dir));
+  for (const ld of gLoadsInFlight) {
+    fibers.push(...ld.fibers);
+    ld.dirs.forEach(d => dirs.add(d));
+  }
+  // A load landing that did not say what it asked for (no beginLoad) is
+  // waited for: the first chunk is A's alone, and the box read "1-144" with
+  // the Dir on "A →", so a Clear All there left the next load to fetch A
+  // only (audit 2026-10-01).  The load syncs both when it settles.
+  if (gLoadingKeys.size && !gLoadsInFlight.size) return;
+  box.value = fiberRangeText(fibers);
+  if (!dirs.size) return;
   setAddDir(dirs.size === 1 ? [...dirs][0] : 'both');
 }
 
@@ -2933,9 +3420,12 @@ function renderFilesPanel() {
       (hasA && hasB) ? 'both sides loaded, dropping a folder here starts a new span'
       : hasA ? 'drop the other direction here, A stays loaded'
       : hasB ? 'drop the other direction here, B stays loaded'
-      : 'drop .sor / .json / .trc files, a folder, or a .zip here';
+      : 'drop .sor / .json / .trc / .olts files, a folder, or a .zip here';
   };
   syncFilesTabs();
+  list.classList.toggle('meas', gFilesView === 'meas');
+  document.getElementById('files-cols').style.display = gFilesView === 'meas' ? 'none' : '';
+  if (gFilesView === 'meas') { renderMeasView(list, esc); return; }
   if (gFilesView === 'fibers') { renderFibersView(list, esc); sayNextDrop(); return; }
   const loaded = new Map(gTraces.map(t => [t.key, t]));
   const cols = shownFileCols();
@@ -3154,16 +3644,22 @@ function ensureFileFacts(now) {
 // Clicks work as in Files, a fibre at a time: click, Shift+click,
 // Ctrl/Cmd+click and the arrow keys select the fibre's files, and a
 // right-click opens the file menu on them.
-let gFilesView = 'files';            // 'files' | 'fibers'
+let gFilesView = 'files';            // 'files' | 'fibers' | 'meas' (a dropped .olts)
+let gOlts = null;                    // the .olts the Measurements tab lists (olts_load's answer)
+let gOltsSort = null;                // { col, desc }
+let gOltsSel = null;                 // the identifier of the row clicked
 try { if (localStorage.getItem('otdr_viewer_files_tab') === 'fibers') gFilesView = 'fibers'; } catch (e) {}
 let gFiberAnchor = null;             // as gFileAnchor / gFileFocus, a fibre at a time
 let gFiberFocus = null;
 
 function syncFilesTabs() {
-  document.querySelectorAll('#files-tabs button').forEach(b =>
-    b.classList.toggle('active', b.dataset.view === gFilesView));
+  if (gFilesView === 'meas' && !gOlts) gFilesView = 'files';
+  document.querySelectorAll('#files-tabs button').forEach(b => {
+    b.classList.toggle('active', b.dataset.view === gFilesView);
+    if (b.dataset.view === 'meas') b.hidden = !gOlts;
+  });
   const h = document.querySelector('#files-hd h2');
-  if (h) h.textContent = gFilesView === 'fibers' ? 'Fibers' : 'Files';
+  if (h) h.textContent = { fibers: 'Fibers', meas: 'Measurements' }[gFilesView] || 'Files';
 }
 document.getElementById('files-tabs').addEventListener('click', (ev) => {
   const b = ev.target.closest('button[data-view]');
@@ -3225,13 +3721,13 @@ function renderFibersView(list, esc) {
       + ` data-fkey="${r.fiber}">`
       + `<span class="file-vis"${t ? ` style="color:${t.color};text-shadow:0 0 1px #333"` : ''}>${t ? '●' : ''}</span>`
       + `<span class="file-num">${r.fiber}</span>`
-      + `<span title="${esc(r.a.join(', '))}">${esc(r.a.join(', ') || '-')}</span>`
-      + `<span title="${esc(r.b.join(', '))}">${esc(r.b.join(', ') || '-')}</span>`
+      + `<span title="${esc(r.a.join(', '))}">${esc(r.a.join(', ') || '---')}</span>`
+      + `<span title="${esc(r.b.join(', '))}">${esc(r.b.join(', ') || '---')}</span>`
       + `<span class="fib-pair${pair.ok ? '' : ' bad'}" title="${why}">${pair.text}</span></div>`;
   }).join('') : '<span id="chip-empty">no folders loaded</span>';
   const full = rows.filter(r => fiberState(r) === 'selected').length;
   document.getElementById('files-count').textContent =
-    rows.length ? `${full} of ${rows.length} fibers selected` : '';
+    rows.length ? `${full} of ${rows.length} fiber${rows.length === 1 ? '' : 's'} selected` : '';
 }
 
 // Select these fibres' files, in place of the selection.
@@ -3459,7 +3955,7 @@ function endFileDrag() {
 }
 
 filesList.addEventListener('keydown', (ev) => {
-  if (gFilesView === 'fibers') return;           // the Fibers tab has its own keys
+  if (gFilesView !== 'files') return;            // the other tabs have their own keys
   if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key)) return;
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
   const s = fileKeySelection(fileRowKeys(), gFileAnchor, gFileFocus, ev.key, ev.shiftKey);
@@ -3800,6 +4296,11 @@ function showFileDirMenu(x, y, src, fiber, name) {
   // What Save would write: the marked files whose direction was changed.
   const dirty = marks.filter(key => gDirOverride[key]);
   const loaded = gTraces.some(t => t.key === k);   // (a removed file has no row to right-click)
+  // Remove This File / Remove This Fiber (Robert 2026-10-01): with the whole
+  // span marked, "Remove N Marked Files" was the only Remove, so one file
+  // could not come off without first narrowing the chart down to it.
+  const fileLabel = `F${fiber} ${effDir(src, fiber) === 'a' ? 'A→B' : 'B→A'}`;
+  const fiberKeys = fileRowKeys().filter(key => splitFileKey(key)[1] === +fiber);
   m.innerHTML = `<div class="span-menu-hd">Direction${marked ? ` (${marked} Marked)` : ''}</div>`
     + [['a', 'A→B'], ['b', 'B→A']].map(([d, label]) =>
         `<button data-d="${d}">${allAre(d) ? '✓ ' : '\u2003'}${label}</button>`).join('')
@@ -3818,8 +4319,16 @@ function showFileDirMenu(x, y, src, fiber, name) {
     + `<button data-rename="1">Rename ${marked > 1 ? marked + ' Marked Files' : 'File'}…</button>`
     // Take the file out of the list, off the chart and out of the grid.
     // Says the count first: a marked range removes the whole range.
-    + `<button data-remove="1">Remove ${marked > 1 ? marked + ' Marked Files' : 'File'}`
-    + ` from Viewer</button>`
+    + (marked
+       ? `<button data-remove-one="1">Remove This File (${fileLabel})</button>`
+         + (fiberKeys.length > 1
+            ? `<button data-remove-fiber="1">Remove This Fiber (F${fiber}, Both Directions)</button>`
+            : '')
+         + `<button data-remove="1">Remove ${marked} Marked Files from Viewer</button>`
+       : `<button data-remove="1">Remove This File (${fileLabel})</button>`)
+    + (gRemovedFiles.size
+       ? `<button data-putback="1">Put Back ${gRemovedFiles.size} Removed File`
+         + `${gRemovedFiles.size === 1 ? '' : 's'}</button>` : '')
     + (gRenameUndo.length
        ? `<button data-undo="1">Undo Rename of ${gRenameUndo[gRenameUndo.length - 1].n} File`
          + `${gRenameUndo[gRenameUndo.length - 1].n === 1 ? '' : 's'}</button>` : '')
@@ -3842,6 +4351,15 @@ function showFileDirMenu(x, y, src, fiber, name) {
   m.querySelector('button[data-rename]').onclick = () => { closeSpanMenu(); showRenameDialog(src, fiber, name); };
   const un = m.querySelector('button[data-undo]');
   if (un) un.onclick = () => { closeSpanMenu(); undoLastRename(); };
+  const pb = m.querySelector('button[data-putback]');
+  if (pb) pb.onclick = () => { closeSpanMenu(); putBackRemovedFiles(); };
+  const r1 = m.querySelector('button[data-remove-one]');
+  if (r1) r1.onclick = () => { closeSpanMenu(); removeOnly([k], fileLabel); };
+  const rf = m.querySelector('button[data-remove-fiber]');
+  if (rf) rf.onclick = () => {
+    closeSpanMenu();
+    removeOnly(fiberKeys, `F${fiber} (both directions)`);
+  };
   const rm = m.querySelector('button[data-remove]');
   if (rm) rm.onclick = () => {
     closeSpanMenu();
@@ -3948,6 +4466,8 @@ function markFiles(keys) {
 }
 
 async function applyFileSelection(want) {
+  newLoadEpoch();                     // the selection is the chart now: an older load stops
+  const epoch = gLoadEpoch;
   const drop = gTraces.filter(x => !want.has(x.key)).map(x => x.key);
   gTraces = gTraces.filter(x => want.has(x.key));
   prunePick();                        // before the load draws a chunk behind it
@@ -3958,26 +4478,35 @@ async function applyFileSelection(want) {
     return { key: k, f, d };
   });
   // Same two regimes as the Fibers box: a selection past MAX_DETAIL_TRACES
-  // goes through the bulk overview instead of being cut off at 48.
-  const overview = tasks.length > MAX_DETAIL_TRACES;
+  // goes through the bulk overview instead of being cut off at 48, and so do
+  // a few files added to a chart already past it (they were cut off
+  // silently, the room left under 48 being none).
+  const overview = tasks.length > MAX_DETAIL_TRACES
+    || gTraces.length + tasks.length > MAX_DETAIL_TRACES;
   const MAX = overview ? MAX_OVERVIEW_FIBERS * 2 : MAX_DETAIL_TRACES;
   const room = Math.max(0, MAX - gTraces.length);
   const capped = tasks.length > room;
   tasks = tasks.slice(0, room);
   gLoadFailures = [];
-  if (tasks.length) setReadout(`loading ${tasks.length} trace${tasks.length === 1 ? '' : 's'}…`);
-  if (overview) {
-    await loadOverview(tasks);
-  } else {
-    for (let i = 0; i < tasks.length; i += 6) {
-      await Promise.all(tasks.slice(i, i + 6).map(x => loadOne(x.key, x.f, x.d)));
+  const ld = tasks.length ? beginLoad(tasks) : null;
+  try {
+    if (overview) {
+      await loadOverview(tasks, ld);
+    } else {
+      for (let i = 0; i < tasks.length; i += 6) {
+        const batch = tasks.slice(i, i + 6);
+        await Promise.all(batch.map(x => loadOne(x.key, x.f, x.d)));
+        loadStep(ld, batch.length);
+        if (epoch !== gLoadEpoch) break;
+      }
     }
-  }
+  } finally { if (ld) endLoad(ld); }
+  if (epoch !== gLoadEpoch) return;   // cleared or replaced meanwhile
   syncFileMarks();                    // what the cap cut off is not selected
   renderChips();
   if (gAutoFit || drop.length) fit();
   draw();
-  renderEventTable();
+  await buildTable();
   setReadout(`${gTraces.length} trace${gTraces.length === 1 ? '' : 's'} loaded`
     + (overview ? ` in overview (~${OVERVIEW_PTS} pts each, spikes preserved)` : '')
     + (capped ? `, capped at ${MAX}` : '')
@@ -4301,7 +4830,7 @@ function updateMarkerReadout() {
   // A and B read from the axis zero (A's first event).  The gap between them
   // is a length, so it is never shifted.
   const z = axisZeroKm();
-  const at = v => (v == null ? '-' : dist(v - z));
+  const at = v => (v == null ? '---' : dist(v - z));
   let html = `<div><span class="mr-a">A</span>: ${at(a)}` +
              ` &nbsp; <span class="mr-b">B</span>: ${at(b)}</div>`;
 
@@ -4320,7 +4849,7 @@ function updateMarkerReadout() {
       for (const { t } of cap.shown) {
         const va = traceDbAtDispKm(t, a);
         const vb = traceDbAtDispKm(t, b);
-        let dloss = '-', slope = '-';
+        let dloss = '---', slope = '---';
         if (va != null && vb != null) {
           // Signal descends with loss; loss over the span (upstream→downstream).
           // A mirrored B runs right to left on the chart, so its upstream end
@@ -4333,13 +4862,13 @@ function updateMarkerReadout() {
             ? (isFlipped(t) ? vhi - vlo : vlo - vhi) : null;
           if (d != null) {
             dloss = d.toFixed(3);
-            slope = dkm > 1e-6 ? (d / dkm).toFixed(3) : '-';
+            slope = dkm > 1e-6 ? (d / dkm).toFixed(3) : '---';
           }
         }
         const arrow = t.dir === 'a' ? 'A→B' : 'B→A';
         html += `<tr><td><span style="color:${t.color};text-shadow:0 0 1px #333">■</span> F${t.fiber} ${arrow}</td>` +
-                `<td>${va == null ? '-' : va.toFixed(3)}</td>` +
-                `<td>${vb == null ? '-' : vb.toFixed(3)}</td>` +
+                `<td>${va == null ? '---' : va.toFixed(3)}</td>` +
+                `<td>${vb == null ? '---' : vb.toFixed(3)}</td>` +
                 `<td>${dloss}</td><td>${slope}</td></tr>`;
       }
       if (cap.more) html += `<tr><td colspan="5" class="hint">+${cap.more} more traces</td></tr>`;
@@ -4914,7 +5443,8 @@ function drawPairing(sets, r, failedOnly = false) {
     const detail = shown.size <= DRAWER_DETAIL_MAX;
     const allTicks = shown.size <= DRAWER_TICK_MAX;
     // What a cell's value is called on its tag: the A+B tables' Average, or
-    // a one-direction table's own loss.
+    // a one-direction table's own loss.  A column may name and format its own
+    // (`word`, `fmt`): the FEC table's reflectance column prints dB to 0.1.
     const word = D.single ? 'loss' : 'avg';
     // A leg's place: its own km on its own trace, or -- a gray leg the report
     // gave no km of its own -- the cell's km on that trace.
@@ -4971,10 +5501,10 @@ function drawPairing(sets, r, failedOnly = false) {
       const color = colorOf(cell.avgFail, cell.avgWarn);
       band(lo, hi, color, 0.13);
       qs.forEach(q => legMark(q, cell.fi, col.i, !D.single, 1));
-      const v = fmtV(cell.avg);
+      const v = (col.fmt || fmtV)(cell.avg);
       const who = many ? `F${p.fiber}${D.single ? ((p.ta ? ' A' : ' B')) : ''} ` : '';
       tags.push({ x: (xToPx(lo, r) + xToPx(hi, r)) / 2, color,
-                  full: `${who}${col.title}${v ? `  ${word} ${v}` : ''}${cell.avgFail ? '  FAIL' : ''}`,
+                  full: `${who}${col.title}${v ? `  ${col.word || word} ${v}` : ''}${cell.avgFail ? '  FAIL' : ''}`,
                   short: `${who}${v || col.title}`,
                   go: () => D.goCell(cell.fi, D.single ? (p.ta ? 'a' : 'b') : 'avg', col.i) });
     };
@@ -5010,7 +5540,7 @@ function drawPairing(sets, r, failedOnly = false) {
         band(lo, hi, color, 0.09);
         const dim = pickFi >= 0 ? 0.3 : 0.75;
         legs.forEach(([q, fi]) => legMark(q, fi, col.i, false, dim));
-        const worst = fmtV(s.worst);
+        const worst = (col.fmt || fmtV)(s.worst);
         const count = s.nFail ? `  ${s.nFail}/${s.n} FAIL` : s.nWarn ? `  ${s.nWarn}/${s.n} warn` : '';
         const wp = D.have[s.worstFi];
         tags.push({ x: (xToPx(lo, r) + xToPx(hi, r)) / 2, color,
@@ -5105,6 +5635,44 @@ function gridGoCell(g, fi, which, col, opts = {}) {
   setTimeout(() => td.classList.add('fading'), 1500);
   setTimeout(() => td.classList.remove('fr-hit', 'fading'), 2200);
 }
+// A report link (?fiber=354&km=44.099, a report cell click) zoomed the chart
+// to the event and left the table on its first column.  Once the table is up,
+// it goes to the column whose event is nearest the km (within half a km, in
+// the chart's frame, as the headers' own zoom clicks are), brings that
+// fiber's row into view when others are loaded too, and flashes the header.
+const TABLE_GO_TOL_KM = 0.5;
+function tableGoKm() {
+  const go = gTableGoKm;
+  if (!go) return;
+  gTableGoKm = null;
+  const host = document.getElementById('event-tbody-wrap');
+  const heads = host ? [...host.querySelectorAll('th.fr-evhdr[data-km]')] : [];
+  let th = null, best = TABLE_GO_TOL_KM;
+  for (const h of heads) {
+    const d = Math.abs(+h.dataset.km - go.km);
+    if (d <= best) { best = d; th = h; }
+  }
+  if (!th) return;
+  if (new Set(gTraces.map(t => t.fiber)).size > 1 && gGridGoTo) {
+    const t = gTraces.find(x => x.visible && x.fiber === go.fiber);
+    if (t) gGridGoTo(t, null);
+  }
+  const scroller = th.closest('table') && th.closest('table').parentElement;
+  if (!scroller) return;
+  // The fiber column stays put and covers the left edge.
+  const sr = scroller.getBoundingClientRect(), cr = th.getBoundingClientRect();
+  const lab = th.closest('thead').querySelector('th.fr-rowlab');
+  const leadR = lab ? Math.max(sr.left, lab.getBoundingClientRect().right) : sr.left;
+  if (cr.left < leadR + 8 || cr.right > sr.right - 8) {
+    // centered in what the labels leave
+    scroller.scrollLeft += (cr.left + cr.right) / 2 - (leadR + sr.right) / 2;
+  }
+  th.classList.remove('fr-hit', 'fading');
+  th.classList.add('fr-hit');
+  setTimeout(() => th.classList.add('fading'), 1500);
+  setTimeout(() => th.classList.remove('fr-hit', 'fading'), 2200);
+}
+
 // The two A+B tables' Minimum and Maximum cells, like the one-direction
 // table's (#274): the number is one fibre's, so a click picks that row (the
 // Average row for a loss, the direction's row for a reflectance), centres it,
@@ -5525,30 +6093,48 @@ function wireEventSettings() {
   if (lossEl) lossEl.addEventListener('change', () => {
     const v = parseFloat(lossEl.value);
     if (!Number.isFinite(v)) return;
+    if (gFecMode) { setFecGateOverride('loss', v); return; }
     // Back to following the report when the tech types its value back in.
     gGateOverride = (Math.abs(v - reportGateDb()) < 1e-9) ? null : v;
     syncGateUI();
     renderEventTable();
   });
-  bind('set-refl-lo', 'reflLo');
-  bind('set-refl-hi', 'reflHi');
+  if (!gFecMode) {
+    bind('set-refl-lo', 'reflLo');
+    bind('set-refl-hi', 'reflHi');
+    return;
+  }
+  const reflEl = document.getElementById('set-refl-lo');
+  if (reflEl) reflEl.addEventListener('change', () => {
+    const v = parseFloat(reflEl.value);
+    if (Number.isFinite(v)) setFecGateOverride('refl', v);
+  });
 }
 
 // Opened on its own, the server runs the report on the folders for the end-
 // connector verdicts; they land a little after the traces, then the table
-// repaints with them.
+// takes them (endVerdictsLanded).
+// One question at a time.  The trace server answers one request at a time,
+// so while a whole span's table held it (a minute or more) every tick queued
+// another question; they were all answered together once the table was, and
+// each one laid the panel out again and asked for the whole table again.
 let gEndPoll = null;
+let gEndAsking = false;
 function pollEndVerdicts() {
   if (gEndPoll) return;
-  gEndPoll = setInterval(async () => {
+  const poll = setInterval(async () => {
+    if (gEndAsking || gEndPoll !== poll) return;
+    gEndAsking = true;
     let v;
     try { v = await (await fetch('/api/end_verdicts')).json(); } catch (e) { return; }
-    if (v.end_pending) return;
-    clearInterval(gEndPoll); gEndPoll = null;
+    finally { gEndAsking = false; }
+    if (v.end_pending || gEndPoll !== poll) return;
+    clearInterval(poll); gEndPoll = null;
     gInfo.end_refl = v.end_refl; gInfo.panel_span = v.panel_span;
     gEndRefl = Array.isArray(v.end_refl) ? v.end_refl : [];
-    renderEventTable();
+    endVerdictsLanded();
   }, 3000);
+  gEndPoll = poll;
 }
 function frameWarnText(nB) {
   if (gFecMode) return '   FEC mode: each end is graded on its own; A and B are not paired.';
@@ -5559,9 +6145,22 @@ function frameWarnText(nB) {
     : '';
 }
 function renderEventTable() {
+  // Busy again below only when the mode's table waits on the server; the
+  // other tables are built by the time this returns, and the status line
+  // and a report link's column follow just after (tableStepEnd).
+  const wasBusy = gTableBusy;
+  gTableBusy = false;
+  queueMicrotask(() => tableStepEnd(wasBusy));
   const host = document.getElementById('event-tbody-wrap');
   const hint = document.getElementById('event-hint');
+  // What is up now, held while a table that waits on the server is built
+  // (holdOldTable); a note already there is made again.
+  const prev = [...host.childNodes].filter(n => n.className !== 'tbl-updating')
+    .map(n => [n, Number(n.scrollTop) || 0, Number(n.scrollLeft) || 0]);
   host.innerHTML = '';
+  host.classList.remove('tbl-stale');
+  gHeldNodes = [];
+  gTableLive = null;
   gGridGoTo = null;
   gTableExport = null;
   gDrawerMarks = [];                 // the drawer waits for the mode's table
@@ -5570,7 +6169,7 @@ function renderEventTable() {
   syncGateUI();   // the gate follows what is on screen (see oneDirOnly)
   const visible = gTraces.filter(t => t.visible);
   if (visible.length === 0) {
-    hint.textContent = 'add a trace to see events';
+    hint.textContent = gLoadingKeys.size ? 'loading traces…' : 'add a trace to see events';
     return;
   }
 
@@ -5585,11 +6184,13 @@ function renderEventTable() {
   // OTDR Suite mode, FastReporter's in FastReporter mode.  The
   // single-direction grid stands in when nothing is paired.
   if (gFecMode && renderFecGrid(visible, host, hint)) return;
-  if (gAnalysisMode === 'suite') {
-    if (renderSuiteBidiGrid(visible, host, hint)) return;
-  } else if (renderFrBidiGrid(visible, host, hint)) return;
-  renderFastReporterGrid(visible, host, hint);
-  return;
+  const server = gAnalysisMode === 'suite'
+    ? renderSuiteBidiGrid(visible, host, hint) : renderFrBidiGrid(visible, host, hint);
+  if (!server) {
+    renderFastReporterGrid(visible, host, hint);
+    return;
+  }
+  if (gTableBusy && prev.length) holdOldTable(host, prev);
 }
 
 // ── FEC mode table ──────────────────────────────────────────────────────
@@ -5600,12 +6201,64 @@ function renderEventTable() {
 // Splice Report FEC tool prints.  The side is the folder the trace came
 // from (A box / B box), not a direction.
 let gFecSeq = 0;
+// The FEC gates on the Viewer's own boxes (Robert 2026-10-02, "show FEC
+// gates in the boxes"): Loss shows the FEC loss gate (> when strict, as the
+// profile decides), the Refl Band's low end the FEC reflectance gate, and
+// its high end is 0 and fixed, since FEC fails any reflectance above the
+// gate.  Typing in a box overrides that gate for this window only, as the
+// Viewer's Loss box overrides the report's; the customer profile is never
+// changed.  Typing the profile's value back lets go.
+let gFecGates = null;                  // the gates the table on screen was graded at
+let gFecBase = null;                   // the profile's, from the last un-overridden read
+const gFecOverride = { loss: null, refl: null };
+function fecOverridden() { return gFecOverride.loss != null || gFecOverride.refl != null; }
+function setFecGateOverride(which, v) {
+  const key = which === 'loss' ? 'FEC_LOSS_GATE' : 'FEC_REFL_GATE';
+  const base = gFecBase ? Number(gFecBase[key]) : null;
+  gFecOverride[which] = (base != null && Math.abs(v - base) < 1e-9) ? null : v;
+  renderEventTable();
+}
+// Before a table is graded: the profile's gates as the server has them
+// (none = the engine's defaults, known after the first read).
+function fecGatesShown() {
+  return gFecGates || gFecBase || (gInfo && gInfo.fec_gates
+    && gInfo.fec_gates.FEC_LOSS_GATE != null ? gInfo.fec_gates : null);
+}
+function fecGateLabel() {
+  const g = fecGatesShown();
+  if (!g) return 'FEC gates: loading';
+  return `FEC: ${fecGateText(g)}${fecOverridden() ? ', overridden in this window' : ', customer profile'}`;
+}
+function syncFecGateUI() {
+  const g = fecGatesShown();
+  const loss = document.getElementById('set-loss');
+  const lo = document.getElementById('set-refl-lo');
+  const hi = document.getElementById('set-refl-hi');
+  const op = document.getElementById('loss-op');
+  if (loss) loss.value = g ? Number(g.FEC_LOSS_GATE).toFixed(3) : '';
+  if (lo) lo.value = g ? Number(g.FEC_REFL_GATE).toFixed(1) : '';
+  if (op && g) op.textContent = g.FEC_LOSS_STRICT ? 'Loss >' : 'Loss ≥';
+  if (lo) lo.step = '0.1';
+  if (hi) {
+    hi.value = '0';
+    hi.disabled = true;
+    hi.title = 'FEC fails any reflectance above the low end; there is no high end';
+  }
+  if (loss) loss.title = `${fecGateLabel()}. Type to override for this window; the profile is not changed.`;
+  const lbl = document.getElementById('gate-src');
+  if (lbl) {
+    lbl.textContent = fecOverridden() ? '(FEC gates overridden)' : '';
+    lbl.classList.toggle('overridden', fecOverridden());
+  }
+}
 function renderFecGrid(traces, host, hint) {
   const fibers = [...new Set(traces.map(t => t.fiber))];
   if (!fibers.length) return false;
   const seq = ++gFecSeq;
   hint.textContent = `FEC table: grading ${traces.length} trace${traces.length === 1 ? '' : 's'}…`;
-  fetch(`/api/fec_table?fibers=${fibers.join(',')}`)
+  const ov = (gFecOverride.loss != null ? `&loss_gate=${gFecOverride.loss}` : '')
+           + (gFecOverride.refl != null ? `&refl_gate=${gFecOverride.refl}` : '');
+  fetch(`/api/fec_table?fibers=${fibers.join(',')}${ov}`)
     .then(r => r.json())
     .then(res => { if (seq === gFecSeq) paintFecGrid(traces, res || {}, host, hint); })
     .catch(e => {
@@ -5625,46 +6278,145 @@ function paintFecGrid(traces, res, host, hint) {
   gGridGoTo = null;
   const grades = res.grades || {};
   const gates = res.gates || null;
-  const rows = traces.map(t => {
+  // the boxes show what this table was graded at (see syncFecGateUI)
+  gFecGates = gates;
+  if (gates && !fecOverridden()) gFecBase = gates;
+  syncGateUI();
+  const all = traces.map(t => {
     const side = t.src === 'b' ? 'B' : 'A';
     return { t, side, g: (grades[side] || {})[String(t.fiber)] || null };
   });
-  const fails = rows.filter(r => r.g && (r.g.fail_loss || r.g.fail_refl)).length;
-  hint.textContent = `FEC: ${rows.length} trace${rows.length === 1 ? '' : 's'}, ${fails} failing`
+  const fails = all.filter(r => r.g && (r.g.fail_loss || r.g.fail_refl)).length;
+  // The chart numbers only what the table prints, as on the Viewer's other
+  // tables (see tableMark; Robert 2026-10-01, "make FEC viewer match Viewer
+  // in all areas"): each graded trace's panel connector and the events the
+  // rule combines with it.  The grade's km comes from the engine's own read
+  // of the file, so each is matched to the trace's nearest event within
+  // FEC_MARK_TOL_KM.  A trace with no grade keeps every number, as a trace
+  // no table has taken does.
+  const FEC_MARK_TOL_KM = 0.005;
+  const graded0 = all.filter(r => r.g && r.g.found);
+  tableMarkReset(graded0.map(r => r.t));
+  // Each trace's own events behind its row, by key: the panel connector's
+  // ('conn') and the combined ones' ('comb'), for the span menu (an event's
+  // own raw km) and for an event number clicked on the chart (its cell).
+  const evAt = new Map();              // t.key -> {conn: km, comb: [km]}
+  const evCol = new Map();             // `${t.key}|${tableKmKey(km)}` -> cell
+  for (const { t, g } of graded0) {
+    const evs = (t.data && t.data.events) || [];
+    const own = { conn: null, comb: [] };
+    [g.conn_km, ...(g.combined || []).map(c => c.km)].forEach((km, k) => {
+      let best = null;
+      for (const e of evs) {
+        const d = Math.abs(e.dist_km - km);
+        if (d <= FEC_MARK_TOL_KM && (!best || d < best.d)) best = { d, e };
+      }
+      if (!best) return;
+      tableMark(t, best.e.dist_km);
+      evCol.set(`${t.key}|${tableKmKey(best.e.dist_km)}`, k === 0 ? 'conn' : 'comb');
+      if (k === 0) own.conn = best.e.dist_km; else own.comb.push(best.e.dist_km);
+    });
+    evAt.set(t.key, own);
+  }
+  // The gear's switches, the FEC way.  A gainer (a negative connector or FEC
+  // loss: one trace's reading) prints blank with Show Gainers off and leaves
+  // the Minimum / Maximum / Average; it never fails, so no verdict moves.
+  // "Failing cells only" keeps the traces that fail and, on them, only what
+  // failed: the loss with the connector and events it adds up, and/or the
+  // reflectance.  FEC grades pass or fail, with no warning band, so
+  // "warning cells only" alone keeps nothing.
+  const num = v => v != null && !isNaN(v);
+  const hideG = v => gainerHidden(v);
+  const kept = (g, col) => !cellFilterOn() || (gFailCellsOnly && !!g && !!(col === 'refl' ? g.fail_refl : g.fail_loss));
+  const collapse = cellFilterOn();
+  // "Show Only Flagged Rows" (the table's ⋯ menu) keeps the traces that fail
+  const failsRow = g => !!(g && (g.fail_loss || g.fail_refl));
+  const rows = all.filter(({ g }) => (!gFlaggedOnly || failsRow(g))
+    && (!collapse || (gFailCellsOnly && failsRow(g))));
+  hint.textContent = `FEC: ${all.length} trace${all.length === 1 ? '' : 's'}, ${fails} failing`
     + (gates ? `  ·  fails on ${fecGateText(gates)}` : '')
-    + (res.error ? `  ·  ${res.error}` : '');
+    + (res.error ? `  ·  ${res.error}` : '')
+    + (gFailCellsOnly ? `  ·  failing cells only${fails ? '' : ': nothing fails'}` : '')
+    + (gWarnCellsOnly ? '  ·  warning cells only: FEC has no warning band' : '')
+    + (gShowGainers ? '' : '  ·  gainers hidden')
+    + (gFlaggedOnly ? `  ·  flagged rows only${fails ? '' : ': nothing fails'}` : '')
+    + (fecOverridden() ? '  ·  gates overridden in this window' : '');
   const scroller = document.createElement('div');
   scroller.className = 'fr-scroll';
   const table = document.createElement('table');
   table.className = 'fr-table';
-  const H = ['Identifiers', 'P/F', 'λ (nm)', 'Side', 'Panel Connector<br>(km)',
+  // Distances in the Viewer's unit (its ⋯ menu), km to 4 / 3 places as before
+  const U = distU();
+  const dist = (km, dpKm) => {
+    const d = gDistUnit === 'km' ? dpKm : U.dp, v = Number(km) * U.f;
+    return d === 0 ? Math.round(v).toLocaleString() : v.toFixed(d);
+  };
+  const H = ['Identifiers', 'P/F', 'λ (nm)', 'Side',
+             `Panel Connector<br>(${U.label}) <button class="fr-evmenu" title="span and settings">⋯</button>`,
              'Connector<br>Loss (dB)', 'Combined With', 'FEC Loss<br>(dB)',
              'Refl.<br>(dB)', 'Distance'];
   const head = H.map((h, i) => `<th class="${i === 0 ? 'fr-rowlab ' : ''}${i === 4 ? 'fr-evhdr' : ''}">${h}</th>`).join('');
   const f3 = v => (v == null || isNaN(v)) ? '---' : Number(v).toFixed(3);
   const f1 = v => (v == null || isNaN(v)) ? '---' : Number(v).toFixed(1);
   const fecHi = x => (x && !flagsOff()) ? 'fr-hi' : '';
-  const body = rows.map(({ t, side, g }) => {
+  // a loss cell: blank when the cell filter drops it or it is a hidden gainer
+  const lossTxt = (g, v) => (!kept(g, 'loss') || hideG(v)) ? '' : f3(v);
+  const body = rows.map(({ t, side, g }, ti) => {
     const dot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;`
       + `background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>`;
     const lead = `<td class="fr-rowlab">${dot}F${t.fiber}</td>`;
+    const attrs = ` data-ti="${ti}" data-key="${t.key}"${isPicked(t.key) ? ' class="fr-pick"' : ''}`;
     if (!g || !g.found) {
-      return `<tr>${lead}<td></td><td>${(t.data && t.data.wavelength_nm) || '---'}</td><td>${side}</td>`
+      return `<tr${attrs}>${lead}<td></td><td>${(t.data && t.data.wavelength_nm) || '---'}</td><td>${side}</td>`
         + `<td colspan="6">${g ? 'no panel connector found (not graded)' : 'not graded'}</td></tr>`;
     }
     const fail = g.fail_loss || g.fail_refl;
-    const comb = (g.combined || []).map(c => `${f3(c.loss)} @ ${Number(c.km).toFixed(3)} km`).join('; ');
-    const dist = g.fail_loss && (g.combined || []).length ? 'COMBINE' : `${Number(g.conn_km).toFixed(3)}km`;
-    return `<tr>${lead}`
+    const comb = (g.combined || []).map(c => `${f3(c.loss)} @ ${dist(c.km, 3)} ${U.label}`).join('; ');
+    const where = g.fail_loss && (g.combined || []).length ? 'COMBINE' : `${dist(g.conn_km, 3)}${U.label}`;
+    return `<tr${attrs}>${lead}`
       + `<td class="${pfClass(fail)}" title="FEC rule: ${fecGateText(gates)}">${pfMark(fail)}</td>`
       + `<td>${(t.data && t.data.wavelength_nm) || '---'}</td><td>${side}</td>`
-      + `<td class="fr-fec-km" data-km="${g.conn_km}" style="cursor:pointer" title="zoom to the connector">${Number(g.conn_km).toFixed(4)}</td>`
-      + `<td>${f3(g.conn_loss)}</td><td>${comb || '---'}</td>`
-      + `<td class="${fecHi(g.fail_loss)}">${f3(g.loss)}</td>`
-      + `<td class="${fecHi(g.fail_refl)}">${f1(g.refl)}</td>`
-      + `<td>${fail ? dist : ''}</td></tr>`;
+      + `<td class="fr-fec-km" data-col="km" data-km="${g.conn_km}" style="cursor:pointer" title="zoom to the connector">${dist(g.conn_km, 4)}</td>`
+      + `<td data-col="conn">${lossTxt(g, g.conn_loss)}</td><td data-col="comb">${kept(g, 'loss') ? (comb || '---') : ''}</td>`
+      + `<td data-col="loss" class="${hideG(g.loss) ? '' : fecHi(g.fail_loss)}">${lossTxt(g, g.loss)}</td>`
+      + `<td data-col="refl" class="${fecHi(g.fail_refl)}">${kept(g, 'refl') ? f1(g.refl) : ''}</td>`
+      + `<td>${fail ? where : ''}</td></tr>`;
   });
-  table.innerHTML = `<thead><tr>${head}</tr></thead><tbody>${body.join('')}</tbody>`;
+  // Minimum / Maximum / Average down each number column, as every other
+  // Viewer table ends, over the figures the column prints (the rows on screen,
+  // less the cells a filter or Show Gainers blanks).  A Minimum or Maximum is
+  // one trace's figure, so the cell names it and a click finds its row (the
+  // owner is matched on the PRINTED figure; ties go to the first row).  The
+  // Average is nobody's measurement and stays inert; all three stay plain,
+  // since the FEC verdict is per trace.
+  const graded = rows.map((r, ti) => ({ ...r, ti })).filter(r => r.g && r.g.found);
+  const AGG_COLS = [['km', g => g.conn_km, v => dist(v, 4), () => true],
+                    ['conn', g => g.conn_loss, f3, g => kept(g, 'loss') && !hideG(g.conn_loss)],
+                    ['loss', g => g.loss, f3, g => kept(g, 'loss') && !hideG(g.loss)],
+                    ['refl', g => g.refl, f1, g => kept(g, 'refl')]];
+  const aggCell = (col, fn, owned) => {
+    const [key, get, fmt, prints] = col;
+    const have = graded.filter(r => num(get(r.g)) && prints(r.g));
+    if (!have.length) return `<td>${collapse ? '' : '---'}</td>`;
+    const v = fn(have.map(r => Number(get(r.g))));
+    const own = owned ? have.find(r => fmt(get(r.g)) === fmt(v)) : null;
+    return own
+      ? `<td class="fr-own" data-ti="${own.ti}" data-own-col="${key}"`
+        + ` title="F${own.t.fiber} ${own.side}: click to find it">${fmt(v)}</td>`
+      : `<td>${fmt(v)}</td>`;
+  };
+  const aggRow = (label, fn, owned) => {
+    const c = AGG_COLS.map(col => aggCell(col, fn, owned));
+    return `<tr class="fr-agg"><td class="fr-rowlab">${label}</td><td></td><td></td><td></td>`
+      + `${c[0]}${c[1]}<td></td>${c[2]}${c[3]}<td></td></tr>`;
+  };
+  const aggRows = graded.length ? [
+    aggRow('Minimum', a => Math.min(...a), true),
+    aggRow('Maximum', a => Math.max(...a), true),
+    aggRow('Average', a => a.reduce((s, v) => s + v, 0) / a.length, false),
+  ] : [];
+  table.innerHTML = `<thead><tr>${head}</tr></thead><tbody>${body.join('')}</tbody>`
+    + (aggRows.length ? `<tfoot>${aggRows.join('')}</tfoot>` : '');
   gTableExport = { table, rows: () => body };
   scroller.appendChild(table);
   host.appendChild(scroller);
@@ -5672,7 +6424,157 @@ function paintFecGrid(traces, res, host, hint) {
   // three-row FR headers, which set their own per row the same way)
   table.querySelectorAll('thead th').forEach(th => { th.style.top = '0px'; });
   table.querySelectorAll('td.fr-fec-km').forEach(td => {
-    td.addEventListener('click', () => zoomToKm(+td.dataset.km, 0.3));
+    td.addEventListener('click', (ev) => { ev.stopPropagation(); zoomToKm(+td.dataset.km, 0.3); });
+  });
+  const tb = table.tBodies[0];
+  // The picked trace's row is marked, as on the other grids; the table is not
+  // virtual, so the mark is moved on the rows themselves.
+  const markPick = () => tb.querySelectorAll('tr[data-key]').forEach(tr =>
+    tr.classList.toggle('fr-pick', isPicked(tr.dataset.key)));
+  // Centre a row in the window the pinned header and footer leave.
+  const centre = tr => {
+    const headH = table.tHead ? table.tHead.offsetHeight : 0;
+    const view = Math.max(FR_ROW_H, scroller.clientHeight - headH - pinnedFootH(table));
+    scroller.scrollTop = Math.max(0, tr.offsetTop - headH - (view - tr.offsetHeight) / 2);
+  };
+  const flash = cell => {
+    table.querySelectorAll('td.fr-hit').forEach(x => x.classList.remove('fr-hit', 'fading'));
+    cell.classList.add('fr-hit');
+    setTimeout(() => cell.classList.add('fading'), 1500);
+    setTimeout(() => cell.classList.remove('fr-hit', 'fading'), 2200);
+  };
+  // A click on a row: its trace to the front (pickRow); again lets go.
+  tb.addEventListener('click', (ev) => {
+    // Not the second click of a double-click (it would let go at once), and
+    // not a mouse-up that ends selecting text to copy.
+    if (ev.detail > 1 || String(window.getSelection() || '').trim()) return;
+    const tr = ev.target.closest('tr[data-key]');
+    if (!tr) return;
+    pickRow([tr.dataset.key]);
+    markPick();
+  });
+  // A click on a trace on the chart (goToTrace) lands here: its row, marked
+  // and centred.  An event number clicked on the chart (`e`) flashes its own
+  // cell, as on the other tables: the connector's loss, or the Combined With
+  // cell for an event the rule adds to it.  A row a filter has taken out
+  // says so instead.
+  gGridGoTo = (t, e) => {
+    markPick();
+    const tr = tb.querySelector(`tr[data-key="${t.key}"]`);
+    if (!tr) {
+      setReadout(`F${t.fiber}: its row is hidden by "${gFlaggedOnly ? 'Show Only Flagged Rows' : 'Show Failing Cells Only'}"`);
+      return;
+    }
+    centre(tr);
+    const col = e ? evCol.get(`${t.key}|${tableKmKey(e.dist_km)}`) : null;
+    flash((col && tr.querySelector(`td[data-col="${col}"]`)) || tr.cells[0]);
+  };
+  // The span and settings menu, as on the other tables: a right-click on a
+  // trace's row, or the ⋯ on the Panel Connector header.  The event it is
+  // picked on is the trace's own: the combined event for a right-click on
+  // Combined With, the panel connector anywhere else on the row.
+  const menuAt = (x, y, t, which) => {
+    const own = evAt.get(t.key);
+    const km = own && ((which === 'comb' && own.comb[0] != null) ? own.comb[0] : own.conn);
+    if (km == null) return false;
+    showSpanMenu(x, y, t.dir, km, t.fiber, t.src || t.dir);
+    return true;
+  };
+  tb.addEventListener('contextmenu', (ev) => {
+    const tr = ev.target.closest('tr[data-key]');
+    const r = tr && rows[+tr.dataset.ti];
+    if (!r) return;
+    const td = ev.target.closest('td[data-col]');
+    if (menuAt(ev.clientX, ev.clientY, r.t, td && td.dataset.col)) ev.preventDefault();
+  });
+  const hdr = table.querySelector('th.fr-evhdr');
+  if (hdr) {
+    hdr.style.cursor = 'pointer';
+    hdr.title = 'zoom to the panel connectors';
+    hdr.addEventListener('click', (ev) => {
+      const shownG = rows.filter(r => r.g && r.g.found && evAt.get(r.t.key) && evAt.get(r.t.key).conn != null);
+      const btn = ev.target.closest('.fr-evmenu');
+      if (!btn) {                        // the header itself zooms, as on the other tables
+        const kms = shownG.map(r => r.g.conn_km).sort((a, b) => a - b);
+        if (kms.length) zoomToKm(kms[Math.floor(kms.length / 2)], 0.3);
+        return;
+      }
+      // The ⋯: the header is every row's, so each direction uses its first
+      // row, at that trace's own connector.
+      ev.stopPropagation();
+      const picks = [];
+      for (const dir of ['a', 'b']) {
+        const r = shownG.find(q => q.t.dir === dir);
+        if (r) picks.push({ dir, km: evAt.get(r.t.key).conn, fiber: r.t.fiber, src: r.t.src || dir });
+      }
+      const b = btn.getBoundingClientRect();
+      if (picks.length === 1) showSpanMenu(b.left, b.bottom + 2, picks[0].dir, picks[0].km, picks[0].fiber, picks[0].src);
+      else if (picks.length === 2) showDirChooser(b.left, b.bottom + 2, picks);
+    });
+  }
+  // A Minimum or Maximum click: pick its trace on the chart, centre its row
+  // and flash the cell.  A second click lets go, as on the other grids.
+  if (table.tFoot) table.tFoot.addEventListener('click', (ev) => {
+    const td = ev.target.closest('td.fr-own');
+    if (!td) return;
+    const t = rows[+td.dataset.ti].t;
+    if (gPickKey === t.key) { gPickKey = null; markPick(); draw(); return; }
+    gPickKey = t.key;
+    markPick();
+    draw();
+    const tr = tb.querySelector(`tr[data-ti="${td.dataset.ti}"]`);
+    if (!tr) return;
+    centre(tr);
+    const cell = tr.querySelector(`td[data-col="${td.dataset.ownCol}"]`);
+    if (cell) flash(cell);
+  });
+  // The chart's marks (Show Event Labels / Show Failed Event Labels, see
+  // drawPairing), as a one-direction table: each trace's panel connector
+  // (tagged with its FEC loss), every event the rule combines with it (its
+  // own loss) and the connector's reflectance, colored by the FEC verdict --
+  // a combined event fails with the loss it is part of.  Each trace is its
+  // own "fibre", on the side it came from.  Only the cells the table prints
+  // are marked, so the filters reach the chart.
+  const fecRows = rows.filter(r => r.g && r.g.found);
+  const fecHave = fecRows.map(({ t, side }) => side === 'A' ? { fiber: t.fiber, ta: t } : { fiber: t.fiber, tb: t });
+  const fecCell = (r, fi, km, v, fail) => {
+    const w = r.side === 'A' ? 'a' : 'b';
+    return { fi, km, avg: v, avgFail: !flagsOff() && !!fail, avgWarn: false,
+             legs: { [w]: { km, loss: v, fail: !flagsOff() && !!fail, warn: false } } };
+  };
+  // `at(g)` is the event's km (null: this trace has no such event)
+  const fecCol = (ci, title, key, at, val, fail) => {
+    const cells = fecRows.map((r, fi) => (kept(r.g, key) && at(r.g) != null)
+      ? fecCell(r, fi, at(r.g), val(r.g), fail(r.g)) : null).filter(Boolean);
+    return { i: ci, title, km: cells.length ? cells[0].km : 0, cells };
+  };
+  const nComb = Math.max(0, ...fecRows.map(r => (r.g.combined || []).length));
+  const combCols = Array.from({ length: nComb }, (_x, k) => fecCol(2 + k,
+    nComb > 1 ? `Combined Event ${k + 1}` : 'Combined Event', 'loss',
+    g => (g.combined || [])[k] ? g.combined[k].km : null,
+    g => { const v = g.combined[k].loss; return hideG(v) ? null : v; },
+    g => g.fail_loss));
+  if (fecRows.length) gDrawerMarks.push({
+    mode: 'fec', single: true, have: fecHave,
+    cols: [fecCol(0, 'Panel Connector', 'loss', g => g.conn_km,
+                  g => hideG(g.loss) ? null : g.loss, g => g.fail_loss),
+           ...combCols,
+           { ...fecCol(1, 'Connector Refl.', 'refl', g => g.conn_km, g => g.refl, g => g.fail_refl),
+             word: 'refl', fmt: v => (v != null && !isNaN(v)) ? v.toFixed(1) : null }]
+      .filter(c => c.cells.length),
+    // a tag or tick goes to that trace's row and flashes the cell it marks
+    goCell: (fi, _w, ci) => {
+      const t = fecRows[fi] && fecRows[fi].t;
+      if (!t) return;
+      gPickKey = t.key;
+      markPick();
+      draw();
+      const tr = tb.querySelector(`tr[data-key="${t.key}"]`);
+      if (!tr) return;
+      centre(tr);
+      const cell = tr.querySelector(`td[data-col="${ci === 1 ? 'refl' : ci >= 2 ? 'comb' : 'loss'}"]`);
+      if (cell) flash(cell);
+    },
   });
   draw();
 }
@@ -5869,9 +6771,9 @@ function renderVirtualEventList(rows, host) {
         `<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${r.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${r.fiber} ${r.arrow}</td>` +
         `<td>${r.num}</td>` +
         `<td>${kmFt(r.km)}</td>` +
-        `<td>${r.loss == null ? '-' : r.loss.toFixed(3)}</td>` +
-        `<td>${r.refl == null ? '-' : r.refl.toFixed(2)}</td>` +
-        `<td>${r.slope == null ? '-' : r.slope.toFixed(3)}</td>` +
+        `<td>${r.loss == null ? '---' : r.loss.toFixed(3)}</td>` +
+        `<td>${r.refl == null ? '---' : r.refl.toFixed(2)}</td>` +
+        `<td>${r.slope == null ? '---' : r.slope.toFixed(3)}</td>` +
         `<td>${r.isEnd ? 'END' : (r.isRefl ? 'reflective' : 'non-refl')}</td>`;
       tb.appendChild(tr);
     }
@@ -6167,9 +7069,10 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     gShowGainers ? '' : 'gainers hidden',
   ].filter(Boolean).join(' · ');
 
-  const fmt  = v => (v == null || isNaN(v)) ? '-' : v.toFixed(3);
-  const fmtK = v => (v == null || isNaN(v)) ? '-' : v.toFixed(4);
-  const fmtR = v => (v == null || isNaN(v) || v === 0) ? '-' : v.toFixed(1);
+  // An empty cell is '---', as in the A+B tables and FastReporter's own.
+  const fmt  = v => (v == null || isNaN(v)) ? '---' : v.toFixed(3);
+  const fmtK = v => (v == null || isNaN(v)) ? '---' : v.toFixed(4);
+  const fmtR = v => (v == null || isNaN(v) || v === 0) ? '---' : v.toFixed(1);
   const lossCell = (v, isBreak, attrs = '') => {
     let cls = '';
     if (v != null && !isNaN(v)) {
@@ -6188,7 +7091,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   //
   // The gainer/loser line used to be inferred from sign(splice_loss).  That
   // agrees with FastReporter almost always, but FR carries its own Type field
-  // and on 4 of 4,727 events across the Zayo 432 span FR's Type disagrees with
+  // and on 4 of 4,727 events across a 432-fiber span FR's Type disagrees with
   // the sign of FR's OWN stored loss.  Reproducing FR means following FR's
   // Type where it exists, and only falling back to the inference where it does
   // not (a file with no proprietary block).
@@ -6371,7 +7274,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
       `<td class="${pfClass(fail)}" title="following `
       + `${gateLabel()}, this is OUR verdict, not FastReporter's`
       + `">${pfMark(fail)}</td>`,
-      `<td>${t.data.wavelength_nm || '-'}</td>`,
+      `<td>${t.data.wavelength_nm || '---'}</td>`,
       `<td>${arrow(t)}</td>`,
     ];
     cols.forEach((c, i) => {
@@ -6389,9 +7292,9 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
                + `<td>${cellText(fmtR(e ? e.reflection : null))}</td>`);
       if (showSec && i < cols.length - 1) {
         const s = section(ti, i);
-        cells.push(`<td class="fr-sec">${cellText(s ? fmtK(s.len) : '-')}</td>`
-                 + `<td class="fr-sec">${cellText(s ? fmt(s.loss) : '-')}</td>`
-                 + `<td class="fr-sec">${cellText(s ? fmt(s.att) : '-')}</td>`);
+        cells.push(`<td class="fr-sec">${cellText(s ? fmtK(s.len) : '---')}</td>`
+                 + `<td class="fr-sec">${cellText(s ? fmt(s.loss) : '---')}</td>`
+                 + `<td class="fr-sec">${cellText(s ? fmt(s.att) : '---')}</td>`);
       }
     });
     const statArrs = [splice, connLoss, connRefl];
@@ -6449,7 +7352,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
       // `isBreak` is false here — evLoss already drops End-of-Fiber events, so
       // an aggregate is never a break.
       // Reflectance down the column too, over every reading the column prints
-      // (fmtR prints a 0 as "-", so a 0 is no reading here either).  Plain:
+      // (fmtR prints a 0 as "---", so a 0 is no reading here either).  Plain:
       // the reflectance verdict is per trace, never on a summary.
       const rs = c.ev.map(e => e ? e.reflection : null).filter(r => r != null && !isNaN(r) && r !== 0);
       const r = rs.length ? fn(rs) : null;
@@ -6466,7 +7369,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
         const ss = traces.map((_t, ti) => section(ti, i)).filter(Boolean);
         const pick = k => ss.map(s => s[k]).filter(v => v != null && !isNaN(v));
         const [pl, pa] = [pick('loss'), pick('att')];
-        cells.push(`<td class="fr-sec">${cellText('-')}</td>`
+        cells.push(`<td class="fr-sec">${cellText('---')}</td>`
                  + `<td class="fr-sec">${cellText(fmt(pl.length ? fn(pl) : null))}</td>`
                  + `<td class="fr-sec">${cellText(fmt(pa.length ? fn(pa) : null))}</td>`);
       }
@@ -6752,12 +7655,24 @@ function renderFrBidiGrid(traces, host, hint) {
   }
   if (!pairs.length) return false;
   const seq = ++gFrTableSeq;
+  // The same traces' table is laid out again, not asked for again.
+  const key = serverTableKey('fr', pairs);
+  const kept = keptServerTable('fr', key);
+  if (kept) {
+    paintFrBidiGrid(pairs, singles, kept, host, hint);
+    return true;
+  }
+  gTableBusy = true;                       // "Building the table…" until it paints
   hint.textContent = `FastReporter table: reading ${pairs.length} fiber pair${pairs.length === 1 ? '' : 's'}…`;
-  fetch(`/api/fr_table?fibers=${pairs.map(p => p.fiber).join(',')}`)
-    .then(r => r.json())
-    .then(res => { if (seq === gFrTableSeq) paintFrBidiGrid(pairs, singles, res || {}, host, hint); })
+  askServerTable('fr', key, `/api/fr_table?fibers=${pairs.map(p => p.fiber).join(',')}`,
+                 res => !res.error)
+    .then(res => {
+      if (seq !== gFrTableSeq) return;
+      try { paintFrBidiGrid(pairs, singles, res || {}, host, hint); } finally { tableSettled(); }
+    })
     .catch(e => {
       if (seq !== gFrTableSeq) return;
+      tableSettled();
       gTableKm = null; draw();             // no table: every event, as before
       hint.textContent = `FastReporter table unavailable (${(e && e.message) || 'fetch failed'})`;
     });
@@ -6863,20 +7778,25 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // engine reads KeyEvents, the table FR's block, so the two differ by a
   // hair).  A launch connector is a launch-level row, which the loss rules
   // never judge; the report grades its reflectance, so it is judged here.
-  const endBad = { a: new Set(), b: new Set() };
-  gEndRefl.forEach(v => {
-    const fi = have.findIndex(p => String(p.fiber) === String(v.fiber));
-    const which = v.dir === 'A' ? 'a' : 'b';
-    if (fi < 0) return;
-    let best = null, bestD = 0.5;
-    cols.forEach(c => {
-      const x = c.ev[fi], leg = x && x.row[which];
-      if (!leg || leg.synthetic || leg.refl == null) return;
-      const d = Math.abs(leg.refl - v.refl);
-      if (d <= bestD) { best = x; bestD = d; }
+  // Worked out again when the verdicts land after the table (refreshVerdicts).
+  const endBadNow = () => {
+    const bad = { a: new Set(), b: new Set() };
+    gEndRefl.forEach(v => {
+      const fi = have.findIndex(p => String(p.fiber) === String(v.fiber));
+      const which = v.dir === 'A' ? 'a' : 'b';
+      if (fi < 0) return;
+      let best = null, bestD = 0.5;
+      cols.forEach(c => {
+        const x = c.ev[fi], leg = x && x.row[which];
+        if (!leg || leg.synthetic || leg.refl == null) return;
+        const d = Math.abs(leg.refl - v.refl);
+        if (d <= bestD) { best = x; bestD = d; }
+      });
+      if (best) bad[which].add(best);
     });
-    if (best) endBad[which].add(best);
-  });
+    return bad;
+  };
+  let endBad = endBadNow();
   const legReflFails = (x, which) => {
     if (endBad[which].has(x)) return true;
     const leg = x.row[which];
@@ -6954,7 +7874,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // verdicts, FR's transplanted legs as hollow rings (see drawPairing).  In
   // OTDR Suite mode this table only stands in for the report's, and the
   // drawer keeps the files' own events.
-  let marks = null;
+  let marks = null, markCols = null;
   if (gAnalysisMode === 'fr') {
     const drawerLeg = (x, w) => {
       const leg = x.row[w];
@@ -6962,13 +7882,13 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       return { km: rawKm(leg.pos_m), loss: leg.loss, hollow: !legOk(leg),
                fail: cellFails(x, w), warn: cellWarns(x, w) };
     };
-    marks = { mode: 'fr', have, goCell: () => {},
-      cols: cols.map((c, i) => ({ i, title: `Event ${i + 1}`, km: c.km, cells: keepCol[i]
+    markCols = () => cols.map((c, i) => ({ i, title: `Event ${i + 1}`, km: c.km, cells: keepCol[i]
         ? c.ev.map((x, fi) => x && { fi, avg: x.row.loss, km: c.km,
                                      avgFail: cellFails(x, 'avg'), avgWarn: cellWarns(x, 'avg'),
                                      legs: { a: drawerLeg(x, 'a'), b: drawerLeg(x, 'b') } })
                .filter(Boolean)
-        : [] })) };
+        : [] }));
+    marks = { mode: 'fr', have, goCell: () => {}, cols: markCols() };
   }
   const showSec = gShowSections && !collapse;
 
@@ -7261,6 +8181,18 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     showSpanMenu(ev.clientX, ev.clientY, tr.dataset.dir, +td.dataset.km,
                  tr.dataset.fiber, tr.dataset.src);
   });
+  // End verdicts landing later move only the end marks, the P/F column and
+  // the drawer's marks (see endVerdictsLanded): the rows on screen are
+  // painted again, the rest stays.  A filter or the one-direction fibres'
+  // table below follow the verdicts too, so those lay the panel out again.
+  gTableLive = { host, scroller, refreshVerdicts: () => {
+    if (cellFilterOn() || gFlaggedOnly || singles.length) return false;
+    endBad = endBadNow();
+    if (marks) marks.cols = markCols();
+    paintRows();
+    draw();
+    return true;
+  } };
 }
 
 // ─── Declaring the span ───────────────────────────────────────────────
@@ -7455,6 +8387,22 @@ function renderSuiteBidiGrid(traces, host, hint) {
     singles.length = 0;
   }
   const seq = ++gSuiteTableSeq;
+  // The same traces' table, from the same report run, is laid out again,
+  // not asked for again.  The run follows the server's settings and
+  // folders, all of which /api/list reports (its end verdicts aside: they
+  // come from that same run), and the files removed in the Viewer, which the
+  // run leaves out (gServerRemovedSig: the shared state, the same in every
+  // Viewer window).
+  const listSig = JSON.stringify(Object.assign({}, gInfo || {},
+    { end_refl: null, panel_span: null, end_pending: null }));
+  const key = serverTableKey('suite', pairs,
+                             `${oneDir || ''}|${listSig}|${gServerRemovedSig}`);
+  const kept = keptServerTable('suite', key);
+  if (kept) {
+    paintSuiteBidiGrid(pairs, singles, kept, host, hint);
+    return true;
+  }
+  gTableBusy = true;                       // "Building the table…" until it paints
   hint.textContent = oneDir
     ? `${PRODUCT_NAME} table: reading ${pairs.length} fiber${pairs.length === 1 ? '' : 's'} from one direction…`
     : `${PRODUCT_NAME} table: reading ${pairs.length} fiber pair${pairs.length === 1 ? '' : 's'}…`;
@@ -7468,9 +8416,11 @@ function renderSuiteBidiGrid(traces, host, hint) {
       + `${esc(why)}. The traces and their own events still show above; `
       + `switch to FastReporter mode for FastReporter's table.</div>`;
     hint.textContent = `${PRODUCT_NAME} table unavailable`;
+    tableSettled();
   };
-  const ask = () => fetch(`/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`)
-    .then(r => r.json())
+  const ask = () => askServerTable('suite', key,
+    `/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`,
+    res => !res.pending && !res.error)
     .then(res => {
       if (seq !== gSuiteTableSeq) return;
       gSuitePoll = null;
@@ -7485,7 +8435,7 @@ function renderSuiteBidiGrid(traces, host, hint) {
         noTable(res.error || 'The report has no table for these fibers');
         return;
       }
-      paintSuiteBidiGrid(pairs, singles, res, host, hint);
+      try { paintSuiteBidiGrid(pairs, singles, res, host, hint); } finally { tableSettled(); }
     })
     .catch(e => {
       if (seq !== gSuiteTableSeq) return;
@@ -7609,8 +8559,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     return { km: leg.km, loss: leg.loss, hollow: !!leg.grey,
              fail: cellFails(c, x, w), warn: lossWarns(c, x, w) };
   };
-  const marks = { mode: 'suite', single: !!oneDir, have, goCell: () => {},
-    cols: cols.map((c, i) => ({ i, title: c.title, km: c.viewKm, cells: keepCol[i]
+  const markCols = () => cols.map((c, i) => ({ i, title: c.title, km: c.viewKm, cells: keepCol[i]
       ? c.ev.map((x, fi) => x && { fi, avg: x.loss,
                                    km: x.km != null ? toView(x.km + launchA, oneDir && legOf(have[fi])) : c.viewKm,
                                    // A one-direction table has no Average: its tag carries that
@@ -7618,7 +8567,8 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
                                    avgFail: lossFails(c, x, oneDir || 'avg'), avgWarn: lossWarns(c, x, oneDir || 'avg'),
                                    legs: { a: drawerLeg(c, x, 'a'), b: drawerLeg(c, x, 'b') } })
              .filter(Boolean)
-      : [] })) };
+      : [] }));
+  const marks = { mode: 'suite', single: !!oneDir, have, goCell: () => {}, cols: markCols() };
 
   // What the report said about a cell, for its tooltip: the row's own
   // reason first (an end connector's rows are judged one by one), then the
@@ -7914,6 +8864,16 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     showSpanMenu(ev.clientX, ev.clientY, tr.dataset.dir, +td.dataset.km,
                  tr.dataset.fiber, tr.dataset.src);
   });
+  // The end verdicts landing (see endVerdictsLanded) can move a connector's
+  // one-direction gate (gateFor stands it down on a panel tie): the rows on
+  // screen and the drawer's marks are judged again, the rest stays.
+  gTableLive = { host, scroller, refreshVerdicts: () => {
+    if (cellFilterOn() || gFlaggedOnly || singles.length) return false;
+    marks.cols = markCols();
+    paintRows();
+    draw();
+    return true;
+  } };
 }
 
 // ─── Editing a trace's settings (the boss's "IOR is wrong, correct it in
@@ -7986,17 +8946,24 @@ function closeEditDialog() {
     if (e) e.remove();
   }
 }
+// Same shape as the Summary Report's: built after an await, so only the
+// latest ask builds a dialog (gReportDlgSeq).
+let gEditDlgSeq = 0;
 async function showEditDialog(dir, fiber) {
+  const seq = ++gEditDlgSeq;
   closeEditDialog();
   const arrow = dir === 'a' ? 'A→B' : 'B→A';
   let s;
   try {
     const r = await fetch(`/api/trace_settings?dir=${dir}&fiber=${fiber}`);
     s = await r.json();
+    if (seq !== gEditDlgSeq) return;
     if (!r.ok || s.error) { setReadout(`could not read F${fiber}: ${s.error || r.status}`); return; }
   } catch (e) {
+    if (seq !== gEditDlgSeq) return;
     setReadout(`could not read F${fiber}: ${(e && e.message) || e}`); return;
   }
+  closeEditDialog();
   const bg = document.createElement('div'); bg.id = 'edit-dlg-bg';
   const d = document.createElement('div'); d.id = 'edit-dlg';
   const ids = s.identifiers || {};
@@ -9050,14 +10017,24 @@ async function reportPayload(opt, token, progress) {
   try {
     const sorted = [...vis].sort((a, b) => a.fiber - b.fiber || a.dir.localeCompare(b.dir));
     const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';
-    const meta = [['Mode', gAnalysisMode === 'fr' ? 'FastReporter' : PRODUCT_NAME]];
+    // Viewer FEC: the mode and the gates the FEC table was graded at, not
+    // the analysis mode's or the Viewer boxes' usual meaning.
+    const meta = [['Mode', gFecMode ? 'FEC' : gAnalysisMode === 'fr' ? 'FastReporter' : PRODUCT_NAME]];
     if (vis.some(t => t.src === 'a') && folderLabel('a')) meta.push(['A folder', folderLabel('a')]);
     if (vis.some(t => t.src === 'b') && folderLabel('b')) meta.push(['B folder', folderLabel('b')]);
     const nf = new Set(vis.map(t => t.fiber)).size;
     meta.push(['Fibers', `${fiberRanges(vis.map(t => t.fiber))} (${nf} fiber${nf === 1 ? '' : 's'})`]);
-    meta.push(['Loss gate', gateLabel()]);
-    const lo = document.getElementById('set-refl-lo').value, hi = document.getElementById('set-refl-hi').value;
-    meta.push(['Reflectance band', `${lo} to ${hi} dB`]);
+    const fg = gFecMode ? fecGatesShown() : null;
+    if (gFecMode) {
+      const src = w => gFecOverride[w] != null ? 'overridden in this window' : 'customer profile';
+      meta.push(['FEC loss gate', fg ? `fails ${fg.FEC_LOSS_STRICT ? '>' : '≥'} ${Number(fg.FEC_LOSS_GATE).toFixed(3)} dB, `
+        + `connector + events within ${Number(fg.FEC_COMBINE_M).toFixed(0)} m (${src('loss')})` : 'not loaded']);
+      meta.push(['FEC reflectance gate', fg ? `fails > ${Number(fg.FEC_REFL_GATE).toFixed(1)} dB (${src('refl')})` : 'not loaded']);
+    } else {
+      meta.push(['Loss gate', gateLabel()]);
+      const lo = document.getElementById('set-refl-lo').value, hi = document.getElementById('set-refl-hi').value;
+      meta.push(['Reflectance band', `${lo} to ${hi} dB`]);
+    }
     const views = [gFlaggedOnly && 'flagged rows only', gFailCellsOnly && 'failing cells only',
                    gWarnCellsOnly && 'warning cells only', !gShowSections && 'sections off',
                    gAvgOnly && 'averages only'].filter(Boolean);
@@ -9151,12 +10128,27 @@ function closeReportDialog() {
     if (e) e.remove();
   }
 }
+// Which click on Summary Report is the latest.  The dialog is built after
+// an await (the Save To default), so a double-click got past the close
+// above twice and stacked two dialogs; Cancel shut only the top one (audit
+// 2026-10-01).  Only the latest click builds one.
+let gReportDlgSeq = 0;
 async function showReportDialog() {
+  const seq = ++gReportDlgSeq;
   closeReportDialog();
   const vis = gTraces.filter(t => t.visible);
-  if (!vis.length) { setReadout('load a trace first: the Summary Report is the event table on screen'); return; }
+  // A warning, not a plain note: the readout shows no plain notes, so this
+  // click used to do nothing at all that the tech could see.
+  if (!vis.length) {
+    setReadout('', { warn: gLoadingKeys.size
+      ? 'the traces are still loading: Summary Report opens once they are on the chart'
+      : 'load a trace first: the Summary Report is the event table on screen' });
+    return;
+  }
   let dest = '';
   try { dest = (await (await fetch('/api/report_defaults')).json()).dest || ''; } catch (e) {}
+  if (seq !== gReportDlgSeq) return;    // a later click builds the dialog
+  closeReportDialog();
   const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   const nFib = new Set(vis.map(t => t.fiber)).size;
   const bg = document.createElement('div'); bg.id = 'report-dlg-bg';
@@ -9280,6 +10272,320 @@ async function submitReport() {
   d.querySelector('#rpt-open').onclick = () => open(false);
   d.querySelector('#rpt-reveal').onclick = () => open(true);
   d.querySelector('#rpt-done').onclick = closeReportDialog;
+}
+
+// ─── EXFO .olts: OLTS results as a PDF or an Excel workbook ─────────
+// The boss, 2026-10-01: "we need to be able to handle these in viewer ... we
+// want it pdf or excel so we can sort if we need to".  An .olts holds loss,
+// ORL and length per fiber and no trace, so a dropped one is read by the
+// server (POST /api/olts_load) and offered as a report, the Summary Report's
+// dialog with the same Save To; it never touches the A / B folders.
+function isOltsFile(f) {
+  return !!(f && f.name) && /\.olts$/i.test(f.name);
+}
+async function handleOltsDrop(files) {
+  const loaded = [];
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    showDropSign('load', `reading ${f.name}` + (files.length > 1 ? ` (${i + 1} of ${files.length})` : ''));
+    try {
+      const r = await fetch('/api/olts_load?name=' + encodeURIComponent(f.name), { method: 'POST', body: f });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || ('server said ' + r.status));
+      loaded.push(j);
+    } catch (e) {
+      setReadout(`could not read ${f.name}: ${(e && e.message) || e}`);
+    }
+  }
+  hideDropSign();
+  if (!loaded.length) return;
+  // The boss, 2026-10-02: the values on screen, in the panel on the right,
+  // as FastReporter's Measurements panel shows them, and sortable.  The last
+  // .olts dropped is the one listed; Save Report… there writes the files.
+  showOltsMeasurements(loaded[loaded.length - 1]);
+  if (loaded.length > 1) {
+    setReadout(`${loaded.length} .olts files dropped: Measurements lists the last one, `
+               + `${loaded[loaded.length - 1].file}`, { warn: true });
+  }
+}
+function showOltsMeasurements(info) {
+  gOlts = info;
+  gOltsSort = null;
+  gOltsSel = null;
+  gFilesView = 'meas';
+  if (window.filesPanelAtLeast) window.filesPanelAtLeast(640);
+  renderFilesPanel();
+}
+
+// ─── The Measurements tab ──────────────────────────────────────────
+// The boss, 2026-10-02, pointing at FastReporter's Measurements panel: "we
+// need to see those losses in that measurements column in our tool and sort
+// by them ... sort high to low in each column".  A row per fiber of the
+// dropped .olts: P/F, identifier, type, direction, then per wavelength the
+// A->B and B->A loss, their average and the two ORLs, each unit's reference
+// power (FR's FasTesT table), the length and when.
+// A click on a heading sorts by it, highest first (A to Z for words); a
+// second click turns it over; a right-click names the two.  Blank values
+// stay at the bottom either way.
+
+function oltsCols(info) {
+  const cols = [{ k: 'pf', t: 'P/F', kind: 'pf' }, { k: 'id', t: 'Identifiers', kind: 'text' },
+                { k: 'type', t: 'Type', kind: 'text' }, { k: 'dir', t: 'Direction', kind: 'text' }];
+  for (const wl of (info.wavelengths || [])) {
+    for (const [k, t] of [['loss_ab', 'A->B Loss'], ['loss_ba', 'B->A Loss'],
+                          ['loss_avg', 'Average Loss'], ['orl_a', 'ORL A'], ['orl_b', 'ORL B']]) {
+      cols.push({ k: `${k}@${wl}`, t: `${wl} ${t}`, kind: 'num', nd: 2, unit: ' dB' });
+    }
+  }
+  // FastReporter's FasTesT table: each unit's reference power, in dBm.
+  for (const wl of (info.wavelengths || [])) {
+    cols.push({ k: `ref_ab@${wl}`, t: `${wl} Ref. A->B`, kind: 'num', nd: 2, unit: ' dBm' });
+    cols.push({ k: `ref_ba@${wl}`, t: `${wl} Ref. B->A`, kind: 'num', nd: 2, unit: ' dBm' });
+  }
+  cols.push({ k: 'length_km', t: 'Length', kind: 'num', nd: 3, unit: ' km' });
+  cols.push({ k: 'when_ts', t: 'Test Date/Time', kind: 'num', text: 'when' });
+  return cols;
+}
+function oltsValue(r, k) {
+  const at = k.indexOf('@');
+  if (at < 0) return r[k];
+  const w = (r.wl || {})[k.slice(at + 1)];
+  return w ? w[k.slice(0, at)] : null;
+}
+function oltsSortRows(rows, cols, sort) {
+  const col = sort && cols.find(c => c.k === sort.col);
+  if (!col) return rows.slice();
+  const key = r => col.kind === 'pf' ? ({ fail: 1, pass: 0 }[r.pf] ?? null) : oltsValue(r, col.k);
+  return rows.map((r, i) => [r, i, key(r)]).sort((x, y) => {
+    const a = x[2], b = y[2];
+    const na = a == null || a === '', nb = b == null || b === '';
+    if (na || nb) return na === nb ? x[1] - y[1] : na ? 1 : -1;
+    let c = typeof a === 'number' && typeof b === 'number' ? a - b
+          : String(a).localeCompare(String(b), undefined, { numeric: true });
+    if (sort.desc) c = -c;
+    return c || x[1] - y[1];
+  }).map(x => x[0]);
+}
+function oltsCell(c, r, graded, esc) {
+  if (c.kind === 'pf') {
+    return `<td class="olts-pf ${r.pf ? 'olts-' + r.pf : ''}">${r.pf === 'fail' ? '✗' : r.pf === 'pass' ? '✓' : ''}</td>`;
+  }
+  if (c.text) return `<td>${esc(r[c.text] || '')}</td>`;
+  const v = oltsValue(r, c.k);
+  if (c.kind !== 'num') return `<td>${esc(v == null ? '' : v)}</td>`;
+  let cls = 'num';
+  const at = c.k.indexOf('@'), base = at < 0 ? c.k : c.k.slice(0, at);
+  if (graded && v != null && (base === 'orl_a' || base === 'orl_b')) {
+    const w = (r.wl || {})[c.k.slice(at + 1)] || {};
+    cls += w[base + '_fail'] ? ' olts-fail' : ' olts-pass';
+  }
+  return `<td class="${cls}">${v == null ? '' : (+v).toFixed(c.nd) + c.unit}</td>`;
+}
+function renderMeasView(list, esc) {
+  const info = gOlts;
+  const cols = oltsCols(info);
+  const rows = oltsSortRows(info.rows || [], cols, gOltsSort);
+  const graded = !!info.status;
+  const mark = c => gOltsSort && gOltsSort.col === c.k ? (gOltsSort.desc ? ' ▼' : ' ▲') : '';
+  const tip = c => c.kind === 'text' ? 'click to sort A to Z, again for Z to A; right-click for both'
+                                     : 'click to sort highest first, again for lowest first; right-click for both';
+  list.innerHTML = `<div class="olts-bar"><span class="olts-file" title="${esc(info.job || '')}">${esc(info.file)}</span>`
+    + (info.status ? `<span class="olts-${info.status.toLowerCase()}">${esc(info.status)}</span>` : '')
+    + `<button type="button" data-olts="save" title="Save these results as an Excel workbook or a PDF">Save Report…</button>`
+    + `<button type="button" data-olts="close" title="Close this .olts">Close</button></div>`
+    + `<table class="olts-meas"><thead><tr>`
+    + cols.map(c => `<th data-col="${c.k}" data-kind="${c.kind}"${gOltsSort && gOltsSort.col === c.k ? ' class="sorted"' : ''}`
+                    + ` title="${tip(c)}">${esc(c.t)}${mark(c)}</th>`).join('')
+    + `</tr></thead><tbody>`
+    + rows.map(r => `<tr data-id="${esc(r.id)}"${r.id === gOltsSel ? ' class="sel"' : ''}>`
+                    + cols.map(c => oltsCell(c, r, graded, esc)).join('') + `</tr>`).join('')
+    + `</tbody></table>`;
+  document.getElementById('files-count').textContent =
+    `${rows.length} fiber${rows.length === 1 ? '' : 's'}`;
+}
+filesList.addEventListener('click', (ev) => {
+  if (gFilesView !== 'meas' || !gOlts) return;
+  const btn = ev.target.closest('button[data-olts]');
+  if (btn) {
+    if (btn.dataset.olts === 'save') showOltsDialog(gOlts);
+    else { gOlts = null; gFilesView = 'files'; renderFilesPanel(); }
+    return;
+  }
+  const th = ev.target.closest('th[data-col]');
+  if (th) {
+    const c = th.dataset.col;
+    gOltsSort = gOltsSort && gOltsSort.col === c ? { col: c, desc: !gOltsSort.desc }
+                                                 : { col: c, desc: th.dataset.kind !== 'text' };
+    renderFilesPanel();
+    return;
+  }
+  const tr = ev.target.closest('tbody tr[data-id]');
+  if (!tr) return;
+  gOltsSel = gOltsSel === tr.dataset.id ? null : tr.dataset.id;
+  for (const el of filesList.querySelectorAll('tbody tr.sel')) el.classList.remove('sel');
+  if (gOltsSel) tr.classList.add('sel');
+});
+// A right-click on a heading: the two sorts by name (the boss, 2026-10-02:
+// "right click on any column header ... sort high to low or sort low to
+// high").  Words sort A to Z / Z to A.
+filesList.addEventListener('contextmenu', (ev) => {
+  if (gFilesView !== 'meas' || !gOlts) return;
+  const th = ev.target.closest('th[data-col]');
+  if (!th) return;
+  ev.preventDefault();
+  showOltsSortMenu(ev.clientX, ev.clientY, th.dataset.col, th.dataset.kind,
+                   th.textContent.replace(/ [▲▼]$/, ''));
+});
+function showOltsSortMenu(x, y, col, kind, label) {
+  closeSpanMenu();
+  const text = kind === 'text';
+  const m = document.createElement('div');
+  m.id = 'span-menu';
+  const on = d => gOltsSort && gOltsSort.col === col && gOltsSort.desc === d ? '✓ ' : '  ';
+  m.innerHTML = `<div class="span-menu-hd">${label.replace(/[&<>]/g, '')}</div>`
+    + `<button data-desc="${text ? 0 : 1}">${on(!text)}${text ? 'Sort A to Z' : 'Sort High to Low'}</button>`
+    + `<button data-desc="${text ? 1 : 0}">${on(text)}${text ? 'Sort Z to A' : 'Sort Low to High'}</button>`;
+  document.body.appendChild(m);
+  m.style.left = Math.max(8, Math.min(x, window.innerWidth - m.offsetWidth - 8)) + 'px';
+  m.style.top = Math.max(8, Math.min(y, window.innerHeight - m.offsetHeight - 8)) + 'px';
+  m.querySelectorAll('button[data-desc]').forEach(b => {
+    b.onclick = () => {
+      closeSpanMenu();
+      gOltsSort = { col, desc: b.dataset.desc === '1' };
+      renderFilesPanel();
+    };
+  });
+  setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
+}
+function showOltsDialog(info) {
+  closeReportDialog();
+  return new Promise(async (resolve) => {
+    let dest = '';
+    try { dest = (await (await fetch('/api/report_defaults')).json()).dest || ''; } catch (e) {}
+    const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    const bg = document.createElement('div'); bg.id = 'report-dlg-bg';
+    const d = document.createElement('div'); d.id = 'report-dlg';
+    const wls = (info.wavelengths || []).join(' / ');
+    const mins = Object.values(info.orl_min || {}).filter(v => v != null);
+    const orlLine = mins.length
+      ? `ORL below ${Number(mins[0]).toFixed(2)} dB: ${info.orl_fails} reading${info.orl_fails === 1 ? '' : 's'}`
+      : 'no ORL threshold in the file';
+    const stem = String(info.file || 'OLTS').replace(/\.olts$/i, '');
+    d.innerHTML = `<h3>OLTS Report</h3>`
+      + `<div class="sub">${esc(info.file)}: ${info.fibers} fiber${info.fibers === 1 ? '' : 's'}`
+      + (wls ? `, ${esc(wls)} nm` : '') + (info.job ? `, ${esc(info.job)}` : '') + `</div>`
+      + `<div class="sub">${esc(orlLine)}${info.status ? `, ${esc(info.status)}` : ''}</div>`
+      + `<div class="scope"><label title="one row per fiber with a filter on every column, to sort">`
+      + `<input type="radio" name="olts-fmt" value="xlsx" checked> Excel</label>`
+      + `<label title="laid out like EXFO's OLTS Report"><input type="radio" name="olts-fmt" value="pdf"> PDF</label></div>`
+      + `<div class="row"><label>File Name</label><input type="text" id="olts-name" value="${esc(stem)}"></div>`
+      + `<div class="row"><label>Save To</label><input type="text" id="olts-dest" value="${esc(dest)}">`
+      + `<button type="button" id="olts-browse" title="choose the folder the report is saved to">Browse…</button></div>`
+      + `<div class="err" id="olts-err"></div>`
+      + `<div class="btns"><button id="olts-cancel">Cancel</button><button class="primary" id="olts-save">Save Report</button></div>`;
+    document.body.appendChild(bg);
+    document.body.appendChild(d);
+    // Closed by any route (Cancel, Done, the backdrop, another dialog opening).
+    const gone = new MutationObserver(() => {
+      if (!d.isConnected) { gone.disconnect(); resolve(); }
+    });
+    gone.observe(document.body, { childList: true });
+    bg.onclick = closeReportDialog;
+    d.querySelector('#olts-cancel').onclick = closeReportDialog;
+    const err = d.querySelector('#olts-err');
+    d.querySelector('#olts-browse').onclick = async () => {
+      err.textContent = 'choose a folder in the dialog that just opened…';
+      try {
+        const r = await fetch('/api/pick_folder', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: 'Save the report to' }),
+        });
+        const j = await r.json();
+        if (!r.ok || j.error) { err.textContent = j.error || ('server said ' + r.status); return; }
+        if (!j.available) { err.textContent = 'no folder picker on this machine. Type the full path instead'; return; }
+        if (j.path) d.querySelector('#olts-dest').value = j.path;
+        err.textContent = '';
+      } catch (e) {
+        err.textContent = (e && e.message) || String(e);
+      }
+    };
+    const write = async (fmt, name, where) => {
+      const r = await fetch('/api/olts_report', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: info.token, format: fmt, name, dest: where }),
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || ('server said ' + r.status));
+      return j;
+    };
+    const kind = fmt => fmt === 'pdf' ? 'PDF' : 'Excel workbook';
+    d.querySelector('#olts-save').onclick = async () => {
+      const fmt = d.querySelector('input[name=olts-fmt]:checked').value;
+      const name = d.querySelector('#olts-name').value;
+      const where = d.querySelector('#olts-dest').value;
+      const save = d.querySelector('#olts-save'), cancel = d.querySelector('#olts-cancel');
+      save.disabled = cancel.disabled = true;
+      bg.onclick = null;
+      err.style.color = 'var(--text-sec)';
+      err.textContent = `writing the ${fmt === 'pdf' ? 'PDF' : 'workbook'}…`;
+      let j;
+      try {
+        j = await write(fmt, name, where);
+      } catch (e) {
+        err.style.color = '';
+        err.textContent = (e && e.message) || String(e);
+        save.disabled = cancel.disabled = false;
+        bg.onclick = closeReportDialog;
+        return;
+      }
+      bg.onclick = closeReportDialog;
+      setReadout(`OLTS report saved to ${j.path}`);
+      const other = fmt === 'pdf' ? 'xlsx' : 'pdf';
+      const saved = [[fmt, j.path]];
+      const paint = () => {
+        d.innerHTML = `<h3>OLTS Report Saved</h3>`
+          + saved.map(([f, p]) => `<div class="note" style="font-size:12px;line-height:1.5"><b>${kind(f)}</b> saved to:<br><code>${esc(p)}</code></div>`).join('')
+          + `<div class="err" id="olts-err"></div>`
+          + `<div class="btns">`
+          + (saved.length < 2 ? `<button id="olts-other">Save ${other === 'pdf' ? 'PDF' : 'Excel'} Too</button>` : '')
+          + `<button id="olts-reveal">Show in Folder</button><button id="olts-open">Open</button>`
+          + `<button class="primary" id="olts-done">Done</button></div>`;
+        const e2 = d.querySelector('#olts-err');
+        const open = async (reveal) => {
+          try {
+            const r = await fetch('/api/report_open', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ path: saved[saved.length - 1][1], reveal }),
+            });
+            const k = await r.json();
+            e2.textContent = (!r.ok || k.error) ? (k.error || ('server said ' + r.status)) : '';
+          } catch (e) {
+            e2.textContent = (e && e.message) || String(e);
+          }
+        };
+        d.querySelector('#olts-open').onclick = () => open(false);
+        d.querySelector('#olts-reveal').onclick = () => open(true);
+        d.querySelector('#olts-done').onclick = closeReportDialog;
+        const ob = d.querySelector('#olts-other');
+        if (ob) ob.onclick = async () => {
+          ob.disabled = true;
+          e2.style.color = 'var(--text-sec)';
+          e2.textContent = `writing the ${other === 'pdf' ? 'PDF' : 'workbook'}…`;
+          try {
+            const k = await write(other, name, where);
+            saved.push([other, k.path]);
+            setReadout(`OLTS report saved to ${k.path}`);
+            paint();
+          } catch (e) {
+            e2.style.color = '';
+            e2.textContent = (e && e.message) || String(e);
+            ob.disabled = false;
+          }
+        };
+      };
+      paint();
+    };
+  });
 }
 
 // A report link's km as a chart position.  The Splice Report hands it in A's
@@ -9537,8 +10843,13 @@ window.addEventListener('keydown', (ev) => {
   if (ev.target.tagName === 'INPUT') return;
   // A dialog is modal: the chart's keys, and Ctrl+A marking the FILES list
   // behind it, are not what the tech is aiming at while one is open.
+  // The Summary Report's too: M turned the A/B markers on behind it (audit
+  // 2026-10-01).
   if (document.getElementById('rn-dlg') || document.getElementById('edit-dlg')
-      || document.getElementById('sel-dlg')) return;
+      || document.getElementById('sel-dlg') || document.getElementById('report-dlg')) return;
+  // Escape shuts a right-click menu the way it shuts the two gear menus,
+  // and only the menu: the markers stay.
+  if (ev.key === 'Escape' && document.getElementById('span-menu')) { closeSpanMenu(); return; }
   if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'a' || ev.key === 'A')) {
     ev.preventDefault();
     selectAllFiles();
@@ -9785,7 +11096,8 @@ async function applyTarget(t) {
   }
   const fibers = t.fibers;
   if (fibers && /^\d+(\s*,\s*\d+)*$/.test(String(fibers))) {
-    if (!planOrSay(parseFibers(String(fibers)), t.dir || 'a')) return;
+    const plan = planOrSay(parseFibers(String(fibers)), t.dir || 'a');
+    if (!plan || sayRemovedTarget(plan)) return;
     if (t.replace) clearAll();
     document.getElementById('fiber-input').value = String(fibers);
     setAddDir(t.dir || 'a');
@@ -9794,14 +11106,22 @@ async function applyTarget(t) {
   }
   const fiber = t.fiber;
   if (fiber != null && /^\d+$/.test(String(fiber))) {
-    if (!planOrSay([+fiber], t.dir || 'both')) return;
+    const plan = planOrSay([+fiber], t.dir || 'both');
+    if (!plan || sayRemovedTarget(plan)) return;
     if (t.replace) clearAll();
     document.getElementById('fiber-input').value = String(fiber);
     setAddDir(t.dir || 'both');
+    gTableGoKm = null;               // not the last link's column
     await addFibers();
     const km = parseFloat(t.km);
-    // FEC links point at a panel connector on a 5 km shot: zoom in close.
-    if (!isNaN(km)) zoomToKm(linkDispKm(km, t.src, t.dir || 'both', fiber), gFecMode ? 0.3 : 2.5);
+    if (!isNaN(km)) {
+      // FEC links point at a panel connector on a 5 km shot: zoom in close.
+      zoomToKm(linkDispKm(km, t.src, t.dir || 'both', fiber), gFecMode ? 0.3 : 2.5);
+      // The table goes to the same event: its column, now or when the
+      // table paints (a table from the server lands after this).
+      gTableGoKm = { km: linkDispKm(km, t.src, t.dir || 'both', fiber), fiber: +fiber };
+      if (!gTableBusy) tableGoKm();
+    }
     return;
   }
   await autoloadDefault();
@@ -9827,8 +11147,20 @@ let gDeepLinkDone = false;
 async function bootLoad() {
   if (!gInfo || gDeepLinkDone) return;
   const p = new URLSearchParams(location.search);
-  await applyTarget({ fibers: p.get('fibers'), fiber: p.get('fiber'),
-                      km: p.get('km'), dir: p.get('dir'), src: p.get('src') });
+  // The chart as the tech left it (see viewer_state): its removed files
+  // always, its traces unless a report cell sent this window to a fiber.
+  const linked = !!(p.get('fibers') || p.get('fiber'));
+  try {
+    const st = await fetchViewerState();
+    if (stateFits(st)) await applyViewerState(st, !linked);
+    else if (st) gStateVer = Math.max(gStateVer, st.ver || 0);
+  } finally {
+    gStateReady = true;
+    pushViewerState();                 // anything done while it loaded
+  }
+  if (!gTraces.length || linked)
+    await applyTarget({ fibers: p.get('fibers'), fiber: p.get('fiber'),
+                        km: p.get('km'), dir: p.get('dir'), src: p.get('src') });
   if (gTraces.length) gDeepLinkDone = true;
 }
 

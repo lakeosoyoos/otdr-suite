@@ -248,7 +248,9 @@ def _back(at, to):
 def test_every_link_into_the_viewer_tab_carries_the_panels_folders():
     from conftest import APP_PATH
     src = APP_PATH.read_text(encoding='utf-8')
-    assert src.count('ssfolder={ssq}') == 2
+    # Secret Sauce's pair links are all made in _ss_pair_link: one panel
+    # direction, both directions (A+B run), or the one folder the run read.
+    assert src.count('ssfolder={ssq}') == 3
     for line in src.splitlines():
         if 'ssfolder={ssq}' in line:
             assert '_panel_qs()' in line or '_panel_qs()' in src[src.index(line):][:200]

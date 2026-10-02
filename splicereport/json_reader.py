@@ -469,11 +469,11 @@ def load_all_json(directory: str) -> dict[int, dict]:
 #  site codes, and the segment's two town names.  That is the only
 #  trustworthy statement of which end is A.
 #
-#  The FOLDER is not.  On AWS / IIG MT.1085 span 27 the SharePoint folder
+#  The FOLDER is not.  On the contract job's span 27 the SharePoint folder
 #  reads "Lavina, MT to Rapelje, MT" while every file in it reads
 #  BIL400 (Rapelje) -> RPX400 (Lavina): the folder has the two ends
 #  backwards, and a report built from the folder name would label every
-#  column with the wrong site (NCT, 2026-09-12).
+#  column with the wrong site (the prime contractor, 2026-09-12).
 # ═══════════════════════════════════════════════════════════════════════
 
 #  How many measurements to read before trusting what they say.  They are
@@ -552,7 +552,7 @@ def read_span_identifiers(directory: str, sample: int = _ID_SAMPLE):
     LOC, and the first town of `Segment`.  A job not pushed through a
     controlled config carries whatever the tech keyed into the unit, which
     can be blank or inconsistent, and that must never silently name a
-    report (NCT, 2026-09-12)."""
+    report (the prime contractor, 2026-09-12)."""
     if not directory or not os.path.isdir(directory):
         return None
     files = sorted(glob.glob(os.path.join(directory, "*.json")))[:max(1, sample)]
@@ -608,7 +608,7 @@ def span_site_names(dir_a: str, dir_b: str = None):
 
     Town and code together, the way the customer identifies a site: the code
     is what their records key on and the town is what makes it readable
-    (NCT, 2026-09-12)."""
+    (the prime contractor, 2026-09-12)."""
     info = read_span_identifiers(dir_a) or read_span_identifiers(dir_b)
     if not info:
         return None
@@ -627,9 +627,9 @@ def span_site_names(dir_a: str, dir_b: str = None):
 #      Position 0.0   Connector  Loss 0.047  Verdict Pass
 #      Position 3.8   Splice     Loss 0.455  Verdict Fail
 #
-#  which is the AWS / IIG MT.1085 customer's "near 0.047 / pigtail 0.455"
+#  which is the contract customer's "near 0.047 / pigtail 0.455"
 #  on span 17 fiber 397, to the millidecibel.  Their rule going forward
-#  (NCT, 2026-09-12): the pigtail is graded as a SPLICE, against the splice
+#  (the prime contractor, 2026-09-12): the pigtail is graded as a SPLICE, against the splice
 #  limit, "with the connector graded separately".
 #
 #  Read from the sidecar and nowhere else.  The .sor sometimes carries the

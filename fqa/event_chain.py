@@ -27,7 +27,7 @@ That disagreement is the useful output: on Span 4 it points straight at
 the two sheets a crew filled in wrong.
 
 Distances are round metres.  The Event Log is a metre-resolution form and
-Lumen's own examples are all whole metres.
+the customer's own examples are all whole metres.
 
 Robert, 2026-09-23.
 """

@@ -1,6 +1,6 @@
 """Unidirectional one-shot (uni_* engine section) — regression tests.
 
-Ground truth: LAMBEY 432 (Lumen Border project) vs the Zach-approved
+Ground truth: LAMBEY 432 (the Border job project) vs the Zach-approved
 LAM_BEY_unidir ZK.xlsx.  The three detection deltas vs the old standalone
 tool are each locked here with the LAMBEY numbers that motivated them:
 
@@ -270,6 +270,21 @@ def test_runner_uni_needs_no_dir_b(tmp_path):
     manifest = json.loads(proc.stdout.strip().splitlines()[-1])
     assert manifest['ok'] is False
     assert 'no SOR/JSON files' in manifest['error'] or 'folder' in manifest['error']
+
+
+def test_runner_uni_makes_the_report_folder(tmp_path):
+    """'Save Reports To' may name a folder that does not exist yet (a new
+    project's Reports folder, or a new folder under an existing one); the
+    --uni run makes it, as the Splice Report and FEC runs do."""
+    out = tmp_path / 'Reports' / 'new folder' / 'unidirectional_events.xlsx'
+    proc = subprocess.run(
+        [sys.executable, os.path.join(SPLICE_DIR, 'run_splicereport.py'),
+         '--uni', '--dir-a', os.path.join(HERE, 'fixtures', 'splice_A'),
+         '--out', str(out)],
+        capture_output=True, text=True, timeout=300)
+    manifest = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert manifest['ok'] is True, manifest.get('error') or proc.stderr[-800:]
+    assert out.is_file()
 
 
 # ── Damage-zone completion (trace-measured, LAMBEY BD1 ground truth) ────

@@ -1,6 +1,6 @@
 """The reflectance FAIL gate is judged the way FastReporter judges it.
 
-FR 3.21, Lumen template, Reflectance Fail -50.0 dB, read off FR's own event
+FR 3.21, customer L template, Reflectance Fail -50.0 dB, read off FR's own event
 table (red cell = fail) on 2026-09-23.  Real shots from Red Rock 4-5 East and
 SNARCAAH, plus copies of RDR5RDR4 0119 with the stored float64 edited:
 
@@ -60,6 +60,6 @@ def test_the_default_is_frs_own_number():
 
 
 def test_other_gates_round_the_same_way():
-    # AT&T's template fails at -40.0; Intermountain / IIG at -55.0.
+    # One template fails at -40.0; the contract profile at -55.0.
     assert E.refl_fails(-39.94, -40.0) and not E.refl_fails(-39.96, -40.0)
     assert E.refl_fails(-54.94, -55.0) and not E.refl_fails(-54.96, -55.0)

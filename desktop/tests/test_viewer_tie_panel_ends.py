@@ -104,4 +104,7 @@ def test_opened_on_its_own_the_server_runs_the_report_for_the_ends():
 def test_the_viewer_repaints_when_the_server_s_verdicts_land():
     assert "if (gInfo.end_pending) pollEndVerdicts();" in SRC
     body = _fn('pollEndVerdicts')
-    assert "fetch('/api/end_verdicts')" in body and "renderEventTable();" in body
+    # the table on screen takes them in place, or the panel is laid out
+    # again (test_viewer_fr_table_once)
+    assert "fetch('/api/end_verdicts')" in body and "endVerdictsLanded();" in body
+    assert "renderEventTable();" in _fn('endVerdictsLanded')

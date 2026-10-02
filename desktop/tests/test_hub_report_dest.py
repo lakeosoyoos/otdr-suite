@@ -38,8 +38,7 @@ def test_the_chosen_folder_is_what_the_engines_are_handed():
     assert "out_dir = _ss_dest" in SRC
     # Wrapped in _unused_report_path since 2026-09-29 (a rerun gets
     # "name (2).xlsx" instead of writing over the last report): same folder.
-    assert ("out_xlsx = _unused_report_path(\n"
-            "            os.path.join(_uni_dest, 'unidirectional_events.xlsx'))") in SRC
+    assert "out_xlsx = _unused_report_path(os.path.join(_uni_dest, _report_file_name(" in SRC
     assert re.search(r"out_xlsx = _unused_report_path\(os\.path\.join\(_sr_dest,", SRC)
     # The old next-to-the-traces defaults are gone.
     assert "os.path.join(src_folder, 'SecretSauce_reports')" not in SRC

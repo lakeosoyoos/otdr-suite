@@ -923,7 +923,7 @@ def main():
         #   * silence otherwise — no guess, no half-name, just the defaults
         #     the tech can fill in.
         # The FOLDER is never consulted: on span 27 it names the two ends in
-        # the wrong order (NCT, 2026-09-12).
+        # the wrong order (the prime contractor, 2026-09-12).
         site_src = 'typed'
         if (getattr(E, 'SITE_NAMES_FROM_IDENTIFIERS', 0)
                 and (args.site_a, args.site_b) == ('A', 'B')):
@@ -1052,6 +1052,11 @@ def main():
                           file=sys.stderr)
                     _lms = None
             try:
+                # The page offers a new folder under an existing one, as every
+                # report page does, and a new project has no Reports folder
+                # until a report is written: make it, as the Splice Report does.
+                os.makedirs(os.path.dirname(os.path.abspath(args.out)),
+                            exist_ok=True)
                 summary = E.uni_generate(
                     a, args.out,
                     ribbon_size=args.ribbon_size,
@@ -1519,7 +1524,7 @@ def main():
 
         # ── Per-fiber AVERAGE splice loss (ADDITIVE, own sheet) ────────
         # Only when a profile or the panel sent a positive AVG_SPLICE_LOSS_DB
-        # (AWS / IIG MT.1085: 0.08 dB).  FastReporter's per-fiber "Avg.
+        # (the contract profile: 0.08 dB).  FastReporter's per-fiber "Avg.
         # Splice Loss" over the union of both directions' splices; never
         # touches all_results / cells / n_flagged.  Off = no sheet at all.
         fiber_avgs = None
@@ -1537,7 +1542,7 @@ def main():
 
         # ── Span attenuation / ORL (ADDITIVE, own sheet) ──────────────
         # Only when a positive FIBER_ATTEN_DB_KM or SPAN_ORL_MIN_DB arrived
-        # (AWS / IIG MT.1085: 0.250 dB/km and 30 dB).  EXFO's stored span
+        # (the contract profile: 0.250 dB/km and 30 dB).  EXFO's stored span
         # figures, reported and graded; never touches cells / n_flagged.
         span_stats = None
         n_atten_fail = n_orl_fail = 0

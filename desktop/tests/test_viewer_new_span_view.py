@@ -45,10 +45,12 @@ def _js_func(name):
 
 _STUBS = r"""
 var gTraces = [], gRemovedFiles = new Set(), COLORS_USED = new Set();
+var gLoadingKeys = new Set(), gLoadEpoch = 0;
 var gDirOverride = {}, gStoredDir = {}, gFileAnchor = null, gFileFocus = null;
 var gAutoFit = false, gView = { x0: 41.91, x1: 45.91, y0: -9.9, y1: -0.7 };
 var gMarkers = { a: 43.9, b: 44.1 }, gDragMarker = null, gPickKey = 'a-146';
 var gAddDir = 'both', gDropInFlight = false, gModePollBusy = false, gAnalysisMode = 'suite';
+var gLoadsInFlight = new Set();          // syncFiberBox counts loads in flight
 var server = { dir_a: '/span1/A', dir_b: '/span1/B' };
 var gInfo = { dir_a: '/span1/A', dir_b: '/span1/B' };
 var buttons = ['a', 'b', 'both'].map(function (d) {

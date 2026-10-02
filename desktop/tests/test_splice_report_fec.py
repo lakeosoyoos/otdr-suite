@@ -373,7 +373,7 @@ def test_a_folder_of_mixed_types_reads_each_fiber_once(tmp_path):
 def test_viewer_fec_grades_every_trace_type():
     from conftest import VIEWER_DIR
     src = (VIEWER_DIR / 'trace_server.py').read_text(encoding='utf-8')
-    body = src.split('def fec_tables(fibers):', 1)[1].split('\ndef ', 1)[0]
+    body = src.split('def fec_tables(fibers', 1)[1].split('\ndef ', 1)[0]
     assert "endswith(('.sor', '.trc', '.json'))" in body
     assert "endswith('.sor')" not in body
 
@@ -409,3 +409,153 @@ def test_the_engine_default_is_tech_cs_style():
         print('OK')
     """)
     assert hub.FEC_DEFAULTS['FEC_LOSS_STRICT'] == 1
+
+
+# ── the page after a run (2026-10-02 audit) ─────────────────────────────
+
+_GATES = {'FEC_LOSS_GATE': 0.5, 'FEC_LOSS_STRICT': 1.0,
+          'FEC_REFL_GATE': -50.0, 'FEC_COMBINE_M': 150.0}
+
+
+def _fec_page(tmp_path, monkeypatch):
+    """The FEC page with an A end folder in its box and nothing run.  The
+    folder holds traces: an empty one is warned about (no trace files)."""
+    import os
+    import shutil
+    from conftest import run_streamlit
+    monkeypatch.setenv('OTDR_CACHE_DIR', str(tmp_path / 'cache'))
+    a = tmp_path / 'endA'
+    if not a.exists():
+        shutil.copytree(FIXTURE_SPLICE_A_DIR, a)
+    at = run_streamlit(default_timeout=180).run()
+    at.sidebar.radio[0].set_value('Splice Report FEC').run()
+    next(t for t in at.text_input if t.label.startswith('A End FEC')).set_value(str(a)).run()
+    assert not at.exception, at.exception
+    return at, os.path.abspath(str(a))
+
+
+def _a_report(dir_a, gates=_GATES):
+    """What a run hands the page, for a span with one failing fiber."""
+    row = {'side': 'A', 'fiber': 6, 'fiber_id': 'ABCDEF0006', 'conn_km': 1.002,
+           'failing_at': '0.576', 'distance': 'COMBINE', 'kind': 'loss',
+           'conn_loss': 0.2, 'conn_refl': -55.0, 'pulse_ns': 10.0,
+           'combined': [{'km': 1.05, 'loss': 0.376}]}
+    return {'ok': True, 'xlsx': '', '_dirs': [dir_a, ''],
+            'fec': {'gates': dict(gates), 'sides': [
+                {'side': 'A', 'label': 'ABCDEF', 'n_traces': 1,
+                 'n_fail_fibers': 1, 'rows': [row]}]}}
+
+
+def test_a_second_run_into_the_same_folder_keeps_the_first_report(tmp_path, monkeypatch):
+    """The workbook was always FEC_OOS.xlsx: a second span run into the same
+    Save Reports To folder wrote over the first, and the first span's page
+    then offered the second span's file."""
+    import shutil
+    from conftest import finish_engine_run, run_streamlit
+    monkeypatch.setenv('OTDR_CACHE_DIR', str(tmp_path / 'cache'))
+    a = tmp_path / 'endA'
+    shutil.copytree(FIXTURE_SPLICE_A_DIR, a)
+    dest = tmp_path / 'reports'
+    dest.mkdir()
+    (dest / 'FEC_OOS.xlsx').write_bytes(b'the first span')
+    at = run_streamlit(default_timeout=180).run()
+    at.sidebar.radio[0].set_value('Splice Report FEC').run()
+    next(t for t in at.text_input if t.label.startswith('A End FEC')).set_value(str(a)).run()
+    next(t for t in at.text_input if t.label == 'Save Reports To').set_value(str(dest)).run()
+    next(b for b in at.button if b.label == 'Run FEC Report').click().run()
+    finish_engine_run(at, 'fec')
+    assert not at.exception, at.exception
+    assert (dest / 'FEC_OOS.xlsx').read_bytes() == b'the first span'
+    assert at.session_state['fec_result']['xlsx'] == str(dest / 'FEC_OOS (2).xlsx')
+    assert any(c.value == f"Saved: {dest / 'FEC_OOS (2).xlsx'}" for c in at.caption)
+
+
+def test_a_settings_edit_after_a_run_says_the_report_is_old(tmp_path, monkeypatch):
+    """The report on screen is found by its folders; an FEC Settings edit
+    left its fails under the new rule's caption with nothing said."""
+    at, a = _fec_page(tmp_path, monkeypatch)
+    at.session_state['fec_result'] = _a_report(a)
+    at.run()
+    assert not at.exception, at.exception
+    assert not at.warning and at.success
+    gate = next(n for n in at.number_input if n.label == 'Loss Gate (dB)')
+    gate.set_value(0.3).run()
+    said = [w.value for w in at.warning]
+    assert len(said) == 1 and said[0].startswith(
+        'This report was made with other FEC Settings: loss > 0.500 dB'), said
+    assert 'Run FEC Report again' in said[0]
+    assert any(c.value.startswith('Fails: loss > 0.300 dB') for c in at.caption)
+    next(n for n in at.number_input if n.label == 'Loss Gate (dB)').set_value(0.5).run()
+    assert not at.warning
+    next(s for s in at.selectbox if s.label == 'Loss Fails When').set_value(
+        'At or Over the Gate').run()
+    assert len(at.warning) == 1
+
+
+def test_the_same_gates_are_judged_as_the_engine_gets_them():
+    import app as hub
+    assert hub._fec_same_gates(_GATES, dict(_GATES))
+    assert not hub._fec_same_gates(_GATES, dict(_GATES, FEC_LOSS_GATE=0.501))
+    assert not hub._fec_same_gates(_GATES, dict(_GATES, FEC_REFL_GATE=-45.0))
+    assert not hub._fec_same_gates(_GATES, dict(_GATES, FEC_COMBINE_M=100.0))
+    assert not hub._fec_same_gates(_GATES, dict(_GATES, FEC_LOSS_STRICT=0.0))
+    # a report with no record of its gates is not questioned
+    assert hub._fec_same_gates(None, _GATES) and hub._fec_same_gates({}, _GATES)
+    assert hub._fec_same_gates({'FEC_LOSS_GATE': 0.5}, _GATES)
+
+
+def _clear_traces(at):
+    next(b for b in at.sidebar.button if b.label == 'Clear Traces').click().run()
+    next(b for b in at.button if b.key == 'clear_traces_allow').click().run()
+    assert not at.exception, at.exception
+
+
+def test_clear_traces_clears_the_fec_page(tmp_path, monkeypatch):
+    """The dialog says every tool; the FEC page kept its folders, its report
+    and the report's saved copy."""
+    import json as _json
+    import os
+    import app as hub
+    at, a = _fec_page(tmp_path, monkeypatch)
+    at.session_state['fec_result'] = _a_report(a)
+    at.run()
+    saved = hub._hub_cache_path('fec_result_cache.json', a, '')
+    with open(saved, 'w', encoding='utf-8') as fh:
+        _json.dump(_a_report(a), fh)
+    assert at.success
+    _clear_traces(at)
+    at.run()
+    assert not os.path.exists(saved)
+    assert next(t for t in at.text_input if t.label.startswith('A End FEC')).value == ''
+    assert not at.success and 'fec_result' not in at.session_state
+    # the same folder back in the box needs a fresh run
+    next(t for t in at.text_input if t.label.startswith('A End FEC')).set_value(a).run()
+    assert not at.success
+
+
+def test_clear_traces_after_a_row_click_forgets_the_fec_report(tmp_path, monkeypatch):
+    """A row click starts a new session on Viewer FEC; the report's saved
+    copy is filed under the run's folders, which the link brings."""
+    import json as _json
+    import os
+    import app as hub
+    from conftest import run_streamlit
+    monkeypatch.setenv('OTDR_CACHE_DIR', str(tmp_path / 'cache'))
+    fa = tmp_path / 'endA'
+    fa.mkdir()
+    saved = hub._hub_cache_path('fec_result_cache.json', str(fa), '')
+    with open(saved, 'w', encoding='utf-8') as fh:
+        _json.dump(_a_report(str(fa)), fh)
+    at = run_streamlit()
+    at.query_params['nav'] = 'viewerfec'
+    at.query_params['fiber'] = '6'
+    at.query_params['km'] = '1.002'
+    at.query_params['dir'] = 'a'
+    at.query_params['fa'] = str(fa)
+    at.query_params['ra'] = str(fa) + '.zip'     # the box held the zip
+    at.run()
+    assert not at.exception, at.exception
+    _clear_traces(at)
+    assert not os.path.exists(saved)
+    at.sidebar.radio[0].set_value('Splice Report FEC').run()
+    assert next(t for t in at.text_input if t.label.startswith('A End FEC')).value == ''

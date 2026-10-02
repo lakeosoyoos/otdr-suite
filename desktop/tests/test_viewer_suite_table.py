@@ -407,7 +407,9 @@ def test_the_run_asks_for_the_table_in_suite_mode_only():
 def test_the_hub_asks_every_report_for_its_table_and_hands_it_over():
     cmd = APP.split("def splicereport_cmd(", 1)[1].split("\ndef ", 1)[0]
     assert "common += ['--viewer-table', viewer_table]" in cmd
-    assert "viewer_table=_viewer_table_path(_da, _db))})" in APP
+    # the run's command ends on the table path (2026-10-02: the run's
+    # removed set follows the command in the same dict)
+    assert "viewer_table=_viewer_table_path(_da, _db))," in APP
     assert APP.count("trace_server.set_suite_table(res.get('viewer_table'))") == 1
     # the uni grid has no A+B table, and a cleared report takes its own away
     assert APP.count("trace_server.set_suite_table(None)") == 2
@@ -418,16 +420,18 @@ def test_the_hub_asks_every_report_for_its_table_and_hands_it_over():
 
 def test_the_table_follows_the_analysis_mode():
     body = _fn('renderEventTable')
-    assert ("if (gAnalysisMode === 'suite') {\n"
-            "    if (renderSuiteBidiGrid(visible, host, hint)) return;\n"
-            "  } else if (renderFrBidiGrid(visible, host, hint)) return;\n"
-            "  renderFastReporterGrid(visible, host, hint);") in body
+    assert ("const server = gAnalysisMode === 'suite'\n"
+            "    ? renderSuiteBidiGrid(visible, host, hint) : renderFrBidiGrid(visible, host, hint);\n"
+            "  if (!server) {\n"
+            "    renderFastReporterGrid(visible, host, hint);") in body
     ask = _fn('renderSuiteBidiGrid')
     # a load from one direction asks for that direction's table (Robert
     # 2026-09-30: "it has to work for one direction OR bidi, equally"); a
     # mix of lone A and lone B traces still has no Suite table
     assert "if (dirs.size !== 1) return false;" in ask
-    assert "fetch(`/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`)" in ask
+    # asked once for the traces on screen (askServerTable, test_viewer_fr_table_once)
+    assert "`/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`," in ask
+    assert "askServerTable('suite', key," in ask
     # the report may still be running: the table waits for it ...
     assert "if (res.pending) {" in ask and "gSuitePoll = setTimeout(ask, 3000);" in ask
     assert "if (seq !== gSuiteTableSeq) return;" in ask

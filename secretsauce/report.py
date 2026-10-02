@@ -553,7 +553,7 @@ def _compute_pair_metrics_batch_multiwl(files, wl_list, min_samples=50,
         # float32 the trace quantization alone (~5.5e-6 dB/sample at 46 dB)
         # puts ~2.6e-4 into the cross term - catastrophic cancellation.  True
         # pair σ 0.0094 collapsed to 0.0000 and the σ-outlier tier confirmed
-        # 67 numerical artifacts as duplicates (Lumen Border LAM/BEY,
+        # 67 numerical artifacts as duplicates (the Border job LAM/BEY,
         # 2026-07-23).  report_sor.py was fixed then; this lineage was not.
         #
         # Both loaders happen to emit float64 TODAY, which is the only reason

@@ -204,8 +204,11 @@ def test_add_fibers_plans_before_it_fetches():
 
 def test_a_jump_to_nothing_does_not_clear_the_plot():
     fn = _js_func(SRC, 'applyTarget')
-    a = fn.index("if (!planOrSay(parseFibers(String(fibers)), t.dir || 'a')) return;")
-    b = fn.index("if (!planOrSay([+fiber], t.dir || 'both')) return;")
+    # 2026-10-02: the plan is kept, and a target of removed files says so
+    # before the clear too (sayRemovedTarget).
+    a = fn.index("const plan = planOrSay(parseFibers(String(fibers)), t.dir || 'a');")
+    b = fn.index("const plan = planOrSay([+fiber], t.dir || 'both');")
+    assert fn.count("if (!plan || sayRemovedTarget(plan)) return;") == 2
     assert a < fn.index("if (t.replace) clearAll();") < b < fn.rindex("if (t.replace) clearAll();")
 
 
@@ -286,20 +289,23 @@ _DRIVER = r"""
 (async function () {
   var out = {};
   var box = document.getElementById('fiber-input');
+  // the line once the table's server step has answered ("Building the
+  // table…" leads it until then)
   var say = function () { return String(document.getElementById('readout').textContent); };
+  var settle = function () { return __hSleep(60); };
   try {
     await __hSleep(150);                              // boot's /api/list
-    box.value = '1-3'; gAddDir = 'both'; await addFibers();
+    box.value = '1-3'; gAddDir = 'both'; await addFibers(); await settle();
     out.typed = [gTraces.map(t => t.key).sort(), say(), box.value];
-    await applyTarget({ fiber: '999', dir: 'both', replace: true });   // a report jump
+    await applyTarget({ fiber: '999', dir: 'both', replace: true }); await settle();   // a report jump
     out.jump999 = [gTraces.length, say()];
-    await applyTarget({ fibers: '998,999', dir: 'a', replace: true });
+    await applyTarget({ fibers: '998,999', dir: 'a', replace: true }); await settle();
     out.pair999 = [gTraces.length, say()];
-    box.value = '6, 999'; gAddDir = 'both'; await addFibers();         // some there, some not
+    box.value = '6, 999'; gAddDir = 'both'; await addFibers(); await settle();         // some there, some not
     out.part999 = [gTraces.length, say()];
     clearAll();
     out.cleared = [gTraces.length, box.value, say()];
-    await applyFileSelection(new Set(['a-2', 'a-3', 'a-7']));           // FILES panel
+    await applyFileSelection(new Set(['a-2', 'a-3', 'a-7'])); await settle();           // FILES panel
     out.files = [box.value];
   } catch (e) { print('THREW ' + e + '\n' + (e && e.stack)); }
   out.fetched = __hFetched;

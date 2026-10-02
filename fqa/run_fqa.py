@@ -2,7 +2,7 @@
 FQA Builder engine
 ==================
 
-Builds a Lumen FQA Site Survey package from a ZeroDB production sheet.
+Builds the FQA Site Survey package from a ZeroDB production sheet.
 
 Contract, matching the rest of the suite: exactly ONE JSON manifest line
 on stdout, everything else on stderr, so a caller can run this in a
@@ -183,7 +183,7 @@ def build(production: str,
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description='Build a Lumen FQA package.')
+    ap = argparse.ArgumentParser(description='Build the FQA package.')
     ap.add_argument('--production', required=True,
                     help='the span’s ZeroDB production sheet (.xlsx)')
     ap.add_argument('--out', required=True, help='where to write the .xlsm')

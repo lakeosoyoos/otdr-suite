@@ -143,7 +143,7 @@ def _popup(at, label):
 
 
 def _popup_open(at):
-    return any(b.label == 'Allow' for b in at.button)
+    return any(b.key == 'clear_traces_allow' for b in at.button)
 
 
 def _clear_and_allow(at):
@@ -161,7 +161,8 @@ def _loaded():
 
 def test_clear_traces_asks_before_it_clears():
     """A report can be minutes of engine time: the button says what it will
-    take and waits for Allow (Robert 2026-09-28)."""
+    take and waits for its own Clear Traces button (Robert 2026-09-28; named
+    for what it does 2026-10-02, it read 'Allow')."""
     at = _loaded()
     assert not _popup_open(at)
     _clear(at).click().run()
@@ -170,7 +171,7 @@ def test_clear_traces_asks_before_it_clears():
     assert len(dialog) == 1
     said = ' '.join(m.value for m in dialog[0].markdown)
     assert 'traces' in said and 'reports' in said
-    assert [b.label for b in dialog[0].button] == ['Cancel', 'Allow']
+    assert [b.label for b in dialog[0].button] == ['Cancel', 'Clear Traces']
     # nothing has gone yet
     assert _box(at, 'A Folder').value == A and _box(at, 'B Folder').value == B
     assert 'sr_result' in at.session_state and 'viewer_target' in at.session_state

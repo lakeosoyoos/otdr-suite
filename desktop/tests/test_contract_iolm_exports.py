@@ -1,4 +1,4 @@
-"""iOLM-export handling for the AWS / IIG MT.1085 profile.
+"""iOLM-export handling for the contract profile.
 
 Span 29 (Ingomar-Musselshell, 432 fibers, shot as iOLM and exported to .sor)
 showed three things the engine had never met:
@@ -6,7 +6,7 @@ showed three things the engine had never met:
   * A BROKEN fiber's break is written as a reflective '1F' event carrying the
     whole loss, with NO 'E' end-of-fiber marker.  Healthy fibers carry one.
     With no marker the engine read the trace as endless and printed nothing
-    for the two fibers NCT's own review marks BROKEN (F289 at the panel,
+    for the two fibers the prime contractor's own review marks BROKEN (F289 at the panel,
     F380 904 m out).
   * The crews shot straight from the panel, so the panel connector IS the
     0 km event and there is no launch reel.  The connector gates look for the
@@ -16,8 +16,8 @@ showed three things the engine had never met:
     landed on nearly every ILA cell and buried the real findings.
 
 Three engine switches handle those.  Every one ships inert -- OFF, or the
-shipped behaviour -- and only the IIG profile turns them on, so Default,
-Lumen and Zayo render exactly as before.  These tests pin the arithmetic of
+shipped behaviour -- and only the contract profile turns them on, so Default,
+customer L and customer Z render exactly as before.  These tests pin the arithmetic of
 each switch on synthetic records, that OFF really is off, and the wiring.
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ from conftest import (
 sys.path.insert(0, str(SPLICEREPORT_DIR))
 import splicereportmatchexfo as E  # noqa: E402
 
-IIG = "AWS / IIG MT.1085"
+CONTRACT_PROFILE = "AWS / IIG MT.1085"
 
 
 def _hub():
@@ -167,7 +167,7 @@ def test_default_fixture_run_is_unchanged_by_the_switches(tmp_path):
 
 def test_switches_on_do_not_break_a_reel_shot_span(tmp_path):
     """The fixtures were shot with launch reels and carry end markers; with
-    every IIG switch on they must still run and flag the same cells (the
+    every contract profile switch on they must still run and flag the same cells (the
     fallback finds nothing to synthesize, the direct pairing never triggers)."""
     o1 = tmp_path / "d.xlsx"; o2 = tmp_path / "i.xlsx"
     rc1, m1, _ = run_splicereport(FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, o1)
@@ -179,26 +179,26 @@ def test_switches_on_do_not_break_a_reel_shot_span(tmp_path):
            [(c['fiber'], c['splice'], c['loss'], c['category']) for c in m2["cells"]]
 
 
-def test_iig_profile_turns_the_switches_on_and_the_average_connector_gate():
+def test_contract_profile_turns_the_switches_on_and_the_average_connector_gate():
     hub = _hub()
-    ex = hub._engine_extras_from_profile(IIG)
+    ex = hub._engine_extras_from_profile(CONTRACT_PROFILE)
     assert ex["IOLM_END_FALLBACK"] == 1 and ex["PANEL_CONN_DIRECT"] == 1
     assert ex["FQA_DURATION_TAG"] == 0
-    conn = hub._conn_settings_from_profile(IIG)
+    conn = hub._conn_settings_from_profile(CONTRACT_PROFILE)
     assert conn["LAUNCH_CONN_AVG_MIN_DB"] == 0.50
-    assert hub._overrides_from_settings(hub._otdr_settings_from_profile(IIG))["LAUNCH_CONN_UNI_MIN_DB"] == 0.0
+    assert hub._overrides_from_settings(hub._otdr_settings_from_profile(CONTRACT_PROFILE))["LAUNCH_CONN_UNI_MIN_DB"] == 0.0
     assert conn["LAUNCH_CONN_LOSS_MIN_DB"] == 0.65
 
 
 def test_other_profiles_leave_the_switches_alone():
     hub = _hub()
     for prof in hub.CUSTOMER_PROFILES:
-        if prof == IIG:
+        if prof == CONTRACT_PROFILE:
             continue
         ex = hub._engine_extras_from_profile(prof)
         assert not any(k in ex for k in ("IOLM_END_FALLBACK", "PANEL_CONN_DIRECT",
                                          "FQA_DURATION_TAG")), prof
-    # The average connector gate is no longer IIG-only: every FastReporter
+    # The average connector gate is no longer contract-only: every FastReporter
     # customer template (Sep 2026) carries a Bidir Connector Loss, which is
     # exactly that gate.  Since 2026-09-29 the engine baseline has it on too,
     # at the Bidir connector loss value (Robert: flag a connector when either

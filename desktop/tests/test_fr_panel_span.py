@@ -133,7 +133,7 @@ def test_a_one_sample_before_window_takes_the_after_slope_in_both_modes():
 
 def test_suite_mode_measures_and_fr_mode_shows_fr_s_stored_value():
     # FR mode shows what FR shows, stored or measured; OTDR Suite mode always
-    # measures (Robert, 2026-09-23).  Plant a wrong stored value on a Zayo key
+    # measures (Robert, 2026-09-23).  Plant a wrong stored value on a BETA span key
     # and only FR mode's call may return it.
     _run("""
         fp = os.path.join(BDR, 'ORPVL.ZYO-OR-DES-0048.1550.0355_1550.bdr')

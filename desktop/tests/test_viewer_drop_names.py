@@ -217,7 +217,7 @@ def _js_func(name):
 
 
 _STUBS = r"""
-const DROP_EXTS = ['.sor', '.json', '.trc', '.zip'];
+const DROP_EXTS = ['.sor', '.json', '.trc', '.zip', '.olts'];
 const DROP_BATCH_FILES = 32, DROP_BATCH_BYTES = 4 * 1024 * 1024;
 var gDropFolder = new WeakMap(), gDropInFlight = false, gAutoFit = true;
 var gRemovedFiles = new Set(), gTraces = [], gInfo = null, gLoadFailures = [];
@@ -289,7 +289,8 @@ _CASES = r"""
 @pytest.fixture(scope='module')
 def page(tmp_path_factory):
     funcs = '\n'.join(_js_func(n) for n in ('_parentName', '_dropOk', '_dropBatches',
-                                            'handleFilesDrop', 'folderLabel', 'reportJob'))
+                                            'handleFilesDrop', 'isOltsFile', 'folderLabel',
+                                            'reportJob'))
     path = tmp_path_factory.mktemp('drop_names') / 'drop.js'
     path.write_text(_STUBS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)

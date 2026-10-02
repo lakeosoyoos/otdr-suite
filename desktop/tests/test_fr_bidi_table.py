@@ -232,8 +232,8 @@ def test_the_customer_path_gives_the_same_table_from_the_sor_pair():
     """Fiber 0017 as a customer supplies it -- the two .sor, nothing of FR's
     -- against FR's merged table read from its .bdr: exact, every row."""
     _run("""
-        pa = FIX + '/zayo_sor/ORPVL.ZYO-OR-DES-0048.1550.0017.sor'
-        pb = FIX + '/zayo_sor/ZYO-OR-DES-0048.ORPVL.1550.0017.sor'
+        pa = FIX + '/span432_sor/ORPVL.ZYO-OR-DES-0048.1550.0017.sor'
+        pb = FIX + '/span432_sor/ZYO-OR-DES-0048.ORPVL.1550.0017.sor'
         ra = sr.parse_sor_full(pa, trim=False); rb = sr.parse_sor_full(pb, trim=False)
         for r, side in ((ra, 'a'), (rb, 'b')):
             r['_source'] = 'sor'; r['_span_side'] = side

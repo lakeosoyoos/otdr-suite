@@ -1,0 +1,53 @@
+{
+ "source": "EXFO's own library (Metrino.Oltsx 1.4, FastReporter 3.21) loading OLTSFX_SAMPLE.olts: OltsStorage.Load, then each measurement's ABResults / BAResults / Results",
+ "reference": {
+  "wl_nm": 1550,
+  "ref_ab": 0.5573408291176437,
+  "ref_ba": 0.038325413167015224,
+  "power_ab": -0.0002659611067792064,
+  "power_ba": 1.6224713856566242,
+  "power_source": "EXFO's LoopbackResultsA / LoopbackResultsB .InitialPowerReference at 1550 nm (FastReporter's FasTesT table: Ref. A->B / Ref. B->A, dBm)"
+ },
+ "fibers": {
+  "OLTSFX001": {
+   "length_m": 93529.77726180444,
+   "loss_ab": 17.91684683879258,
+   "orl_a": 32.213428405030555,
+   "loss_ba": 17.971120134874987,
+   "orl_b": 31.97332021471557,
+   "loss_avg": 17.943898706470943
+  },
+  "OLTSFX007": {
+   "length_m": 93522.10458932958,
+   "loss_ab": 17.94581168375677,
+   "orl_a": 32.15256504076772,
+   "loss_ba": 17.98750140974442,
+   "orl_b": 32.176927758042,
+   "loss_avg": 17.966606522324426
+  },
+  "OLTSFX011": {
+   "length_m": 93522.09625562174,
+   "loss_ab": 18.08689435583826,
+   "orl_a": 32.42806166961826,
+   "loss_ba": 18.11985670886606,
+   "orl_b": 31.817329761401233,
+   "loss_avg": 18.10334425996227
+  },
+  "OLTSFX721": {
+   "length_m": 93199.23398739756,
+   "loss_ab": 18.409102488764294,
+   "orl_a": 33.0300504989051,
+   "loss_ba": 18.509468458468824,
+   "orl_b": 31.90426920180594,
+   "loss_avg": 18.458995546385776
+  },
+  "OLTSFX864": {
+   "length_m": 93186.71508328669,
+   "loss_ab": 18.08914749233007,
+   "orl_a": 31.928705769891845,
+   "loss_ba": 18.163854927552276,
+   "orl_b": 32.13873868134381,
+   "loss_avg": 18.126340572047486
+  }
+ }
+}

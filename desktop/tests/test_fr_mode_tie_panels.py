@@ -1,7 +1,7 @@
-"""FastReporter mode on a Lumen tie panel shows what FastReporter shows there.
+"""FastReporter mode on a customer L tie panel shows what FastReporter shows there.
 
 Before, the FR-mode grid printed only FR's merged LOSS, and only on ordinary
-rows, so a tie panel lost everything else FR paints red with the Lumen
+rows, so a tie panel lost everything else FR paints red with the customer L
 template (Reflectance Fail -50.0, IncludeSpanStart/End True):
 
   * reflectance, judged per direction the way FR judges it -- Red Rock East
@@ -12,7 +12,7 @@ template (Reflectance Fail -50.0, IncludeSpanStart/End True):
 
 Breaks stay out: FR passes RDR4<->RDR6 F46 (broken at the panel) in both
 directions, taking the break as the span end.  So does the receive reel's far
-end on a shot with no markers: FR under Lumen paints it red (Tucson West A,
+end on a shot with no markers: FR under customer L paints it red (Tucson West A,
 -48.0 dB at 2.1309 km) but the files' own setting leaves the span end out and
 no tech ever graded it.
 """

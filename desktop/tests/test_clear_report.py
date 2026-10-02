@@ -283,7 +283,7 @@ def test_clear_traces_allow_forgets_the_saved_reports(hub):
     _press_clear_traces(at)
     said = ' '.join(m.value for m in at.get('dialog')[0].markdown)
     assert 'fresh run' in said
-    _btn(at, 'Allow').click().run()
+    next(b for b in at.button if b.key == 'clear_traces_allow').click().run()
     assert not at.exception, at.exception
     for w in ('sr', 'uni', 'ss'):
         assert not os.path.exists(saved[w]), w
@@ -302,7 +302,7 @@ def test_clear_traces_cancel_keeps_the_saved_reports(hub):
 def test_the_same_folder_needs_a_fresh_run_after_a_clear(hub):
     at, saved = hub
     _press_clear_traces(at)
-    _btn(at, 'Allow').click().run()
+    next(b for b in at.button if b.key == 'clear_traces_allow').click().run()
     trace_box(at, 'a').input(A).run()
     trace_box(at, 'b').input(B).run()
     at.session_state['uni_folder_input'] = A
