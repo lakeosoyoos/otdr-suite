@@ -264,7 +264,11 @@ def test_fiber_colours_toggle_off_to_fastreporter_blue_and_black():
     mid gray (FR3's #0000f7 / #000 toned down), and the choice is remembered."""
     html = open(VIEWER_HTML, encoding='utf-8').read()
     assert "const FR_COLORS = { a: '#7b96d8', b: '#8a8a8a' }" in html
-    assert 'id="cb-colors" checked' in html
+    # Off by default (Robert 2026-10-01): only a saved '1' turns the colors on.
+    assert '<input type="checkbox" id="cb-colors">' in html
+    assert 'id="cb-colors" checked' not in html
+    assert "let gFiberColors = false;" in html
+    assert "localStorage.getItem('otdr_viewer_fiber_colors') === '1'" in html
     fn = html[html.index('function nextColor('):][:700]
     assert '!gFiberColors' in fn and "startsWith('b-') ? FR_COLORS.b : FR_COLORS.a" in fn
     tog = html[html.index('function setFiberColors('):][:600]

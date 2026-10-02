@@ -10,13 +10,12 @@ Display only: no number, event or flag moves.
      says nothing meanwhile; the box and the buttons show what was asked for
      from the start.
 #39  1. The A/B marker box sat on marker B's flag (top right of the chart).
-        It moves to the top left, or below the flags' row when both top
-        corners hold a flag.
+        Main's window-size audit moves it (placeMarkerReadout), tested there.
      2. A report link (?fiber=354&km=44.099) zoomed the chart but left the
         table on its first column.  The table goes to the column nearest the
         km and flashes its header.
      3. The dB title ran off a short chart ("signal (dB, descending = los").
-        It stays on the canvas, a size smaller when even that is too short.
+        Main's window-size audit draws the longest wording that fits.
      4. Empty cells: "-" in the one-direction table, "---" in the A+B ones.
         "---" everywhere, FastReporter's own mark.
      5. The browser tab read "Streamlit" while the hub reran
@@ -207,40 +206,6 @@ def test_the_box_counts_what_is_on_its_way():
     assert 'box.value = fiberRangeText(fibers);' in fn
 
 
-# ─── #39.1: the marker box keeps clear of the markers' flags ────────────────
-
-@needs_jsc
-def test_the_marker_box_moves_off_a_flag(tmp_path):
-    prog = ('const MARKER_BOX_GAP = 10, MARKER_FLAG_W = 16, MARKER_FLAG_H = 13;\n'
-            + _js_func(SRC, 'markerBoxSpot') + r"""
-var W = 1000, w = 290, left = 56;       // the box's usual spot: x 700..990
-print('OUT ' + JSON.stringify({
-  none: markerBoxSpot([], w, W, left),
-  clearOfIt: markerBoxSpot([300, 600], w, W, left),
-  bUnder: markerBoxSpot([500, 900], w, W, left),
-  flagEdge: markerBoxSpot([684], w, W, left),       // its 16 px flag reaches 700
-  bothCorners: markerBoxSpot([100, 900], w, W, left),
-  noWidth: markerBoxSpot([900], w, 0, left),
-}));
-""")
-    out = _jsc(prog, tmp_path)
-    assert out == {'none': 'right', 'clearOfIt': 'right', 'bUnder': 'left',
-                   'flagEdge': 'left', 'bothCorners': 'below', 'noWidth': 'right'}
-
-
-def test_the_marker_box_is_placed_on_every_update():
-    fn = _js_func(SRC, 'updateMarkerReadout')
-    assert fn.index('box.innerHTML = html;') < fn.index(
-        "if (typeof placeMarkerBox === 'function') placeMarkerBox(box);")
-    place = _js_func(SRC, 'placeMarkerBox')
-    assert 'markerBoxSpot(flags, box.offsetWidth, W, M.l)' in place
-    assert 'box.dataset.spot = spot;' in place
-    # the status line follows the box to whichever side it went
-    ro = _js_func(SRC, 'placeReadout')
-    assert "box.dataset.spot === 'below'" in ro and "box.dataset.spot === 'left'" in ro
-    assert "const top = spot === 'below' ? M.t + MARKER_FLAG_H + 6 : MARKER_BOX_GAP;" in place
-
-
 # ─── #39.2: a report link takes the table to its column ─────────────────────
 
 _GO_STUBS = r"""
@@ -303,46 +268,13 @@ print('OUT ' + JSON.stringify(out));
 
 def test_the_link_asks_for_the_column_after_its_zoom():
     fn = _js_func(SRC, 'applyTarget')
-    z = fn.index("zoomToKm(linkDispKm(km, t.src, t.dir || 'both', fiber), 2.5);")
+    z = fn.index("zoomToKm(linkDispKm(km, t.src, t.dir || 'both', fiber), gFecMode ? 0.3 : 2.5);")
     assert z < fn.index("gTableGoKm = { km: linkDispKm(km, t.src, t.dir || 'both', fiber), fiber: +fiber };")
     assert z < fn.index('if (!gTableBusy) tableGoKm();')
     assert 'tableGoKm();' in _js_func(SRC, 'tableSettled')
     assert 'queueMicrotask(() => tableStepEnd(wasBusy));' in _js_func(SRC, 'renderEventTable')
     assert 'if (!gTableBusy) tableGoKm();' in _js_func(SRC, 'tableStepEnd')
     assert 'table.fr-table th.fr-evhdr.fr-hit {' in SRC
-
-
-# ─── #39.3: the dB title fits ───────────────────────────────────────────────
-
-@needs_jsc
-def test_the_db_title_stays_on_the_canvas(tmp_path):
-    prog = ('const Y_TITLE_PAD = 3, Y_TITLE_MIN_PX = 6;\n' + _js_func(SRC, 'yTitleFit') + r"""
-var W11 = 158, M = { t: 12, b: 36 }, rows = [];
-for (var H = 80; H <= 1100; H += 7) {
-  var r = { y: M.t, h: H - M.t - M.b };
-  var f = yTitleFit(W11, 11, r.y + r.h / 2, H);
-  rows.push([H, f.font, f.cy - f.width / 2, f.cy + f.width / 2, r.y + r.h / 2, f.cy]);
-}
-print('OUT ' + JSON.stringify(rows));
-""")
-    rows = _jsc(prog, tmp_path)
-    for H, font, top, bot, mid, cy in rows:
-        if 158 * 6 / 11 + 6 <= H:               # room for it at the smallest size
-            assert top >= 3 - 1e-9 and bot <= H - 3 + 1e-9, (H, top, bot)
-        if H >= 158 + 6:
-            assert font == 11, H                 # full size whenever it fits
-        if H - 48 >= 158 + 6:                    # the plot itself holds it: centered on it
-            assert cy == mid, H
-    # the PDF's fiber charts are 360 px tall: full size, centered on the plot
-    assert all(r[1] == 11 and r[5] == r[4] for r in rows if r[0] >= 220)
-
-
-def test_draw_grid_places_the_title_with_the_fit():
-    g = _js_func(SRC, 'drawGrid')
-    assert "yTitleFit(ctx.measureText(Y_TITLE).width, 11, r.y + r.h / 2," in g
-    assert 'ctx.translate(14, yt.cy);' in g
-    assert "ctx.fillText(Y_TITLE, 0, 0);" in g
-    assert "const Y_TITLE = 'signal (dB, descending = loss)';" in SRC
 
 
 # ─── #39.4: one mark for an empty cell ──────────────────────────────────────

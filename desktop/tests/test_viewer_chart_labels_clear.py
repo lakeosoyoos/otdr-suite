@@ -307,4 +307,5 @@ def test_draw_resets_the_pool_and_shows_the_tip():
     fn = _fn("draw")
     assert fn.index("gLabelHits = [];") < fn.index("chartLabels(r);") < fn.index("drawGrid(r);")
     assert "for (const t of numOrder)" in fn
-    assert "if (gMouse && !hovered) drawLabelTip();" in fn
+    assert "drawOverlay(r);" in fn
+    assert "if (gMouse && !hovered) drawLabelTip();" in _fn("drawOverlay")

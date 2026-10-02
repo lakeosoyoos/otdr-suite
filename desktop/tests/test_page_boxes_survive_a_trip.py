@@ -135,3 +135,19 @@ def test_an_emptied_save_box_stays_empty_after_a_trip(tmp_path):
     _trip(at, 'Splice Report')
     assert _box(at, 'Save Reports To').value == ''
 
+
+
+def test_the_fec_folder_boxes_survive_a_trip(tmp_path):
+    """Splice Report FEC's own A end / B end boxes: a trip to Viewer FEC (or
+    any tool) and back finds them as the tech left them."""
+    ea, eb = tmp_path / 'endA', tmp_path / 'endB'
+    ea.mkdir(); eb.mkdir()
+    at = _open(_hub(None, None), 'Splice Report FEC')
+    _box(at, 'A End FEC (Folder or .zip)').input(str(ea)).run()
+    _box(at, 'B End FEC (Optional) (Folder or .zip)').input(str(eb)).run()
+    _box(at, 'Save Reports To').input(str(tmp_path)).run()
+    _trip(at, 'Splice Report FEC', via='Viewer FEC')
+    assert not at.exception, at.exception
+    assert _box(at, 'A End FEC (Folder or .zip)').value == str(ea)
+    assert _box(at, 'B End FEC (Optional) (Folder or .zip)').value == str(eb)
+    assert _box(at, 'Save Reports To').value == str(tmp_path)

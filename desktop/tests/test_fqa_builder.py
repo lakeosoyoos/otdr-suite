@@ -1118,7 +1118,8 @@ def test_the_app_offers_the_fqa_builder_and_the_suite_does_not(monkeypatch):
     at = run_streamlit(default_timeout=180).run()
     assert not at.exception
     tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    assert tool.options == ['Viewer', 'Splice Report', 'Unidirectional',
+    assert tool.options == ['Viewer', 'Splice Report', 'Splice Report FEC', 'Viewer FEC',
+                            'Unidirectional',
                             'Secret Sauce', 'FQA Builder', 'Field Capture']
     monkeypatch.delenv('OTDR_SUITE_EDITION')
     at = run_streamlit(default_timeout=180).run()

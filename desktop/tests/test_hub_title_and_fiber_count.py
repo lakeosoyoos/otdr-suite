@@ -66,8 +66,10 @@ print('OUT ' + JSON.stringify({ seen: out, installed: again }));
 
 def test_the_title_keep_is_installed_on_every_run():
     assert "\n_install_title_keep()\n" in APP
-    assert "st.set_page_config(page_title='OTDR Suite', layout='wide'," in APP
-    assert "PAGE_TITLE = 'OTDR Suite'" in APP
+    # the product's name, from its one place (PRODUCT_NAME), in both
+    assert "st.set_page_config(page_title=PRODUCT_NAME, layout='wide'," in APP
+    assert "PAGE_TITLE = PRODUCT_NAME" in APP
+    assert APP.index("PRODUCT_NAME = os.environ.get(") < APP.index("PAGE_TITLE = PRODUCT_NAME")
 
 
 # ─── 6. one fiber ───────────────────────────────────────────────────────────

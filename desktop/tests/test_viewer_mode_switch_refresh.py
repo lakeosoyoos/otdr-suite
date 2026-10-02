@@ -48,7 +48,7 @@ def _js_func(name):
 _STUBS = r"""
 var gAnalysisMode = 'suite', gInfo = null, gTraces = [], gThresholds = null;
 var gLaunchA = 0, gSpanDecl = null, gEndRefl = [], gFrameWarn = '';
-var gDropInFlight = false, gModePollBusy = false;
+var gDropInFlight = false, gModePollBusy = false, gFecMode = false;
 var calls = { table: 0, draw: 0, list: 0, mode: 0 };
 var listMode = 'suite', apiMode = 'suite', gate = 0.16;
 function activeGateDb() { return gate; }
@@ -117,7 +117,7 @@ _CASES = r"""
 
 @pytest.fixture(scope='module')
 def res(tmp_path_factory):
-    funcs = '\n'.join(_js_func(n) for n in ('loadInfo', 'pollAnalysisMode'))
+    funcs = '\n'.join(_js_func(n) for n in ('loadInfo', 'pollAnalysisMode', 'frameWarnText'))
     path = tmp_path_factory.mktemp('mode_switch') / 'mode.js'
     path.write_text(_STUBS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)

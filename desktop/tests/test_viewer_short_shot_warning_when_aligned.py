@@ -57,7 +57,7 @@ needs_jsc = pytest.mark.skipif(not JSC.exists(), reason="no JavaScriptCore shell
 def test_the_warning_shows_only_while_a_short_b_is_lined_up_against_a(tmp_path):
     code = "\n".join([r"""
 var WARN = '   ⚠ B never reaches the end of the fiber';
-var gFrameWarn = '', gTraces = [], gStacked = true, gHaveA = false;
+var gFrameWarn = '', gTraces = [], gStacked = true, gHaveA = false, gFecMode = false;
 function T(dir, src, visible) { return {key: src + '-1', dir: dir, src: src, fiber: 1, visible: visible !== false}; }
 var out = {};
 function run(name, warn, stacked, traces) {
