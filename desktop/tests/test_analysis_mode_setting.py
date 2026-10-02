@@ -114,7 +114,7 @@ def test_the_sidebar_control_sits_under_the_tool_list():
     assert ".toggle(" in body and "value=not _on" in body and "st.rerun()" in body
     # Keyless on purpose: a keyed switch came back from the App's home screen
     # in its old position and flipped OTDR Mode to FR Mode on the next run.
-    assert "m.toggle('Analysis mode', value=not _on, label_visibility='collapsed')" in body
+    assert "m.toggle('Analysis Mode', value=not _on, label_visibility='collapsed')" in body
     assert "st.radio(" not in body                      # a switch, not a radio
     # the radio's key holds the label; the mode lives in its own slot
     assert "st.session_state['analysis_mode'] = _mode" in body

@@ -291,7 +291,7 @@ def test_one_direction_connector_lives_in_the_otdr_table():
     import app as hub
     rows = {r[0]: r for r in hub.OTDR_ROWS}
     row = rows['unidir_connector_loss']
-    assert row[1] == 'Connector loss (1 direction)'
+    assert row[1] == 'Connector Loss (1 Direction)'
     assert row[2] == 0.649 and row[4] is True
     assert hub._OTDR_KEY_TO_ENGINE_GLOBAL['unidir_connector_loss'] == 'LAUNCH_CONN_UNI_MIN_DB'
     assert 'unidir_connector_loss' in hub.OTDR_DEFAULT_APPLY

@@ -185,8 +185,8 @@
       </tbody>
     </table>
     <div class="apply-btn-wrap">
-      <button class="apply-btn" id="apply-btn">Apply settings</button>
-      <button class="reset-btn" id="reset-btn" style="display:none;">Reset to defaults</button>
+      <button class="apply-btn" id="apply-btn">Apply Settings</button>
+      <button class="reset-btn" id="reset-btn" style="display:none;">Reset to Defaults</button>
       <span class="status" id="status"></span>
     </div>
   </div>
@@ -405,7 +405,7 @@ function renderRows() {
     if (row.band) {
       const h2 = document.createElement("span");
       h2.className = "band";
-      h2.textContent = row.band[1] || "high";
+      h2.textContent = row.band[1] || "High";
       td2.appendChild(h2);
     }
     const u2 = document.createElement("span");
@@ -446,7 +446,7 @@ function renderRows() {
     if (row.band) {
       const h3 = document.createElement("span");
       h3.className = "band";
-      h3.textContent = row.band[0] || "low";
+      h3.textContent = row.band[0] || "Low";
       td3.appendChild(h3);
     }
     const u3 = document.createElement("span");

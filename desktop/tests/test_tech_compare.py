@@ -226,7 +226,7 @@ def test_upload_box_sits_under_the_a_b_inputs():
     keys = SRC.split('def _sr_span_keys(span):', 1)[1].split('\ndef ', 1)[0]
     assert "tech='sr_tech_xlsx'" in keys                       # span 1's key
     assert body.index("k_tech = _k['one'], _k['zip'], _k['tech']") < up
-    assert body.index("st.text_input('B folder', key=k_b") < up   # two-folder mode
+    assert body.index("st.text_input('B Folder', key=k_b") < up   # two-folder mode
     assert body.index("key=k_zip") < up                       # one-folder/zip mode
     page = SRC.split('def page_splice_report():', 1)[1]
     assert page.index('_sr_span_inputs(1)') < page.index('_sr_site_inputs(1, dir_a, dir_b)')
@@ -237,7 +237,7 @@ def test_comparison_is_written_to_the_report_folder_and_offered():
     body = SRC.split('def _render_tech_comparison(', 1)[1].split('\ndef ', 1)[0]
     assert "_SpliceReport_vs_Tech.xlsx" in body
     assert 'out_path = os.path.join(dest_dir,' in body
-    assert "st.download_button('⬇ Differences vs tech (Excel)'" in body
+    assert "st.download_button('⬇ Differences vs Tech (Excel)'" in body
     assert "report_error('splice report — tech comparison'" in body
 
 
@@ -279,4 +279,4 @@ def test_splice_report_page_renders_the_tech_upload_box(monkeypatch, tmp_path, m
     ups = _uploaders(at)
     if ups is not None:   # AppTest exposes uploaders on this Streamlit
         labels = [getattr(u, 'label', '') for u in ups]
-        assert any('Tech' in (l or '') and 'compare' in (l or '') for l in labels), labels
+        assert any('Tech' in (l or '') and 'Compare' in (l or '') for l in labels), labels
