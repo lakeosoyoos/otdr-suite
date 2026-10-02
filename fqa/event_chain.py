@@ -558,7 +558,7 @@ def splice_distances_from_manifest(
     # worksheet.  Blank, with the reason (Robert, 2026-10-01).
     if manifest.get('event_job'):
         return _result(span=span_m, closures=[], warnings=warnings + [
-            'this job has under 80 fibres, so the Splice Report lists its '
+            'this job has under 80 fibers, so the Splice Report lists its '
             'events rather than closures and makes no splice calls; the '
             'Event Log distances are left to the tech'])
 

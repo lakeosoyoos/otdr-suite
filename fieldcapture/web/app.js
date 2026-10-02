@@ -266,7 +266,7 @@
         setMsg(el.jobMsg, `${file.name} was saved to Downloads; email it to the office.`, 'ok');
       }
     } catch (e) {
-      if (e && e.name === 'AbortError') setMsg(el.jobMsg, 'Share cancelled.');
+      if (e && e.name === 'AbortError') setMsg(el.jobMsg, 'Share canceled.');
       else setMsg(el.jobMsg, 'Could not send the test: ' + (e && e.message ? e.message : e), 'err');
     }
   }
@@ -472,7 +472,7 @@
         setMsg(el.sendMsg, `${file.name} was saved to Downloads; attach it to an email to the office.`, 'ok');
       }
     } catch (e) {
-      if (e && e.name === 'AbortError') setMsg(el.sendMsg, 'Share cancelled.');
+      if (e && e.name === 'AbortError') setMsg(el.sendMsg, 'Share canceled.');
       else setMsg(el.sendMsg, 'Could not send the package: ' + (e && e.message ? e.message : e), 'err');
     } finally {
       renderPkgGate();
