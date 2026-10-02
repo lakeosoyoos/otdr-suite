@@ -122,7 +122,11 @@ def test_the_sample_span_events_name_the_app(settings_dir, monkeypatch):
     assert not at.exception, list(at.exception)
     assert at.session_state["app_mode"] == "project"
     assert not [t for t in _seen(at) if "Suite" in t]
-    import app
+    # Import the hub with the edition unset: a first import here would fix
+    # PRODUCT_NAME at "OTDR App" for every later test in this process.
+    with monkeypatch.context() as m:
+        m.delenv("OTDR_SUITE_EDITION", raising=False)
+        import app
     monkeypatch.setattr(app, "PRODUCT_NAME", APP)
     assert app._how_shown("OTDR Suite") == APP                # the log's own value
     assert app._how_shown(None) == APP
