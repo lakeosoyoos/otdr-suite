@@ -118,6 +118,7 @@ def test_routes_serve_and_take_the_state_and_mode_names_it():
 _STUBS = r"""
 var gInfo = { dir_a: '/span/A', dir_b: '/span/B' };
 var gTraces = [], gRemovedFiles = new Set(), gAddDir = 'both', gClientId = 'me';
+var gLoadingKeys = new Set();
 var gStateVer = 0, gStateSig = '', gStateReady = true, gStatePushT = null, gStateApplying = 0;
 var posts = [], loads = [], clears = 0, timers = [], gSelLoading = false, gStateLoad = null;
 function setTimeout(fn) { timers.push(fn); return timers.length; }

@@ -209,7 +209,7 @@ def test_clear_traces_brings_the_tools_loader_back(page):
     at = _open(_hub(A, B), page)
     assert _loaders(at) == []
     next(b for b in at.sidebar.button if b.label == 'Clear Traces').click().run()
-    next(b for b in at.button if b.label == 'Allow').click().run()
+    next(b for b in at.button if b.key == 'clear_traces_allow').click().run()
     assert not at.exception, at.exception
     assert any('Browse for Folder' in l for l in _loaders(at))
 
@@ -217,7 +217,7 @@ def test_clear_traces_brings_the_tools_loader_back(page):
 def test_clear_traces_brings_the_splice_reports_loader_back():
     at = _open(_hub(A, B), 'Splice Report')
     next(b for b in at.sidebar.button if b.label == 'Clear Traces').click().run()
-    next(b for b in at.button if b.label == 'Allow').click().run()
+    next(b for b in at.button if b.key == 'clear_traces_allow').click().run()
     assert 'Select Traces' in _main(at)['radio']
 
 

@@ -80,7 +80,7 @@ def test_clear_traces_on_another_tool_still_puts_the_site_names_back_to_a_and_b(
     assert _sites(at) != ('A', 'B')
     _open(at, 'Viewer')
     next(b for b in at.sidebar.button if b.label == 'Clear Traces').click().run()
-    next(b for b in at.button if b.label == 'Allow').click().run()
+    next(b for b in at.button if b.key == 'clear_traces_allow').click().run()
     assert not at.exception, at.exception
     # A few more runs away from the page: the "A" and "B" that Clear Traces
     # writes into the boxes are dropped too while the page is not drawn.
