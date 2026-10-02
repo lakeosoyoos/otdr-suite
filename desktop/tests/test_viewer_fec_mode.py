@@ -125,6 +125,156 @@ def test_fec_table_ends_with_min_max_average_that_pins():
     assert '#event-panel.agg-unpinned table.fr-table tfoot { position: static; }' in HTML
 
 
+JSC = ('/System/Library/Frameworks/JavaScriptCore.framework/Versions/'
+       'Current/Helpers/jsc')
+
+
+def _paint_fec(switches, with_marks=False):
+    """Run the real paintFecGrid under JavaScriptCore on three made-up
+    grades and return the table markup it builds.  F1 fails on loss (the
+    connector plus one event behind it), F2 on reflectance, F3 passes with a
+    negative connector loss (a gainer)."""
+    if not os.path.exists(JSC):
+        pytest.skip('JavaScriptCore shell not available')
+    import json, tempfile
+
+    def fn(name):
+        i = HTML.index(f'function {name}(')
+        return HTML[i:HTML.index('\n}\n', i) + 3]
+
+    def line(pat):
+        return re.search(pat, HTML).group(0) + '\n'
+
+    grades = {'A': {
+        '1': {'found': True, 'conn_km': 1.0121, 'conn_loss': 0.306, 'loss': 0.549,
+              'combined': [{'loss': 0.243, 'km': 1.06}], 'refl': -53.0,
+              'fail_loss': True, 'fail_refl': False},
+        '2': {'found': True, 'conn_km': 1.0117, 'conn_loss': 0.100, 'loss': 0.100,
+              'combined': [], 'refl': -45.2, 'fail_loss': False, 'fail_refl': True},
+        '3': {'found': True, 'conn_km': 1.0050, 'conn_loss': -0.032, 'loss': -0.032,
+              'combined': [], 'refl': -58.0, 'fail_loss': False, 'fail_refl': False},
+    }}
+    traces = [{'fiber': f, 'src': 'a', 'key': f'a-{f}', 'color': '#000',
+               'data': {'wavelength_nm': 1550}} for f in (1, 2, 3)]
+    js = ("var gInfo=null, gGridGoTo=null, gTableExport=null, gPickKey=null, gDrawerMarks=[];"
+          " const FR_ROW_H=22; var window={getSelection:()=>''};\n"
+          "function draw(){} function zoomToKm(){} function pinnedFootH(){return 0}"
+          " function setReadout(){} function pickRow(){}\n"
+          "var OUT='';\n"
+          "function el(){return {className:'',style:{},_ih:'',"
+          "set innerHTML(v){this._ih=v; if(this.className==='fr-table') OUT=v;},"
+          " get innerHTML(){return this._ih}, appendChild(){}, querySelectorAll(){return []},"
+          " addEventListener(){}, tFoot:null, tHead:null, get tBodies(){return [el()]}};}\n"
+          "var document={createElement:el};\n"
+          + line(r"function flagsOff\(\).*")
+          + line(r"const pfClass = .*") + line(r"const pfMark = .*")
+          + line(r"let gFailCellsOnly = false;") + line(r"let gWarnCellsOnly = false;")
+          + line(r"const cellFilterOn = .*") + "let gShowGainers = true;\n"
+          + line(r"const gainerHidden = .*")
+          + fn('isPicked') + fn('fecGateText') + fn('paintFecGrid')
+          + ''.join(f"{k} = {json.dumps(v)};\n" for k, v in switches.items())
+          + f"var hint=el(); paintFecGrid({json.dumps(traces)}, {json.dumps({'grades': grades})}, el(), hint);\n"
+          + "print(hint.textContent); print(JSON.stringify(gDrawerMarks)); print(OUT);\n")
+    with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as fh:
+        fh.write(js)
+    try:
+        p = subprocess.run([JSC, fh.name], capture_output=True, text=True)
+    finally:
+        os.unlink(fh.name)
+    assert p.returncode == 0 and 'Exception' not in p.stdout, p.stdout + p.stderr
+    hint, marks, out = p.stdout.split('\n', 2)
+    body = re.search(r'<tbody>(.*)</tbody>', out, re.S).group(1)
+    foot = re.search(r'<tfoot>(.*)</tfoot>', out, re.S)
+    if with_marks:
+        return json.loads(marks)
+    return hint, body, foot.group(1) if foot else ''
+
+
+def _cell(html, fiber, col):
+    row = re.search(rf'<tr[^>]*data-key="a-{fiber}"[^>]*>(.*?)</tr>', html, re.S)
+    if not row:
+        return None
+    return re.search(rf'<td data-col="{col}"[^>]*>(.*?)</td>', row.group(1)).group(1)
+
+
+def _agg(foot, label, col_index):
+    row = re.search(rf'<td class="fr-rowlab">{label}</td>(.*?)</tr>', foot, re.S).group(1)
+    return re.sub(r'<[^>]+>', '', re.findall(r'<td[^>]*>.*?</td>', row)[col_index])
+
+
+def test_fec_table_all_switches_off_prints_every_cell():
+    hint, body, foot = _paint_fec({})
+    assert [_cell(body, f, 'loss') for f in (1, 2, 3)] == ['0.549', '0.100', '-0.032']
+    assert _cell(body, 2, 'refl') == '-45.2'
+    # Minimum / Maximum / Average strip; columns: 3 blanks, km, conn, comb, loss, refl
+    assert _agg(foot, 'Minimum', 6) == '-0.032' and _agg(foot, 'Maximum', 6) == '0.549'
+
+
+def test_fec_failing_cells_only_keeps_what_failed():
+    hint, body, foot = _paint_fec({'gFailCellsOnly': True})
+    assert 'failing cells only' in hint
+    assert _cell(body, 3, 'loss') is None                 # a passing trace leaves
+    assert _cell(body, 1, 'loss') == '0.549' and _cell(body, 1, 'conn') == '0.306'
+    assert '0.243 @ 1.060 km' in body                     # what the loss adds up
+    assert _cell(body, 1, 'refl') == ''                   # F1's refl passed
+    assert _cell(body, 2, 'loss') == '' and _cell(body, 2, 'refl') == '-45.2'
+    # the strip is over the figures that print
+    assert _agg(foot, 'Maximum', 6) == '0.549' and _agg(foot, 'Minimum', 6) == '0.549'
+    assert _agg(foot, 'Maximum', 7) == '-45.2'
+
+
+def test_fec_warning_cells_only_says_fec_has_no_warnings():
+    hint, body, foot = _paint_fec({'gWarnCellsOnly': True})
+    assert 'warning cells only: FEC has no warning band' in hint
+    assert 'data-key=' not in body
+    hint, body, _ = _paint_fec({'gWarnCellsOnly': True, 'gFailCellsOnly': True})
+    assert _cell(body, 1, 'loss') == '0.549' and _cell(body, 3, 'loss') is None
+
+
+def test_fec_gainers_off_blanks_negative_losses_and_leaves_the_strip():
+    hint, body, foot = _paint_fec({'gShowGainers': False})
+    assert 'gainers hidden' in hint
+    assert _cell(body, 3, 'loss') == '' and _cell(body, 3, 'conn') == ''
+    assert _cell(body, 3, 'refl') == '-58.0'
+    assert _agg(foot, 'Minimum', 6) == '0.100' and _agg(foot, 'Minimum', 4) == '0.100'
+
+
+def test_fec_rows_pick_their_trace_and_the_chart_finds_the_row():
+    body = HTML[HTML.index('function paintFecGrid('):]
+    body = body[:body.index('\n}\n')]
+    assert 'pickRow([tr.dataset.key])' in body
+    assert 'gGridGoTo = (t) =>' in body
+    assert "tr.classList.toggle('fr-pick', isPicked(tr.dataset.key))" in body
+    hint, html, _ = _paint_fec({'gPickKey': 'a-2'})
+    assert re.search(r'data-key="a-2" class="fr-pick"', html)
+    assert not re.search(r'data-key="a-1" class="fr-pick"', html)
+
+
+def test_fec_marks_the_chart_at_the_connector_and_its_combined_events():
+    """Show Event Labels / Show Failed Event Labels draw from gDrawerMarks:
+    the FEC table hands the chart the connector (its FEC loss), each event it
+    combines (its own loss, failing with the sum) and the reflectance."""
+    (D,) = _paint_fec({}, with_marks=True)
+    assert D['mode'] == 'fec' and D['single'] is True
+    # FEC grades only the connector, so the traces keep their event numbers
+    assert D['keepNumbers'] is True
+    assert 'if (!D.keepNumbers) D.have.forEach(' in HTML
+    cols = {c['title']: c for c in D['cols']}
+    assert set(cols) == {'Panel Connector', 'Combined Event', 'Connector Refl.'}
+    conn = {c['fi']: c for c in cols['Panel Connector']['cells']}
+    assert conn[0]['avg'] == 0.549 and conn[0]['avgFail'] and conn[0]['legs']['a']['km'] == 1.0121
+    assert not conn[2]['avgFail']
+    (comb,) = cols['Combined Event']['cells']
+    assert comb['fi'] == 0 and comb['km'] == 1.06 and comb['avg'] == 0.243 and comb['avgFail']
+    refl = {c['fi']: (c['avg'], c['avgFail']) for c in cols['Connector Refl.']['cells']}
+    assert refl == {0: (-53.0, False), 1: (-45.2, True), 2: (-58.0, False)}
+    assert cols['Connector Refl.']['word'] == 'refl'
+    # the filters reach the chart: failing cells only marks only what failed
+    (D,) = _paint_fec({'gFailCellsOnly': True}, with_marks=True)
+    cols = {c['title']: [x['fi'] for x in c['cells']] for c in D['cols']}
+    assert cols == {'Panel Connector': [0], 'Combined Event': [0], 'Connector Refl.': [1]}
+
+
 def test_viewer_script_still_parses():
     jsc = ('/System/Library/Frameworks/JavaScriptCore.framework/Versions/'
            'Current/Helpers/jsc')
