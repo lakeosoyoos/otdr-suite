@@ -3160,7 +3160,6 @@ _TOP_NAV_CSS = '''<style>
   box-shadow:none !important;border-radius:0 !important;min-height:%(h)dpx;padding:0 6px !important;color:var(--nav-fg) !important}
 .st-key-top_nav button[data-testid^="stBaseButton-"]:hover p,
 .st-key-top_nav button[data-testid^="stBaseButton-"]:hover span{color:var(--nav-hi) !important}
-.st-key-top_nav button[data-testid="stBaseButton-primary"]{box-shadow:inset 0 -2px 0 var(--otdr-accent,#3b82f6) !important}
 .st-key-top_nav button[data-testid="stBaseButton-primary"] p{color:var(--nav-hi) !important;font-weight:600}
 .st-key-nav_logo button p{color:var(--nav-hi) !important;font-weight:700;font-size:15px !important}
 .st-key-nav_logo button span{color:#22c55e !important}
