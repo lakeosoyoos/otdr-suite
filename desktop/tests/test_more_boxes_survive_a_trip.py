@@ -58,7 +58,7 @@ def _trip(at, back_to, via='Viewer'):
 def _clear_traces_on(at, page):
     _open(at, page)
     next(b for b in at.sidebar.button if b.label == 'Clear Traces').click().run()
-    next(b for b in at.button if b.label == 'Allow').click().run()
+    next(b for b in at.button if b.key == 'clear_traces_allow').click().run()
     assert not at.exception, at.exception
     at.run()
     return at

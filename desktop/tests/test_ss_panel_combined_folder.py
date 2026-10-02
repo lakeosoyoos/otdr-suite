@@ -165,7 +165,7 @@ def test_clear_traces_then_the_same_span_needs_a_fresh_run(tmp_path, monkeypatch
     at.run()
     assert 'ss_pairs_result' in at.session_state
     next(b_ for b_ in at.sidebar.button if b_.label == 'Clear Traces').click().run()
-    next(b_ for b_ in at.button if b_.label == 'Allow').click().run()
+    next(b_ for b_ in at.button if b_.key == 'clear_traces_allow').click().run()
     assert not at.exception, at.exception
     _box(at, 'A Folder').input(a).run()
     _box(at, 'B Folder').input(b).run()
