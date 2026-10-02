@@ -18,7 +18,7 @@ import sys
 import textwrap
 
 from conftest import (FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
-                      SPLICEREPORT_DIR)
+                      SPLICEREPORT_DIR, clear_traces, go_tab, page_of)
 
 
 def _run(body):
@@ -428,7 +428,7 @@ def _fec_page(tmp_path, monkeypatch):
     if not a.exists():
         shutil.copytree(FIXTURE_SPLICE_A_DIR, a)
     at = run_streamlit(default_timeout=180).run()
-    at.sidebar.radio[0].set_value('Splice Report FEC').run()
+    go_tab(at, 'Splice Report FEC')
     next(t for t in at.text_input if t.label.startswith('A End FEC')).set_value(str(a)).run()
     assert not at.exception, at.exception
     return at, os.path.abspath(str(a))
@@ -459,7 +459,7 @@ def test_a_second_run_into_the_same_folder_keeps_the_first_report(tmp_path, monk
     dest.mkdir()
     (dest / 'FEC_OOS.xlsx').write_bytes(b'the first span')
     at = run_streamlit(default_timeout=180).run()
-    at.sidebar.radio[0].set_value('Splice Report FEC').run()
+    go_tab(at, 'Splice Report FEC')
     next(t for t in at.text_input if t.label.startswith('A End FEC')).set_value(str(a)).run()
     next(t for t in at.text_input if t.label == 'Save Reports To').set_value(str(dest)).run()
     next(b for b in at.button if b.label == 'Run FEC Report').click().run()
@@ -505,8 +505,11 @@ def test_the_same_gates_are_judged_as_the_engine_gets_them():
 
 
 def _clear_traces(at):
-    next(b for b in at.sidebar.button if b.label == 'Clear Traces').click().run()
-    next(b for b in at.button if b.key == 'clear_traces_allow').click().run()
+    """Clear Traces (on the Traces tab), then back to the page it was on."""
+    was = page_of(at)
+    clear_traces(at, allow=True)
+    assert not at.exception, at.exception
+    go_tab(at, was)
     assert not at.exception, at.exception
 
 
@@ -557,5 +560,5 @@ def test_clear_traces_after_a_row_click_forgets_the_fec_report(tmp_path, monkeyp
     assert not at.exception, at.exception
     _clear_traces(at)
     assert not os.path.exists(saved)
-    at.sidebar.radio[0].set_value('Splice Report FEC').run()
+    go_tab(at, 'Splice Report FEC')
     assert next(t for t in at.text_input if t.label.startswith('A End FEC')).value == ''

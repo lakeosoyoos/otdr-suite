@@ -15,7 +15,7 @@ import os
 import shutil
 
 from conftest import FIXTURE_DIR
-from test_panel_zip_mixed_folder_uni_jump import (A, B, _back, _box, _click, _hub,
+from test_panel_zip_mixed_folder_uni_jump import (A, B, _back, _click, _held, _hub,
                                                    _open, _server, _viewer_url)
 from test_uni_own_folder_b_side import _done, _run, _this_tab_links, _uni_box
 from test_uni_upload_both_directions import A_TO_B, B_TO_A, _errors, _run_on_radio
@@ -98,9 +98,10 @@ def test_a_b_run_opens_the_viewer_on_b_and_back_keeps_the_typed_folder(tmp_path,
     seen = _click(links[0])
     assert '&dir=b' in _viewer_url(seen)
     assert _server() == (None, ran)
-    # The left panel's B box names the folder, not its temporary split.
-    assert _box(seen, 'A Folder').value == ''
-    assert _box(seen, 'B Folder').value == 'both directions: B Direction (24 files)'
+    # The left panel's B box names the folder, not its temporary split (read
+    # on the Viewer: a trip to the Traces tab puts the tech's own boxes back).
+    assert _held(seen, 'A Folder') == ''
+    assert _held(seen, 'B Folder') == 'both directions: B Direction (24 files)'
     _back(seen, 'Unidirectional')
     # The typed folder again, Run On still on B, and the report.
     assert _uni_box(seen) == folder

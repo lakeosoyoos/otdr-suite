@@ -24,7 +24,7 @@ import re
 
 import pytest
 
-from conftest import VIEWER_DIR, finish_engine_run
+from conftest import VIEWER_DIR, finish_engine_run, trace_box_value
 from test_panel_zip_mixed_folder_uni_jump import A, B, _click, _hub, _open, _server
 
 HTML = (VIEWER_DIR / "viewer.html").read_text(encoding="utf-8")
@@ -68,15 +68,13 @@ def test_an_a_folder_run_still_opens_on_a(dest):
 
 def test_back_from_the_window_lands_on_the_side_the_report_ran_on():
     seen = _click({'nav': 'uni', 'sra': A, 'srb': B, 'pside': 'b'})
-    boxes = {t.label: t.value for t in seen.sidebar.text_input}
-    assert boxes['A Folder'] == A and boxes['B Folder'] == B
+    assert trace_box_value(seen, 'a') == A and trace_box_value(seen, 'b') == B
     assert next(r for r in seen.main.radio if r.label == 'Run On').value == 'B folder'
 
 
 def test_back_without_a_side_works_as_before():
     seen = _click({'nav': 'uni', 'sra': A})
-    boxes = {t.label: t.value for t in seen.sidebar.text_input}
-    assert boxes['A Folder'] == A
+    assert trace_box_value(seen, 'a') == A
     assert seen.session_state['uni_folder_input'] == A
 
 

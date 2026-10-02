@@ -22,8 +22,8 @@ import re
 import shutil
 from urllib.parse import parse_qs
 
-from conftest import (run_streamlit, finish_engine_run, FIXTURE_A_DIR,
-                      FIXTURE_B_DIR)
+from conftest import (run_streamlit, finish_engine_run, go_tab, load_traces,
+                      FIXTURE_A_DIR, FIXTURE_B_DIR)
 
 
 def _span(tmp_path, same_names=False):
@@ -40,18 +40,21 @@ def _span(tmp_path, same_names=False):
     return str(a), str(b)
 
 
-def _box(at, label):
-    return next(t for t in at.sidebar.text_input if t.label == label)
+def _set_b(at, b):
+    """Type `b` into the Traces tab's B box, then back to Secret Sauce."""
+    load_traces(at, b=b)
+    go_tab(at, 'Secret Sauce')
+    return at
 
 
 def _hub(tmp_path, monkeypatch, a, b=''):
     monkeypatch.setenv('OTDR_CACHE_DIR', str(tmp_path / 'cache'))
     monkeypatch.setenv('OTDR_DOWNLOADS_DIR', str(tmp_path / 'Downloads'))
     at = run_streamlit(default_timeout=180).run()
-    _box(at, 'A Folder').input(a).run()
+    load_traces(at, a=a)
     if b:
-        _box(at, 'B Folder').input(b).run()
-    at.sidebar.radio[0].set_value('Secret Sauce').run()
+        load_traces(at, b=b)
+    go_tab(at, 'Secret Sauce')
     assert not at.exception, at.exception
     return at
 
@@ -86,7 +89,7 @@ def test_emptying_b_takes_the_a_and_b_report_off_the_page(tmp_path, monkeypatch)
     a, b = _span(tmp_path)
     at = _run(_hub(tmp_path, monkeypatch, a, b))
     assert _summary(at).startswith('8 files'), _summary(at)
-    _box(at, 'B Folder').input('').run()
+    _set_b(at, '')
     assert not at.exception, at.exception
     assert 'the A folder loaded' in _caption(at)
     assert _summary(at) is None, f'old report still on screen: {_summary(at)}'
@@ -96,7 +99,7 @@ def test_adding_b_takes_the_a_only_report_off_the_page(tmp_path, monkeypatch):
     a, b = _span(tmp_path)
     at = _run(_hub(tmp_path, monkeypatch, a))
     assert _summary(at).startswith('4 files'), _summary(at)
-    _box(at, 'B Folder').input(b).run()
+    _set_b(at, b)
     assert not at.exception, at.exception
     assert 'the A and B folders' in _caption(at)
     assert _summary(at) is None, f'old report still on screen: {_summary(at)}'
@@ -106,8 +109,8 @@ def test_the_folders_report_comes_back_with_the_folders(tmp_path, monkeypatch):
     """Not a lost report: load the same folders again and it is there."""
     a, b = _span(tmp_path)
     at = _run(_hub(tmp_path, monkeypatch, a, b))
-    _box(at, 'B Folder').input('').run()
-    _box(at, 'B Folder').input(b).run()
+    _set_b(at, '')
+    _set_b(at, b)
     assert not at.exception, at.exception
     assert (_summary(at) or '').startswith('8 files'), _summary(at)
 
@@ -115,8 +118,8 @@ def test_the_folders_report_comes_back_with_the_folders(tmp_path, monkeypatch):
 def test_the_report_stays_while_the_folders_stay(tmp_path, monkeypatch):
     a, b = _span(tmp_path)
     at = _run(_hub(tmp_path, monkeypatch, a, b))
-    at.sidebar.radio[0].set_value('Viewer').run()
-    at.sidebar.radio[0].set_value('Secret Sauce').run()
+    go_tab(at, 'Viewer')
+    go_tab(at, 'Secret Sauce')
     assert not at.exception, at.exception
     assert (_summary(at) or '').startswith('8 files'), _summary(at)
 
@@ -127,7 +130,7 @@ def test_the_page_box_is_an_input_too(tmp_path, monkeypatch):
     monkeypatch.setenv('OTDR_CACHE_DIR', str(tmp_path / 'cache'))
     monkeypatch.setenv('OTDR_DOWNLOADS_DIR', str(tmp_path / 'Downloads'))
     at = run_streamlit(default_timeout=180).run()
-    at.sidebar.radio[0].set_value('Secret Sauce').run()
+    go_tab(at, 'Secret Sauce')
     box = next(t for t in at.main.text_input if t.key == 'ss_folder_input')
     box.input(a).run()
     _run(at)
@@ -183,8 +186,8 @@ def test_output_choice_survives_a_trip_to_another_tool(tmp_path, monkeypatch):
     a, b = _span(tmp_path)
     at = _hub(tmp_path, monkeypatch, a, b)
     _output(at).set_value('PDF').run()
-    at.sidebar.radio[0].set_value('Viewer').run()
-    at.sidebar.radio[0].set_value('Secret Sauce').run()
+    go_tab(at, 'Viewer')
+    go_tab(at, 'Secret Sauce')
     assert not at.exception, at.exception
     assert _on_screen(_output(at)) == 'PDF'
     assert _output(at).value == 'PDF'

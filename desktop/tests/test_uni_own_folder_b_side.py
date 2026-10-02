@@ -25,8 +25,9 @@ import shutil
 import tempfile
 from urllib.parse import parse_qsl
 
-from conftest import FIXTURE_SPLICE_A_DIR as PA, FIXTURE_SPLICE_B_DIR as PB, finish_engine_run
-from test_panel_zip_mixed_folder_uni_jump import (A, B, _back, _box, _click, _hub,
+from conftest import (FIXTURE_SPLICE_A_DIR as PA, FIXTURE_SPLICE_B_DIR as PB,
+                      finish_engine_run, import_trace_server)
+from test_panel_zip_mixed_folder_uni_jump import (A, B, _back, _click, _held, _hub,
                                                    _open, _server, _texts,
                                                    _viewer_url)
 from test_uni_upload_both_directions import (_drop, _files, _run_on_radio, _zip,
@@ -78,6 +79,14 @@ def _uni_box(at):
     return box.value if box.proto.set_value else ''
 
 
+def _server_counts():
+    """(A, B) fibers the Viewer's server lists, as the sidebar counted them.
+    Read off the server: the Traces tab that counts them now is a trip off
+    the Viewer, which puts the tech's own boxes back (_panel_restore)."""
+    tv = import_trace_server()
+    return tuple(len(tv.list_fibers(d)) if d else 0 for d in _server())
+
+
 def _done(at):
     return [s.value for s in at.success if s.value.startswith('Done:')]
 
@@ -99,12 +108,12 @@ def test_a_typed_b_folder_opens_the_viewer_with_its_files_on_b(tmp_path, monkeyp
     seen = _click(links[0])
     assert '&dir=b' in _viewer_url(seen) and '&src=uni' in _viewer_url(seen)
     assert _server() == (None, folder)                         # was (folder, None)
-    assert _box(seen, 'A Folder').value == ''
-    assert _box(seen, 'B Folder').value == folder
-    assert 'A: 0 fibers · B: 24 fibers' in _texts(seen.sidebar.caption)
+    assert _held(seen, 'A Folder') == ''
+    assert _held(seen, 'B Folder') == folder
+    assert _server_counts() == (0, 24)
     _back(seen, 'Unidirectional')
     # the page's own box again, with the report, and the left panel empty
-    assert _box(seen, 'A Folder').value == '' and _box(seen, 'B Folder').value == ''
+    assert _held(seen, 'A Folder') == '' and _held(seen, 'B Folder') == ''
     assert _uni_box(seen) == folder
     assert _done(seen)
 
@@ -125,7 +134,7 @@ def test_a_typed_a_folder_still_opens_on_a(tmp_path, monkeypatch):
     assert {q['dir'] for q in links} == {'a'}
     seen = _click(links[0])
     assert '&dir=a' in _viewer_url(seen)
-    assert _box(seen, 'A Folder').value == folder and _box(seen, 'B Folder').value == ''
+    assert _held(seen, 'A Folder') == folder and _held(seen, 'B Folder') == ''
     # Back: the box shows the folder again (it came back empty, and the next
     # click sent the empty box and the report went), with the report.
     _back(seen, 'Unidirectional')
@@ -152,16 +161,16 @@ def test_an_upload_of_both_directions_run_on_b_opens_the_viewer_on_b(tmp_path, d
     assert _server() == (None, ran)
     # The left panel's boxes: A empty, and B names the upload, not the
     # temporary folder it was staged in.
-    assert _box(seen, 'A Folder').value == ''
-    assert _box(seen, 'B Folder').value == 'Uploaded Files: B Direction (24 files)'
-    assert 'A: 0 fibers · B: 24 fibers' in _texts(seen.sidebar.caption)
+    assert _held(seen, 'A Folder') == ''
+    assert _held(seen, 'B Folder') == 'Uploaded Files: B Direction (24 files)'
+    assert _server_counts() == (0, 24)
     # ── 2. Back shows a plain label in the page's box, and the report ──
     _back(seen, 'Unidirectional')
     assert _uni_box(seen) == 'Uploaded Files: B Direction (24 files)'
     assert tempfile.gettempdir() not in _uni_box(seen)
     assert _done(seen)
     assert seen.session_state['uni_result']['_folder'] == ran
-    assert _box(seen, 'A Folder').value == '' and _box(seen, 'B Folder').value == ''
+    assert _held(seen, 'A Folder') == '' and _held(seen, 'B Folder') == ''
 
 
 def test_a_one_direction_upload_of_b_opens_the_viewer_on_b(tmp_path, drops):
@@ -188,7 +197,7 @@ def test_a_zip_upload_is_named_after_the_zip(tmp_path, drops):
     links = _this_tab_links(at)
     assert {q['dir'] for q in links} == {'a'}
     seen = _click(links[0])
-    assert _box(seen, 'A Folder').value == 'both directions.zip (Uploaded): A Direction (24 files)'
+    assert _held(seen, 'A Folder') == 'both directions.zip (Uploaded): A Direction (24 files)'
     _back(seen, 'Unidirectional')
     assert _uni_box(seen) == 'both directions.zip (Uploaded): A Direction (24 files)'
     assert _done(seen)
