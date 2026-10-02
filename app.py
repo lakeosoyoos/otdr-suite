@@ -4198,7 +4198,10 @@ _install_hub_drop_catch()
 # developer toolbar off (client.toolbarMode = viewer, see desktop/launcher.py
 # and .streamlit/config.toml); this hides the button on builds already out
 # in the field, which pick up app.py on update but keep their old launcher.
-st.markdown('<style>[data-testid="stAppDeployButton"]{display:none}</style>',
+# Nor the ⋮ menu (Robert, 2026-10-01): its Settings has a theme picker of its
+# own that overrides the hub's Theme switch (see THEME_PICK_CLEAR_JS).
+st.markdown('<style>[data-testid="stAppDeployButton"],[data-testid="stMainMenu"],'
+            '#MainMenu{display:none}</style>',
             unsafe_allow_html=True)
 
 
