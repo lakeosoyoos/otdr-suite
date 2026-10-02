@@ -209,14 +209,14 @@ def test_inventory_ignores_dotfiles(tmp_path):
     assert len(sor) == 1 and jsn == [] and trc == []
 
 
-# ── Lumen Border FP fix (2026-07-23): σ numerics + twin/serial gates ────
+# ── the Border job FP fix (2026-07-23): σ numerics + twin/serial gates ────
 
 def test_sigma_identity_no_catastrophic_cancellation():
     """Pair σ must be exact even at high trace levels with a large mean
     offset — the uncentered variance identity collapsed a true 0.0094 dB
     σ to 0.0000 on ~46 dB float32 traces with a 10 dB injection delta,
     and the σ-outlier tier confirmed 67 numerical artifacts as duplicates
-    (Lumen Border LAM/BEY).  Runs in a SUBPROCESS to honor the
+    (the Border job LAM/BEY).  Runs in a SUBPROCESS to honor the
     sor_reader namespace-isolation rule."""
     import subprocess, sys as _sys
     script = r"""

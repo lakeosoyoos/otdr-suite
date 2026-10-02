@@ -15,7 +15,7 @@ Three things have to hold:
      direction below the floor.
   2. OFF is really off: no sheet, no Legend rows, unchanged manifest unless
      a positive gate arrives.
-  3. The IIG profile turns both on (0.250 dB/km, 30 dB); Default leaves both
+  3. The the contract profile turns both on (0.250 dB/km, 30 dB); Default leaves both
      off; the unticked 0.0 survives the runner's guard.
 """
 from __future__ import annotations
@@ -33,7 +33,7 @@ sys.path.insert(0, str(SPLICEREPORT_DIR))
 import splicereportmatchexfo as E  # noqa: E402
 
 SHEET = "Span attenuation and ORL"
-IIG = "AWS / IIG MT.1085"
+CONTRACT_PROFILE = "AWS / IIG MT.1085"
 
 
 def _hub():
@@ -182,22 +182,22 @@ def test_unticked_zero_survives_the_override_guard(tmp_path):
 
 
 # ── 3. Profiles ──────────────────────────────────────────────────────────
-def test_iig_turns_both_span_gates_on():
+def test_contract_turns_both_span_gates_on():
     hub = _hub()
-    ov = hub._overrides_from_settings(hub._otdr_settings_from_profile(IIG))
+    ov = hub._overrides_from_settings(hub._otdr_settings_from_profile(CONTRACT_PROFILE))
     assert ov["FIBER_ATTEN_DB_KM"] == 0.250
     assert ov["SPAN_ORL_MIN_DB"] == 30.0
 
 
 def test_other_profiles_leave_attenuation_off_and_default_leaves_orl_off():
-    """Attenuation is off everywhere but IIG (every FastReporter customer
+    """Attenuation is off everywhere but the contract profile (every FastReporter customer
     template ships Fiber Section Attenuation with Apply=False).  ORL is a
     different story since the Sep 2026 templates: every customer template
     applies Span ORL, so only the engine baseline (and the Custom sentinel,
     which carries no profile values) leaves the floor at 0."""
     hub = _hub()
     for prof in hub.CUSTOMER_PROFILES:
-        if prof == IIG:
+        if prof == CONTRACT_PROFILE:
             continue
         ov = hub._overrides_from_settings(hub._otdr_settings_from_profile(prof))
         assert ov.get("FIBER_ATTEN_DB_KM") == 0.0, prof

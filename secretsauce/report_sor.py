@@ -153,7 +153,7 @@ def _compute_pair_metrics_batch(files, interior_start, interior_end, min_samples
     # error into the cross term — catastrophic cancellation.  On a pristine
     # span (true pair σ ~0.01) that error DOMINATES: σ collapsed to 0.0000
     # for high-injection-offset pairs and the σ-outlier tier confirmed 67
-    # numerical artifacts as duplicates (Lumen Border LAM/BEY, 2026-07-23).
+    # numerical artifacts as duplicates (the Border job LAM/BEY, 2026-07-23).
     # Centered values span ~±1 dB, so the same identity is exact to ~1e-8.
     M64 = M_raw.astype(np.float64)
     del M_raw
@@ -485,7 +485,7 @@ _ALLDUPS_MIN_HIGHR_FRAC = 0.5
 # Uniqueness (twin) gate — ALL regimes.  A true duplicate is
 # UNIQUELY close to its twin: its pair σ sits far below its σ to every
 # other file.  Ribbon-family members (same tube position in adjacent
-# ribbons: Δ24/Δ48 ladders like Lumen Border 146-194-218-242) share helix
+# ribbons: Δ24/Δ48 ladders like the Border job 146-194-218-242) share helix
 # micro-structure on pristine cables and land at σ ~0.009 / r ~0.99
 # against SEVERAL partners at once — no unique twin, so they are cable
 # geometry, not duplication.  A flagged pair must have pair-σ ≤ this
@@ -4688,7 +4688,7 @@ def _analyze_sor(folder):
     #     folder                  files    pairs   ev-capped  eligible  refuted
     #     A-F West 145-288          264   34,716          0         0        0
     #     A-F East 1-144            288   41,328          0         0        0
-    #     LAMBEY (Lumen border)     432   93,096          0         0        0
+    #     LAMBEY (the Border job)     432   93,096          0         0        0
     #     BKF<->DEL (LONGS)         864  372,816          0         0        0
     #     TULORO                    864  372,816          0         0        0
     #     MILTOP                  1,146  656,085          0         0        0
@@ -4843,7 +4843,7 @@ def _analyze_sor(folder):
     # A pair acquired by two different physical OTDRs is two independent
     # acquisitions — it can only be "the same data" at raw-identity grade,
     # and the raw-identity short-circuit below fires regardless of this
-    # cap.  (Lumen Border LAMBEY170/241: serials 1876272 vs 1978245, 84
+    # cap.  (the Border job LAMBEY170/241: serials 1876272 vs 1978245, 84
     # min apart, 3.4 dB injection delta, r 0.992 on a pristine span —
     # and the SAME two fibers from the OPPOSITE end read σ 0.05, five
     # times the flag level.  Different boxes -> different fibers.)

@@ -185,7 +185,7 @@ def test_the_projection_picks_the_terminal_the_a_side_estimate_endorses():
     two is L and `min(t_s, t_l)` picks it by coin-flip.
 
     FastReporter's own constant -- recovered by inverting its stored cursors,
-    l_proj = CursorAPosition + twin.Position, across the Zayo 432 span -- is
+    l_proj = CursorAPosition + twin.Position, across the 432-fiber BETA span -- is
     one value per fiber, always one of the two terminals, and always the one
     nearest the estimate built from the A DIRECTION:
 
@@ -350,7 +350,7 @@ def test_projection_into_either_end_zone_is_refused():
     polarity, ~100 m before the A-end far connector.
 
     The reach is 150 m, not the reconstruction's 500 m: at 500 m the guard
-    refused nine Zayo 432 legs whose rebuilt cursors were already
+    refused nine the 432-fiber BETA span legs whose rebuilt cursors were already
     FastReporter's own (its nearest transplant to an end in that corpus is
     199 m), and turning it off lost nothing.  150 m keeps Splice 12 (66-80 m)
     and the KAN↔LAN 116.35 column (past the end marker) refused."""
@@ -692,7 +692,7 @@ def test_the_812_phantom_does_not_reach_the_report():
         # own closure at 104,468.5 m (B's stored loss there is 0.237).  What
         # FastReporter does with an own event inside the projected inner
         # window is pull CursorB back to it and fit the one remaining sample
-        # with the before-line's slope (13 of 13 Zayo records, 0.000000 mdB),
+        # with the before-line's slope (13 of 13 BETA records, 0.000000 mdB),
         # so that is what the transplant does too -- the +0.205 fit across
         # B's step is gone, and what comes back is the truncated window's
         # own number.  The protection against mis-projection itself lives in

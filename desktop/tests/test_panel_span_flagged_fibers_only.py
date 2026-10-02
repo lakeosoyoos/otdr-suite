@@ -1,6 +1,6 @@
 """A tie-panel connector cell prints the fibers that FAILED, and only those.
 
-SNARCAAH 1 East (Lumen, 2026-09-23), boss: "we are having issues".  The
+SNARCAAH 1 East (customer L, 2026-09-23), boss: "we are having issues".  The
 span is launch reel -> panel connector -> 62 m tie -> panel connector ->
 receive reel, so the grid is Connector / Section / Connector (#118).  On
 ribbon 10 (fibers 109-120, the fixture here) the far connector read:

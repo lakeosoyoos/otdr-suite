@@ -10,7 +10,7 @@ subtracts ~2000-magnitude terms to extract a variance of ~1e-4, and in float32
 the trace quantization alone (~5.5e-6 dB/sample at 46 dB) puts ~2.6e-4 of
 error into the cross term.  True pair sigma 0.0094 collapsed to 0.0000, worst
 on large-injection-offset pairs, and the sigma-outlier tier confirmed the
-artifacts as duplicates (Lumen Border LAM/BEY).  The fix there was to
+artifacts as duplicates (the Border job LAM/BEY).  The fix there was to
 mean-center the rows first.  This lineage never received it.
 
 THIS CHANGE IS A MEASURED NO-OP ON EVERY FOLDER ON DISK, and the reason is
@@ -80,7 +80,7 @@ out = {}
 rng = np.random.default_rng(4)
 N = 20000
 # Two traces at REAL levels (~46 dB, 6 dB of slope) whose true pair sigma is
-# ~0.0094 - the same value the Lumen pairs carried.  The injection-level
+# ~0.0094 - the same value the customer L pairs carried.  The injection-level
 # OFFSET between them is what drives the cancellation, so it is swept.
 sweep = []
 for off in (0.6, 5.0, 15.0, 30.0, 45.0):
@@ -141,7 +141,7 @@ def test_on_float64_the_two_forms_agree():
 def test_float32_is_where_the_uncentred_form_breaks():
     """The reason the change ships despite being a no-op today.
 
-    Same traces, same true sigma (~0.0094 - the Lumen value), only the dtype
+    Same traces, same true sigma (~0.0094 - the customer L value), only the dtype
     and the injection-level OFFSET change.  Measured:
 
         offset dB       true  f32 centred  f32 uncentred
@@ -153,7 +153,7 @@ def test_float32_is_where_the_uncentred_form_breaks():
 
     The centred form recovers the true value at every offset.  The uncentered
     one wanders, and at 15 dB it returns EXACTLY ZERO - which is the recorded
-    Lumen signature: "true sigma .0094 collapsed to 0.0000, worst on
+    customer L signature: "true sigma .0094 collapsed to 0.0000, worst on
     large-injection-offset pairs".  A sigma of 0.0000 does not read as an
     error, it reads as a perfect duplicate, which is how 67 artifacts were
     confirmed."""
@@ -183,7 +183,7 @@ def test_the_measurement_and_the_reason_are_recorded():
     i = src.index("def _compute_pair_metrics_batch_multiwl(")
     block = src[i:i + 6000]
     for marker in ("67 false positives", "catastrophic cancellation",
-                   "float64", "Lumen Border",
+                   "float64", "the Border job",
                    # the measured ripple, so "no-op" is never claimed loosely
                    "7.01e-03", "NO VERDICT MOVES", "6.8x"):
         assert marker in block, f"missing rationale: {marker}"

@@ -224,10 +224,10 @@ class Location:
         """The Event Log's 'Vault ID #'.
 
         Read off the tab name: 'Splice 10' -> 10, anything with 'entry'
-        in it -> 'ENTRY' (which is the literal Lumen wants there), and a
+        in it -> 'ENTRY' (which is the literal the customer wants there), and a
         termination has no vault at all.
 
-        A numbered vault comes back as an int because that is how Lumen's
+        A numbered vault comes back as an int because that is how the customer's
         own packages hold it -- the column is right-aligned numbers with
         'ENTRY' and 'NA' as the only text in it.
         """

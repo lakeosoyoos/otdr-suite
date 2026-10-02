@@ -42,7 +42,7 @@ def test_no_engine_file_is_checked_out_with_crlf():
     here (a Windows autocrlf checkout without `.gitattributes * -text`) would
     poison every SHA-256 and silently kill auto-update fleet-wide."""
     # Only text files can be damaged by EOL conversion, and only text
-    # files can be scanned for it: a binary engine file (the blank Lumen
+    # files can be scanned for it: a binary engine file (the blank the customer
     # form is a zip) contains b"\r\n" by chance in its compressed bytes,
     # which is not a line ending and not a problem.  `* -text` already
     # covers every path, binaries included.

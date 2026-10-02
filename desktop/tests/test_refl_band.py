@@ -1,6 +1,6 @@
 """Mid-span reflectance: polarity-robust spike confirm + band ceiling.
 
-Lumen Border (2026-07-23): real -77.6/-77.9 dB glints (LAMBEY F109 @5.19,
+the Border job (2026-07-23): real -77.6/-77.9 dB glints (LAMBEY F109 @5.19,
 F133 @4.82) measure as -0.13 dB DIPS in accumulated-loss-ascending traces
 — 20x noise, at exactly the claimed km — and the positive-only spike
 confirm blindly refuted them, so the mid-span reflective detection was
@@ -35,7 +35,7 @@ def _rec(kind, km=5.0, mag=0.7, n=4000, seed=9):
         tr[i - w:i + w] -= mag
     elif kind == 'spike':
         tr[i - w:i + w] += mag
-    # 50 ns pulse stored in SECONDS — matches the Lumen file class and
+    # 50 ns pulse stored in SECONDS — matches the customer L file class and
     # exercises the units normalization; keeps min_run at the short-pulse
     # floor so the narrow synthetic features are width-consistent.
     return {'trace': tr, 'exfo_sampling_period': SP, 'events': [],
@@ -152,7 +152,7 @@ def test_uni_band_requires_trace_confirm(monkeypatch):
 
 
 def test_sharpness_separates_phantom_from_real():
-    """The F609/Lumen discriminator: a real Fresnel reflection has a SHARP
+    """The F609/customer L discriminator: a real Fresnel reflection has a SHARP
     edge (peak gradient >> flank noise); a firmware-mislabeled smooth
     backscatter ripple does not.  Amplitude+width alone can't tell them
     apart — sharpness can."""

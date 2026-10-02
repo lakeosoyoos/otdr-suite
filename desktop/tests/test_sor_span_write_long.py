@@ -3,7 +3,7 @@
 trace_server used 0.02998 m per time-of-travel unit.  The true constant is
 c / 1e10 = 0.0299792458; the rounded one is 25 ppm long, 1.1 m at 44.7 km.
 set_span matches every KeyEvent to FR's proprietary record within 1 m, so on
-Lumen Span 7 (Monument <-> Grainfield) it refused all 2,304 files, and the
+Span 7 (Monument <-> Grainfield) it refused all 2,304 files, and the
 Viewer's "Span START here" could not be saved anywhere on the span.
 
 The fixture pair is fiber 183 as shot and the same file after FR 3 set the

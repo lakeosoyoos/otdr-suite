@@ -1,8 +1,8 @@
 """
-Surgical cell writer for the Lumen FQA workbook
+Surgical cell writer for the FQA workbook
 ===============================================
 
-The FQA Site Survey is a macro-enabled Lumen form.  Besides the VBA that
+The FQA Site Survey is the customer's macro-enabled form.  Besides the VBA that
 opens and closes its sections, the file carries four customXml parts, a
 Microsoft sensitivity label (docMetadata/LabelInfo.xml), cell comments,
 printer settings and the drawings that hold the site photos.
@@ -492,7 +492,7 @@ class WorkbookPatch:
         The part alone is not enough: [Content_Types].xml would still
         declare a type for it and workbook.xml.rels would still link to
         it.  Both are edited as bytes, one element each, so the rest of
-        those two parts stays exactly as Lumen's form has it.
+        those two parts stays exactly as the customer's form has it.
         """
         self._names = [n for n in self._names if n != CALC_CHAIN]
         self._parts.pop(CALC_CHAIN, None)
