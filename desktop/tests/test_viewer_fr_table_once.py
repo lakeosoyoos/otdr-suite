@@ -356,6 +356,7 @@ var gInfo = { dir_a: 'A', dir_b: 'B' };
 var gTraces = [{ key: 'a-1' }, { key: 'b-1' }], gRemovedFiles = new Set(), gAddDir = 'both';
 var gClientId = 'me', gStateVer = 0, gStateSig = '', gStateReady = true, gStatePushT = null;
 var gStateApplying = 0, gServerRemovedSig = '', timers = [], renders = 0, posts = 0;
+var gLoadingKeys = new Set();            // keys on their way count too (main's load epochs)
 function setTimeout(fn) { timers.push(fn); return timers.length; }
 function clearTimeout() {}
 async function flush() { var t = timers; timers = []; for (var i = 0; i < t.length; i++) await t[i](); }
