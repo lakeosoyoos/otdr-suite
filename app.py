@@ -3012,7 +3012,7 @@ def _project_reattach():
 # "Run Traces" is OTDR Suite exactly as it was: the same sidebar and tools,
 # nothing added but a Home button at the foot of the sidebar.  "Start
 # Project" asks for the project's WORK FOLDER and opens the Project status
-# page, laid out on the four sections of Lumen's Submittal Checklist.
+# page, laid out on the four sections of the customer's Submittal Checklist.
 #
 # The work folder IS the project.  Its project file sits inside it (saved
 # on every change -- there is no Save button), and everything the package
@@ -10689,7 +10689,7 @@ def page_field_capture():
 # here.
 #
 # Three groups, every item read from a file, none typed in:
-#   * Lumen's own Submittal Checklist (the form's last tab): each row there is
+#   * the customer's own Submittal Checklist (the form's last tab): each row there is
 #     "is this cell filled", mirrored below cell for cell.  A test reads the
 #     template's formulas and fails if a form revision moves a cell.
 #   * Field items per end: section 1.2's rack and panel details, a GPS fix,
@@ -10748,7 +10748,7 @@ def _xl_has(v):
 
 
 def _xl_number(v):
-    """A cell's number.  Lumen's form formats some number cells as dates
+    """A cell's number.  The customer's form formats some number cells as dates
     (F97, 'Number Of Fibers Tested', is one), so the reader hands 48 back as
     1900-02-17; the Excel serial is the number the tech typed."""
     import datetime as _dt
@@ -11327,7 +11327,7 @@ def project_status(snap, fqa, caps, trace_dirs=None, work='', manual=None,
         add(3, '3.02-3.06  Events', False, 'no events in an Event Log yet')
     else:
         n = len(events)
-        # Lumen's own checklist only looks at the first two events (D18:D19);
+        # The customer's own checklist only looks at the first two events (D18:D19);
         # a package blank from event 3 on passes it.  This checks every one.
         no_loc = [e for e in events if not _xl_has(e['loc'])]
         add(3, f'3.02  Location entered for each of the {n} events', not no_loc,
@@ -11421,7 +11421,7 @@ def project_status(snap, fqa, caps, trace_dirs=None, work='', manual=None,
 # fragment never reaches the web host.  The job carries exactly what Field
 # Capture's label checks already work from (the site names, the fiber
 # count, each end's section 1.2 rack and panel values), so the phone never
-# needs Lumen's blank form.  The phone sends back a capture package: a .zfc
+# needs the customer's blank form.  The phone sends back a capture package: a .zfc
 # (folder_intake.share_write) of capture.json and the photos, emailed; someone saves it
 # into Field/.  Older packages were plain .zip and still read.
 JOB_VERSION = 1
@@ -12813,7 +12813,7 @@ def fqa_package_name(work):
 
 
 def build_project_fqa(work, prod_path, job, gps_rows, photos, trace):
-    """Build the Lumen FQA package into FQA/ from everything the project has.
+    """Build the customer's FQA package into FQA/ from everything the project has.
     Returns the builder's manifest (with 'out')."""
     from fqa.run_fqa import build
     prod = _read_prod(prod_path)
@@ -12859,7 +12859,7 @@ def build_project_fqa(work, prod_path, job, gps_rows, photos, trace):
 # out horizontally: Events, Traces, Reports, Pictures, GPS, Audit FQA."  The
 # overview is the span and customer, the FQA progress, the final traces and
 # the last thing that happened.  Audit FQA is the Submittal Checklist page
-# that used to be the whole screen, plus building the Lumen FQA workbook.
+# that used to be the whole screen, plus building the customer's FQA workbook.
 PROJECT_TAB_CSS = (
     '<style>'
     '[data-testid="stTabs"] [data-baseweb="tab-list"]{gap:.4rem;flex-wrap:wrap}'
@@ -13796,7 +13796,7 @@ def _project_tab_gps(work):
 
 def _project_tab_audit(work):
     """The Submittal Checklist (Robert: "Audit FQA tab is our audit feature
-    we already built") and building the Lumen FQA workbook.  Returns the
+    we already built") and building the customer's FQA workbook.  Returns the
     checklist items, for the overview."""
     ss = st.session_state
     snap = _project_snapshot(ss, ss.get('project_saved'))
@@ -13989,7 +13989,7 @@ def _build_fqa_now(work):
 
 
 def _render_fqa_build(work, prod_path, pkgs):
-    """Build the Lumen FQA workbook from what the project holds."""
+    """Build the customer's FQA workbook from what the project holds."""
     ss = st.session_state
     st.markdown('**📗 Build the Lumen FQA Package**')
     if not prod_path:
@@ -14069,7 +14069,7 @@ def _render_fqa_build(work, prod_path, pkgs):
 PROJECTS_ROOT_KEY = 'projects_root'
 # Customers for a new project: the Splice Report customer profiles, less the
 # two that are settings choices rather than customers.  The customer becomes
-# the project's profile.  Lumen's is the only FQA form so far (2026-09-24).
+# the project's profile.  One customer's is the only FQA form so far (2026-09-24).
 _NOT_CUSTOMERS = ('Default (engine baseline)', 'Custom (edit table below)')
 FQA_FORM_CUSTOMERS = ('Lumen',)
 

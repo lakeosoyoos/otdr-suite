@@ -462,7 +462,7 @@ def test_in_the_suite_the_page_uses_the_hub_server_not_a_phone_share_sheet():
 
 
 def test_the_hosted_phone_app_never_fetches_or_caches_the_lumen_form():
-    """The blank form carries Lumen's sensitivity label and lives only on the
+    """The blank form carries the customer's sensitivity label and lives only on the
     office computer (api/blank-form).  Outside OTDR Suite the app asks for the
     job link instead, and neither the app nor its offline cache names a form
     file."""
@@ -474,7 +474,7 @@ def test_the_hosted_phone_app_never_fetches_or_caches_the_lumen_form():
 
 
 def test_the_hosted_app_names_no_customer():
-    """Robert, 2026-09-24: remove Lumen references entirely from what gets
+    """Robert, 2026-09-24: remove the customer's name entirely from what gets
     published.  Every file in the web folder, libraries included."""
     web = REPO_ROOT / "fieldcapture" / "web"
     hits = [str(p.relative_to(web)) for p in web.rglob("*")
