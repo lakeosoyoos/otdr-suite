@@ -112,10 +112,10 @@ def test_the_bar_control_sits_right_after_the_tool_tabs():
     # every page: the bar is drawn before the page is.
     bar = _top_nav()
     i_tool = bar.index("for _label, _target in NAV_TABS:")
-    i_ctl = bar.index("        _render_analysis_mode_control(compact=True)\n")
+    i_ctl = bar.index("        _render_analysis_mode_control()\n")
     assert i_tool < i_ctl < i_tool + 400
     assert SRC.index("\n_render_top_nav(page)\n") < SRC.index("\n    if page == 'Traces':")
-    body = SRC.split("def _render_analysis_mode_control(compact=False):", 1)[1].split("\ndef ", 1)[0]
+    body = SRC.split("def _render_analysis_mode_control():", 1)[1].split("\ndef ", 1)[0]
     assert "load_analysis_mode()" in body and "save_analysis_mode(_mode)" in body
     # FR Mode | switch | OTDR Mode (2026-09-24): knob right = OTDR Mode.
     assert ".toggle(" in body and "value=not _on" in body and "st.rerun()" in body
@@ -132,10 +132,10 @@ def test_the_mode_in_use_is_marked_and_the_switch_is_always_on(hub):
     # the switch always drawn "on"; only the knob moves.  In the top bar
     # (Robert, 2026-10-01) the name in use is bold with no halo, as the open
     # tab is, and the switch is always the same bright blue.
-    body = SRC.split("def _render_analysis_mode_control(compact=False):", 1)[1].split("\ndef ", 1)[0]
-    assert "st.container(key='analysis_mode_box')" in body
+    body = SRC.split("def _render_analysis_mode_control():", 1)[1].split("\ndef ", 1)[0]
     assert "st.container(key='analysis_mode_box', width=245" in body
-    assert "_MODE_SWITCH_CSS" in body
+    # one row in the bar, which draws the switches' CSS
+    assert "_MODE_SWITCH_CSS" in _top_nav()
     assert "_mode_name('FR Mode', _on)" in body and "_mode_name('OTDR Mode', not _on)" in body
     css = SRC.split("_MODE_SWITCH_CSS = (", 1)[1].split("'</style>')", 1)[0]
     assert ".mode-on{" in css and "#22c55e" in css           # the green halo

@@ -13,7 +13,7 @@ import os
 import pytest
 
 from conftest import (run_streamlit, import_trace_server, go_tab, page_of,
-                      trace_box, trace_box_value, clear_traces,
+                      trace_box, trace_box_value, clear_traces, load_traces,
                       FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
 
 A, B = str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR)
@@ -353,3 +353,18 @@ def test_a_new_a_folder_after_a_pair_click_builds_its_own_folder(tmp_path):
     _box(clicked, 'A Folder').input(B).run()
     _box(clicked, 'B Folder').input(A).run()
     assert clicked.session_state['ss_folder_input'] != ran_on
+
+
+def test_folders_picked_on_traces_reach_the_viewers_server():
+    """With the boxes on the Viewer's own screen (the sidebar) a folder
+    picked was a folder the Viewer's server had; the Traces tab sends them
+    itself, so a new browser tab or a popped-out Viewer window does not wait
+    for a visit to the Viewer."""
+    ts = import_trace_server()
+    at = run_streamlit().run()
+    load_traces(at, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
+    assert page_of(at) == 'Traces' and not at.exception
+    assert ts.CONFIG['dir_a'] == str(FIXTURE_SPLICE_A_DIR)
+    assert ts.CONFIG['dir_b'] == str(FIXTURE_SPLICE_B_DIR)
+    trace_box(at, 'b').input('').run()
+    assert ts.CONFIG['dir_a'] == str(FIXTURE_SPLICE_A_DIR) and ts.CONFIG['dir_b'] is None

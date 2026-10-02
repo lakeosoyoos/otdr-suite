@@ -324,18 +324,13 @@ def _mode_name(name, on):
     return '<span class="%s">%s</span>' % ('mode-on' if on else 'mode-off', name)
 
 
-def _render_theme_control(where, compact=False):
-    """Dark | switch | Light under a "Theme" title (Robert, 2026-09-29): the
-    same shape as the Analysis Mode switch.  ui_theme holds the theme; the
-    knob is read every run (no on_change).  Knob right = Light.
-    compact=True is the top bar's: one row, no title (the bar draws the CSS)."""
-    if compact:
-        box = where.container(key='theme_box', width=130, horizontal=True,
-                              vertical_alignment='center', gap='small')
-    else:
-        box = where.container(key='theme_box')
-        box.markdown(_MODE_SWITCH_CSS, unsafe_allow_html=True)
-        box.markdown('**Theme**')
+def _render_theme_control(where):
+    """Dark | switch | Light (Robert, 2026-09-29), one row in the top bar
+    (the bar draws its CSS): the same shape as the Analysis Mode switch.
+    ui_theme holds the theme; the knob is read every run (no on_change).
+    Knob right = Light."""
+    box = where.container(key='theme_box', width=130, horizontal=True,
+                          vertical_alignment='center', gap='small')
     dark = st.session_state.get('ui_theme') == 'dark'
     # No key: the knob's start is the theme itself (value=), and a keyless
     # widget's identity includes that value, so after every change the
@@ -343,8 +338,7 @@ def _render_theme_control(where, compact=False):
     # failed twice in testing: once the sidebar was hidden (the home screen)
     # and shown again, the browser drew the knob in its old position while
     # the theme stayed put, and the next click anywhere flipped it back.
-    l, m, r = (box, box, box) if compact else box.columns(
-        [5, 3, 5], vertical_alignment='center')
+    l = m = r = box
     l.markdown(_mode_name('Dark', dark), unsafe_allow_html=True)
     _right = m.toggle('Theme', value=not dark, label_visibility='collapsed')
     r.markdown(_mode_name('Light', not dark), unsafe_allow_html=True)
@@ -354,9 +348,9 @@ def _render_theme_control(where, compact=False):
         st.rerun()
 
 
-def _render_analysis_mode_control(compact=False):
-    """The OTDR Suite / FastReporter switch, right under the Tool list so
-    it is visible on every page.  Seeded from settings.json on the first run of a
+def _render_analysis_mode_control():
+    """The OTDR Suite / FastReporter switch, in the top bar right after the
+    tool tabs so it is visible on every page.  Seeded from settings.json on the first run of a
     session and written back on every change, so a tech's choice survives a
     restart.  session_state.analysis_mode holds the mode; the toggle has no
     key and starts at the mode (value=)."""
@@ -369,21 +363,15 @@ def _render_analysis_mode_control(compact=False):
     # Robert, 2026-09-24: both modes on show, FR Mode on the left and OTDR
     # Mode on the right, the switch between them; the knob points at the
     # mode in use and that name is bold.  Knob right = OTDR Mode.
-    # compact=True is the top bar's: one row, no title (the bar draws the CSS).
-    if compact:
-        box = st.container(key='analysis_mode_box', width=245, horizontal=True,
-                           vertical_alignment='center', gap='small')
-    else:
-        box = st.container(key='analysis_mode_box')
-        box.markdown(_MODE_SWITCH_CSS, unsafe_allow_html=True)
-        box.markdown('**Analysis Mode**')
+    # One row in the top bar (the bar draws the CSS).
+    box = st.container(key='analysis_mode_box', width=245, horizontal=True,
+                       vertical_alignment='center', gap='small')
     # No key (2026-09-30): with key='analysis_switch', the App's home screen
     # (no sidebar) and back redrew the knob in its old position while the
     # mode stayed put, and the next page change silently switched OTDR Mode
     # to FR Mode.  Keyless, the knob starts at the mode itself (value=) and
     # is a new widget after every change.
-    l, m, r = (box, box, box) if compact else box.columns(
-        [5, 3, 5], vertical_alignment='center')
+    l = m = r = box
     l.markdown(_mode_name('FR Mode', _on), unsafe_allow_html=True,
                help=("FR Mode: reproduce EXFO FastReporter's analysis from the same "
                      "files, to the digit, with only your pass/fail thresholds on top."))
@@ -1372,13 +1360,9 @@ def _restart_watchdog_html(timeout_s=RESTART_RECONNECT_TIMEOUT_S):
    .replace('__TIMEOUT_MS__', str(int(timeout_s) * 1000))
 
 
-def _render_restart_watchdog(sidebar=False):
+def _render_restart_watchdog():
     """Render the watchdog after a restart has been kicked off."""
-    if sidebar:
-        with st.sidebar:                  # `st` itself is not a context manager
-            st_components_html(theme_recolor(_restart_watchdog_html()), height=40)
-    else:
-        st_components_html(theme_recolor(_restart_watchdog_html()), height=40)
+    st_components_html(theme_recolor(_restart_watchdog_html()), height=40)
 
 
 # Permanent link: CI rewrites this asset on every successful build, so it is
@@ -1399,10 +1383,9 @@ def _cache_pinned():
     return os.environ.get(_CACHE_PINNED_ENV, '') or ''
 
 
-def _render_cache_pinned_notice(sidebar=False):
+def _render_cache_pinned_notice():
     _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
-    target = st.sidebar if sidebar else st
-    target.warning(
+    st.warning(
         'Updates cannot be kept on this computer. Files this app downloads '
         f'keep disappearing, so {_pn} is running the copy that came with '
         'its installer. To get the newest version, download and run the '
@@ -1447,10 +1430,9 @@ def _needs_install():
     return ''
 
 
-def _render_install_notice(latest, running, sidebar=False):
+def _render_install_notice(latest, running):
     _pn = globals().get('PRODUCT_NAME', 'OTDR Suite')   # alone in a test: the default
-    target = st.sidebar if sidebar else st
-    target.warning(
+    st.warning(
         f'Update {latest} needs a fresh install (running {running}). It adds '
         f'files this copy of {_pn} cannot download on its own, so Update '
         f'& restart will not apply it. Close {_pn} completely, then '
@@ -1693,48 +1675,6 @@ try:
     trace_server.CONFIG['theme'] = st.session_state['ui_theme']
 except Exception:
     pass
-
-
-# ─── Sidebar drag-to-widen must not close the sidebar ────────────────────
-# Robert, 2026-09-17: "when I go to click and drag it closes it instead".
-# Streamlit (1.50) closes the sidebar on any mouse press OUTSIDE its content
-# box whenever the window is narrower than its tablet breakpoint -- and the
-# drag handle sits on the sidebar's edge, outside that content box.  So in a
-# narrow hub window, pressing the handle closed the panel before the drag
-# could start.  CSS cannot fix it (the check is on the DOM tree, not the
-# pixels).  This script stops a press on the handle at the app root: React's
-# own handler (which starts the resize) runs first at the root, and the
-# press never bubbles up to the document, where Streamlit's close-on-outside
-# listener waits.  Installed once per browser tab; a no-op when anything it
-# expects is missing, so a Streamlit upgrade can only make it do nothing.
-SIDEBAR_DRAG_FIX_JS = """
-<script>
-(function(){
-  var w; try { w = window.parent; void w.document; } catch (e) { return; }
-  if (!w || w.__otdrSidebarDragFix) return;
-  var root = w.document.getElementById('root');
-  if (!root) return;
-  w.__otdrSidebarDragFix = true;
-  function onHandle(t){
-    if (!t || !t.closest) return false;
-    var sb = t.closest('[data-testid="stSidebar"]');
-    // Inside the sidebar but NOT inside its content box = the resize handle.
-    return !!sb && !t.closest('[data-testid="stSidebarContent"]');
-  }
-  root.addEventListener('mousedown', function(ev){
-    if (onHandle(ev.target)) ev.stopPropagation();
-  }, false);
-})();
-</script>
-"""
-
-
-def _install_sidebar_drag_fix():
-    """Render the zero-height script above (best effort, never fatal)."""
-    try:
-        st_components_html(SIDEBAR_DRAG_FIX_JS, height=0)
-    except Exception:
-        pass
 
 
 # Trace files dropped on the hub page itself, not on the Viewer.  Nothing on
@@ -2491,7 +2431,6 @@ def _install_theme_pick_clear():
         pass
 
 
-_install_sidebar_drag_fix()
 _install_hub_drop_catch()
 _install_theme_pick_clear()
 
@@ -3286,8 +3225,12 @@ def _render_top_nav(page):
                    hi='#ffffff', line='rgba(255,255,255,.08)') if dark else
               dict(bg='rgba(250,250,252,.94)', fg='rgba(0,0,0,.78)',
                    hi='#000000', line='rgba(0,0,0,.10)'))
-    st.markdown(_TOP_NAV_CSS % dict(colors, h=NAV_HEIGHT_PX, menu_px=NAV_MENU_BELOW_PX)
-                + _MODE_SWITCH_CSS + _NAV_SWITCH_CSS,
+    # One <style> block: two in one markdown call reach the browser as one,
+    # with the second's tags as text, and the rule after them is dropped.
+    _css = [_TOP_NAV_CSS % dict(colors, h=NAV_HEIGHT_PX, menu_px=NAV_MENU_BELOW_PX),
+            _MODE_SWITCH_CSS, _NAV_SWITCH_CSS]
+    st.markdown('<style>' + ''.join(c.replace('<style>', '').replace('</style>', '')
+                                    for c in _css) + '</style>',
                 unsafe_allow_html=True)
     with st.container(key='top_nav', horizontal=True,
                       horizontal_alignment='distribute',
@@ -3313,8 +3256,8 @@ def _render_top_nav(page):
             st.button(_label, key=f'nav_tab_{_target}',
                       type='primary' if _target == page else 'tertiary',
                       on_click=_nav_go, args=(_target,))
-        _render_analysis_mode_control(compact=True)
-        _render_theme_control(st, compact=True)
+        _render_analysis_mode_control()
+        _render_theme_control(st)
         _render_update_menu()
 
 
@@ -3464,8 +3407,16 @@ def page_traces():
 
     try:
         dir_a, dir_b, _notes = _panel_dirs()
-        na = len(trace_server.list_fibers(dir_a)) if dir_a and os.path.isdir(dir_a) else 0
-        nb = len(trace_server.list_fibers(dir_b)) if dir_b and os.path.isdir(dir_b) else 0
+        dir_a = dir_a if dir_a and os.path.isdir(dir_a) else ''
+        dir_b = dir_b if dir_b and os.path.isdir(dir_b) else ''
+        # The Viewer's server takes the folders from here too, as the Viewer
+        # page does: with the boxes on the Viewer's own screen (the sidebar)
+        # a folder picked was a folder shown; from this tab it must not wait
+        # for a visit to the Viewer (a new browser tab, a popped-out Viewer
+        # window and the server's own folder list read them from there).
+        trace_server.set_dirs(dir_a or None, dir_b or None)
+        na = len(trace_server.list_fibers(dir_a)) if dir_a else 0
+        nb = len(trace_server.list_fibers(dir_b)) if dir_b else 0
         _cols[0].caption(f'A: {na} fibers')
         _cols[1].caption(f'B: {nb} fibers')
         for _k, _t in _notes:

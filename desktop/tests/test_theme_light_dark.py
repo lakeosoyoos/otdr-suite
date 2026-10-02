@@ -76,7 +76,7 @@ def test_every_start_is_dark_and_nothing_is_saved():
     assert "st.session_state['ui_theme'] = THEME_DEFAULT" in SRC
     for gone in ('load_theme', 'save_theme', '_theme_settings_path'):
         assert gone not in SRC, gone
-    switch = SRC.split('def _render_theme_control(where, compact=False):', 1)[1].split('\ndef ', 1)[0]
+    switch = SRC.split('def _render_theme_control(where):', 1)[1].split('\ndef ', 1)[0]
     assert 'settings' not in switch
 
 
@@ -106,16 +106,16 @@ def test_no_new_engine_file():
 
 
 def test_theme_switch_is_dark_left_light_right_and_keyless():
-    """Robert, 2026-09-29: "Theme" above "Dark | switch | Light", knob right =
-    Light.  Keyless, so a page without the sidebar cannot leave the knob in
+    """Robert, 2026-09-29: "Dark | switch | Light", knob right = Light.  Keyless, so a page without the sidebar cannot leave the knob in
     an old position that flips the theme on the next run.  The top bar
     (Robert 2026-10-01) draws it on one row with no title, on every page."""
-    body = SRC.split('def _render_theme_control(where, compact=False):', 1)[1].split('\ndef ', 1)[0]
-    assert "box.markdown('**Theme**')" in body
+    body = SRC.split('def _render_theme_control(where):', 1)[1].split('\ndef ', 1)[0]
+    # one row in the top bar, no title: the names say what it is
+    assert "where.container(key='theme_box', width=130, horizontal=True" in body
     assert body.index("'Dark'") < body.index('m.toggle(') < body.index("'Light'")
     assert "m.toggle('Theme', value=not dark, label_visibility='collapsed')" in body
     bar = SRC.split('\ndef _render_top_nav(', 1)[1].split('\ndef ', 1)[0]
-    assert '_render_theme_control(st, compact=True)' in bar
+    assert '_render_theme_control(st)' in bar
 
 
 def _get_viewer(monkeypatch, theme):
