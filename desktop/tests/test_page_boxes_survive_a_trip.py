@@ -1,4 +1,4 @@
-"""The Splice Report's site names and every report page's 'Save reports to'
+"""The Splice Report's site names and every report page's 'Save Reports To'
 folder survive a trip to another tool.
 
 Seen 2026-09-29: with an A and a B folder loaded in the left panel, the
@@ -21,7 +21,7 @@ import pytest
 from conftest import run_streamlit, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR
 
 A, B = str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR)
-SITE_A, SITE_B = 'A-direction ILA / site', 'B-direction ILA / site'
+SITE_A, SITE_B = 'A-Direction ILA / Site', 'B-Direction ILA / Site'
 
 
 def _box(at, label, where='main'):
@@ -37,9 +37,9 @@ def _open(at, page):
 def _hub(a=A, b=B):
     at = run_streamlit(default_timeout=180).run()
     if a:
-        _box(at, 'A folder', 'sidebar').input(a).run()
+        _box(at, 'A Folder', 'sidebar').input(a).run()
     if b:
-        _box(at, 'B folder', 'sidebar').input(b).run()
+        _box(at, 'B Folder', 'sidebar').input(b).run()
     assert not at.exception, at.exception
     return at
 
@@ -95,24 +95,24 @@ def test_a_new_pair_loaded_on_another_tool_does_not_bring_back_the_old_names():
     _box(at, SITE_A).input('Hut 7').run()
     _open(at, 'Viewer')
     # The same two folders, the other way round: a different pair.
-    _box(at, 'A folder', 'sidebar').input(B).run()
-    _box(at, 'B folder', 'sidebar').input(A).run()
+    _box(at, 'A Folder', 'sidebar').input(B).run()
+    _box(at, 'B Folder', 'sidebar').input(A).run()
     _open(at, 'Splice Report')
     assert 'Hut 7' not in _sites(at)
 
 
 def test_a_span_removed_and_added_again_starts_with_a_and_b():
     at = _open(_hub(), 'Splice Report')
-    next(b for b in at.main.button if b.label == '➕ Add span…').click().run()
+    next(b for b in at.main.button if b.label == '➕ Add Span…').click().run()
     at.text_input(key='sr2_site_a').input('Hut 7').run()
-    next(b for b in at.main.button if b.label == '✖ Remove span 2').click().run()
-    next(b for b in at.main.button if b.label == '➕ Add span…').click().run()
+    next(b for b in at.main.button if b.label == '✖ Remove Span 2').click().run()
+    next(b for b in at.main.button if b.label == '➕ Add Span…').click().run()
     assert not at.exception, at.exception
     assert (at.text_input(key='sr2_site_a').value,
             at.text_input(key='sr2_site_b').value) == ('A', 'B')
 
 
-# ── 'Save reports to' on every report page ────────────────────────────────
+# ── 'Save Reports To' on every report page ────────────────────────────────
 
 @pytest.mark.parametrize('page,key', [
     ('Splice Report', 'sr_report_dest'),
@@ -121,19 +121,19 @@ def test_a_span_removed_and_added_again_starts_with_a_and_b():
 ])
 def test_the_save_folder_survives_a_trip(page, key, tmp_path):
     at = _open(_hub(), page)
-    _box(at, 'Save reports to').input(str(tmp_path)).run()
+    _box(at, 'Save Reports To').input(str(tmp_path)).run()
     assert not at.exception, at.exception
     _trip(at, page)
-    assert _box(at, 'Save reports to').value == str(tmp_path)
+    assert _box(at, 'Save Reports To').value == str(tmp_path)
     assert at.session_state[key] == str(tmp_path)
 
 
 def test_an_emptied_save_box_stays_empty_after_a_trip(tmp_path):
     at = _open(_hub(), 'Splice Report')
-    _box(at, 'Save reports to').input(str(tmp_path)).run()
-    _box(at, 'Save reports to').input('').run()
+    _box(at, 'Save Reports To').input(str(tmp_path)).run()
+    _box(at, 'Save Reports To').input('').run()
     _trip(at, 'Splice Report')
-    assert _box(at, 'Save reports to').value == ''
+    assert _box(at, 'Save Reports To').value == ''
 
 
 

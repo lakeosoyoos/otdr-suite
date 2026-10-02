@@ -283,6 +283,6 @@ def test_the_repair_page_says_what_to_do_without_jargon():
                       if isinstance(a, ast.Constant) and isinstance(a.value, str)]
     text = " ".join(shown)
     assert "missing from this computer" in text
-    assert "Repair and restart" in text
+    assert "Repair and Restart" in text
     for jargon in ("ModuleNotFoundError", "sys.path", "sor_reader", "traceback"):
         assert jargon not in text, f"{jargon} is not for a tech to read"

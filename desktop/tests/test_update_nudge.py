@@ -261,7 +261,7 @@ def test_nudge_fetches_once_per_recheck_window_with_a_short_timeout():
 
 def test_manual_check_for_updates_button_survives_unchanged():
     """The loud path stays: same label, same key, same helpers."""
-    assert "'🔄 Check for updates', key='upd_check'" in APP_SRC
+    assert "'🔄 Check for Updates', key='upd_check'" in APP_SRC
     assert "st.session_state['upd_latest'] = _latest_manifest_version()" in APP_SRC
     assert "key='upd_restart'" in APP_SRC          # footer's own restart button
     assert "key='upd_nudge_restart'" in APP_SRC    # banner's, distinct key

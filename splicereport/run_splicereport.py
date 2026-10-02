@@ -713,7 +713,7 @@ def main():
                          "characters, which a whole cable's pairs pass.")
     ap.add_argument('--viewer-table', default=None,
                     help="Path to write the Viewer's OTDR Suite table to: this "
-                         "report's columns and, for every fibre at every "
+                         "report's columns and, for every fiber at every "
                          "column, the numbers it worked from (flagged or "
                          "not).  The report itself is the same with or "
                          "without it.  Not written in FastReporter mode.")

@@ -24,7 +24,7 @@ def test_one_shared_save_row_with_a_native_browse_button():
     assert 'def _report_dest_row(key, default_dir):' in SRC
     body = SRC.split('def _report_dest_row(key, default_dir):', 1)[1].split('\ndef ', 1)[0]
     assert "pick_folder('Choose where to save the reports')" in body
-    assert "st.text_input('Save reports to', key=key, placeholder=default_dir" in body
+    assert "st.text_input('Save Reports To', key=key, placeholder=default_dir" in body
     assert 'return default_dir' in body
 
 

@@ -161,7 +161,7 @@ def render(default_out_dir: str | None = None,
                'the span’s production sheet.')
 
     upload = st.file_uploader(
-        'Production sheet',
+        'Production Sheet',
         type=['xlsx', 'xlsm'],
         help='The span’s ZeroDB production sheet: one tab per location, in '
              'order from the A end to the Z end. Drag it in, or Browse.')
@@ -171,7 +171,7 @@ def render(default_out_dir: str | None = None,
         # must not also be handed a value, or Streamlit ignores one of the two
         # and the box stops accepting what is typed into it.
         st.text_input(
-            'Production sheet path',
+            'Production Sheet Path',
             placeholder='/path/to/Span 4 … Production Sheet final.xlsx',
             key='fqa_prod',
             help='Useful for a sheet that is already on a share, or one too '
@@ -220,10 +220,10 @@ def render(default_out_dir: str | None = None,
     for col, tag, site in ((cols[0], 'A', job.site_a), (cols[1], 'Z', job.site_z)):
         with col:
             st.markdown(f'**Site {tag}**')
-            site.address = st.text_input(f'{tag} street address', site.address or '',
+            site.address = st.text_input(f'{tag} Street Address', site.address or '',
                                          key=f'{tag}_addr') or None
             c1, c2 = st.columns(2)
-            site.alias = c1.text_input(f'{tag} alias', site.alias or '',
+            site.alias = c1.text_input(f'{tag} Alias', site.alias or '',
                                        key=f'{tag}_alias') or None
             site.clli = c2.text_input(f'{tag} CLLI', site.clli or '',
                                       key=f'{tag}_clli') or None
@@ -237,16 +237,16 @@ def render(default_out_dir: str | None = None,
             site.bay = c4.text_input('Bay', site.bay or '',
                                      key=f'{tag}_bay') or None
             c1, c2 = st.columns(2)
-            site.rmu = c1.text_input('RMU (shelf)', site.rmu or '',
+            site.rmu = c1.text_input('RMU (Shelf)', site.rmu or '',
                                      key=f'{tag}_rmu') or None
-            site.vendor_part = c2.text_input('Panel vendor part #',
+            site.vendor_part = c2.text_input('Panel Vendor Part #',
                                              site.vendor_part or '',
                                              key=f'{tag}_vpart') or None
             st.caption(f'Test from device: `{site.test_from_device or "-"}`')
 
     c1, c2, c3 = st.columns(3)
-    job.market = c1.text_input('Market / city', job.market or '') or None
-    job.project = c2.text_input('NetBuild / project', job.project or '') or None
+    job.market = c1.text_input('Market / City', job.market or '') or None
+    job.project = c2.text_input('NetBuild / Project', job.project or '') or None
     job.customer = c3.text_input('Customer or FEC #', job.customer or '') or None
 
     c1, c2, c3, c4 = st.columns(4)
@@ -260,20 +260,20 @@ def render(default_out_dir: str | None = None,
     # nobody asked -- the box stops reading as empty, the completeness
     # list stops naming it, and a package ships claiming the OTDR was
     # calibrated the morning it was tested.
-    _cal = c1.date_input('Test-equipment calibration',
+    _cal = c1.date_input('Test-Equipment Calibration',
                          value=job.calibration_date)
     job.calibration_date = _cal if isinstance(_cal, date) else None
-    job.fiber_count = c2.number_input('Fibers tested', min_value=0, step=24,
+    job.fiber_count = c2.number_input('Fibers Tested', min_value=0, step=24,
                                       value=int(job.fiber_count or 0)) or None
-    job.cable_manufacturer = c3.text_input('Cable manufacturer',
+    job.cable_manufacturer = c3.text_input('Cable Manufacturer',
                                            job.cable_manufacturer or '') or None
-    job.cable_type = c4.text_input('Cable type', job.cable_type or '') or None
+    job.cable_type = c4.text_input('Cable Type', job.cable_type or '') or None
 
     c1, c2, c3 = st.columns(3)
-    job.cable_comp = c1.selectbox('Cable composition', ['RIBBON', 'Loose Tube'],
+    job.cable_comp = c1.selectbox('Cable Composition', ['RIBBON', 'Loose Tube'],
                                   index=0 if job.cable_comp == 'RIBBON' else 1)
     job.fiber_type = c2.selectbox(
-        'Fiber type', ['SMF 28', 'AllWave', 'Ultra', 'Ultra LL', 'LEAF',
+        'Fiber Type', ['SMF 28', 'AllWave', 'Ultra', 'Ultra LL', 'LEAF',
                        'TrueWave', 'LS', 'MetroCor', 'Other'],
         index=0 if job.fiber_type == 'SMF 28' else 8)
     job.direction = c3.selectbox(
@@ -285,14 +285,14 @@ def render(default_out_dir: str | None = None,
 
     st.markdown('##### Measured Distances')
     st.caption('One distance from Site A per splice location, in span order: '
-               f'{len(prod.splices)} of them. Metres, or km if you paste km. '
+               f'{len(prod.splices)} of them. Meters, or km if you paste km. '
                'Leave it empty to fall back on the production sheet’s own '
                'footage marks.')
     c1, c2 = st.columns([3, 1])
     closure_text = c1.text_area(
-        'Closure distances', height=90, label_visibility='collapsed',
+        'Closure Distances', height=90, label_visibility='collapsed',
         placeholder='60, 5010, 7650, 13540, …')
-    span_len = c2.number_input('Span length (m)', min_value=0, step=10, value=0)
+    span_len = c2.number_input('Span Length (m)', min_value=0, step=10, value=0)
 
     st.markdown('##### Exception Reporting')
     st.caption('One per line: fiber, event #, description. The event number is '
@@ -334,17 +334,17 @@ def render(default_out_dir: str | None = None,
         st.session_state.setdefault('fqa_template', DEFAULT_TEMPLATE)
         # key= without value=: a widget owning a session-state slot must
         # not also be handed a value, or Streamlit ignores one of them.
-        template = st.text_input('FQA form template', key='fqa_template',
+        template = st.text_input('FQA Form Template', key='fqa_template',
                                  help='A blank Lumen Site Survey form. Replace '
                                       'this when Lumen publishes a new revision.')
         c1, c2 = st.columns(2)
         entry_offset = c1.number_input(
-            'Frame to entry splice (m)', min_value=0, step=10,
+            'Frame to Entry Splice (m)', min_value=0, step=10,
             value=DEFAULT_ENTRY_OFFSET_M,
             help='The short run from the ILA frame out to the entry splice, at '
                  'each end. The production sheet does not measure it.')
         tolerance = c2.number_input(
-            'Footage-mark tolerance (m)', min_value=0, step=5,
+            'Footage-Mark Tolerance (m)', min_value=0, step=5,
             value=DEFAULT_TOLERANCE_M,
             help='How far the footage marks may sit from the measured distance '
                  'before the build calls it out.')
@@ -356,13 +356,13 @@ def render(default_out_dir: str | None = None,
     if dest_row is not None:
         out_dir = dest_row('fqa_dest', fallback)
     else:
-        out_dir = st.text_input('Save to', fallback) or fallback
+        out_dir = st.text_input('Save To', fallback) or fallback
     default_name = os.path.splitext(os.path.basename(prod_path))[0]
     default_name = default_name.replace('Production Sheet', '').strip(' -_')
-    out_name = st.text_input('File name',
+    out_name = st.text_input('File Name',
                              f'{default_name} - FQA SITE SURVEY.xlsm')
 
-    if st.button('Build the FQA package', type='primary'):
+    if st.button('Build the FQA Package', type='primary'):
         try:
             closures = _parse_closures(closure_text)
         except ValueError as exc:
@@ -416,5 +416,5 @@ def render(default_out_dir: str | None = None,
                      use_container_width=True, hide_index=True)
 
         with open(out_path, 'rb') as fh:
-            st.download_button('Download the package', fh.read(), file_name=out_name,
+            st.download_button('Download the Package', fh.read(), file_name=out_name,
                                mime='application/vnd.ms-excel.sheet.macroEnabled.12')
