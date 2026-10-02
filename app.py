@@ -4299,8 +4299,14 @@ def page_duplicate_check():
     st.session_state.pop('_ss_removed_note', None)     # a slot from an earlier run
     # The line that tells the tech to pick a folder is for the page's own
     # loader, which is not drawn when the left panel holds the traces.
-    st.caption(('' if any(_panel_traces()) else
-                'Pick a folder of `.sor` / `.trc` / `.json` files. ')
+    # What the tool does first, as every other tool page says it (audit
+    # 2026-10-02: the page never said it looks for duplicates).
+    st.caption('Finds traces that are copies of each other: one fiber shot '
+               'twice and saved under two fiber numbers, or one file saved '
+               'twice. Every pair of traces is compared by the shape of its '
+               'trace and ranked by how likely it is a duplicate. '
+               + ('' if any(_panel_traces()) else
+                  'Pick a folder of `.sor` / `.trc` / `.json` files. ')
                + 'Reports are saved to the folder you choose below (Downloads '
                'by default) and offered for download.')
 
