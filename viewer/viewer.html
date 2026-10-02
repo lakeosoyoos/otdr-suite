@@ -4361,6 +4361,18 @@ function fileDay(acq) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
        + `-${String(d.getDate()).padStart(2, '0')}`;
 }
+// "2026-09-13 14:07:40": when a trace was shot, in the same time zone as
+// fileDay, for the Summary Report.
+function fileShot(acq) {
+  if (!acq) return null;
+  const d = new Date(acq * 1000), p2 = v => String(v).padStart(2, '0');
+  return `${fileDay(acq)} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
+}
+// "100 km", "2.5 km": the distance range the tech set (FR's Test Parameters
+// Range), or null when the file does not carry one.
+function rangeLabel(km) {
+  return km ? `${+km.toFixed(4)} km` : null;
+}
 // What Select Same compares for one row, or null for a file not read yet.
 // Its Pass/Fail is the event table's (tableFileFails): null, never matching,
 // for a file the table has not judged.
@@ -10892,15 +10904,18 @@ async function reportPayload(opt, token, progress) {
     if (mk) tables.push(mk);
     tables.push({
       title: 'Traces', note: '', lead: 1,
-      head: [['Trace', 'File', 'λ (nm)', 'Pulse (ns)', 'IOR', 'End', 'Events'].map(t => ({ t, s: H }))],
+      head: [['Trace', 'File', 'Date / Time', 'λ (nm)', 'Pulse (ns)', 'Range', 'IOR', 'End', 'Events']
+        .map(t => ({ t, s: H }))],
       body: sorted.map(t => {
         const d = t.data || {};
         const end = (d.events || []).find(e => e.is_end);
         return [
           { t: `F${fiberLabel(t.fiber)} ${arrow(t)}`, s: B, dot: colorHex(t.color) },
           { t: d.filename || '', s: B },
+          { t: fileShot(d.acq_time) || '---', s: C },
           { t: d.wavelength_nm ? String(d.wavelength_nm) : '---', s: C },
           { t: d.pulse_ns ? String(d.pulse_ns) : '---', s: C },
+          { t: rangeLabel(d.range_km) || '---', s: C },
           { t: d.ior ? d.ior.toFixed(5) : '---', s: C },
           { t: end ? kmFt(end.dist_km) : '---', s: C },
           { t: String((d.events || []).length), s: C },
@@ -10922,8 +10937,10 @@ async function reportPayload(opt, token, progress) {
         const ts = sorted.filter(t => t.fiber === f);
         const tab = byTable.get(f);
         const meta = ts.map(t => [`${arrow(t)} file`, (t.data && t.data.filename) || '']);
+        for (const t of ts) meta.push([`Date / time ${arrow(t)}`, fileShot(t.data && t.data.acq_time) || '']);
         meta.push(['Wavelength', one(ts, t => t.data.wavelength_nm ? `${t.data.wavelength_nm} nm` : null)]);
         meta.push(['Pulse', one(ts, t => t.data.pulse_ns ? `${t.data.pulse_ns} ns` : null)]);
+        meta.push(['Range', one(ts, t => rangeLabel(t.data.range_km))]);
         meta.push(['IOR', one(ts, t => t.data.ior ? t.data.ior.toFixed(5) : null)]);
         for (const t of ts) {
           const end = (t.data.events || []).find(e => e.is_end);
