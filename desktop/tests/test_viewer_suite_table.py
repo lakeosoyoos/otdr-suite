@@ -420,16 +420,18 @@ def test_the_hub_asks_every_report_for_its_table_and_hands_it_over():
 
 def test_the_table_follows_the_analysis_mode():
     body = _fn('renderEventTable')
-    assert ("if (gAnalysisMode === 'suite') {\n"
-            "    if (renderSuiteBidiGrid(visible, host, hint)) return;\n"
-            "  } else if (renderFrBidiGrid(visible, host, hint)) return;\n"
-            "  renderFastReporterGrid(visible, host, hint);") in body
+    assert ("const server = gAnalysisMode === 'suite'\n"
+            "    ? renderSuiteBidiGrid(visible, host, hint) : renderFrBidiGrid(visible, host, hint);\n"
+            "  if (!server) {\n"
+            "    renderFastReporterGrid(visible, host, hint);") in body
     ask = _fn('renderSuiteBidiGrid')
     # a load from one direction asks for that direction's table (Robert
     # 2026-09-30: "it has to work for one direction OR bidi, equally"); a
     # mix of lone A and lone B traces still has no Suite table
     assert "if (dirs.size !== 1) return false;" in ask
-    assert "fetch(`/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`)" in ask
+    # asked once for the traces on screen (askServerTable, test_viewer_fr_table_once)
+    assert "`/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`," in ask
+    assert "askServerTable('suite', key," in ask
     # the report may still be running: the table waits for it ...
     assert "if (res.pending) {" in ask and "gSuitePoll = setTimeout(ask, 3000);" in ask
     assert "if (seq !== gSuiteTableSeq) return;" in ask

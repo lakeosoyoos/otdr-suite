@@ -2085,6 +2085,79 @@ def _unused_report_path(path, taken=()):
     return cand
 
 
+# A report's file name says what made it (Robert 2026-10-01): the span in the
+# direction the report reads, the tool, the analysis mode and the gate it ran
+# at, e.g. SITEA_to_SITEB_SpliceReport_OTDR_0.160.xlsx.  The mode word follows
+# the hub's switch: OTDR Suite -> OTDR, FastReporter -> FR.
+REPORT_NAME_MODES = {'suite': 'OTDR', 'fr': 'FR'}
+_FILE_NAME_BAD_CHARS = frozenset('\\/:*?"<>|')
+
+
+def _file_name_site(name, fallback):
+    """`name` as Windows takes it in a file name: \\ / : * ? " < > | and
+    control characters taken out, no trailing dot or space.  `fallback` when
+    nothing is left."""
+    s = ''.join(c for c in str(name or '')
+                if c not in _FILE_NAME_BAD_CHARS and ord(c) >= 32)
+    return s.strip().rstrip('. ') or fallback
+
+
+def _report_file_name(site_from, site_to, tool, mode, gate,
+                      fallback=('A', 'B')):
+    """'<from>_to_<to>_<tool>_<MODE>_<gate>.xlsx'.  `mode` is the analysis
+    mode ('suite' / 'fr'), `gate` the splice gate in dB, three decimals; a
+    gate switched off in the OTDR Settings (the off-sentinel) reads 'off'."""
+    try:
+        g = float(gate)
+        gate_s = f'{g:.3f}' if 0 < g < _OTDR_DISABLE_SENTINEL else 'off'
+    except (TypeError, ValueError):
+        gate_s = 'off'
+    return (f'{_file_name_site(site_from, fallback[0])}_to_'
+            f'{_file_name_site(site_to, fallback[1])}_{tool}_'
+            f'{REPORT_NAME_MODES.get(mode, "OTDR")}_{gate_s}.xlsx')
+
+
+def _sr_file_sites(site_a, site_b, dir_a, dir_b):
+    """The two names a Splice Report's file is named by: the site boxes, and
+    for a box left blank the names the span's files store."""
+    a, b = (site_a or '').strip(), (site_b or '').strip()
+    if not (a and b):
+        try:
+            sa, sb = _site_names_for(dir_a, dir_b)
+        except Exception:
+            sa = sb = ''
+        a, b = a or sa or 'A', b or sb or 'B'
+    return a, b
+
+
+def _uni_named_report(manifest):
+    """Give a finished Unidirectional workbook its name, from what the run
+    reports: the sites in the direction of the shot (a B-folder run reads
+    SITEB_to_SITEA), its analysis mode and the splice gate it ran at.  Which
+    way the shot went is only known once the engine has read the files, so
+    the workbook is moved after the run, never over another file.  Returns
+    the path the workbook is at (where it was, if the move fails)."""
+    out = manifest.get('out') or ''
+    if not out or not os.path.isfile(out):
+        return out
+    u = manifest.get('uni') or {}
+    ends = ('B', 'A') if u.get('shot_side') == 'B' else ('A', 'B')
+    want = os.path.join(os.path.dirname(out), _report_file_name(
+        u.get('site_a'), u.get('site_b'), 'Uni', manifest.get('analysis_mode'),
+        (manifest.get('thresholds') or {}).get('UNI_BEND_THRESHOLD'),
+        fallback=ends))
+    # Already that name, or that name's " (2)" for a rerun: it stays.
+    _bare = re.sub(r' \(\d+\)(\.xlsx)$', r'\1', os.path.abspath(out))
+    if os.path.normcase(os.path.abspath(want)) == os.path.normcase(_bare):
+        return out
+    want = _unused_report_path(want)
+    try:
+        os.rename(out, want)
+    except OSError:
+        return out
+    return want
+
+
 # ─── ILA / site-name auto-detection from SOR GenParams ───────────────────────
 # So the report labels WHICH ILA is the A-direction and which is the B-direction
 # (the boss's request) instead of a literal "A"/"B".  Standalone + engine-free:
@@ -2601,9 +2674,54 @@ def _install_theme_pick_clear():
         pass
 
 
+# The browser tab read "Streamlit" while the hub reran.  Streamlit's page
+# resets the tab title to "Streamlit" at the start of every run and sets it
+# back when the script reaches st.set_page_config, so the tab flips for as
+# long as that takes (seconds on a slow start).  The page config cannot stop
+# it, so this pins the title on the hub page: Streamlit's own reset
+# writes the product's name (PRODUCT_NAME) instead, and every other title
+# passes through.
+# Installed once per browser tab; a no-op if the page is not reachable.
+PAGE_TITLE = PRODUCT_NAME
+TITLE_KEEP_JS = """
+<script>
+(function(){
+  var w; try { w = window.parent; void w.document; } catch (e) { return; }
+  if (!w || w.__otdrTitleKeep) return;
+  var d = w.document, proto = w.Document && w.Document.prototype;
+  var own = proto && Object.getOwnPropertyDescriptor(proto, 'title');
+  if (!own || !own.get || !own.set) return;
+  w.__otdrTitleKeep = true;
+  var KEEP = '__TITLE__';
+  Object.defineProperty(d, 'title', {
+    configurable: true,
+    get: function(){ return own.get.call(d); },
+    set: function(v){ own.set.call(d, String(v) === 'Streamlit' ? KEEP : v); }
+  });
+  if (own.get.call(d) === 'Streamlit') own.set.call(d, KEEP);
+})();
+</script>
+""".replace('__TITLE__', PAGE_TITLE)
+
+
+def _install_title_keep():
+    """Render the script above out of the page's flow, as the theme clear
+    does (best effort, never fatal)."""
+    try:
+        box = st.container(key='title_keep')
+        box.markdown('<style>[data-testid="stLayoutWrapper"]:has(> .st-key-title_keep)'
+                     '{position:absolute;width:0;height:0;overflow:hidden}</style>',
+                     unsafe_allow_html=True)
+        with box:
+            st_components_html(TITLE_KEEP_JS, height=0)
+    except Exception:
+        pass
+
+
 _install_sidebar_drag_fix()
 _install_hub_drop_catch()
 _install_theme_pick_clear()
+_install_title_keep()
 
 # No "Deploy" button in the header (Robert, 2026-09-29): it is Streamlit's
 # developer menu and means nothing to a tech.  New builds turn the whole
@@ -2788,7 +2906,13 @@ def _panel_traces():
     box loaded 24 + 24 fibers in the Viewer while the Splice Report asked for
     both folders and the Unidirectional page ignored them (2026-09-29)."""
     dir_a, dir_b, _notes = _panel_dirs()
-    return tuple(_d if _d and os.path.isdir(_d) else '' for _d in (dir_a, dir_b))
+    # A folder with no trace files is not loaded for a report: the Splice
+    # Report took one as loaded and failed on Generate (audit 2026-10-02).
+    # The Viewer still gets it, so its frame reloads to show 0 fibers.
+    _none = {t[:1] for k, t in _notes
+             if k == 'warning' and t[1:].startswith(': no trace files')}
+    return tuple(_d if _d and os.path.isdir(_d) and _s not in _none else ''
+                 for _s, _d in (('A', dir_a), ('B', dir_b)))
 
 
 def _show_panel_notes():
@@ -3999,7 +4123,18 @@ def _resolve_viewer_dir(raw_path):
     list.  Accepts a plain folder, a `.zip`, or a folder CONTAINING zip(s) —
     extracting and flattening as needed — so a zipped SOR span (even a single
     direction) can be viewed WITHOUT the bidirectional 'Load span' flow.
-    Returns (usable_dir, note_or_None).  Never raises."""
+    Returns (usable_dir, note_or_None).  Never raises.
+
+    A folder whose trace files are all in its subfolders is flattened the
+    same way, with the note 'traces read from its subfolders'.  Unzipping
+    SITE.zip leaves SITE/SITE/*.sor, and the outer folder
+    in a box loaded 0 fibers on every page with nothing said; the Splice
+    Report took it as loaded and only failed on Generate (audit 2026-10-02).
+    A folder with trace files of its own at the top is used as it is, its
+    subfolders unread, as before.  A folder with no trace files in it or in
+    its subfolders gets the note 'no trace files (.sor, .trc, .json) in that
+    folder'.  Which notes are captions and which are warnings:
+    _dir_note_is_caption."""
     import folder_intake as fi
     p = (raw_path or '').strip().strip('"')
     if not p:
@@ -4009,38 +4144,82 @@ def _resolve_viewer_dir(raw_path):
         return p, None
     is_zip = os.path.isfile(p) and p.lower().endswith('.zip')
     try:
-        has_inner_zip = os.path.isdir(p) and any(
-            f.lower().endswith('.zip') for f in os.listdir(p))
+        names = os.listdir(p) if os.path.isdir(p) else []
     except OSError:
-        has_inner_zip = False
-    if not (is_zip or has_inner_zip):
+        names = None              # unreadable: page_viewer says so
+    has_inner_zip = bool(names) and any(f.lower().endswith('.zip') for f in names)
+    # No trace file and no zip at the top: look in its subfolders, three
+    # levels down at most (SITE/SITE, span/A/SITE), so a
+    # folder typed by mistake (a whole drive, a home folder) is not walked
+    # end to end on every rerun.  The rules of find_otdr_files: no
+    # dot-files (the hub's own report caches are .json) and none of
+    # SKIP_DIRS.  Zips in subfolders are not opened.
+    nested = []
+    if names is not None and os.path.isdir(p) and not has_inner_zip and not any(
+            f.lower().endswith(fi.OTDR_EXTS) and not f.startswith('.') for f in names):
+        top = os.path.normpath(p)
+        for root, dirs, files in os.walk(top):
+            depth = 0 if root == top else os.path.relpath(root, top).count(os.sep) + 1
+            dirs[:] = [] if depth >= 3 else [d for d in dirs if d not in fi.SKIP_DIRS]
+            if depth:
+                nested += [os.path.join(root, f) for f in files
+                           if not f.startswith('.') and f.lower().endswith(fi.OTDR_EXTS)]
+        nested.sort()
+        if not nested:
+            return p, 'no trace files (.sor, .trc, .json) in that folder'
+    if not (is_zip or has_inner_zip or nested):
         return p, None            # nothing to extract; page_viewer validates/warns
+    note = 'traces read from its subfolders' if nested else 'viewing from .zip'
+    # Flattening keeps one file per name (materialize_all keeps the first):
+    # say so when two subfolders hold the same name, case aside as Windows
+    # sees it, rather than leave the others out unsaid.
+    first, clash = {}, []
+    for f in nested:
+        name = os.path.basename(f)
+        if name.lower() not in first:
+            first[name.lower()] = name
+        elif first[name.lower()] not in clash:
+            clash.append(first[name.lower()])
+    if clash:
+        note = (f"{note}, but {len(clash)} file name"
+                f"{'s are' if len(clash) != 1 else ' is'} in more than one "
+                f'subfolder and only one copy of each was loaded (for example '
+                f'{clash[0]})')
     # What the extraction was built from: the zip itself, or, for a folder,
     # every zip and trace file in it, each by path, size, mtime and inode, so
     # a zip replaced or overwritten in place is extracted again.
     try:
         if is_zip:
             _zsig = _files_sig([p])
+        elif nested:
+            _zsig = _files_sig(nested)
         else:
             _zsig = _files_sig(fi.zip_paths(p) + fi.find_otdr_files(p))
     except OSError:
         _zsig = None
+
+    def _usable(d):
+        # A flattened folder is built whole (_settle), so one that is there
+        # is the one to use even when its names give no fiber numbers: a
+        # zip's copy must list fibers, as it always had to.
+        if not (d and os.path.isdir(d)):
+            return False
+        return bool(os.listdir(d)) if nested else bool(trace_server.list_fibers(d))
     cached_sig, cached_dir = _VIEWER_DIR_CACHE.get(p) or (None, None)
-    if (_zsig is not None and cached_sig == _zsig
-            and cached_dir and os.path.isdir(cached_dir)
-            and trace_server.list_fibers(cached_dir)):
-        return cached_dir, 'viewing from .zip'
+    if _zsig is not None and cached_sig == _zsig and _usable(cached_dir):
+        return cached_dir, note
     # One folder per zip (and per version of it), named after both, so every
     # tool, every session and a restarted hub get the same folder for the same
     # zip: the report pages read these boxes too (_panel_dirs), and a report
     # is saved under the folders it ran on.
     final = _stable_dir('viewer_zip_', p, _zsig)
-    if final and os.path.isdir(final) and trace_server.list_fibers(final):
+    if _usable(final):
         _remember(_VIEWER_DIR_CACHE, p, (_zsig, final))
-        return final, 'viewing from .zip'
+        return final, note
     try:
         dest = tempfile.mkdtemp(prefix='viewer_zip_')
-        files = (fi.extract_zip(p, os.path.join(dest, 'unzipped')) if is_zip
+        files = (nested if nested
+                 else fi.extract_zip(p, os.path.join(dest, 'unzipped')) if is_zip
                  else fi.find_otdr_files_with_zips(p, os.path.join(dest, 'zips')))
         if not files:
             return p, None        # nothing extractable; fall through to the folder
@@ -4048,9 +4227,24 @@ def _resolve_viewer_dir(raw_path):
         # (extract_zip / find_otdr_files_with_zips may leave files in subfolders).
         flat = _settle(fi.materialize_all(files, os.path.join(dest, 'all')), final)
         _remember(_VIEWER_DIR_CACHE, p, (_zsig, flat))
-        return flat, 'viewing from .zip'
+        return flat, note
     except Exception as exc:                           # bad zip / IO
+        if nested:
+            return '', f'could not read its subfolders ({exc})'
         return '', f'could not read that .zip ({exc})'
+
+
+def _dir_note_is_caption(note):
+    """True for a _resolve_viewer_dir note that only says where the traces
+    were read from; every other note is a warning.  A page used to show any
+    note but 'could not ...' as a caption (audit 2026-10-02)."""
+    return note in ('viewing from .zip', 'traces read from its subfolders')
+
+
+def _dir_note_unusable(note):
+    """True for a _resolve_viewer_dir note that leaves nothing to load: a
+    zip or subfolders that could not be read, or no trace files at all."""
+    return bool(note) and note.startswith(('could not', 'no trace files'))
 
 
 # A folder in one of the left panel's boxes that holds BOTH directions:
@@ -4111,24 +4305,33 @@ def _split_panel_folder(folder):
 def _panel_dirs():
     """The left panel's two boxes, resolved: (dir_a, dir_b, notes).
 
-    Each box may hold a folder, a .zip or a folder of zips (_resolve_viewer_dir).
+    Each box may hold a folder, a .zip, a folder of zips or a folder whose
+    traces are in its subfolders (_resolve_viewer_dir).
     A box whose folder holds both directions is split into A and B when the
     other box is empty or names the same folder; with another folder in the
     other box nothing is split and a note says why.  `notes` is a list of
-    (kind, text), kind 'warning' or 'caption', for the page to show.  A path
-    that does not exist comes back as typed, for the caller to judge."""
+    (kind, text), kind 'warning' or 'caption', for the page to show.  A box
+    whose folder is not there comes back '' with a note naming what the box
+    shows: only the Viewer said so, and the Splice Report asked for a folder
+    the tech had already typed (audit 2026-10-02)."""
     raw_a, raw_b = _panel_boxes()
     out, notes = {}, []
     for side, raw in (('A', raw_a), ('B', raw_b)):
         d, note = _resolve_viewer_dir(raw)
-        if note and note.startswith('could not'):
-            notes.append(('warning', f'{side}: {note}'))
+        if note:
+            notes.append(('caption' if _dir_note_is_caption(note) else 'warning',
+                          f'{side}: {note}'))
+            if note.startswith('could not'):
+                d = ''
+        elif d and not os.path.isdir(d):
+            typed = (st.session_state.get(f'view_dir_{side.lower()}_input') or '').strip()
+            notes.append(('warning', f'{side} folder not found: {typed or raw}'))
             d = ''
-        elif note:
-            notes.append(('caption', f'{side}: {note}'))
         out[side] = d
-    same = bool(raw_a and raw_b) and (os.path.normcase(os.path.abspath(raw_a))
-                                      == os.path.normcase(os.path.abspath(raw_b)))
+    # The same folder in both boxes, however it was typed: a trailing slash,
+    # quotes or another case named it twice unseen.  Compared as resolved, so
+    # the same .zip twice is the same folder too.
+    same = _same_folder(out['A'], out['B'])
     # A pair click points the A box at Secret Sauce's own folder, which holds
     # both directions on purpose (see _handle_nav): the pair is read from it.
     ss_nav = st.session_state.get('_ss_nav_folder')
@@ -4152,7 +4355,32 @@ def _panel_dirs():
                                  f'({what}), and the {other} box has a folder of '
                                  f'its own. Empty the {other} box to split it '
                                  f'into A and B, or give {side} one direction.'))
+    # The same one-direction folder in both boxes was loaded as both A and B:
+    # the Viewer listed every file both ways, and the Splice Report made a
+    # "bidirectional" report of one direction averaged with itself (audit
+    # 2026-10-02).  It is A only; a folder holding both directions was split
+    # above and is two folders by now.
+    if same and _same_folder(out['A'], out['B']):
+        out['B'] = ''
+        # B's own caption ('B: viewing from .zip') is about a B not loaded.
+        notes = [n for n in notes
+                 if not (n[0] == 'caption' and n[1].startswith('B: '))]
+        notes.append(('warning', 'The A and B boxes name the same folder. It is '
+                                 "loaded as A only; put the other direction's "
+                                 'folder in the B box.'))
     return out['A'], out['B'], notes
+
+
+def _same_folder(p, q):
+    """True when `p` and `q` are one existing folder (os.path.samefile:
+    a trailing slash, another case or a link name it too)."""
+    if not (p and q and os.path.isdir(p) and os.path.isdir(q)):
+        return False
+    try:
+        return os.path.samefile(p, q)
+    except OSError:
+        return (os.path.normcase(os.path.realpath(p))
+                == os.path.normcase(os.path.realpath(q)))
 
 
 def page_viewer(fec=False):
@@ -4173,28 +4401,23 @@ def page_viewer(fec=False):
         dir_a, dir_b, _notes = _panel_dirs()
 
         # Validate + push into the trace server's shared config.
+        # A folder not found is one of _panel_dirs' notes, for every page.
         warn = [t for k, t in _notes if k == 'warning']
-        if dir_a and not os.path.isdir(dir_a):
-            warn.append('A folder not found')
-            dir_a = ''
-        if dir_b and not os.path.isdir(dir_b):
-            warn.append('B folder not found')
-            dir_b = ''
         for _d, _lbl in ((dir_a, 'A'), (dir_b, 'B')):
             if _d:
                 try:
                     os.listdir(_d)
                 except OSError:
                     warn.append(f'{_lbl} folder is not readable (check permissions)')
-        if dir_a and dir_b and os.path.abspath(dir_a) == os.path.abspath(dir_b):
-            warn.append('A and B are the same folder')
+        # The same folder in both boxes: _panel_dirs loads it as A only and
+        # its note says so, on every page (audit 2026-10-02).
         trace_server.set_dirs(dir_a or None, dir_b or None)
         for w in warn:
             st.warning(w)
 
         na = len(trace_server.list_fibers(dir_a)) if dir_a else 0
         nb = len(trace_server.list_fibers(dir_b)) if dir_b else 0
-        st.caption(f'A: {na} fibers · B: {nb} fibers')
+        st.caption(f"A: {_count(na, 'fiber')} · B: {_count(nb, 'fiber')}")
         for _k, _t in _notes:
             if _k == 'caption' and 'both directions' in _t:
                 st.caption(_t)
@@ -4410,6 +4633,12 @@ def page_duplicate_check():
 
     _ab = False
     _pa, _pb = _panel_traces()
+    # What is wrong with the left panel's boxes (a folder with no trace
+    # files, one not found), as on the other report pages; its captions
+    # stay off this page, as before (audit 2026-10-02).
+    for _kind, _text in _panel_dirs()[2]:
+        if _kind == 'warning':
+            st.warning(_text)
     _dropped, _from_drop = None, False
     if _pa or _pb:
         # Traces loaded in the left panel: the page draws no loader of its
@@ -6568,7 +6797,7 @@ def _render_clickable_grid(table_html, port, height=560, src=''):
 # * Parses each cell into per-fiber entries ("49,50,60 .369" -> three fibers
 #   at 0.369 dB; "1-8 brok" -> eight broken fibers; "all" -> the whole
 #   ribbon) and compares fiber by fiber.
-# * Writes <site_a>_to_<site_b>_SpliceReport_vs_Tech.xlsx with three sheets:
+# * Writes <report name>_vs_Tech.xlsx with three sheets:
 #   the grid with only the differing cells filled (colour = kind of
 #   difference), a flat list of every fiber-level difference, and a summary
 #   with the column line-up.
@@ -7199,11 +7428,11 @@ def tc_compare_reports(ours_xlsx: str, tech_xlsx: str, out_path: str,
 def _render_tech_comparison(page, our_xlsx, upload, dest_dir, site_a, site_b):
     """Compare our finished report against the tech's uploaded workbook and
     offer the difference workbook.  Written to `dest_dir` — the same folder
-    the splice report went to — as <A>_to_<B>_SpliceReport_vs_Tech.xlsx.
+    the splice report went to — as <report name>_vs_Tech.xlsx, so it carries
+    the report's span, mode and gate (_report_file_name).
     Cached per (report file, upload) in session_state so a rerun (any widget
     click) doesn't redo the compare or rewrite the file.  Never lets a bad
     tech workbook take the page down: the report above is already saved."""
-    _safe = lambda s: ''.join(c if (c.isalnum() or c in ' -_') else '_' for c in str(s)).strip() or 'site'
     try:
         _mtime = os.path.getmtime(our_xlsx)
     except OSError:
@@ -7213,8 +7442,8 @@ def _render_tech_comparison(page, our_xlsx, upload, dest_dir, site_a, site_b):
     slot = f'{page}_techcmp'
     cached = st.session_state.get(slot)
     if not (cached and cached.get('sig') == sig and os.path.exists(cached.get('xlsx', ''))):
-        out_path = os.path.join(dest_dir,
-                                f'{_safe(site_a)}_to_{_safe(site_b)}_SpliceReport_vs_Tech.xlsx')
+        out_path = os.path.join(dest_dir, os.path.splitext(
+            os.path.basename(our_xlsx))[0] + '_vs_Tech.xlsx')
         tmp_tech = None
         try:
             os.makedirs(dest_dir, exist_ok=True)
@@ -7300,11 +7529,25 @@ def _sr_span_inputs(span):
         mode = None
         if dir_a and dir_b:
             st.caption('Traces: the A and B folders loaded in the left panel.')
+            # Two copies of one direction: the report would average a
+            # direction with itself.  Said, not blocked (audit 2026-10-02).
+            _one_way = _same_direction_sites(dir_a, dir_b)
+            if _one_way:
+                st.warning(f'Both the A and B boxes hold {_one_way[0]} → '
+                           f'{_one_way[1]} traces. Check that the B box has the '
+                           "other direction's folder.")
             _viewer_removed_note(dir_a, dir_b, page='sr')
         else:
+            # A box with text in it has its own warning above (not found, no
+            # trace files, the same folder twice): it was typed, so the line
+            # does not ask for it again (audit 2026-10-02).
+            _other = 'B' if dir_a else 'A'
+            _typed = (st.session_state.get(f'view_dir_{_other.lower()}_input')
+                      or '').strip()
             st.caption(f"Traces: only the {'A' if dir_a else 'B'} folder is "
-                       f"loaded in the left panel. Load the "
-                       f"{'B' if dir_a else 'A'} folder there too.")
+                       'loaded in the left panel.'
+                       + ('' if _typed else
+                          f' Load the {_other} folder there too.'))
     else:
         # Input mode: two A/B folders (shared with the Viewer) OR a single
         # folder / .zip that holds both directions (auto-split by direction).
@@ -7377,7 +7620,7 @@ def _sr_span_inputs(span):
             _typed_trace_dir(st.session_state.get(k_one), 'That'), zf)
 
     # The tech's own splice report (optional).  When one is here, the run
-    # also writes a <A>_to_<B>_SpliceReport_vs_Tech.xlsx beside the report
+    # also writes a <report name>_vs_Tech.xlsx beside the report
     # that highlights every cell where the two disagree — the tech_compare block.
     # Sits under the A/B inputs on both input modes (the boss's placement).
     tech_xlsx = st.file_uploader(
@@ -7389,16 +7632,39 @@ def _sr_span_inputs(span):
     return dir_a, dir_b, tech_xlsx
 
 
+def _same_direction_sites(dir_a, dir_b):
+    """(origin, far end) when two different folders hold traces shot the
+    same way, else None.  Read as the site boxes read a folder (_derive_ila),
+    so only when both folders name both ends; folders whose files stamp
+    different directions (LocationsDirection, _stamped_side) are not called
+    the same.  Two copies of the A folder in the boxes made a SITE → SITE
+    report with nothing said (audit 2026-10-02)."""
+    try:
+        if _same_folder(dir_a, dir_b):
+            return None
+        ka, kb = _derive_ila(dir_a), _derive_ila(dir_b)
+        if not (all(ka) and all(kb)) or ka != kb:
+            return None
+        sa, sb = _stamped_side(dir_a), _stamped_side(dir_b)
+        if sa and sb and sa != sb:
+            return None
+        return ka
+    except Exception:
+        return None             # a check only: never block the page on it
+
+
 def _typed_trace_dir(raw, label):
     """A folder box on a report page, read the way the Viewer reads its own
     boxes: a .zip, or a folder of zips, becomes its extracted copy.  A zip
-    that cannot be read says so and gives ''."""
+    that cannot be read says so and gives '', and so does a folder with no
+    trace files (audit 2026-10-02)."""
     typed = (raw or '').strip().strip('"')
     if not typed:
         return ''
     d, note = _resolve_viewer_dir(typed)
-    if note and note.startswith('could not'):
+    if note and not _dir_note_is_caption(note):
         st.warning(f'{label} folder: {note}')
+    if _dir_note_unusable(note):
         return ''
     return d
 
@@ -7777,8 +8043,6 @@ def page_splice_report():
     if st.button(_gen_label, type='primary',
                  disabled=bool(_stale) or bool(_not_ready) or _no_settings) \
             and not _no_settings:
-        _safe = lambda s: ''.join(c if (c.isalnum() or c in ' -_') else '_' for c in str(s)).strip() or 'site'
-        _suffix = '_SpliceReport.xlsx'
         # Read the panel values straight out of session_state (which the
         # component's auto-commit keeps current) and translate to engine
         # globals: the threshold table, the connector/launch knobs and the
@@ -7799,10 +8063,16 @@ def page_splice_report():
             spans.append((_n, _da, _db, _sa, _sb))
         queue, used_names = [], set()
         _prune_viewer_tables(VIEWER_TABLES_KEPT - len(spans))
+        # Named by the span, the analysis mode and the bidirectional gate
+        # (_report_file_name); the gate is the Bidir splice loss row's.
+        _mode = analysis_mode()
+        _gate = overrides.get('REBURN_THRESHOLD', next(
+            r[2] for r in OTDR_ROWS if r[0] == 'bidir_splice_loss'))
         for _n, _da, _db, _sa, _sb in spans:
-            _name = f'{_safe(_sa)}_to_{_safe(_sb)}{_suffix}'
+            _fa, _fb = _sr_file_sites(_sa, _sb, _da, _db)
+            _name = _report_file_name(_fa, _fb, 'SpliceReport', _mode, _gate)
             if _name in used_names:                   # same sites twice → keep both files
-                _name = f'{_safe(_sa)}_to_{_safe(_sb)}_span{_n}{_suffix}'
+                _name = _report_file_name(_fa, _fb, f'span{_n}_SpliceReport', _mode, _gate)
             used_names.add(_name)
             out_xlsx = _unused_report_path(os.path.join(_sr_dest, _name),
                                            [q['out'] for q in queue])
@@ -8559,8 +8829,10 @@ def page_unidirectional():
         if folder:
             _typed = folder
             folder, _znote = _resolve_viewer_dir(folder)
-            if _znote and _znote.startswith('could not'):
+            if _znote and not _dir_note_is_caption(_znote):
                 st.warning(f'{_typed}: {_znote}')
+            elif _znote == 'traces read from its subfolders':
+                st.caption(f'Reading the traces from its subfolders: {_typed}')
             elif _znote:
                 st.caption(f'📦 Reading the traces from the .zip: {_typed}')
             elif not os.path.exists(_typed):
@@ -8697,8 +8969,12 @@ def page_unidirectional():
     if _uni_boxes:
         _uni_boxes.append(_uni_pside or _uni_up_side or '')
     if _run_uni:
-        out_xlsx = _unused_report_path(
-            os.path.join(_uni_dest, 'unidirectional_events.xlsx'))
+        # Named by the A-end and B-end boxes for now; the run says which way
+        # the shot went and the gate it ran at (_uni_named_report).
+        out_xlsx = _unused_report_path(os.path.join(_uni_dest, _report_file_name(
+            uni_site_a, uni_site_b, 'Uni', analysis_mode(),
+            (uni_overrides or {}).get('UNI_BEND_THRESHOLD',
+                                      _UNI_DEFAULTS['UNI_BEND_THRESHOLD']))))
         st.session_state['uni_pending_cmd'] = uni_cmd(_run_folder(folder), out_xlsx,
                                                       direction=dir_choice,
                                                       landmarks=landmarks,
@@ -8747,6 +9023,9 @@ def page_unidirectional():
                          {"folder": os.path.basename(folder)}, log=proc.stderr)
             return
         manifest['_folder'] = folder
+        if manifest.get('out'):
+            manifest['out'] = st.session_state['uni_out_xlsx'] = \
+                _uni_named_report(manifest)
         manifest['_viewer_removed'] = st.session_state.pop('uni_run_removed', None)
         manifest['_trace_files'] = st.session_state.pop('uni_run_files', None)
         _ran_boxes = st.session_state.pop('uni_run_boxes', None)
@@ -9108,7 +9387,7 @@ def _fec_folder_row(slot, label, placeholder):
     if not raw:
         return ''
     d, note = _resolve_viewer_dir(raw)
-    if note and note != 'viewing from .zip':
+    if note and not _dir_note_is_caption(note):
         st.warning(f'{label}: {note}')
     if not d or not os.path.isdir(d):
         st.warning(f'{label}: folder not found.')

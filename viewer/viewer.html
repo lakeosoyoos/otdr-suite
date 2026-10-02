@@ -606,6 +606,11 @@
      below.  Pinning the strip is the point: FR prints it at the bottom of the
      table, which on 2,304 rows means nobody ever sees it. */
   .fr-scroll { overflow: auto; flex: 1; min-height: 0; }
+  /* A table that has to come from the server again stays up, dimmed, under
+     this note until the new one paints (holdOldTable). */
+  #event-tbody-wrap > .tbl-updating { flex: none; padding: 2px 12px; font-size: 11px;
+                                      color: var(--text-sec); font-style: italic; }
+  #event-tbody-wrap.tbl-stale > :not(.tbl-updating) { opacity: .5; }
   /* the one-direction fibres' own table, under the A+B one */
   .onedir-box { flex: 0 1 auto; max-height: 45%; min-height: 0; display: flex;
                 flex-direction: column; border-top: 2px solid #b0bdcc; }
@@ -635,6 +640,11 @@
      both. */
   table.fr-table thead th.fr-rowlab,
   table.fr-table tfoot td.fr-rowlab { z-index: 6; }
+  /* Only the fiber column stays put sideways, in the body and the footer.
+     The P/F, λ and Dir. headers were pinned too, all at left 0, so a table
+     scrolled sideways (a report link's column, #39) showed "Dir." over the
+     fiber names.  They scroll with their columns, under the fiber header. */
+  table.fr-table thead tr:first-child > th.fr-rowlab ~ th.fr-rowlab { left: auto; z-index: 5; }
   table.fr-table tbody tr { height: 22px; }
   table.fr-table th, table.fr-table td {
     text-align: center; white-space: nowrap; border: 1px solid #c9d5e1;
@@ -654,6 +664,10 @@
   table.fr-table td.fr-hit { outline: 2px solid var(--accent); outline-offset: -2px;
                              background: #dbeaf9; transition: background .6s, outline-color .6s; }
   table.fr-table td.fr-hit.fading { background: transparent; outline-color: transparent; }
+  /* A report link's column: its header, the same way. */
+  table.fr-table th.fr-evhdr.fr-hit { outline: 2px solid var(--accent); outline-offset: -2px;
+                                      transition: outline-color .6s; }
+  table.fr-table th.fr-evhdr.fr-hit.fading { outline-color: transparent; }
   table.fr-table th.fr-evhdr:hover { background: #d4e2f2; }
   /* The visible way into the span menu: a header has no row, so it asks. */
   table.fr-table th.fr-evhdr .fr-evmenu {
@@ -1054,6 +1068,17 @@ let gHoverKey = null;                  // the trace nearest the cursor, if one i
 let gTraceClick = null;                // trace under the mouse at mousedown, until mouseup
 let gTableExport = null;               // set by the grid: {table, rows(), headExtra} for the Report
 let gExportDpr = 0;                    // the Report draws the chart at this scale; 0 = the screen's
+// A load in flight shows how far it has got, and the box shows what it asked
+// for (see beginLoad).  Each entry: {fibers, dirs, done, total}.
+const gLoadsInFlight = new Set();
+let gTableBusy = false;                // the event table waits on its server step
+let gTableGoKm = null;                 // a report link's km: the table column to scroll to
+// The tables the server builds (FastReporter's, the Splice Report's), kept
+// for the traces that asked for them: kind -> {key, res, pending}.  See
+// serverTableKey.
+const gServerTables = new Map();
+let gTableLive = null;                 // the server-built table on screen, see endVerdictsLanded
+let gHeldNodes = [];                   // the last table, held up while the next one is built
 let gBase = null;                      // the chart without its overlay (keepBase)
 let gBaseImg = null;                   // that copy's canvas, reused
 // The shared Viewer state (see pushViewerState).
@@ -1065,6 +1090,10 @@ let gStatePushT = null;
 let gStateApplying = 0;                // applying another window's state
 let gStateLoad = null;                 // that state's load, while it runs
 let gGateSig = null;                    // the gates' fingerprint (gate_sig)
+// The removed files the server's runs leave out, as this window last sent
+// or took them (sorted, comma-joined).  The Splice Report table kept for the
+// traces follows it (renderSuiteBidiGrid).
+let gServerRemovedSig = '';
 const MARKER_HIT_PX = 6;               // grab radius for dragging a marker
 
 // ─── Display transforms (stacked mode flips B to A's km frame + offsets Y) ─
@@ -2310,8 +2339,8 @@ async function loadInfo() {
   // completely plausible and is wrong by however much cable is missing.  Say
   // so wherever it is drawn (frameWarn).
   gFrameWarn = frameWarnText(nB);
-  setReadout(`A: ${gInfo.dir_a_name} (${nA} fibers)   ` +
-             `B: ${gInfo.dir_b_name} (${nB} fibers)` +
+  setReadout(`A: ${gInfo.dir_a_name} (${nA} fiber${nA === 1 ? '' : 's'})   ` +
+             `B: ${gInfo.dir_b_name} (${nB} fiber${nB === 1 ? '' : 's'})` +
              (gAnalysisMode === 'fr' ? '   ·   FastReporter analysis' : ''));
   return true;
 }
@@ -2422,10 +2451,17 @@ function placeReadout() {
   el.style.left = left + 'px';
   el.style.maxWidth = Math.max(60, box.offsetLeft - left - 10) + 'px';
 }
+// A load's progress leads the line while it runs ("Loading 312 of 864
+// traces…", then "Building the table…" while the table waits on the
+// server).  It is not a plain note: a whole span takes 40 s or more, and a
+// blank line looked like a hang.
+let gReadoutLast = ['', {}];
+function refreshReadout() { setReadout(gReadoutLast[0], gReadoutLast[1]); }
 function setReadout(s, extra = {}) {
   s = String(s || '');
+  gReadoutLast = [s, extra];
   const el = document.getElementById('readout');
-  const parts = [];
+  const parts = [[progressNote(), 'ro-prog']];
   if (READOUT_FAIL_START.test(s)) parts.push([s, 'ro-fail']);
   else {
     // A load readout ends in loadFailNote()'s ", could not load F12 A: ..."
@@ -2612,13 +2648,15 @@ async function addFibers() {
   }
   if (overview) {
     gLoadFailures = plan.gaps.slice();
-    const ok = await loadOverview(tasks);
+    const ld = beginLoad(tasks);
+    let ok;
+    try { ok = await loadOverview(tasks, ld); } finally { endLoad(ld); }
     if (epoch !== gLoadEpoch) return;  // cleared or replaced meanwhile
     syncFileMarks();                 // what the box loaded is selected in FILES
     renderChips();
     if (gAutoFit) fit();
     draw();
-    renderEventTable();
+    await buildTable();
     setReadout(`${gTraces.length} traces loaded in overview (~${OVERVIEW_PTS} pts each` +
                `, spikes preserved)` +
                (capped ? `, capped at ${MAX_TRACES}` : '') +
@@ -2627,18 +2665,22 @@ async function addFibers() {
     return;
   }
   gLoadFailures = plan.gaps.slice();
-  setReadout(`loading ${tasks.length} trace${tasks.length===1?'':'s'}…`);
+  const ld = tasks.length ? beginLoad(tasks) : null;
   // Throttle the fan-out so the single-threaded trace server stays responsive.
   const BATCH = 6;
-  for (let i = 0; i < tasks.length; i += BATCH) {
-    await Promise.all(tasks.slice(i, i + BATCH).map(t => loadOne(t.key, t.f, t.d)));
-    if (epoch !== gLoadEpoch) return;  // cleared or replaced meanwhile
-  }
+  try {
+    for (let i = 0; i < tasks.length; i += BATCH) {
+      const batch = tasks.slice(i, i + BATCH);
+      await Promise.all(batch.map(t => loadOne(t.key, t.f, t.d)));
+      loadStep(ld, batch.length);
+      if (epoch !== gLoadEpoch) return;  // cleared or replaced meanwhile
+    }
+  } finally { if (ld) endLoad(ld); }
   syncFileMarks();
   renderChips();
   if (gAutoFit) fit();
   draw();
-  renderEventTable();
+  await buildTable();
   setReadout(`${gTraces.length} trace${gTraces.length===1?'':'s'} loaded` +
              (capped ? `, capped at ${MAX_TRACES}; narrow the fiber range for more` : '') +
              loadFailNote() + absentTail);
@@ -2763,7 +2805,7 @@ const OVERVIEW_PTS = 2000;
 // Whole-cable bulk load: ONE request, decimated server-side.  Chunked so the
 // canvas fills in progressively instead of showing nothing for ~30 s while
 // 1152 SOR files are parsed on first visit to a folder.
-async function loadOverview(tasks) {
+async function loadOverview(tasks, ld = null) {
   const CHUNK = 144;                       // one ribbon-group per request
   let done = 0;
   // Every key is on its way from now on, so a second Enter or Add during
@@ -2826,7 +2868,8 @@ async function loadOverview(tasks) {
       return false;
     }
     done += slice.length;
-    setReadout(`loading ${done}/${tasks.length} traces…`);
+    if (ld) loadStep(ld, slice.length);
+    else setReadout(`loading ${done}/${tasks.length} traces…`);
     loadProgress(done, tasks.length);
     // draw() early-returns on `!gView`, and gView is null on a cold page and
     // again after Clear All.  fit() -- the only thing that fills it -- runs in
@@ -2864,6 +2907,157 @@ function loadProgress(done, total) {
   if (hint) hint.textContent = `loading ${done} of ${total} traces…`;
 }
 
+// ─── A load in flight ─────────────────────────────────────────────────
+// A whole span (864 traces both ways) used to load with a blank status line,
+// "add a trace to see events" under the chart, and a Fibers box and Dir
+// buttons that followed the chunks as they landed: "1-144", "1-288", A→,
+// and only then the full range and A + B.  While a load runs the line counts
+// it, the hint says it is loading (loadProgress counts there too), and the
+// box and the buttons show what was asked for (what is loaded plus what is
+// on its way).  A new load epoch (Clear All, a new FILES selection) drops
+// the older loads' asks with their keys (newLoadEpoch).  `tasks` are {f, d}.
+function beginLoad(tasks) {
+  const ld = { fibers: new Set(tasks.map(t => t.f)), dirs: new Set(tasks.map(t => t.d)),
+               done: 0, total: tasks.length };
+  gLoadsInFlight.add(ld);
+  const hint = document.getElementById('event-hint');
+  if (hint && !gTraces.some(t => t.visible)) hint.textContent = 'loading traces…';
+  syncFiberBox();
+  refreshReadout();
+  return ld;
+}
+// The status line's count (progressNote); the event panel's hint counts
+// too (loadProgress).
+function loadStep(ld, n) {
+  ld.done = Math.min(ld.total, ld.done + n);
+  refreshReadout();
+}
+function endLoad(ld) {
+  gLoadsInFlight.delete(ld);
+  refreshReadout();
+}
+function progressNote() {
+  if (gLoadsInFlight.size) {
+    let done = 0, total = 0;
+    for (const ld of gLoadsInFlight) { done += ld.done; total += ld.total; }
+    return `Loading ${done} of ${total} trace${total === 1 ? '' : 's'}…`;
+  }
+  return gTableBusy ? 'Building the table…' : '';
+}
+// The table step, said before it starts: the line paints "Building the
+// table…" first (a frame, or 50 ms in a hidden tab, where frames stop), then
+// the table is built.  A table that waits on the server keeps the line up
+// until it paints (tableSettled).
+async function buildTable() {
+  gTableBusy = true;
+  refreshReadout();
+  await new Promise(res => {
+    let done = false;
+    const go = () => { if (!done) { done = true; res(); } };
+    requestAnimationFrame(() => setTimeout(go, 0));
+    setTimeout(go, 50);
+  });
+  renderEventTable();
+}
+function tableSettled() {
+  dropOldTable();
+  if (gTableBusy) { gTableBusy = false; refreshReadout(); }
+  tableGoKm();
+}
+
+// ─── The server-built tables, kept ─────────────────────────────────────
+// A whole span's FastReporter table took a minute or more to come back, and
+// every repaint of the event panel asked for it again: the end-connector
+// verdicts landing a moment after it painted threw the finished table away,
+// left the area blank under "Building the table…" and asked for the same
+// rows a second time.  The rows depend only on the files (the loaded trace
+// objects: a re-loaded or edited trace is a new object), the mode and the
+// folders, so the answer is kept for exactly those, and a second ask while
+// the first is on its way waits for it.
+const gTraceStamps = new WeakMap();
+let gTraceStampN = 0;
+function traceStamp(t) {
+  if (!t) return 0;
+  let n = gTraceStamps.get(t);
+  if (!n) { n = ++gTraceStampN; gTraceStamps.set(t, n); }
+  return n;
+}
+// `extra`: whatever else the table's answer follows (the Splice Report's
+// follows the report run's settings, see renderSuiteBidiGrid).
+function serverTableKey(kind, pairs, extra = '') {
+  return [kind, gAnalysisMode, (gInfo && gInfo.dir_a) || '', (gInfo && gInfo.dir_b) || '', extra,
+          pairs.map(p => `${p.fiber}:${traceStamp(p.ta)}:${traceStamp(p.tb)}`).join(',')].join('|');
+}
+function keptServerTable(kind, key) {
+  const k = gServerTables.get(kind);
+  return k && k.key === key && k.res ? k.res : null;
+}
+// The answer for `key`, asked once: `keep(res)` says whether it may serve
+// the next repaint (an answer still pending, or an error, is asked again).
+function askServerTable(kind, key, url, keep) {
+  const k = gServerTables.get(kind);
+  if (k && k.key === key && k.pending) return k.pending;
+  const entry = { key, res: null, pending: null };
+  entry.pending = fetch(url).then(r => r.json()).then(res => {
+    res = res || {};
+    if (gServerTables.get(kind) === entry) {
+      entry.pending = null;
+      if (keep(res)) entry.res = res; else gServerTables.delete(kind);
+    }
+    return res;
+  }, e => {
+    if (gServerTables.get(kind) === entry) gServerTables.delete(kind);
+    throw e;
+  });
+  gServerTables.set(kind, entry);
+  return entry.pending;
+}
+// A table that has to come from the server again (a mode switch, other
+// traces) leaves the last one on screen, dimmed, under a note, until the new
+// one paints (tableSettled): never a blank area, and never a stale table
+// without the note.  `prev`: [node, scrollTop, scrollLeft] of what was there.
+function holdOldTable(host, prev) {
+  const note = document.createElement('div');
+  note.className = 'tbl-updating';
+  note.textContent = 'Updating the table…';
+  host.appendChild(note);
+  gHeldNodes = [note];
+  for (const [n] of prev) {
+    host.appendChild(n);
+    gHeldNodes.push(n);
+  }
+  // back where the tech had scrolled it (re-attached, it starts at the top)
+  for (const [n, top, left] of prev) {
+    if (top) n.scrollTop = top;
+    if (left) n.scrollLeft = left;
+  }
+  host.classList.add('tbl-stale');
+}
+function dropOldTable() {
+  const host = document.getElementById('event-tbody-wrap');
+  if (!host) return;
+  for (const n of gHeldNodes) if (n.parentNode === host) host.removeChild(n);
+  gHeldNodes = [];
+  host.classList.remove('tbl-stale');
+}
+// The end-connector verdicts change only the end marks, the P/F column and
+// the drawer's marks of a server-built table: the one on screen takes them
+// in place (refreshVerdicts).  It cannot when a filter decides which rows
+// and columns show; the panel is laid out again then, from the kept answer.
+function endVerdictsLanded() {
+  // Mid-load the table is not built yet: the load builds it when it ends,
+  // with these.  Built now it was a table of the traces loaded so far,
+  // thrown away a few seconds later.
+  if (gLoadsInFlight.size) return;
+  const live = gTableLive;
+  if (live && live.scroller.parentNode === live.host && live.refreshVerdicts()) return;
+  renderEventTable();
+}
+function tableStepEnd(wasBusy) {
+  if (gTableBusy !== wasBusy) refreshReadout();
+  if (!gTableBusy) tableGoKm();
+}
+
 let gLoadFailures = [];            // per-addFibers() failure notes for the readout
 // The traces being fetched right now.  A load plans what is missing and then
 // awaits its fetches, so a second Add (a double-click, Enter then Add) used to
@@ -2884,6 +3078,7 @@ let gLoadEpoch = 0;
 function newLoadEpoch() {
   gLoadEpoch++;
   gLoadingKeys.clear();
+  gLoadsInFlight.clear();            // their asks no longer count (syncFiberBox)
 }
 // fetch() that retries a THROWN fetch (connection refused/reset: "Failed to
 // fetch") a few times with a short backoff.  An HTTP error is an answer from
@@ -3010,8 +3205,13 @@ async function putBackRemovedFiles() {
   // refused at MAX_DETAIL_TRACES, so they come back as overview traces.
   if (gTraces.length) {
     const tasks = keys.map(key => { const [d, f] = splitFileKey(key); return { key, f, d }; });
-    if (gTraces.length + tasks.length > MAX_DETAIL_TRACES) await loadOverview(tasks);
-    else for (const t of tasks) await loadOne(t.key, t.f, t.d);
+    // Counted on the status line like any other load, and the Fibers box
+    // and Dir buttons show what is coming back from the start (beginLoad).
+    const ld = beginLoad(tasks);
+    try {
+      if (gTraces.length + tasks.length > MAX_DETAIL_TRACES) await loadOverview(tasks, ld);
+      else for (const t of tasks) { await loadOne(t.key, t.f, t.d); loadStep(ld, 1); }
+    } finally { endLoad(ld); }
     syncFileMarks();
     renderChips();
     if (gAutoFit) fit();
@@ -3092,8 +3292,7 @@ function pushViewerState() {
     const removed = [...gRemovedFiles];
     const sig = stateSig(keys, removed, gAddDir);
     if (sig === gStateSig) return;
-    const removedMoved = !gStateSig
-      || JSON.parse(gStateSig)[1].join() !== [...removed].sort().join();
+    const removedSig = [...removed].sort().join(',');
     gStateSig = sig;
     try {
       const r = await fetch('/api/viewer_state', { method: 'POST',
@@ -3102,7 +3301,12 @@ function pushViewerState() {
       if (j && j.ver) gStateVer = Math.max(gStateVer, j.ver);
       // The table is the span run again without the removed files (the
       // server's run follows this state), so ask for it again now the
-      // server has it: a table asked for before this landed is the old run.
+      // server has it: a table asked for before this landed is the old run
+      // (its kept answer is keyed by the removed files the server had).
+      // Only when they moved: a load or a Dir change keeps the table on
+      // screen, which is built once (see serverTableKey).
+      const removedMoved = removedSig !== gServerRemovedSig;
+      gServerRemovedSig = removedSig;
       if (removedMoved && gTraces.length) renderEventTable();
     } catch (e) { gStateSig = ''; }    // the next change tries again
   }, 300);
@@ -3127,6 +3331,7 @@ async function applyViewerState(s, keysToo = true) {
   try {
     gRemovedFiles.clear();
     (s.removed || []).forEach(k => gRemovedFiles.add(k));
+    gServerRemovedSig = [...gRemovedFiles].sort().join(',');
     const want = new Set((s.keys || []).filter(k => !gRemovedFiles.has(k)));
     gStateSig = stateSig(keysToo ? [...want] : gTraces.map(t => t.key),
                          [...gRemovedFiles], s.add_dir || 'both');
@@ -3160,14 +3365,21 @@ async function applyViewerState(s, keysToo = true) {
 function syncFiberBox() {
   const box = document.getElementById('fiber-input');
   if (document.activeElement === box) return;
-  // Nor while a load is landing: the first chunk is A's alone, and the box
-  // read "1-144" with the Dir on "A →", so a Clear All there left the next
-  // load to fetch A only (audit 2026-10-01).  The load syncs both when it
-  // settles.
-  if (gLoadingKeys.size) return;
-  box.value = fiberRangeText(gTraces.map(t => t.fiber));
-  if (!gTraces.length) return;
+  // While a load runs, what it asked for counts as loaded (see beginLoad):
+  // the box and the buttons say where the load is going from the start.
+  const fibers = gTraces.map(t => t.fiber);
   const dirs = new Set(gTraces.map(t => t.src || t.dir));
+  for (const ld of gLoadsInFlight) {
+    fibers.push(...ld.fibers);
+    ld.dirs.forEach(d => dirs.add(d));
+  }
+  // A load landing that did not say what it asked for (no beginLoad) is
+  // waited for: the first chunk is A's alone, and the box read "1-144" with
+  // the Dir on "A →", so a Clear All there left the next load to fetch A
+  // only (audit 2026-10-01).  The load syncs both when it settles.
+  if (gLoadingKeys.size && !gLoadsInFlight.size) return;
+  box.value = fiberRangeText(fibers);
+  if (!dirs.size) return;
   setAddDir(dirs.size === 1 ? [...dirs][0] : 'both');
 }
 
@@ -3509,13 +3721,13 @@ function renderFibersView(list, esc) {
       + ` data-fkey="${r.fiber}">`
       + `<span class="file-vis"${t ? ` style="color:${t.color};text-shadow:0 0 1px #333"` : ''}>${t ? '●' : ''}</span>`
       + `<span class="file-num">${r.fiber}</span>`
-      + `<span title="${esc(r.a.join(', '))}">${esc(r.a.join(', ') || '-')}</span>`
-      + `<span title="${esc(r.b.join(', '))}">${esc(r.b.join(', ') || '-')}</span>`
+      + `<span title="${esc(r.a.join(', '))}">${esc(r.a.join(', ') || '---')}</span>`
+      + `<span title="${esc(r.b.join(', '))}">${esc(r.b.join(', ') || '---')}</span>`
       + `<span class="fib-pair${pair.ok ? '' : ' bad'}" title="${why}">${pair.text}</span></div>`;
   }).join('') : '<span id="chip-empty">no folders loaded</span>';
   const full = rows.filter(r => fiberState(r) === 'selected').length;
   document.getElementById('files-count').textContent =
-    rows.length ? `${full} of ${rows.length} fibers selected` : '';
+    rows.length ? `${full} of ${rows.length} fiber${rows.length === 1 ? '' : 's'} selected` : '';
 }
 
 // Select these fibres' files, in place of the selection.
@@ -4276,21 +4488,25 @@ async function applyFileSelection(want) {
   const capped = tasks.length > room;
   tasks = tasks.slice(0, room);
   gLoadFailures = [];
-  if (tasks.length) setReadout(`loading ${tasks.length} trace${tasks.length === 1 ? '' : 's'}…`);
-  if (overview) {
-    await loadOverview(tasks);
-  } else {
-    for (let i = 0; i < tasks.length; i += 6) {
-      await Promise.all(tasks.slice(i, i + 6).map(x => loadOne(x.key, x.f, x.d)));
-      if (epoch !== gLoadEpoch) break;
+  const ld = tasks.length ? beginLoad(tasks) : null;
+  try {
+    if (overview) {
+      await loadOverview(tasks, ld);
+    } else {
+      for (let i = 0; i < tasks.length; i += 6) {
+        const batch = tasks.slice(i, i + 6);
+        await Promise.all(batch.map(x => loadOne(x.key, x.f, x.d)));
+        loadStep(ld, batch.length);
+        if (epoch !== gLoadEpoch) break;
+      }
     }
-  }
+  } finally { if (ld) endLoad(ld); }
   if (epoch !== gLoadEpoch) return;   // cleared or replaced meanwhile
   syncFileMarks();                    // what the cap cut off is not selected
   renderChips();
   if (gAutoFit || drop.length) fit();
   draw();
-  renderEventTable();
+  await buildTable();
   setReadout(`${gTraces.length} trace${gTraces.length === 1 ? '' : 's'} loaded`
     + (overview ? ` in overview (~${OVERVIEW_PTS} pts each, spikes preserved)` : '')
     + (capped ? `, capped at ${MAX}` : '')
@@ -4614,7 +4830,7 @@ function updateMarkerReadout() {
   // A and B read from the axis zero (A's first event).  The gap between them
   // is a length, so it is never shifted.
   const z = axisZeroKm();
-  const at = v => (v == null ? '-' : dist(v - z));
+  const at = v => (v == null ? '---' : dist(v - z));
   let html = `<div><span class="mr-a">A</span>: ${at(a)}` +
              ` &nbsp; <span class="mr-b">B</span>: ${at(b)}</div>`;
 
@@ -4633,7 +4849,7 @@ function updateMarkerReadout() {
       for (const { t } of cap.shown) {
         const va = traceDbAtDispKm(t, a);
         const vb = traceDbAtDispKm(t, b);
-        let dloss = '-', slope = '-';
+        let dloss = '---', slope = '---';
         if (va != null && vb != null) {
           // Signal descends with loss; loss over the span (upstream→downstream).
           // A mirrored B runs right to left on the chart, so its upstream end
@@ -4646,13 +4862,13 @@ function updateMarkerReadout() {
             ? (isFlipped(t) ? vhi - vlo : vlo - vhi) : null;
           if (d != null) {
             dloss = d.toFixed(3);
-            slope = dkm > 1e-6 ? (d / dkm).toFixed(3) : '-';
+            slope = dkm > 1e-6 ? (d / dkm).toFixed(3) : '---';
           }
         }
         const arrow = t.dir === 'a' ? 'A→B' : 'B→A';
         html += `<tr><td><span style="color:${t.color};text-shadow:0 0 1px #333">■</span> F${t.fiber} ${arrow}</td>` +
-                `<td>${va == null ? '-' : va.toFixed(3)}</td>` +
-                `<td>${vb == null ? '-' : vb.toFixed(3)}</td>` +
+                `<td>${va == null ? '---' : va.toFixed(3)}</td>` +
+                `<td>${vb == null ? '---' : vb.toFixed(3)}</td>` +
                 `<td>${dloss}</td><td>${slope}</td></tr>`;
       }
       if (cap.more) html += `<tr><td colspan="5" class="hint">+${cap.more} more traces</td></tr>`;
@@ -5419,6 +5635,44 @@ function gridGoCell(g, fi, which, col, opts = {}) {
   setTimeout(() => td.classList.add('fading'), 1500);
   setTimeout(() => td.classList.remove('fr-hit', 'fading'), 2200);
 }
+// A report link (?fiber=354&km=44.099, a report cell click) zoomed the chart
+// to the event and left the table on its first column.  Once the table is up,
+// it goes to the column whose event is nearest the km (within half a km, in
+// the chart's frame, as the headers' own zoom clicks are), brings that
+// fiber's row into view when others are loaded too, and flashes the header.
+const TABLE_GO_TOL_KM = 0.5;
+function tableGoKm() {
+  const go = gTableGoKm;
+  if (!go) return;
+  gTableGoKm = null;
+  const host = document.getElementById('event-tbody-wrap');
+  const heads = host ? [...host.querySelectorAll('th.fr-evhdr[data-km]')] : [];
+  let th = null, best = TABLE_GO_TOL_KM;
+  for (const h of heads) {
+    const d = Math.abs(+h.dataset.km - go.km);
+    if (d <= best) { best = d; th = h; }
+  }
+  if (!th) return;
+  if (new Set(gTraces.map(t => t.fiber)).size > 1 && gGridGoTo) {
+    const t = gTraces.find(x => x.visible && x.fiber === go.fiber);
+    if (t) gGridGoTo(t, null);
+  }
+  const scroller = th.closest('table') && th.closest('table').parentElement;
+  if (!scroller) return;
+  // The fiber column stays put and covers the left edge.
+  const sr = scroller.getBoundingClientRect(), cr = th.getBoundingClientRect();
+  const lab = th.closest('thead').querySelector('th.fr-rowlab');
+  const leadR = lab ? Math.max(sr.left, lab.getBoundingClientRect().right) : sr.left;
+  if (cr.left < leadR + 8 || cr.right > sr.right - 8) {
+    // centered in what the labels leave
+    scroller.scrollLeft += (cr.left + cr.right) / 2 - (leadR + sr.right) / 2;
+  }
+  th.classList.remove('fr-hit', 'fading');
+  th.classList.add('fr-hit');
+  setTimeout(() => th.classList.add('fading'), 1500);
+  setTimeout(() => th.classList.remove('fr-hit', 'fading'), 2200);
+}
+
 // The two A+B tables' Minimum and Maximum cells, like the one-direction
 // table's (#274): the number is one fibre's, so a click picks that row (the
 // Average row for a loss, the direction's row for a reflectance), centres it,
@@ -5859,19 +6113,28 @@ function wireEventSettings() {
 
 // Opened on its own, the server runs the report on the folders for the end-
 // connector verdicts; they land a little after the traces, then the table
-// repaints with them.
+// takes them (endVerdictsLanded).
+// One question at a time.  The trace server answers one request at a time,
+// so while a whole span's table held it (a minute or more) every tick queued
+// another question; they were all answered together once the table was, and
+// each one laid the panel out again and asked for the whole table again.
 let gEndPoll = null;
+let gEndAsking = false;
 function pollEndVerdicts() {
   if (gEndPoll) return;
-  gEndPoll = setInterval(async () => {
+  const poll = setInterval(async () => {
+    if (gEndAsking || gEndPoll !== poll) return;
+    gEndAsking = true;
     let v;
     try { v = await (await fetch('/api/end_verdicts')).json(); } catch (e) { return; }
-    if (v.end_pending) return;
-    clearInterval(gEndPoll); gEndPoll = null;
+    finally { gEndAsking = false; }
+    if (v.end_pending || gEndPoll !== poll) return;
+    clearInterval(poll); gEndPoll = null;
     gInfo.end_refl = v.end_refl; gInfo.panel_span = v.panel_span;
     gEndRefl = Array.isArray(v.end_refl) ? v.end_refl : [];
-    renderEventTable();
+    endVerdictsLanded();
   }, 3000);
+  gEndPoll = poll;
 }
 function frameWarnText(nB) {
   if (gFecMode) return '   FEC mode: each end is graded on its own; A and B are not paired.';
@@ -5882,9 +6145,22 @@ function frameWarnText(nB) {
     : '';
 }
 function renderEventTable() {
+  // Busy again below only when the mode's table waits on the server; the
+  // other tables are built by the time this returns, and the status line
+  // and a report link's column follow just after (tableStepEnd).
+  const wasBusy = gTableBusy;
+  gTableBusy = false;
+  queueMicrotask(() => tableStepEnd(wasBusy));
   const host = document.getElementById('event-tbody-wrap');
   const hint = document.getElementById('event-hint');
+  // What is up now, held while a table that waits on the server is built
+  // (holdOldTable); a note already there is made again.
+  const prev = [...host.childNodes].filter(n => n.className !== 'tbl-updating')
+    .map(n => [n, Number(n.scrollTop) || 0, Number(n.scrollLeft) || 0]);
   host.innerHTML = '';
+  host.classList.remove('tbl-stale');
+  gHeldNodes = [];
+  gTableLive = null;
   gGridGoTo = null;
   gTableExport = null;
   gDrawerMarks = [];                 // the drawer waits for the mode's table
@@ -5908,11 +6184,13 @@ function renderEventTable() {
   // OTDR Suite mode, FastReporter's in FastReporter mode.  The
   // single-direction grid stands in when nothing is paired.
   if (gFecMode && renderFecGrid(visible, host, hint)) return;
-  if (gAnalysisMode === 'suite') {
-    if (renderSuiteBidiGrid(visible, host, hint)) return;
-  } else if (renderFrBidiGrid(visible, host, hint)) return;
-  renderFastReporterGrid(visible, host, hint);
-  return;
+  const server = gAnalysisMode === 'suite'
+    ? renderSuiteBidiGrid(visible, host, hint) : renderFrBidiGrid(visible, host, hint);
+  if (!server) {
+    renderFastReporterGrid(visible, host, hint);
+    return;
+  }
+  if (gTableBusy && prev.length) holdOldTable(host, prev);
 }
 
 // ── FEC mode table ──────────────────────────────────────────────────────
@@ -6493,9 +6771,9 @@ function renderVirtualEventList(rows, host) {
         `<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${r.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${r.fiber} ${r.arrow}</td>` +
         `<td>${r.num}</td>` +
         `<td>${kmFt(r.km)}</td>` +
-        `<td>${r.loss == null ? '-' : r.loss.toFixed(3)}</td>` +
-        `<td>${r.refl == null ? '-' : r.refl.toFixed(2)}</td>` +
-        `<td>${r.slope == null ? '-' : r.slope.toFixed(3)}</td>` +
+        `<td>${r.loss == null ? '---' : r.loss.toFixed(3)}</td>` +
+        `<td>${r.refl == null ? '---' : r.refl.toFixed(2)}</td>` +
+        `<td>${r.slope == null ? '---' : r.slope.toFixed(3)}</td>` +
         `<td>${r.isEnd ? 'END' : (r.isRefl ? 'reflective' : 'non-refl')}</td>`;
       tb.appendChild(tr);
     }
@@ -6791,9 +7069,10 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     gShowGainers ? '' : 'gainers hidden',
   ].filter(Boolean).join(' · ');
 
-  const fmt  = v => (v == null || isNaN(v)) ? '-' : v.toFixed(3);
-  const fmtK = v => (v == null || isNaN(v)) ? '-' : v.toFixed(4);
-  const fmtR = v => (v == null || isNaN(v) || v === 0) ? '-' : v.toFixed(1);
+  // An empty cell is '---', as in the A+B tables and FastReporter's own.
+  const fmt  = v => (v == null || isNaN(v)) ? '---' : v.toFixed(3);
+  const fmtK = v => (v == null || isNaN(v)) ? '---' : v.toFixed(4);
+  const fmtR = v => (v == null || isNaN(v) || v === 0) ? '---' : v.toFixed(1);
   const lossCell = (v, isBreak, attrs = '') => {
     let cls = '';
     if (v != null && !isNaN(v)) {
@@ -6995,7 +7274,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
       `<td class="${pfClass(fail)}" title="following `
       + `${gateLabel()}, this is OUR verdict, not FastReporter's`
       + `">${pfMark(fail)}</td>`,
-      `<td>${t.data.wavelength_nm || '-'}</td>`,
+      `<td>${t.data.wavelength_nm || '---'}</td>`,
       `<td>${arrow(t)}</td>`,
     ];
     cols.forEach((c, i) => {
@@ -7013,9 +7292,9 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
                + `<td>${cellText(fmtR(e ? e.reflection : null))}</td>`);
       if (showSec && i < cols.length - 1) {
         const s = section(ti, i);
-        cells.push(`<td class="fr-sec">${cellText(s ? fmtK(s.len) : '-')}</td>`
-                 + `<td class="fr-sec">${cellText(s ? fmt(s.loss) : '-')}</td>`
-                 + `<td class="fr-sec">${cellText(s ? fmt(s.att) : '-')}</td>`);
+        cells.push(`<td class="fr-sec">${cellText(s ? fmtK(s.len) : '---')}</td>`
+                 + `<td class="fr-sec">${cellText(s ? fmt(s.loss) : '---')}</td>`
+                 + `<td class="fr-sec">${cellText(s ? fmt(s.att) : '---')}</td>`);
       }
     });
     const statArrs = [splice, connLoss, connRefl];
@@ -7073,7 +7352,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
       // `isBreak` is false here — evLoss already drops End-of-Fiber events, so
       // an aggregate is never a break.
       // Reflectance down the column too, over every reading the column prints
-      // (fmtR prints a 0 as "-", so a 0 is no reading here either).  Plain:
+      // (fmtR prints a 0 as "---", so a 0 is no reading here either).  Plain:
       // the reflectance verdict is per trace, never on a summary.
       const rs = c.ev.map(e => e ? e.reflection : null).filter(r => r != null && !isNaN(r) && r !== 0);
       const r = rs.length ? fn(rs) : null;
@@ -7090,7 +7369,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
         const ss = traces.map((_t, ti) => section(ti, i)).filter(Boolean);
         const pick = k => ss.map(s => s[k]).filter(v => v != null && !isNaN(v));
         const [pl, pa] = [pick('loss'), pick('att')];
-        cells.push(`<td class="fr-sec">${cellText('-')}</td>`
+        cells.push(`<td class="fr-sec">${cellText('---')}</td>`
                  + `<td class="fr-sec">${cellText(fmt(pl.length ? fn(pl) : null))}</td>`
                  + `<td class="fr-sec">${cellText(fmt(pa.length ? fn(pa) : null))}</td>`);
       }
@@ -7376,12 +7655,24 @@ function renderFrBidiGrid(traces, host, hint) {
   }
   if (!pairs.length) return false;
   const seq = ++gFrTableSeq;
+  // The same traces' table is laid out again, not asked for again.
+  const key = serverTableKey('fr', pairs);
+  const kept = keptServerTable('fr', key);
+  if (kept) {
+    paintFrBidiGrid(pairs, singles, kept, host, hint);
+    return true;
+  }
+  gTableBusy = true;                       // "Building the table…" until it paints
   hint.textContent = `FastReporter table: reading ${pairs.length} fiber pair${pairs.length === 1 ? '' : 's'}…`;
-  fetch(`/api/fr_table?fibers=${pairs.map(p => p.fiber).join(',')}`)
-    .then(r => r.json())
-    .then(res => { if (seq === gFrTableSeq) paintFrBidiGrid(pairs, singles, res || {}, host, hint); })
+  askServerTable('fr', key, `/api/fr_table?fibers=${pairs.map(p => p.fiber).join(',')}`,
+                 res => !res.error)
+    .then(res => {
+      if (seq !== gFrTableSeq) return;
+      try { paintFrBidiGrid(pairs, singles, res || {}, host, hint); } finally { tableSettled(); }
+    })
     .catch(e => {
       if (seq !== gFrTableSeq) return;
+      tableSettled();
       gTableKm = null; draw();             // no table: every event, as before
       hint.textContent = `FastReporter table unavailable (${(e && e.message) || 'fetch failed'})`;
     });
@@ -7487,20 +7778,25 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // engine reads KeyEvents, the table FR's block, so the two differ by a
   // hair).  A launch connector is a launch-level row, which the loss rules
   // never judge; the report grades its reflectance, so it is judged here.
-  const endBad = { a: new Set(), b: new Set() };
-  gEndRefl.forEach(v => {
-    const fi = have.findIndex(p => String(p.fiber) === String(v.fiber));
-    const which = v.dir === 'A' ? 'a' : 'b';
-    if (fi < 0) return;
-    let best = null, bestD = 0.5;
-    cols.forEach(c => {
-      const x = c.ev[fi], leg = x && x.row[which];
-      if (!leg || leg.synthetic || leg.refl == null) return;
-      const d = Math.abs(leg.refl - v.refl);
-      if (d <= bestD) { best = x; bestD = d; }
+  // Worked out again when the verdicts land after the table (refreshVerdicts).
+  const endBadNow = () => {
+    const bad = { a: new Set(), b: new Set() };
+    gEndRefl.forEach(v => {
+      const fi = have.findIndex(p => String(p.fiber) === String(v.fiber));
+      const which = v.dir === 'A' ? 'a' : 'b';
+      if (fi < 0) return;
+      let best = null, bestD = 0.5;
+      cols.forEach(c => {
+        const x = c.ev[fi], leg = x && x.row[which];
+        if (!leg || leg.synthetic || leg.refl == null) return;
+        const d = Math.abs(leg.refl - v.refl);
+        if (d <= bestD) { best = x; bestD = d; }
+      });
+      if (best) bad[which].add(best);
     });
-    if (best) endBad[which].add(best);
-  });
+    return bad;
+  };
+  let endBad = endBadNow();
   const legReflFails = (x, which) => {
     if (endBad[which].has(x)) return true;
     const leg = x.row[which];
@@ -7578,7 +7874,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // verdicts, FR's transplanted legs as hollow rings (see drawPairing).  In
   // OTDR Suite mode this table only stands in for the report's, and the
   // drawer keeps the files' own events.
-  let marks = null;
+  let marks = null, markCols = null;
   if (gAnalysisMode === 'fr') {
     const drawerLeg = (x, w) => {
       const leg = x.row[w];
@@ -7586,13 +7882,13 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       return { km: rawKm(leg.pos_m), loss: leg.loss, hollow: !legOk(leg),
                fail: cellFails(x, w), warn: cellWarns(x, w) };
     };
-    marks = { mode: 'fr', have, goCell: () => {},
-      cols: cols.map((c, i) => ({ i, title: `Event ${i + 1}`, km: c.km, cells: keepCol[i]
+    markCols = () => cols.map((c, i) => ({ i, title: `Event ${i + 1}`, km: c.km, cells: keepCol[i]
         ? c.ev.map((x, fi) => x && { fi, avg: x.row.loss, km: c.km,
                                      avgFail: cellFails(x, 'avg'), avgWarn: cellWarns(x, 'avg'),
                                      legs: { a: drawerLeg(x, 'a'), b: drawerLeg(x, 'b') } })
                .filter(Boolean)
-        : [] })) };
+        : [] }));
+    marks = { mode: 'fr', have, goCell: () => {}, cols: markCols() };
   }
   const showSec = gShowSections && !collapse;
 
@@ -7885,6 +8181,18 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     showSpanMenu(ev.clientX, ev.clientY, tr.dataset.dir, +td.dataset.km,
                  tr.dataset.fiber, tr.dataset.src);
   });
+  // End verdicts landing later move only the end marks, the P/F column and
+  // the drawer's marks (see endVerdictsLanded): the rows on screen are
+  // painted again, the rest stays.  A filter or the one-direction fibres'
+  // table below follow the verdicts too, so those lay the panel out again.
+  gTableLive = { host, scroller, refreshVerdicts: () => {
+    if (cellFilterOn() || gFlaggedOnly || singles.length) return false;
+    endBad = endBadNow();
+    if (marks) marks.cols = markCols();
+    paintRows();
+    draw();
+    return true;
+  } };
 }
 
 // ─── Declaring the span ───────────────────────────────────────────────
@@ -8079,6 +8387,22 @@ function renderSuiteBidiGrid(traces, host, hint) {
     singles.length = 0;
   }
   const seq = ++gSuiteTableSeq;
+  // The same traces' table, from the same report run, is laid out again,
+  // not asked for again.  The run follows the server's settings and
+  // folders, all of which /api/list reports (its end verdicts aside: they
+  // come from that same run), and the files removed in the Viewer, which the
+  // run leaves out (gServerRemovedSig: the shared state, the same in every
+  // Viewer window).
+  const listSig = JSON.stringify(Object.assign({}, gInfo || {},
+    { end_refl: null, panel_span: null, end_pending: null }));
+  const key = serverTableKey('suite', pairs,
+                             `${oneDir || ''}|${listSig}|${gServerRemovedSig}`);
+  const kept = keptServerTable('suite', key);
+  if (kept) {
+    paintSuiteBidiGrid(pairs, singles, kept, host, hint);
+    return true;
+  }
+  gTableBusy = true;                       // "Building the table…" until it paints
   hint.textContent = oneDir
     ? `${PRODUCT_NAME} table: reading ${pairs.length} fiber${pairs.length === 1 ? '' : 's'} from one direction…`
     : `${PRODUCT_NAME} table: reading ${pairs.length} fiber pair${pairs.length === 1 ? '' : 's'}…`;
@@ -8092,9 +8416,11 @@ function renderSuiteBidiGrid(traces, host, hint) {
       + `${esc(why)}. The traces and their own events still show above; `
       + `switch to FastReporter mode for FastReporter's table.</div>`;
     hint.textContent = `${PRODUCT_NAME} table unavailable`;
+    tableSettled();
   };
-  const ask = () => fetch(`/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`)
-    .then(r => r.json())
+  const ask = () => askServerTable('suite', key,
+    `/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`,
+    res => !res.pending && !res.error)
     .then(res => {
       if (seq !== gSuiteTableSeq) return;
       gSuitePoll = null;
@@ -8109,7 +8435,7 @@ function renderSuiteBidiGrid(traces, host, hint) {
         noTable(res.error || 'The report has no table for these fibers');
         return;
       }
-      paintSuiteBidiGrid(pairs, singles, res, host, hint);
+      try { paintSuiteBidiGrid(pairs, singles, res, host, hint); } finally { tableSettled(); }
     })
     .catch(e => {
       if (seq !== gSuiteTableSeq) return;
@@ -8233,8 +8559,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     return { km: leg.km, loss: leg.loss, hollow: !!leg.grey,
              fail: cellFails(c, x, w), warn: lossWarns(c, x, w) };
   };
-  const marks = { mode: 'suite', single: !!oneDir, have, goCell: () => {},
-    cols: cols.map((c, i) => ({ i, title: c.title, km: c.viewKm, cells: keepCol[i]
+  const markCols = () => cols.map((c, i) => ({ i, title: c.title, km: c.viewKm, cells: keepCol[i]
       ? c.ev.map((x, fi) => x && { fi, avg: x.loss,
                                    km: x.km != null ? toView(x.km + launchA, oneDir && legOf(have[fi])) : c.viewKm,
                                    // A one-direction table has no Average: its tag carries that
@@ -8242,7 +8567,8 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
                                    avgFail: lossFails(c, x, oneDir || 'avg'), avgWarn: lossWarns(c, x, oneDir || 'avg'),
                                    legs: { a: drawerLeg(c, x, 'a'), b: drawerLeg(c, x, 'b') } })
              .filter(Boolean)
-      : [] })) };
+      : [] }));
+  const marks = { mode: 'suite', single: !!oneDir, have, goCell: () => {}, cols: markCols() };
 
   // What the report said about a cell, for its tooltip: the row's own
   // reason first (an end connector's rows are judged one by one), then the
@@ -8538,6 +8864,16 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     showSpanMenu(ev.clientX, ev.clientY, tr.dataset.dir, +td.dataset.km,
                  tr.dataset.fiber, tr.dataset.src);
   });
+  // The end verdicts landing (see endVerdictsLanded) can move a connector's
+  // one-direction gate (gateFor stands it down on a panel tie): the rows on
+  // screen and the drawer's marks are judged again, the rest stays.
+  gTableLive = { host, scroller, refreshVerdicts: () => {
+    if (cellFilterOn() || gFlaggedOnly || singles.length) return false;
+    marks.cols = markCols();
+    paintRows();
+    draw();
+    return true;
+  } };
 }
 
 // ─── Editing a trace's settings (the boss's "IOR is wrong, correct it in
@@ -10775,10 +11111,17 @@ async function applyTarget(t) {
     if (t.replace) clearAll();
     document.getElementById('fiber-input').value = String(fiber);
     setAddDir(t.dir || 'both');
+    gTableGoKm = null;               // not the last link's column
     await addFibers();
     const km = parseFloat(t.km);
-    // FEC links point at a panel connector on a 5 km shot: zoom in close.
-    if (!isNaN(km)) zoomToKm(linkDispKm(km, t.src, t.dir || 'both', fiber), gFecMode ? 0.3 : 2.5);
+    if (!isNaN(km)) {
+      // FEC links point at a panel connector on a 5 km shot: zoom in close.
+      zoomToKm(linkDispKm(km, t.src, t.dir || 'both', fiber), gFecMode ? 0.3 : 2.5);
+      // The table goes to the same event: its column, now or when the
+      // table paints (a table from the server lands after this).
+      gTableGoKm = { km: linkDispKm(km, t.src, t.dir || 'both', fiber), fiber: +fiber };
+      if (!gTableBusy) tableGoKm();
+    }
     return;
   }
   await autoloadDefault();

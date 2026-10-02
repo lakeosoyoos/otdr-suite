@@ -124,9 +124,9 @@ def test_the_loader_no_longer_takes_a_direction_argument():
     """It reads the direction off each task now; a caller passing dirs[0] would
     silently load one direction twice."""
     src = _src()
-    assert re.search(r'async function loadOverview\(tasks\)', src)
+    assert re.search(r'async function loadOverview\(tasks, ld = null\)', src)   # ld: the load's progress
     assert 'loadOverview(tasks, dirs[0])' not in src
-    assert 'await loadOverview(tasks)' in src
+    assert 'await loadOverview(tasks, ld)' in src
 
 
 def test_each_request_asks_for_the_direction_it_is_grouped_under():
