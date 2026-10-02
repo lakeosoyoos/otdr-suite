@@ -3847,8 +3847,10 @@ def _panel_dirs():
     A box whose folder holds both directions is split into A and B when the
     other box is empty or names the same folder; with another folder in the
     other box nothing is split and a note says why.  `notes` is a list of
-    (kind, text), kind 'warning' or 'caption', for the page to show.  A path
-    that does not exist comes back as typed, for the caller to judge."""
+    (kind, text), kind 'warning' or 'caption', for the page to show.  A box
+    whose folder is not there comes back '' with a note naming what the box
+    shows: only the Viewer said so, and the Splice Report asked for a folder
+    the tech had already typed (audit 2026-10-02)."""
     raw_a, raw_b = _panel_boxes()
     out, notes = {}, []
     for side, raw in (('A', raw_a), ('B', raw_b)):
@@ -3858,6 +3860,10 @@ def _panel_dirs():
                           f'{side}: {note}'))
             if note.startswith('could not'):
                 d = ''
+        elif d and not os.path.isdir(d):
+            typed = (st.session_state.get(f'view_dir_{side.lower()}_input') or '').strip()
+            notes.append(('warning', f'{side} folder not found: {typed or raw}'))
+            d = ''
         out[side] = d
     # The same folder in both boxes, however it was typed: a trailing slash,
     # quotes or another case named it twice unseen.  Compared as resolved, so
@@ -3932,13 +3938,8 @@ def page_viewer(fec=False):
         dir_a, dir_b, _notes = _panel_dirs()
 
         # Validate + push into the trace server's shared config.
+        # A folder not found is one of _panel_dirs' notes, for every page.
         warn = [t for k, t in _notes if k == 'warning']
-        if dir_a and not os.path.isdir(dir_a):
-            warn.append('A folder not found')
-            dir_a = ''
-        if dir_b and not os.path.isdir(dir_b):
-            warn.append('B folder not found')
-            dir_b = ''
         for _d, _lbl in ((dir_a, 'A'), (dir_b, 'B')):
             if _d:
                 try:
@@ -7003,9 +7004,16 @@ def _sr_span_inputs(span):
                            "other direction's folder.")
             _viewer_removed_note(dir_a, dir_b, page='sr')
         else:
+            # A box with text in it has its own warning above (not found, no
+            # trace files, the same folder twice): it was typed, so the line
+            # does not ask for it again (audit 2026-10-02).
+            _other = 'B' if dir_a else 'A'
+            _typed = (st.session_state.get(f'view_dir_{_other.lower()}_input')
+                      or '').strip()
             st.caption(f"Traces: only the {'A' if dir_a else 'B'} folder is "
-                       f"loaded in the left panel. Load the "
-                       f"{'B' if dir_a else 'A'} folder there too.")
+                       'loaded in the left panel.'
+                       + ('' if _typed else
+                          f' Load the {_other} folder there too.'))
     else:
         # Input mode: two A/B folders (shared with the Viewer) OR a single
         # folder / .zip that holds both directions (auto-split by direction).

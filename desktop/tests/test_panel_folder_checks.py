@@ -12,6 +12,9 @@
    Report made a 24-fiber "bidirectional" report of one direction averaged
    with itself ("A direction: SITE → SITE").  Two copies of one direction in
    the two boxes said nothing either.
+3. A good A folder and a mistyped B: only the Viewer said "B folder not
+   found", and the Splice Report said "Load the B folder there too." to a
+   tech who had typed one.
 """
 from __future__ import annotations
 
@@ -231,3 +234,27 @@ def test_two_copies_of_one_direction_are_said_on_the_splice_report(tmp_path):
     assert _generate(at) is not None
     at = _open(_hub(A, B), 'Splice Report')
     assert 'Both the A and B boxes hold' not in _texts(at.main.warning)
+
+
+# ── 3. a folder not found ─────────────────────────────────────────────────
+
+def test_a_folder_not_found_is_named_on_every_page(tmp_path):
+    typo = str(tmp_path / 'MILELM typo')
+    want = f'B folder not found: {typo}'
+    at = _open(_hub(A, typo), 'Viewer')
+    assert _texts(at.sidebar.warning).count(want) == 1
+    assert 'B folder not found' not in _texts(at.sidebar.warning).replace(want, '')
+    assert _server() == (A, None)
+    _open(at, 'Splice Report')
+    assert want in _texts(at.main.warning)
+    assert 'only the A folder is loaded' in _texts(at.main.caption)
+    assert 'Load the B folder' not in _texts(at.main.caption)
+    assert _generate(at) is None
+    _open(at, 'Unidirectional')
+    assert want in _texts(at.main.warning)
+    _open(at, 'Secret Sauce')
+    assert want in _texts(at.main.warning)
+    # an empty B box is still asked for, and is no warning
+    at = _open(_hub(A), 'Splice Report')
+    assert 'Load the B folder there too.' in _texts(at.main.caption)
+    assert 'not found' not in _texts(at.main.warning)
