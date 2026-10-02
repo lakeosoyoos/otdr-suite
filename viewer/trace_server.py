@@ -426,6 +426,19 @@ def set_viewer_state(data):
         return VIEWER_STATE['ver']
 
 
+def reset_viewer_state():
+    """Forget the shared state: the next Viewer opened starts empty, and one
+    open now follows (Clear Traces, a hub session opened afresh).  Made on
+    the folders loaded now, so an open window takes it and clears."""
+    with _VIEWER_STATE_LOCK:
+        VIEWER_STATE.update({
+            'ver': VIEWER_STATE['ver'] + 1, 'by': '',
+            'dir_a': CONFIG.get('dir_a') or '', 'dir_b': CONFIG.get('dir_b') or '',
+            'keys': [], 'removed': [], 'add_dir': 'both',
+        })
+        return VIEWER_STATE['ver']
+
+
 def gate_sig():
     """One string that changes whenever the gates the Viewer judges by do:
     a Customer Profile picked in the hub, a setting changed, a report run.

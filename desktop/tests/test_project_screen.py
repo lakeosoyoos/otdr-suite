@@ -547,7 +547,7 @@ def test_a_direction_changed_in_the_left_panel_is_what_the_tools_run_on(
 def test_clear_traces_in_quick_analysis_empties_the_panel(settings_dir, span_dir):
     at = _qa_loaded(span_dir)
     next(b for b in at.sidebar.button if b.label == "Clear Traces").click().run()
-    next(b for b in at.get("dialog")[0].button if b.label == "Allow").click().run()
+    next(b for b in at.get("dialog")[0].button if b.key == "clear_traces_allow").click().run()
     assert not at.exception, list(at.exception)
     assert at.session_state["app_mode"] == "traces"   # still the Suite screen
     assert _side_box(at, "view_dir_a_input").value == ""
