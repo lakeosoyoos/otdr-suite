@@ -4736,8 +4736,14 @@ def _note_tool_change(page):
     ss['_last_tool'] = page
     if _prev is None or _prev == page:
         return
-    if page in SETTINGS_TOOLS:
-        ss['_carry_popup'] = {'to': page, 'from': ss.get('_last_settings_tool')}
+    # Only when the settings actually come over from ANOTHER Settings tool
+    # (Robert 2026-10-01: "thresholds carried over on every tool switch if we
+    # are actually carrying them over").  Back on the tool they were last set
+    # on (Viewer -> Secret Sauce -> Viewer), or with no Settings tool before
+    # it, nothing is carried and the pop-up stays away.
+    _from = ss.get('_last_settings_tool')
+    if page in SETTINGS_TOOLS and _from and _from != page:
+        ss['_carry_popup'] = {'to': page, 'from': _from}
     else:
         ss.pop('_carry_popup', None)
 
