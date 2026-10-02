@@ -2,7 +2,7 @@
 
 Each template applies one threshold set to all 16 wavelengths, so a customer
 is the handful of FAIL values below.  The mapping onto the engine is the one
-the AWS / IIG profile established; these tests pin that every template value
+the contract profile established; these tests pin that every template value
 lands on the global that grades it, through the same _overrides_from_settings
 and _conn_settings_from_profile paths the hub uses at run time.
 """
@@ -53,9 +53,9 @@ def test_template_connector_values_reach_the_connector_knobs():
         assert cs["LAUNCH_CONN_AVG_MIN_DB"] == conn, name
 
 
-def test_templates_leave_the_iig_only_switches_alone():
+def test_templates_leave_the_contract_only_switches_alone():
     """No template carries the contract block, an engine block, the average
-    splice gate or the attenuation gate: those are the IIG contract's, not a
+    splice gate or the attenuation gate: those are the contract's, not a
     FastReporter template's."""
     for name, *_ in FR_TEMPLATES:
         prof = hub.CUSTOMER_PROFILES[name]
@@ -66,7 +66,7 @@ def test_templates_leave_the_iig_only_switches_alone():
         assert ov.get("FIBER_ATTEN_DB_KM") == 0.0, name
 
 
-def test_intermountain_template_is_not_the_contract_profile():
+def test_the_fr_template_twin_is_not_the_contract_profile():
     """The template grades every bidir splice at 0.08 (the contract's
     per-fiber AVERAGE) and connectors at 0.30 (the RFP figure the SOW
     superseded).  Both profiles stay, and they must not drift together."""

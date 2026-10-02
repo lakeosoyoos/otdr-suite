@@ -139,7 +139,7 @@ RETAIN_UNFLAGGED = False
 
 # Per-fiber AVERAGE splice loss gate, in dB.  0 = off, which is the shipped
 # default: no sheet, byte-identical report.  A customer profile
-# (AWS / IIG MT.1085: <= 0.08 dB) or the settings panel turns it on by sending
+# (the contract profile: <= 0.08 dB) or the settings panel turns it on by sending
 # a positive value; the report then adds an "Average splice loss" sheet with
 # one row per fiber.  Definition and validation: fiber_average_splice_loss.
 AVG_SPLICE_LOSS_DB = 0.0
@@ -153,14 +153,14 @@ AVG_LAUNCH_SKIP_KM = 0.01
 # Per-fiber span ATTENUATION gate, dB/km.  0 = off (default).  Graded on the
 # span loss and span length EXFO stores in every file -- the loss is the
 # number FastReporter prints as "Span Loss (dB)" (exact on 1152 job R
-# fibers) -- per direction and averaged.  AWS / IIG MT.1085: 0.250 dB/km.
+# fibers) -- per direction and averaged.  The contract profile: 0.250 dB/km.
 FIBER_ATTEN_DB_KM = 0.0
 # Per-fiber ORL floor, dB.  0 = off (default).  This is the OTDR's own total
 # ORL from the file, per direction, NOT the OLTS measurement the contract
-# names; the sheet says so.  A reading BELOW the floor fails (IIG: 30 dB).
+# names; the sheet says so.  A reading BELOW the floor fails (the contract profile: 30 dB).
 SPAN_ORL_MIN_DB = 0.0
 
-# ── iOLM-export handling (AWS / IIG MT.1085).  All three ship OFF / as today
+# ── iOLM-export handling (the contract profile).  All three ship OFF / as today
 #    and are turned on by the customer profile, so every other span renders
 #    byte for byte as before.  Span 29 (Ingomar-Musselshell) proved the need:
 #
@@ -190,8 +190,8 @@ FQA_DURATION_TAG = 1
 # ── When a loss is big enough to be a break on its own ──────────────────
 # 0.0 (default, every other profile): a BREAK is a reflective event with
 #   dead glass past it — the trace has to stop for the engine to call one.
-# >0 (AWS / IIG MT.1085: 5.0): any ON-LINK event losing more than this is a
-#   break whatever the trace does past it.  NCT, 2026-09-12: "we treat any
+# >0 (the contract profile: 5.0): any ON-LINK event losing more than this is a
+#   break whatever the trace does past it.  The prime contractor, 2026-09-12: "we treat any
 #   event over 5 dB as a break.  It may technically be a high-loss event
 #   rather than a clean separation, but the fiber is unusable until it's
 #   repaired."  Their rule is deliberately loss-based rather than tied to
@@ -204,7 +204,7 @@ BREAK_LOSS_DB = 0.0
 # 0 (default, every other profile): a one-sided stored loss on such a fiber
 #   is graded only when the trace re-measure confirms it, like any other
 #   single-direction cell.
-# 1 (AWS / IIG MT.1085): grade it on the stored value.  On iOLM exports the
+# 1 (the contract profile): grade it on the stored value.  On iOLM exports the
 #   .sor trace does not carry the samples the instrument fitted (a fit with
 #   the stored cursors misses the stored loss by 100+ mdB), so the confirm
 #   gate is structurally blind there and silently drops the reading.  Span
@@ -218,10 +218,10 @@ ONE_SIDED_TRUST_STORED = 0
 # ── The pigtail splice behind a panel ───────────────────────────────────
 # 0.0 (default, every other profile): a panel port is one element, the
 #   mated connector, and nothing behind it is graded.
-# >0 (AWS / IIG MT.1085: 50.0 m): the iOLM's own element list separates the
+# >0 (the contract profile: 50.0 m): the iOLM's own element list separates the
 #   connector at 0 m from the splice joining the pigtail to the cable a few
 #   metres behind it, and that splice is graded against the SPLICE limit
-#   "with the connector graded separately" (NCT, 2026-09-12).  The value is
+#   "with the connector graded separately" (the prime contractor, 2026-09-12).  The value is
 #   the window, in metres, in which to look for it.
 #   Read from the Exchange sidecar and nowhere else: the .sor merges the two
 #   into one event on some fibers and splits them on others, so grading
@@ -232,10 +232,10 @@ PIGTAIL_SPLICE_WINDOW_M = 0.0
 # ── An end whose far readings are a recovery reel, not the plant ────────
 # 0.0 (default, every other profile): both panel readings are always
 #   believed and every connector is graded on the pair's average.
-# >0 (AWS / IIG MT.1085: 0.45): when an end's far readings sit more than
+# >0 (the contract profile: 0.45): when an end's far readings sit more than
 #   this above its near readings, the far side is reading the recovery reel
 #   rather than the connector, and that end is graded NEAR-SIDE ONLY.
-#   NCT, 2026-09-12, on span 27's Lavina end: "every far-end shot at Lavina
+#   the prime contractor, 2026-09-12, on span 27's Lavina end: "every far-end shot at Lavina
 #   terminates into the reel, which adds ~1.2 dB that is not in the fiber
 #   [...] failing them would be wrong, since the loss is not in the plant."
 #   Measured far-minus-near medians, against their own published verdicts:
@@ -248,20 +248,20 @@ PANEL_UNGRADEABLE_GAP_DB = 0.0
 
 # ── Read the two end names out of the files instead of asking the tech ──
 # 0 (default, every other profile): the tech types the A and Z site names.
-# 1 (AWS / IIG MT.1085): the job config was pushed to every unit through
+# 1 (the contract profile): the job config was pushed to every unit through
 #   EXFO Exchange, so each measurement carries the A-end and Z-end site
 #   codes and the segment's towns and the report can name itself.  Read and
 #   validated by json_reader.read_span_identifiers, which stays silent
 #   unless the files agree — on a job NOT pushed through a controlled
 #   channel the identifiers are whatever the tech keyed into the unit and
 #   can be blank or inconsistent, which is why this is per-profile and not
-#   simply always on (NCT, 2026-09-12).
+#   simply always on (the prime contractor, 2026-09-12).
 SITE_NAMES_FROM_IDENTIFIERS = 0
 
 # ── Which side of the splice threshold a loss AT the threshold lands on ──
 # 0 (default, every other profile): the house rule — round to the printed 3
 #   decimals, flag at or above the threshold.  See _clears_threshold.
-# 1 (AWS / IIG MT.1085): the contract line reads "0.20 dB or less", so a
+# 1 (the contract profile): the contract line reads "0.20 dB or less", so a
 #   splice flags only when its UNROUNDED loss is strictly OVER the
 #   threshold.  Splice gate only; bend, single-direction, uni and connector
 #   gates keep the house rule.  See _clears_splice_threshold.
@@ -719,7 +719,7 @@ BEND_SPLICE_FOLD_KM   = 0.200
                                 #     per-fiber drift starts spawning false
                                 #     bend columns.  75 m is the tight floor;
                                 #     slider lets techs go tighter per-span.)
-# Both-events escape from the bend fold (Lumen Border, 2026-07-23): a
+# Both-events escape from the bend fold (the Border job, 2026-07-23): a
 # near-splice bend cluster is NOT the splice's helix-lay tail when its
 # member fibers ALSO carry their own splice event at the column — a
 # fiber's splice can't be in two places, so the off-splice events are
@@ -751,7 +751,7 @@ _RUN_PULSE_SMEAR_KM   = 0.0
 def _nominal_pulse_ns(fiber_data):
     """NominalPulseWidth from a fiber record in ns, or None.
 
-    Same units handling as the reflectance gate (Lumen Border, 2026-07-23):
+    Same units handling as the reflectance gate (the Border job, 2026-07-23):
     some firmware writes the field in SECONDS; values below 1e-3 can only be
     seconds.  Out-of-physical-range values return None rather than a guess —
     the floor must never be built on a corrupt pulse."""
@@ -1192,7 +1192,7 @@ def refl_fails(refl, gate):
 
     FR rounds the reading to the 0.1 dB it prints and fails it when that is
     strictly worse (less negative) than the gate.  Pinned in FR 3.21 with the
-    Lumen template's Reflectance Fail -50.0, on real Red Rock / SNARCAAH
+    customer L template's Reflectance Fail -50.0, on real Red Rock / SNARCAAH
     shots and on copies whose stored float64 was edited (2026-09-23):
 
         -49.667 FAIL   -49.900 FAIL   -49.930 FAIL   -49.949 FAIL
@@ -1839,7 +1839,7 @@ def _trim_to_declared_span(events):
     15 m jumper, receive reel.  The tech put the span start on panel A and
     the end on panel B, so the table opens with the reel-to-jumper joint at
     -0.015 km and carries the jumper-to-reel joint and the reel end past
-    the end marker.  FR 3.21 with the Lumen template (read 2026-09-23):
+    the end marker.  FR 3.21 with the customer L template (read 2026-09-23):
     -0.0153 km -49.9 dB and 0.0773 km -49.7 dB are NOT red, 0.0000 km is
     Event 1.  That is the boss's jumper rule -- the second spike is the one
     graded -- and the tech's markers already say which spike that is.  The
@@ -2607,7 +2607,7 @@ IDENTITY_WARNINGS = []
 # recorded only as a WARN in the log.
 #
 # Setting this makes the choice explicit and lets 1625 be chosen instead.
-# The customer ask behind it (AWS / IIG MT.1085, Northcentral Telcom
+# The customer ask behind it (the contract profile, the prime contractor
 # 24 Aug 2026) is that splice loss falls with wavelength, so 1550 is always
 # the worse wavelength for a real splice and an event worse at 1625 is
 # carrying bend loss rather than splice loss.  Both wavelengths are still
@@ -2615,7 +2615,7 @@ IDENTITY_WARNINGS = []
 GRADE_WAVELENGTH_NM = 0.0
 
 # The active customer contract's own figures, for the acquisition audit to
-# check the shot against — e.g. {"name": "AWS / IIG MT.1085", "ior": 1.467,
+# check the shot against — e.g. {"name": "<profile name>", "ior": 1.467,
 # "backscatter_db": -81.4, "wavelengths_nm": [1550, 1625], "graded_nm": 1550}.
 # Empty (the default) means no customer profile is active and the audit sheet
 # renders exactly as it did before contract checking existed.
@@ -3218,7 +3218,7 @@ def _fr_pick_terminal(rec_silent, rec_loud, t_s, t_l):
     one of the two is L.
 
     FR's own constant, recovered by inverting its stored cursors
-    (l_proj = CursorAPosition + twin.Position) across the Zayo 432 span, is a
+    (l_proj = CursorAPosition + twin.Position) across the 432-fiber BETA span, is a
     SINGLE value per fiber: both directions share it on 326 of 326.  Which of
     the two terminals it is gets settled by the physical estimate built from
     the A DIRECTION, and only that one:
@@ -3445,7 +3445,7 @@ def _fr_proj_constant(rec_silent, rec_loud):
     # nearer to is the one that is L.
     #
     # Recovered FastReporter's own constant by inverting its stored cursors
-    # (l_proj = CursorAPosition + twin.Position) across the Zayo 432 span: it
+    # (l_proj = CursorAPosition + twin.Position) across the 432-fiber BETA span: it
     # is a single value per FIBRE, shared by both directions on 326 of 326,
     # always equal to one of the two terminals, and equal to the one nearest
     # L_phys on 372 of 372.  `min` matched it on 39.5% of the pairs where the
@@ -3647,7 +3647,7 @@ def _fr_transplant_geometry(rec_silent, rec_loud, evt_loud, l_proj=None):
     # FR there, because FR does something else with the window, below.
     #
     # What FastReporter does with it -- read off its stored cursors on the
-    # Zayo 432 .bdr set (2026-09-21), where every such record carries both
+    # the 432-fiber BETA span .bdr set (2026-09-21), where every such record carries both
     # FR's cursors and FR's loss -- is NOT abstain.  It pulls CursorB back to
     # the silent side's own event and SubCursorB with it, leaving a one-
     # sample after-window, and fits that sample with the before-window's
@@ -3690,7 +3690,7 @@ def _fr_transplant_geometry(rec_silent, rec_loud, evt_loud, l_proj=None):
     # clamped window PLUS that own event's stored loss: the two steps as the
     # loud direction saw them, one event.
     #
-    # Read off the Zayo 432 .bdr set, 19 records with SubCursorA clamped to
+    # Read off the 432-fiber BETA span .bdr set, 19 records with SubCursorA clamped to
     # an own event's CursorB.  Eighteen have no merged-table row for the own
     # event and reproduce FR's stored loss to 0.000000 mdB only with its
     # loss added; the nineteenth (fiber 0263 A, 36.894 km) keeps its own
@@ -3771,7 +3771,7 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=N
     # so 30 m cannot reach the wrong one.
     # FastReporter mode only (use_fr_stored).  FR mode shows what FR shows,
     # stored or measured; OTDR Suite mode ALWAYS measures.  Some of FR's
-    # stored figures are FR's mistakes -- Zayo 432 f0355 A at 36.88 km:
+    # stored figures are FR's mistakes -- the 432-fiber BETA span f0355 A at 36.88 km:
     # stored +0.0943, FR's own Markers tab at the stored cursors -0.004,
     # this measurement -0.0014 -- and Suite mode must not import them
     # (Robert, 2026-09-23).
@@ -3814,7 +3814,7 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=N
     # How close is too close is FR_TRANSPLANT_REACH_M, and where it sits is
     # measured, not chosen.  This clearance was ENDZONE_REACH_KM (500 m),
     # borrowed from the reconstruction, and at 500 m it refused nine legs
-    # of the Zayo 432 .bdr set whose rebuilt cursors were ALREADY
+    # of the 432-fiber BETA span .bdr set whose rebuilt cursors were ALREADY
     # FastReporter's own to the sample — FR transplants in there, with SubB
     # clamped to the end marker, and the fit at those cursors is its stored
     # loss to 0.000000 mdB.  Turning the guard off entirely, in the engine,
@@ -3849,7 +3849,7 @@ def _fr_exact_silent_loss(rec_silent, rec_loud, evt_loud, reach_m=None, l_proj=N
     # The cursors are in the silent file's TABLE frame; its samples start at
     # the OTDR port.  A declared span start puts the two a reel apart, the
     # same shift measure_fr_section_loss adds (_fr_origin_idx).  Without it
-    # Lumen Span 7 F229 (span start on the Monument panel, 1.0095 km) fitted
+    # Span 7 F229 (span start on the Monument panel, 1.0095 km) fitted
     # A's Splice 1 window across the 4.787 dB panel connector: 5.408 where FR
     # prints -0.013, so a clean splice averaged to 2.728 and flagged.
     o_m = _fr_origin_idx(rec_silent) * float(rec_silent.get('exfo_res_m') or 0.0)
@@ -3893,11 +3893,11 @@ def measure_fr_section_loss(rec, start_cursor_b_m, end_cursor_a_m,
     last event's CursorA (inclusive, in samples), and the loss is that slope
     times the section's length in samples (event position to event
     position).  Negative comes back as 0.0 -- FR stores 0.0 (eight sections
-    in the Zayo 432 .bdr set, every one with a negative fit); a window of a
+    in the 432-fiber BETA span .bdr set, every one with a negative fit); a window of a
     single sample (an event whose CursorB was pulled back onto the next
     event, see _fr_transplant_geometry) is 0.0 too (15 of 15).
 
-    Read off the Zayo 432 .bdr set (2026-09-22): 4,277 of 4,277 sections
+    Read off the 432-fiber BETA span .bdr set (2026-09-22): 4,277 of 4,277 sections
     between two detected events reproduce FR's stored float64 loss to
     1e-9 dB from the file's own trace, and 3,085 of 3,085 sections with a
     synthesised event at one or both ends reproduce it from FR's stored
@@ -3932,7 +3932,7 @@ def measure_fr_section_loss(rec, start_cursor_b_m, end_cursor_a_m,
 # FastReporter mode prints what FastReporter prints, and the first thing it
 # prints is this table: one row per event pair, with a leg for each
 # direction, the silent leg synthesised.  Everything below is read off the
-# ZAYO BETA 432 .bdr set (FR's own output for those 432 .sor pairs, 2026-09-22)
+# the 432-fiber BETA span .bdr set (FR's own output for those 432 .sor pairs, 2026-09-22)
 # and reproduces its merged table row for row; the numbers are exact
 # (MeanPosition to 1e-11 m, losses to 1e-9 dB) and the pairing rule is FR's
 # on all 87 cases that fall outside its plain tolerance, and on the five
@@ -3997,7 +3997,7 @@ def measure_fr_section_loss(rec, start_cursor_b_m, end_cursor_a_m,
 # cursors are the transplant's (_fr_transplant_geometry), which is why the
 # sections on either side of it come out to the last digit as well.  The
 # merged Length and Loss are the means of the legs; the attenuation FR
-# prints is loss / length.  Zayo 432: 3,681 of 3,681 section rows, every
+# prints is loss / length.  The 432-fiber BETA span: 3,681 of 3,681 section rows, every
 # field, both legs.  In B's frame the section runs the other way -- from
 # the NEXT row's B event to this row's -- and that is how it is fitted.
 
@@ -4085,7 +4085,7 @@ def fr_bidi_table(rec_a, rec_b):
     ra = rec_a if rec_a.get('_span_side') or rec_a.get('_bdr_side') else dict(rec_a, _span_side='a')
     rb = rec_b if rec_b.get('_span_side') or rec_b.get('_bdr_side') else dict(rec_b, _span_side='b')
     # THE FRAME IS B'S END OF FIBRE.  Back-solved from FR's own rows
-    # (MeanPosition = (A + L - B) / 2) on all 100 .bdr keys on disk -- Zayo,
+    # (MeanPosition = (A + L - B) / 2) on all 100 .bdr keys on disk -- BETA,
     # job S, job R -- L is the B->A file's end-of-fibre event position
     # (Status 0x80), every time, whether A's end reads longer or shorter.
     # On a whole fibre that is what _fr_proj_constant validates and returns;
@@ -4376,7 +4376,7 @@ def fr_bidi_table(rec_a, rec_b):
     # from the next row's B leg (the smaller B-frame position) to this
     # row's.  A leg without cursors (a synthesised leg the transplant could
     # not place) has no section.  The merged figures are the means, as FR
-    # stores them (3,681 of 3,681 on the Zayo 432 .bdr set).
+    # stores them (3,681 of 3,681 on the 432-fiber BETA span .bdr set).
     def _section(rec, start, end):
         if start.get('cur_b_m') is None or end.get('cur_a_m') is None:
             return None
@@ -4581,11 +4581,11 @@ def fr_report_grid(fibers_a, fibers_b, threshold, connector_threshold=None,
         # 54.86 km for the splice the classic grid puts at 55.887).
         off_a = _table_offset_km(ra)
         # FR's launch and end rows join the grid only where the tech MARKED
-        # the span on a panel.  With the Lumen template (IncludeSpanStart/End
+        # the span on a panel.  With the customer L template (IncludeSpanStart/End
         # True) FR grades those: on FTH01<->FTH06 both are panels and FR's
         # .bdr carries their Average (fibre 140: 0.290 and 0.239).  On a shot
         # with no markers the launch row is the OTDR port and the end row is
-        # the receive reel's far end (or a break).  FR under Lumen paints that
+        # the receive reel's far end (or a break).  FR under customer L paints that
         # reel end red too (Tucson West A, -48.0 at 2.1309 km, probed
         # 2026-09-24), but it is test gear the tech never graded -- the files'
         # own FR setting leaves the span end out -- so this grid does not.
@@ -7582,13 +7582,13 @@ def split_offsplice_events_into_own_columns(all_results, splices,
                                   if r.get('bidir_dist') is not None] or
                                  [cluster['km_center']]))
         if splice_kms and min(abs(med_km - sk) for sk in splice_kms) <= splice_dist_km:
-            # BOTH-EVENTS ESCAPE (Lumen Border): before folding, ask
+            # BOTH-EVENTS ESCAPE (the Border job): before folding, ask
             # whether the cluster's member fibers ALSO have their own
             # splice event AT the nearest column.  A fiber's splice can't
             # be in two places — if >= BEND_CLUSTER_BOTH_EVENTS_MIN
             # members show a separate event at the column, this cluster
             # is real adjacent damage, not the splice's lay tail, and it
-            # keeps its own column.  (Lumen: bends @7.77 sit ~170 m from
+            # keeps its own column.  (customer L: bends @7.77 sit ~170 m from
             # the 7.94 splice — inside the 200 m fold — but 26 fibers
             # carry BOTH events.  PLACHE tails have no second event, so
             # the PLACHE folding behavior is unchanged.)
@@ -8104,7 +8104,7 @@ def _format_loss(val):
     the missing digit is the whole verdict.  A half-mdB anywhere else (a
     0.2465 reburn, a .0285 reflectance cell) is unambiguous at 3 decimals
     and stays there rather than spraying false precision across the grid.
-    NCT's own review writes 0.2005 for the same reason."""
+    the prime contractor's own review writes 0.2005 for the same reason."""
     neg = val < 0
     if (SPLICE_STRICT_BOUNDARY and _is_half_mdb(val)
             and abs(abs(float(val)) - REBURN_THRESHOLD) < 0.001):
@@ -8165,12 +8165,12 @@ def _splice_bidir(a_loss, b_loss, default):
     Default (every other profile): `default`, the caller's own mean of the
     full-precision legs.  Untouched.
 
-    SPLICE_STRICT_BOUNDARY = 1 (AWS / IIG MT.1085): each direction is rounded
+    SPLICE_STRICT_BOUNDARY = 1 (the contract profile): each direction is rounded
     to the 3 decimals the instrument reports and FastReporter displays FIRST,
-    and those two are then averaged — which is how NCT reaches the 0.2005 it
+    and those two are then averaged — which is how the prime contractor reaches the 0.2005 it
     fails Span 19 fibers 84 and 408 on, and the exact 0.200 it passes Span 25
     fiber 193 on.  Averaging the full-precision legs instead gives 0.20027 and
-    0.20037: it agrees with NCT on the first two and disagrees on the third,
+    0.20037: it agrees with the prime contractor on the first two and disagrees on the third,
     because a fraction of a millidecibel that neither instrument reports
     decides the call.  Rounding each leg first removes that casting vote.
 
@@ -8225,7 +8225,7 @@ def _clears_splice_threshold(loss, threshold):
     SPLICE_STRICT_BOUNDARY = 0 (default): identical to _clears_threshold —
     the printed 3-decimal value, flagged at or above the threshold.
 
-    SPLICE_STRICT_BOUNDARY = 1 (AWS / IIG MT.1085): the contract reads
+    SPLICE_STRICT_BOUNDARY = 1 (the contract profile): the contract reads
     "0.20 dB or less", so a splice flags only when it is strictly OVER the
     threshold.  `loss` arrives from _splice_bidir — the mean of the two
     3-decimal direction readings — so no rounding happens here: the value
@@ -8537,7 +8537,7 @@ def _ungradeable_note(fibers_a, fibers_b, site_a, site_b):
     reader must not have to work out from a zero count whether an end was
     clean or simply not gradeable, and the reshoot is the point: "Suppressing
     them would hide that a reshoot is owed; failing them would be wrong,
-    since the loss is not in the plant" (NCT, 2026-09-12)."""
+    since the loss is not in the plant" (the prime contractor, 2026-09-12)."""
     if not PANEL_UNGRADEABLE_GAP_DB or not (fibers_a and fibers_b):
         return ""
     try:
@@ -9184,7 +9184,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
             # so it never stores the connector as an event and b_loss above
             # is None -- which used to leave every gate unable to fire.  FR
             # does not skip it: it transplants the near side's cursors into
-            # the far trace and prints that as the far leg.  Lumen Span 7
+            # the far trace and prints that as the far leg.  Span 7
             # (2026-09-25, FR 3 on the .sor pairs): MON 0229 A 4.787 / B
             # 0.009 avg 2.398 FAIL; 0032 .689 / -.001 avg .344; GRA 1029 B
             # .916 / A .006 avg .461 -- each direction failing on its own
@@ -9725,7 +9725,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 if nearest_splice == si:
                     # ── Damage-point loss ──
                     # The tech's sheet records the LOSS of the damage event
-                    # itself, not just the km the fiber quit at (Lumen span 2
+                    # itself, not just the km the fiber quit at (span 2
                     # Tooele↔Knolls F2: 3.384 dB at 46.71 km, end marker at
                     # 47.41).  Take the non-end A event closest to the break
                     # and print it when it clears the single-direction gate.
@@ -9875,7 +9875,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
             # the clusterer swept a nearby bend population in with the
             # closure, or because the cable's sub-units differ in optical
             # length (helix) and read the same closure at different
-            # distances.  ZAYO BETA 432 splice 2 is both at once: the mean
+            # distances.  The 432-fiber BETA span's splice 2 is both at once: the mean
             # landed at 21.50 while the refiner put the closure at 21.8559
             # and ribbon 18's own rung at 21.8610.  Nearest-to-21.50 picked
             # fiber 212's isolated 21.3161 event (184 m away) over its real
@@ -10221,7 +10221,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
                 # carrying the quiet side would hide the evidence for the
                 # call.  The reflectance beside it tells the crew the
                 # mechanism: a return means an air gap or a crack, none
-                # means a bend or a bad splice (NCT, 2026-09-12).
+                # means a bend or a bad splice (the prime contractor, 2026-09-12).
                 _seen_from_b = (is_break_by_loss
                                 and abs(_b_leg or 0.0) > abs(_a_leg or 0.0))
                 uni_loss = abs((_b_leg if _seen_from_b else ea['splice_loss'])
@@ -10305,7 +10305,7 @@ def analyze_all(fibers_a, fibers_b, splices, threshold,
 # analysis") gives no geometric way to tell where it falls into noise, so a
 # silent-side leg on it is checked against the trace itself: the sample-to-
 # sample noise at the reading spot.  Healthy traces sit at 0.05 to 0.13 dB at
-# 95 km; dead ones at 1.7 to 2.6.  Zayo Segment 2 fiber 61 read a B leg at
+# 95 km; dead ones at 1.7 to 2.6.  Segment 2 fiber 61 read a B leg at
 # 1.25 dB noise (-0.489 at Splice 1) and an A leg at 0.54 (a false .228);
 # Tooele-Knolls fiber 336, past a 4.76 dB step, reads a real B leg at 0.21.
 NO_END_LEG_NOISE_DB = 0.35
@@ -10377,7 +10377,7 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
         # B-direction span (EOL)
         b_end_events = [e for e in rb['events'] if e['is_end']]
         # No end marker (a truncated shot): mirror on the cable span, as the
-        # A pass already does.  Skipping the fiber hid Zayo Segment 2 fiber
+        # A pass already does.  Skipping the fiber hid Segment 2 fiber
         # 734's 4.7 dB step at the entry closure, which only B could see.
         b_eof_own = (b_end_events[0]['dist_km'] if b_end_events
                      else (_pop_b_span or total_span_a))
@@ -10436,7 +10436,7 @@ def scan_b_events(fibers_a, fibers_b, splices, threshold, existing_results, tota
             # A has its own stored event here (checked below, after the A
             # lookup).  When A has one, Pass 1 already judged this spot from
             # A's side.  When A has NONE, Pass 1 never looked, and a small B
-            # reading is the only way in: Zayo Segment 2's entry closure had
+            # reading is the only way in: Segment 2's entry closure had
             # A legs of .25 to .38 behind B readings of .05 to .08, and FR
             # flagged fibers 5, 35, 119 and 684 that nothing here measured.
             b_small = b_loss_abs < threshold * 0.75
@@ -11834,7 +11834,7 @@ def _reflective_spike_confirms(fiber_data, event_km, refl_db):
             pulse_ns = None
         if not pulse_ns or pulse_ns <= 0:
             pulse_ns = 2500.0
-        # UNITS (Lumen Border fix, 2026-07-23): some firmware writes
+        # UNITS (the Border job fix, 2026-07-23): some firmware writes
         # NominalPulseWidth in SECONDS (5e-08 = 50 ns), not ns.  Treated
         # as ns, bs_level computed to -155 dB and the expected spike to
         # ~39 dB — an impossible floor that refuted EVERY mid-span
@@ -11891,7 +11891,7 @@ def _reflective_spike_confirms(fiber_data, event_km, refl_db):
         floor = max(0.5 * expected, 2.5 * noise)
         run_thresh = max(0.5 * floor, 1.5 * noise)
         min_run = max(2, int(0.3 * pulse_m / res))
-        # ORIENTATION-SYMMETRIC (Lumen Border fix, 2026-07-23): parses
+        # ORIENTATION-SYMMETRIC (the Border job fix, 2026-07-23): parses
         # come in both trace representations, and saturation behavior can
         # flip the drawn direction — accept the glint in EITHER sign, but
         # demand BOTH amplitude (>= floor) AND WIDTH (a sustained run of
@@ -11943,7 +11943,7 @@ MIDSPAN_REFL_WARN_DB = -80.0
 # (reflectance detection threshold -78 dB) on CHEPLA0609: F609's -66.4 dB
 # firmware tag sits over a smooth 26 mdB wiggle at ratio 3.0 (noise level),
 # which FastReporter drops -> we must too.  Every REAL reflection clears
-# 5x with margin: Lumen's real -77 dB glints 11-19x, connector/far-end
+# 5x with margin: customer L's real -77 dB glints 11-19x, connector/far-end
 # reflections 27-61x.  Below this ratio => not a reflection, refute.
 REFL_SHARP_MIN_RATIO = 5.0
 # Optional BAND ceiling (Robert, 2026-07-23): when set below 0, mid-span
@@ -11989,7 +11989,7 @@ def _is_likely_echo(cand_km, cand_refl, refl_events, tol_km=ECHO_PARENT_TOL_KM,
         for k, rf in refl_events:
             if rf is None:
                 continue
-            # GEOMETRY (Lumen Border fix, 2026-07-23): compare at the
+            # GEOMETRY (the Border job fix, 2026-07-23): compare at the
             # CANDIDATE's scale — an echo of a parent at k sits at n*k, so
             # the position test is |cand - n*k| <= tol.  The old form
             # tested |k - cand/n| <= tol, which inflates the tolerance to
@@ -12373,7 +12373,7 @@ def scan_b_side_breaks(fibers_a, fibers_b, splices, existing_results,
             # this one at the closure nearest B's, and when that is the same
             # closure the key is taken, although the two breaks are at least
             # END_REGION_KM apart (the same-break case returned above).  A
-            # 432-fiber span had fibers 427 and 432 die at 92.57 km from A and
+            # 432-fiber BETA span had fibers 427 and 432 die at 92.57 km from A and
             # at 98.35 km from B; both keys fell on the last closure 7-14 km
             # away, so the second break never printed, while fiber 428 (A
             # dead at 12.56 km, B at 98.33 km) printed both.  Split relocates
@@ -12830,7 +12830,7 @@ def build_ribbon_data(results, n_fibers, ribbon_size, n_splices, launch_issues=N
             at its launch, the other at its far end -- and both print the
             same bare 'REFL-48.3dB', so a fiber failing both ways printed
             '180 REFL-48.3dB 180 REFL-48.7dB' with nothing to tell the two
-            apart (a 432-fiber span: F180, 190, 192, 226, 233, 242).  refl_rules runs
+            apart (a 432-fiber BETA span: F180, 190, 192, 226, 233, 242).  refl_rules runs
             parallel to the REFL tags: 'launch' is the shot taken FROM this
             end, anything else the shot from the other end.  The arrows are
             the ones the header rows use; every other tag is unchanged."""
@@ -13120,7 +13120,7 @@ def sr_legend_rows(painted, end_texts=()):
     The orange A-End / B-End cells are named for what they hold
     (`end_texts`).  The Legend used to call them "Launch / RESHOOT_DEAD_TRACE
     / BREAK_AT_PANEL", two engine tags and a word that is wrong for the B
-    end; on a 432-fiber span every one of them is an end connector's reflectance."""
+    end; on a 432-fiber BETA span every one of them is an end connector's reflectance."""
     blob = ' '.join(end_texts or ())
     conn = [w for w, keys in (('reflectance', ('REFL',)),
                               ('loss', ('LAUNCH', 'PIGTAIL')))
@@ -13519,7 +13519,7 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # ── "Average splice loss" sheet (only when the gate is on) ───────────
     # One row per fiber: FastReporter's per-fiber "Avg. Splice Loss", graded
     # against AVG_SPLICE_LOSS_DB.  A per-SPAN statistic in the contracts that
-    # ask for it (AWS / IIG MT.1085: <= 0.08 dB), so it lives on its own
+    # ask for it (the contract profile: <= 0.08 dB), so it lives on its own
     # sheet and never colours a grid cell.  Absent entirely when the gate is
     # off, so the shipped report is unchanged for every other customer.
     if fiber_avgs is not None:
@@ -15463,7 +15463,7 @@ def uni_detect_tail_box(fibers):
     NOT every shoot has a tail box, and the difference is not cosmetic.  Where
     there is none the fiber's last event IS the cable end — bare glass, often
     reflective — so claiming it as a connector and then asking "did light get
-    through?" answers no for every fiber in the folder.  Measured on Lumen 432
+    through?" answers no for every fiber in the folder.  Measured on the 432-fiber Border job
     Border (432 fibers, 11.41 km, no tail box): that mistake reported 399 of
     432 fibers DARK AT CONNECTOR on perfectly healthy cable.
 

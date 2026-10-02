@@ -5,7 +5,7 @@ Three places the grid was inferring what FastReporter states outright:
   * LOSS on an event FR took no reading for.  FR stores NaN and leaves the
     cell empty.  The Bellcore KeyEvents copy cannot say "no reading" -- its
     loss is an int16, so absence arrives as 0 -- and the grid printed 0.000.
-    1,728 of 6,455 events on the Zayo 432 span, nearly all reflective.
+    1,728 of 6,455 events on the 432-fiber BETA span, nearly all reflective.
 
   * EVENT KIND.  Derived from sign(splice_loss), which disagrees with FR's own
     Type on 4 of 4,727 events -- the ones where FR's Type and the sign of FR's
@@ -200,7 +200,7 @@ def test_type_1_is_a_gainer_and_type_2_a_loser_where_fr_is_consistent():
                 else:
                     disagree += 1
     assert agree > 500, 'corpus too small to mean anything'
-    # On these fixtures FR is self-consistent; the Zayo span has 4 that are not.
+    # On these fixtures FR is self-consistent; the BETA span has 4 that are not.
     assert disagree == 0, disagree
 
 

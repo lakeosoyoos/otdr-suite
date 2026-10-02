@@ -2,7 +2,7 @@
 
 The mid-span-break block printed only WHERE a fiber quit ("2 broke@46.4k
 (B-fill OK)").  The tech's sheet also records the LOSS of the damage event
-itself — Lumen Span 2 Tooele↔Knolls fiber 2: an A event of 3.384 dB at
+itself — Span 2 Tooele↔Knolls fiber 2: an A event of 3.384 dB at
 46.71 km with the fiber-end marker at 47.41 km, landing in the Damage
 @46.37 km column.  "Match him the best we can and be data faithful."
 
@@ -66,7 +66,7 @@ _SETUP = """
 
 
 def test_broke_cell_carries_the_damage_loss():
-    """Lumen F2's shape: a 3.384 dB event 0.7 km before the break prints in
+    """F2's shape: a 3.384 dB event 0.7 km before the break prints in
     the BROKE cell, ahead of the existing B-fill suffix."""
     _run(_SETUP + "\x00" + """
         cell = _span(3.384)

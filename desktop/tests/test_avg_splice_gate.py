@@ -11,7 +11,7 @@ Three things have to hold:
   1. The arithmetic is FR's (union, signed, connectors out, round once).
   2. OFF is really off: the shipped report gains no sheet and no Legend row
      unless a profile or the panel sends a positive gate.
-  3. The IIG profile turns it on at 0.08 dB and Default leaves it off, and
+  3. The the contract profile turns it on at 0.08 dB and Default leaves it off, and
      the unticked value (0.0) survives run_splicereport's override guard.
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ sys.path.insert(0, str(SPLICEREPORT_DIR))
 import splicereportmatchexfo as E  # noqa: E402
 
 SHEET = "Average splice loss"
-IIG = "AWS / IIG MT.1085"
+CONTRACT_PROFILE = "AWS / IIG MT.1085"
 
 
 def _engine():
@@ -176,16 +176,16 @@ def test_unticked_zero_survives_the_override_guard(tmp_path):
 
 
 # ── 3. Profiles ──────────────────────────────────────────────────────────
-def test_iig_average_splice_loss_gate():
+def test_contract_average_splice_loss_gate():
     hub = _hub()
-    ov = hub._overrides_from_settings(hub._otdr_settings_from_profile(IIG))
+    ov = hub._overrides_from_settings(hub._otdr_settings_from_profile(CONTRACT_PROFILE))
     assert ov["AVG_SPLICE_LOSS_DB"] == 0.080
 
 
 def test_default_profile_leaves_the_gate_off():
     hub = _hub()
     for prof in hub.CUSTOMER_PROFILES:
-        if prof == IIG:
+        if prof == CONTRACT_PROFILE:
             continue
         ov = hub._overrides_from_settings(hub._otdr_settings_from_profile(prof))
         assert ov.get("AVG_SPLICE_LOSS_DB") == 0.0, prof

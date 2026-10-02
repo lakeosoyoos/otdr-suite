@@ -4,9 +4,9 @@ An iOLM job pushed to the units through EXFO Exchange carries the customer's
 job config in every measurement: the cable ID, the A-end and Z-end site
 codes, and the segment's two towns.  With that on file the tech types
 nothing, and the report prints "Rapelje BIL400" — the code the customer's
-records key on, the town for readability (NCT, 2026-09-12).
+records key on, the town for readability (the prime contractor, 2026-09-12).
 
-The folder is NOT the source, and AWS / IIG MT.1085 span 27 is why: it sits
+The folder is NOT the source, and the contract profile span 27 is why: it sits
 in a SharePoint folder called "Lavina, MT to Rapelje, MT" while every file in
 it declares BIL400 (Rapelje) as the A end and RPX400 (Lavina) as the Z end.
 A report built from the folder name labels every column with the wrong site.
@@ -29,7 +29,7 @@ sys.path.insert(0, str(SPLICEREPORT_DIR))
 import json_reader as J          # noqa: E402
 import splicereportmatchexfo as E  # noqa: E402
 
-IIG = "AWS / IIG MT.1085"
+CONTRACT_PROFILE = "AWS / IIG MT.1085"
 
 SEGMENT = ("Project=MT.1085 - Lynnwood to Forsyth|Span=Span 27|"
            "Segment=Rapelje, MT to Lavina, MT")
@@ -165,12 +165,12 @@ def test_switch_ships_off():
 def test_profile_carries_the_switch_and_the_whitelist_allows_it():
     app = importlib.import_module('app')  # engine imported first, on purpose
     assert "SITE_NAMES_FROM_IDENTIFIERS" in app._PROFILE_ENGINE_KEYS
-    assert app.CUSTOMER_PROFILES[IIG]["engine"][
+    assert app.CUSTOMER_PROFILES[CONTRACT_PROFILE]["engine"][
         "SITE_NAMES_FROM_IDENTIFIERS"] == 1
-    assert app._engine_extras_from_profile(IIG)[
+    assert app._engine_extras_from_profile(CONTRACT_PROFILE)[
         "SITE_NAMES_FROM_IDENTIFIERS"] == 1.0
     for name, prof in app.CUSTOMER_PROFILES.items():
-        if name == IIG:
+        if name == CONTRACT_PROFILE:
             continue
         assert "SITE_NAMES_FROM_IDENTIFIERS" not in (prof.get("engine") or {}), name
 
@@ -180,9 +180,9 @@ def test_hub_helper_reads_identifiers_only_for_the_profile_that_asks(tmp_path):
     the measurements name the ends."""
     app = importlib.import_module('app')
     d = _span(tmp_path)
-    assert app._site_names_for(str(d), str(d), profile_name=IIG) == (
+    assert app._site_names_for(str(d), str(d), profile_name=CONTRACT_PROFILE) == (
         "Rapelje BIL400", "Lavina RPX400")
-    other = next(n for n in app.CUSTOMER_PROFILES if n != IIG)
+    other = next(n for n in app.CUSTOMER_PROFILES if n != CONTRACT_PROFILE)
     assert app._site_names_for(str(d), str(d), profile_name=other) != (
         "Rapelje BIL400", "Lavina RPX400")
 

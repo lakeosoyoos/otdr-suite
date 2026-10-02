@@ -1,4 +1,4 @@
-"""Pins for the Parker/Stephens (Zayo Dallas to Patricia Segment 2)
+"""Pins for the Parker/Stephens (Dallas to Patricia Segment 2)
 FastReporter comparison fixes: #315, #318, #320.
 
 #315  run_splicereport.py Pass 0 stamps r['_span_side'] ('a' / 'b') as the
@@ -98,7 +98,7 @@ _SMALL_B_SETUP = """
             {'dist_km': SPAN, 'splice_loss': 0.0, 'is_end': True,
              'type': '1E'}]}}
         return splices, fa, fb
-    # Fixed A leg: the Zayo Seg 2 entry closure read .25 to .38 on A.
+    # Fixed A leg: the Seg 2 entry closure read .25 to .38 on A.
     E._grey_loss = lambda fd, km, mirror=None, twin=None: 0.30 if fd else None
     E._phase2_loss = lambda rec, ev: ev['splice_loss']
     assert 0.06 < E.REBURN_THRESHOLD * 0.75

@@ -9,7 +9,7 @@ The tech set the span start on panel A and the end marker on panel B, so each
 table opens with the reel-to-jumper joint at -0.015 km (the "first spike") and
 carries the jumper-to-reel joint and the reel end past the end marker.
 
-FastReporter 3.21, Lumen template (Reflectance Fail -50.0), read 2026-09-23:
+FastReporter 3.21, customer L template (Reflectance Fail -50.0), read 2026-09-23:
 Event 1 is the panel at 0.0000 km; the -0.0153 km spike (-49.9 / -50.0 dB)
 and the 0.0773 km spike (-49.7 dB) are shown but not numbered and not red.
 The report graded the first spike as each end's launch connector and printed
