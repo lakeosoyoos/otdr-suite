@@ -74,7 +74,9 @@
   #toolbar.collapsed #tb-strip .tb-more { display: none; }
   #tb-scroll .group:first-of-type { border-left: 1px solid var(--border); padding-left: 6px; }
   #tb-right { margin-left: auto; }
-  #tb-gear { font-size: 16px; line-height: 1; padding: 3px 7px; }
+  /* A word, not a gear glyph (Robert 2026-10-02), styled like Generate
+     Report beside it. */
+  #tb-gear { white-space: nowrap; }
   /* Fixed, not absolute: the toolbar clips its overflow. */
   #tb-gear-menu {
     position: fixed; z-index: 50; display: flex; flex-direction: column; gap: 6px;
@@ -879,14 +881,15 @@
           title="More controls to the right">&raquo;</button>
   </div>
 
-  <!-- Generate Report, then the chart's settings behind the gear, at the
-       bar's right end (Robert 2026-10-01).  One button for both reports
+  <!-- Generate Report, then the chart's settings behind the Settings
+       button (a gear until Robert 2026-10-02), at the bar's right end
+       (Robert 2026-10-01).  One button for both reports
        (Robert 2026-10-02): the Summary Report of the traces, or the OLTS
        Report of a dropped PMT (.olts) file, by what is loaded. -->
   <div class="group" id="tb-right">
     <button id="btn-report" title="The Summary Report of the traces on the chart, or the OLTS Report of the PMT (.olts) file on the Measurements tab, as a PDF or an Excel workbook">Generate Report…</button>
     <button id="tb-gear" type="button" title="Chart settings"
-            aria-haspopup="true" aria-expanded="false">&#9881;</button>
+            aria-haspopup="true" aria-expanded="false">Settings</button>
     <span id="tb-gear-menu" role="menu" hidden>
       <label><input type="checkbox" id="cb-stack" checked> Stack A/B</label>
       <label id="lbl-yspace"
@@ -1664,7 +1667,8 @@ function setToolbarCollapsed(on) {
   sync();
 })();
 
-// The gear at the bar's right end: Stack A/B, Y Spacing, Fiber Colors.
+// The Settings button (the gear until 2026-10-02) at the bar's right end:
+// Stack A/B, Y Spacing, Fiber Colors.
 // A click anywhere else or Escape shuts it.
 function setTbGearMenu(open) {
   const btn = document.getElementById('tb-gear');
