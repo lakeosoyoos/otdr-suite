@@ -3130,7 +3130,8 @@ def project_apply(snap, ss, only_missing=False):
 
     only_missing=True is the quiet re-attach after a Viewer click-through
     (a fresh session): the deep link already seeded the folders, so only
-    what the wipe lost (profile, tables, site names) is filled back in."""
+    what the wipe lost (profile, tables, site names, the job details and
+    the shoots' record) is filled back in."""
     def put(key, val):
         if only_missing and key in ss:
             return
@@ -3174,6 +3175,22 @@ def project_apply(snap, ss, only_missing=False):
                 ss[k['site_b']] = s.get('site_b') or 'B'
                 ss[k['site_src']] = PROJECT_SITE_MARK
     if only_missing:
+        # The project's own record: without it FQA Progress lost the job
+        # details (1.03, 1.04, 1.09-1.11, 4.01) after a cell click and
+        # "← Back" (2026-10-03).
+        if isinstance(snap.get('fqa_job'), dict):
+            put('fqa_job', dict(snap['fqa_job']))
+        put('project_manual', dict(snap.get('manual') or {}))
+        if snap.get('job_id'):
+            put('project_job_id', snap['job_id'])
+        put('project_shoots', dict(snap.get('shoots') or {}))
+        put('project_gps', dict(snap.get('gps') or {}))
+        put('project_owner', dict(snap.get('owner') or {}))
+        put('project_sp', dict(snap.get('sharepoint') or {}))
+        if ss['project_sp'].get('path'):
+            put('sp_path', ss['project_sp']['path'])
+        if snap.get('final_shoot') is not None:
+            put('project_final_shoot', snap['final_shoot'])
         return
     # A different span: nothing from the previous one may stay on screen.
     for i in range(len(spans) + 1, max(int(old_n or 1), SR_MAX_SPANS_CAP) + 1):
@@ -3309,9 +3326,11 @@ def project_open(path):
 
 def _project_reattach():
     """Top of a fresh session: a Viewer click-through is a URL nav that wipes
-    session_state.  When the A folder the link seeded is the last project's,
-    that project is open again, and what the wipe lost (profile, tables,
-    site names) is filled back in from it."""
+    session_state.  When the A folder the link seeded is the last project's
+    (its span 1, or one of its shoots), that project is open again, and what
+    the wipe lost (profile, tables, site names, job details) is filled back
+    in from it.  A shoot's folders mean the tool was opened on that shoot
+    with Run In…, so it is the chosen shoot again, not the A/B boxes."""
     ss = st.session_state
     if 'project_path' in ss or ss.get('_project_reattach_done'):
         return
@@ -3324,16 +3343,20 @@ def _project_reattach():
         snap, _m = project_read(last)
     except Exception:
         return
+    def same(x):
+        return bool(x) and (os.path.normcase(os.path.abspath(x))
+                            == os.path.normcase(os.path.abspath(a)))
+    shoot = next((sh for sh in list_shoots(work_dir(last)) if same(sh['a'])), None)
     first = snap['spans'][0]
-    if first['mode'] != 'two' or not first['dir_a'] or (
-            os.path.normcase(os.path.abspath(first['dir_a']))
-            != os.path.normcase(os.path.abspath(a))):
+    if not shoot and (first['mode'] != 'two' or not same(first['dir_a'])):
         return
     project_apply(snap, ss, only_missing=True)
     ss['project_path'] = last
     ss['project_saved'] = _project_snapshot(ss, snap)
     ss['_project_rebase'] = True
     ss['_project_reattached'] = True
+    if shoot and ss.get('project_run_shoot') is None:
+        ss['project_run_shoot'] = shoot['id']
 
 
 # ─── Work folders, the home screen, project mode ─────────────────────────
@@ -3657,6 +3680,11 @@ def _mode_actions():
     if ss.get('go_home') or ss.get('setup_back'):
         ss.pop('app_mode', None)
         ss.pop('qa_stage', None)
+        # A session a cell click started is put back in its project (or in
+        # Quick Analysis) by the mode gate below; Home leaves it for good, or
+        # the Home button did nothing after a click-through (2026-10-03).
+        ss.pop('_project_reattached', None)
+        ss.pop('_nav_arrived', None)
         _fresh_tool_chain()
         return None
     for key, kind in (('home_new', 'new'), ('home_open_recent', 'open')):
