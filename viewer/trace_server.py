@@ -6708,7 +6708,7 @@ def _olts_measurement_rows(parsed):
     graded = _olts_status(parsed) != ''
     power = _olts_powers(parsed)
     out = []
-    for f in parsed['fibers']:
+    for n, f in enumerate(parsed['fibers']):
         per, fail, have_ab, have_ba = {}, False, False, False
         for r in f['rows']:
             fa = graded and _olts_orl_fail(parsed, r, 'orl_a')
@@ -6723,7 +6723,7 @@ def _olts_measurement_rows(parsed):
                 'ref_ab': power.get((f.get('ref'), r['wl_nm']), (None, None))[0],
                 'ref_ba': power.get((f.get('ref'), r['wl_nm']), (None, None))[1]}
         km = None if f['length_m'] is None else f['length_m'] / 1000.0
-        out.append({'id': f['id'], 'type': 'OLTS',
+        out.append({'n': n, 'id': f['id'], 'type': 'OLTS',
                     'dir': 'Bidir' if have_ab and have_ba else 'A->B' if have_ab else 'B->A',
                     'pf': ('fail' if fail else 'pass') if graded else '',
                     'length_km': _olts_r(km, 3), 'wl': per,
@@ -7082,6 +7082,17 @@ def write_olts_report(payload):
     if not ent:
         raise ValueError('that .olts is no longer loaded; drop it again')
     parsed = ent[0]
+    # The fibers removed from the Measurements tab (their place in the file,
+    # the rows' `n`) stay out of the report, as they are off the screen.
+    gone = payload.get('leave_out') or []
+    if not isinstance(gone, list):
+        raise ValueError('leave_out must be a list')
+    gone = {int(n) for n in gone if isinstance(n, int) or str(n).isdigit()}
+    if gone:
+        parsed = dict(parsed, fibers=[f for n, f in enumerate(parsed['fibers'])
+                                      if n not in gone])
+        if not parsed['fibers']:
+            raise ValueError('every fiber was removed; nothing to report')
     fmt = str(payload.get('format') or '').lower()
     if fmt not in ('pdf', 'xlsx'):
         raise ValueError('format must be pdf or xlsx')
