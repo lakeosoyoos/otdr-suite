@@ -304,9 +304,10 @@ _CASES = r"""
 
 @pytest.fixture(scope='module')
 def page(tmp_path_factory):
-    funcs = '\n'.join(_js_func(n) for n in ('_parentName', '_dropOk', '_dropBatches',
-                                            'handleFilesDrop', 'isOltsFile', 'folderLabel',
-                                            'reportJob'))
+    src_re = re.search(r'^const SRC_RE = [^\n]+;', SRC, re.M).group(0)
+    funcs = src_re + '\n' + '\n'.join(_js_func(n) for n in (
+        '_parentName', '_dropOk', '_dropBatches', 'handleFilesDrop', 'isOltsFile', 'folderLabel',
+        'reportJob', 'srcParts', 'sideOf', 'srcLabel', 'emptiedList'))
     path = tmp_path_factory.mktemp('drop_names') / 'drop.js'
     path.write_text(_STUBS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)

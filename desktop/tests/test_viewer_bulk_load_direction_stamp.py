@@ -157,7 +157,8 @@ def _fn(name):
 
 
 def test_bulk_loader_reads_the_stamp_as_the_detail_loader_does():
-    line = "if (data.stored_dir && data.stored_dir !== dir) gStoredDir[key] = data.stored_dir;"
+    # `dir` is a source id ('a', 'a2', 'ar2'); its side letter is the folder's own
+    line = "if (data.stored_dir && data.stored_dir !== dir[0]) gStoredDir[key] = data.stored_dir;"
     assert line in _fn('loadOverview')
     assert line in _fn('loadOne')
 

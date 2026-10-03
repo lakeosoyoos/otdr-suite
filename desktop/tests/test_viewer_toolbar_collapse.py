@@ -75,3 +75,13 @@ def test_summary_report_then_the_gear_at_the_right_end():
 
 def test_the_fibers_box_is_narrower():
     assert "#toolbar #fiber-input { width: 110px; }" in SRC
+
+
+def test_the_toolbar_button_says_settings_not_a_gear():
+    """Robert 2026-10-02: the toolbar gear reads Settings too, and opens the
+    same chart menu (Stack A/B, Y Spacing, Fiber Colors)."""
+    btn = SRC.split('<button id="tb-gear"', 1)[1].split("</button>", 1)[0]
+    assert btn.endswith(">Settings")
+    assert "&#9881;" not in btn and 'aria-haspopup="true"' in btn
+    assert "setTbGearMenu(document.getElementById('tb-gear-menu').hidden);" in SRC
+    assert "&#9881;" not in SRC.split("<body", 1)[1]

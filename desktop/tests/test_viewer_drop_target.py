@@ -248,16 +248,16 @@ def test_dropping_the_b_side_first_lands_on_b():
 
 
 def test_a_folder_that_declares_a_taken_side_takes_the_empty_one():
-    """TOOKNO and KNOTOO both stamp A.  Believing the second one would put it
-    straight back over the first, which is the bug this all started from."""
+    """A span whose two directions both stamp A.  The stamp rule stands (Robert
+    2026-10-02): both load on A, nothing is put over the first, and the
+    second's fibres are rows of their own ("1 (copy 2)") for the tech to move
+    with right-click > Direction."""
     first = _drop_real(_real('a', 3))
     assert first['added'] == 'A'
-    # another folder, also stamped A (real A-direction bytes under other names)
-    second = _drop_real(_real('a', 3, rename=lambda n: 'KNOTOO' + n[6:]))
-    assert second['added'] == 'B'                  # the empty side, not over A
-    assert second['added_by'] == 'position'
-    assert second['dir_a'] == first['dir_a']       # the first folder is untouched
-    assert second['b_prefix'] == 'KNOTOO'
+    second = _drop_real(_real('a', 3, rename=lambda n: 'BBBAAA' + n[6:]))
+    assert second['added'] == 'A' and second['added_by'] == 'file'
+    assert second['dir_a'] == first['dir_a'] and second['dir_b'] is None
+    assert second['a_count'] == 6 and len(second['copies']) == 3
 
 
 def test_both_directions_in_one_drop_take_their_sides_from_the_files():
@@ -291,19 +291,18 @@ def test_files_that_do_not_declare_still_fill_the_empty_side():
 
 
 def test_a_folder_holding_both_directions_declares_nothing():
-    """A tie-panel folder carries both, so it cannot name a side and the
-    positional rule takes over."""
+    """A tie-panel folder carries both: every file goes where its own stamp
+    says, so it fills both sides."""
     import os as _os
     tok = TS.drop_begin()
-    # same prefix so the prefix rule sees ONE group, different fiber numbers so
-    # the B files do not simply overwrite the A files in the staging folder
     for name, data in _real('a', 2) + _real('b', 2, rename=lambda n: 'ELMMIL9' + n[7:]):
         TS.drop_file(tok, name, data)
     staged = _os.path.join(TS._DROPS[tok]['dir'], 'in')
     paths = [_os.path.join(staged, f) for f in sorted(_os.listdir(staged))]
     assert TS._declared_direction(paths) is None
     out = TS.drop_end(tok)
-    assert out['added'] == 'A' and out['added_by'] == 'position'
+    assert out['added'] == 'AB' and out['added_by'] == 'file'
+    assert out['a_count'] == 2 and out['b_count'] == 2
 
 
 def test_the_page_forgets_only_a_side_the_drop_let_go_of():
@@ -318,8 +317,8 @@ def test_the_page_forgets_only_a_side_the_drop_let_go_of():
     assert "for (const key of [...(j.new_keys || []), ...back])" in fn
     # and the hint says the next drop adds
     panel = h.split('function renderFilesPanel() {', 1)[1].split('\n}\n', 1)[0]
-    assert "'drop the other direction here, A stays loaded'" in panel
-    assert "'drop more files here, they are added to what is loaded'" in panel
+    # every file goes on the side its own Direction names (the stamp wins)
+    assert "'drop more files here: each goes on the side its Direction names, and nothing loaded is replaced'" in panel
     # and the readout says when the FILES named the side, not the drop order
     assert "j.added_by === 'file'" in fn
     assert 'the files name this folder the ${j.added} side' in fn
@@ -427,20 +426,14 @@ def test_the_repeat_is_caught_whatever_case_the_name_arrives_in():
     assert _staged(out)['ROMTUC001_1550.sor'] == _sized(b'\xa1', 40)
 
 def test_a_dragged_parent_folder_loads_both_directions():
-    """The reported case, with the real fixture spans: both direction folders
-    name their traces alike, so the B files arrive under the A files' names.
-    The first of each name is staged; the repeat used to be thrown away and
-    reported.  Since 2026-09-29 (the boss: files mislabeled for direction
-    still load) a repeat whose direction stamp differs from its twin goes on
-    the OTHER side, so the parent folder loads as A and B, each file on the
-    side its own Direction names."""
+    """Both direction folders name their traces alike, so the B files arrive
+    under the A files' names; each file goes on the side its own Direction
+    names."""
     a_side = _unnamed(_real('a', 3))
     b_side = _unnamed(_real('b', 3))
     assert [n for n, _ in a_side] == [n for n, _ in b_side]      # one name set
     out = _drop_real(a_side, b_side)
     assert out['repeated'] == []                      # nothing left behind
-    assert out['repeats_placed'] == ['0001_1550.sor', '0002_1550.sor',
-                                     '0003_1550.sor']
     assert out['added'] == 'AB' and out['a_count'] == 3 and out['b_count'] == 3
     by_name = dict(a_side)
     got_a = _staged({'dir_a': out['dir_a'], 'dir_b': None})
@@ -536,7 +529,6 @@ def _synth(loc_a=None, loc_b=None, fill=b'\xa1', pad=40):
 def test_letterless_names_are_not_split_one_fiber_per_direction():
     """The reported case: one direction's folder, no site in the names."""
     out = _drop_real(_unnamed(_real('a', 4)))
-    assert out['split_by'] == 'unnamed'
     assert out['added'] == 'A' and out['a_count'] == 4     # whole, not 1 vs 1
     assert out['dir_b'] is None and out['b_count'] == 0
     assert out['ignored'] == []                            # nothing thrown away
@@ -564,7 +556,6 @@ def test_each_letterless_direction_folder_lands_on_its_own_side():
     assert a['added'] == 'A' and a['added_by'] == 'file'
     b = _drop_real(_unnamed(_real('b', 3)))
     assert b['added'] == 'B' and b['added_by'] == 'file'
-    assert b['split_by'] == 'unnamed'
     assert b['dir_a'] == a['dir_a']                     # the A side is untouched
     assert b['a_count'] == 3 and b['b_count'] == 3
     assert {TS.read_direction(open(os.path.join(b['dir_b'], f), 'rb').read())
@@ -730,18 +721,15 @@ def test_the_swapped_fixture_reverses_the_sites_and_keeps_the_stamp():
 
 
 def test_one_direction_with_swapped_sites_stays_on_one_side():
-    """The reported case: the A folder alone, a block of it backwards."""
+    """The reported case: the A folder alone, a block of it backwards.  Every
+    file stamps A, so every file is A."""
     out = _drop_real(_a_side_with_a_swapped_block())
     assert out['added'] == 'A' and out['added_by'] == 'file'
     assert out['a_count'] == 6 and out['a_prefix'] == 'ELMMIL'
     assert out['dir_b'] is None and out['b_count'] == 0
-    assert out['split_by'] == 'prefix'
-    assert out['sites_swapped'] == 2 and out['stamped'] == 'a'
-    # and the B folder dropped after it fills B, with all of A left on A
     b = _drop_real(_real('b', 3))
     assert b['added'] == 'B' and b['added_by'] == 'file'
     assert b['dir_a'] == out['dir_a'] and b['a_count'] == 6
-    assert b['sites_swapped'] == 0 and b['stamped'] is None
 
 
 def test_a_b_folder_with_swapped_sites_lands_whole_on_b():
@@ -750,15 +738,12 @@ def test_a_b_folder_with_swapped_sites_lands_whole_on_b():
     out = _drop_real(files[:3] + _with_sites(files[3:], loc_b, loc_a))
     assert out['added'] == 'B' and out['b_count'] == 5
     assert out['dir_a'] is None
-    assert out['sites_swapped'] == 2 and out['stamped'] == 'b'
 
 
 def test_letterless_one_direction_with_swapped_sites_is_kept_whole():
     out = _drop_real(_unnamed(_a_side_with_a_swapped_block()))
-    assert out['split_by'] == 'unnamed'
     assert out['added'] == 'A' and out['a_count'] == 6
     assert out['dir_b'] is None and out['a_prefix'] is None
-    assert out['sites_swapped'] == 2
 
 
 def test_both_directions_split_by_sites_still_split_when_stamped_both_ways():
@@ -768,22 +753,17 @@ def test_both_directions_split_by_sites_still_split_when_stamped_both_ways():
     loc_a, loc_b = TS._genparams_locations(a[0][1])
     b = _with_sites(_real('b', 3, rename=lambda n: 'ELMMIL9' + n[7:]), loc_b, loc_a)
     out = _drop_real(a, b)
-    assert out['split_by'] == 'location'
     assert out['added'] == 'AB' and out['added_by'] == 'file'
     assert out['a_count'] == 3 and out['b_count'] == 3
-    assert out['sites_swapped'] == 0
     assert sorted(os.listdir(out['dir_b'])) == sorted(n for n, _d in b)
 
 
 def test_a_name_split_stands_on_one_stamp():
-    """The stamp only overrules the site pair.  The one real span whose two
-    directions both stamp A, with one site pair both ways, is told apart by
-    its names alone, so a name split is never merged."""
+    """The one real span whose two directions both stamp A: the stamp rule
+    stands, so both load on A, the second as copy rows of the same fibres."""
     out = _drop_real(_real('a', 3), _real('a', 3, rename=lambda n: 'ZZZZZZ' + n[6:]))
-    assert out['split_by'] == 'prefix'
-    assert out['added'] == 'AB'
-    assert out['a_count'] == 3 and out['b_count'] == 3
-    assert out['sites_swapped'] == 0
+    assert out['added'] == 'A' and out['b_count'] == 0 and out['a_count'] == 6
+    assert len([n for n, _ in TS.list_fibers(out['dir_a']) if n >= TS.COPY_BASE]) == 3
 
 
 def test_the_readout_says_when_swapped_sites_were_kept_together():
@@ -816,10 +796,7 @@ def test_one_direction_under_three_spellings_stays_on_one_side():
     assert out['added'] == 'A' and out['added_by'] == 'file'
     assert out['a_count'] == 6 and out['a_prefix'] == 'ELMMIL'
     assert out['dir_b'] is None and out['b_count'] == 0
-    assert out['ignored'] == []
-    assert out['name_variants'] == [{'keys': ['ELMMIL', 'ELMMILLS', 'ELMMILSH'],
-                                     'as': 'ELMMIL', 'stamped': 'a'}]
-    # and the B folder after it fills B, with all of A left on A
+    assert out['ignored'] == [] and out['touched'] == ['a']
     b = _drop_real(_real('b', 3))
     assert b['added'] == 'B' and b['dir_a'] == out['dir_a'] and b['a_count'] == 6
     assert b['a_prefix'] == 'ELMMIL'               # not relabelled 'ELMMILLS'
@@ -829,8 +806,7 @@ def test_two_spellings_fold_under_the_letters_they_share():
     files = _real('a', 4)
     out = _drop_real(_spelt(files[:2], 'ELMMILLS'), _spelt(files[2:], 'ELMMILSH'))
     assert out['added'] == 'A' and out['a_count'] == 4
-    assert out['a_prefix'] == 'ELMMIL'
-    assert out['name_variants'][0]['keys'] == ['ELMMILLS', 'ELMMILSH']
+    assert out['a_prefix'] == 'ELMMIL' and out['touched'] == ['a']
 
 
 def test_spellings_of_both_directions_dropped_together_split_a_and_b():
@@ -853,11 +829,11 @@ def test_a_shared_name_with_two_stamps_is_still_two_directions():
 
 
 def test_three_shared_letters_are_not_one_name():
-    """Two spans shot from one site share its code and nothing else.  With one
-    stamp on both, the names are all that tells them apart."""
+    """Two names that share only a site code, both stamped A over the same
+    fibres: all on A, the second as copy rows."""
     out = _drop_real(_real('a', 3), _spelt(_real('a', 3), 'ELMXYZ'))
-    assert out['split_by'] == 'prefix' and out['added'] == 'AB'
-    assert out['name_variants'] == []
+    assert out['added'] == 'A' and out['b_count'] == 0
+    assert len([n for n, _ in TS.list_fibers(out['dir_a']) if n >= TS.COPY_BASE]) == 3
 
 
 def test_names_without_a_stamp_are_not_folded_but_one_run_of_fibres_stays_whole():
@@ -874,11 +850,13 @@ def test_names_without_a_stamp_are_not_folded_but_one_run_of_fibres_stays_whole(
 
 
 def test_an_explicit_direction_token_is_never_folded():
+    """An AB / BA token in a name says nothing over the file's own stamp
+    (Robert 2026-10-02: the stamp rule stands): all four stamp A, so all four
+    load on A, and the tech moves the BA pair with right-click > Direction."""
     a = _real('a', 4)
     out = _drop_real([('ELMMIL%04d_AB_1550.sor' % (i + 1), d) for i, (_n, d) in enumerate(a[:2])],
                      [('ELMMIL%04d_BA_1550.sor' % (i + 3), d) for i, (_n, d) in enumerate(a[2:])])
-    assert out['a_prefix'] == 'ELMMIL-AB' and out['b_prefix'] == 'ELMMIL-BA'
-    assert out['name_variants'] == []
+    assert out['added'] == 'A' and out['a_count'] == 4 and out['dir_b'] is None
 
 
 def test_a_fold_is_never_named_after_a_group_it_left_out():

@@ -60,7 +60,8 @@ def rules_from_source(src=None):
             r"if \(gainerHidden\(evLossRaw\(e\)\)\) \{[^\n]*\n\s*cells\.push\(`<td data-col=\"\$\{i\}\" data-km=\"\$\{e\.dist_km\}\"></td>`",
             grid) is not None,
         'fr_leg_unjudged': "if (!legOk(leg) || gainerHidden(leg.loss)) return false;" in fr
-            and "return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, legWarnFor(isRefl(x)));" in fr,
+            and ("return legOk(leg) && !gainerHidden(leg.loss)\n"
+                 "      && clearsAt(leg.loss, x.row.solo ? soloWarn(x) : legWarnFor(isRefl(x)));") in fr,
         'fr_leg_blanks': "+ (gainerHidden(leg.loss) ? `<td${at}></td>`" in fr,
         'suite_leg_unjudged': "if (!leg || gainerHidden(leg.loss)) return false;" in suite
             and "return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, legWarnFor(!!x.reflective));" in suite

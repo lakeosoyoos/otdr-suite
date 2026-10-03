@@ -51,11 +51,14 @@ def _const(name):
 def test_b_alone_zero_comes_from_b():
     fn = _fn("axisZeroKm")
     assert "'launch_b_km'" in fn
-    assert "gSpanDecl.b" in fn
+    # span 1's declaration (another span's own when only it is on the chart)
+    assert "const decl = span > 1 ? spanDeclOf(span) : gSpanDecl;" in fn
+    assert "const B = decl && decl.b;" in fn
     # the reel follows the folder the trace came from, not its drawn direction
-    assert "bT.src === 'a'" in fn
+    # (the source id's side letter: 'a', 'a2', 'ar2')
+    assert "bT.src[0] === 'a'" in fn
     # the B branch runs before A's declared start or A's reel is looked at
-    assert fn.index("'launch_b_km'") < fn.index("return gLaunchA")
+    assert fn.index("'launch_b_km'") < fn.index("return span > 1 ? launchAOf(span) : gLaunchA")
 
 
 def test_every_printed_distance_reads_the_one_zero():

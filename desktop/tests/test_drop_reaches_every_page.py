@@ -52,14 +52,15 @@ def _held(at, label):
 
 
 def _drop_three_and_three():
-    """What the Viewer page does when the tech drops both directions: they
-    are ADDED to the folders the boxes hold (Robert 2026-10-02), which the
-    drop copies into its own staging -- the tech's folders are not written."""
+    """What the Viewer page does when the tech has removed every trace and
+    drops both directions of another cable: span 1 is now the dropped one.
+    (Dropped beside a loaded span, another cable is added as span 2, a
+    Viewer-only span; the hub's tools stay on span 1, Robert 2026-10-02.)"""
     tok = TS.drop_begin()
     for name in ('ROMTUC001_1550.sor', 'ROMTUC002_1550.sor', 'ROMTUC003_1550.sor',
                  'TUCROM001_1550.sor', 'TUCROM002_1550.sor', 'TUCROM003_1550.sor'):
         assert TS.drop_file(tok, name, make_sor(ior=1.47))['files'] == 1
-    out = TS.drop_end(tok)
+    out = TS.drop_end(tok, emptied='ab')
     assert out['added'] == 'AB' and len(out['new_keys']) == 6
     assert out['dir_a'] != X_A and out['dir_b'] != X_B
     return out['dir_a'], out['dir_b']

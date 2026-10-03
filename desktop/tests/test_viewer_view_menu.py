@@ -128,13 +128,25 @@ def test_the_view_switches_sit_behind_a_gear():
     assert 'z-index: 20;' in head
 
 
+
+def test_the_button_says_settings_not_a_gear():
+    """Robert 2026-10-02: the gear was too small to see; the button reads
+    Settings and opens the same menu."""
+    btn = SRC.split('<button id="evt-view-btn"', 1)[1].split("</button>", 1)[0]
+    assert ">Settings<span id=\"evt-view-on\"></span>" in btn
+    assert "&#9881;" not in btn
+    assert 'aria-haspopup="true"' in btn
+    assert ("document.getElementById('evt-view-btn').addEventListener('click'" in SRC)
+    assert "setViewMenu(document.getElementById('evt-view-menu').hidden);" in SRC
+
 def test_averages_only_keeps_each_fibres_average_row():
     """Both two-direction tables (FastReporter and OTDR Suite): with no cell
     filter on, each fibre keeps its Average row alone.  With one on, the
     filter's rule decides the direction rows, so a connector's failing
     direction still shows (#370) and averages-only changes nothing."""
-    rule = ("    .filter(w => (!collapse || w === 'avg' || legKept(fi, w))\n"
-            "              && (collapse || !gAvgOnly || w === 'avg')).map(w => [fi, w]));")
+    # (a file listed with no partner has no Average: its one row stays)
+    rule = ("    : ['a', 'b', 'avg'].filter(w => (!collapse || w === 'avg' || legKept(fi, w))\n"
+            "                                 && (collapse || !gAvgOnly || w === 'avg')).map(w => [fi, w]));")
     assert SRC.count(rule) == 1
     # the Suite table's twin; a one-direction table has no Average row, so
     # averages-only leaves its one row per fibre alone
