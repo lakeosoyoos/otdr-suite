@@ -96,5 +96,5 @@ def test_the_reflectance_box_is_one_number():
     assert '<span id="refl-op">Reflectance &ge;</span> <input id="set-refl" type="number"' in vw
     assert 'set-refl-lo' not in vw and 'set-refl-hi' not in vw
     sync = _fn(vw, 'syncGateUI')
-    assert "if (gReflOverride == null) box.value = String(reflFloor());" in sync
+    assert "box.value = String(reflFloor());" in sync and "box.step = '1';" in sync
     assert 'return refl >= lo;' in _fn(vw, 'reflInBand')

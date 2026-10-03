@@ -223,7 +223,7 @@ def test_the_viewer_says_so_when_the_settings_moved_after_a_splice_report():
     # A Uni report's loss gate is the Uni box's, not the settings'.
     TS.set_thresholds({"REBURN_THRESHOLD": 0.160}, source="uni")
     assert not TS.settings_differ_from_report()
-    assert "settings_differ_from_report()" in SRC.split("def page_viewer(fec=False):", 1)[1]
+    assert "settings_differ_from_report()" in SRC.split("def page_viewer():", 1)[1]
 
 
 def test_the_viewer_s_own_report_runs_with_the_settings(monkeypatch, tmp_path):

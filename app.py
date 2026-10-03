@@ -2611,8 +2611,10 @@ def _handle_nav():
 
     # Splice Report FEC row click: ?nav=viewerfec&fiber=&km=&dir=a|b&fa=&fb=
     # (the run's resolved folders) &ra=&rb= (what the FEC page's boxes held).
-    # Viewer FEC reads the left panel's folders, so they point at the run's;
-    # the tech's own come back on leaving (pa/pb -> _panel_restore).
+    # It opens the Viewer, which knows FEC shots by itself (Robert 2026-10-02:
+    # no separate Viewer FEC).  The Viewer reads the left panel's folders, so
+    # they point at the run's; the tech's own come back on leaving (pa/pb ->
+    # _panel_restore).
     if qp.get('nav') == 'viewerfec' and qp.get('fiber'):
         _fa, _fb = qp.get('fa') or '', qp.get('fb') or ''
         st.session_state['view_dir_a_input'] = _fa if os.path.isdir(_fa) else ''
@@ -2627,7 +2629,7 @@ def _handle_nav():
             'dir': qp.get('dir') if qp.get('dir') in ('a', 'b') else 'a'}
         st.session_state['viewer_jump_announce'] = True
         st.session_state['came_from_fec'] = True
-        st.session_state['nav_radio'] = 'Viewer FEC'   # BEFORE the radio widget
+        st.session_state['nav_radio'] = 'Viewer'   # BEFORE the radio widget
         st.query_params.clear()
         return
     if qp.get('nav') == 'viewer' and qp.get('fiber'):
@@ -3636,7 +3638,7 @@ def _drop_report(which):
 def _forget_fec_report():
     """Take the Splice Report FEC report off the page and delete its saved
     copy, which is filed under the pair of folders it ran on: the report's
-    own record of them, the pair a Viewer FEC row link brought into this
+    own record of them, the pair an FEC row link to the Viewer brought into this
     session, and the boxes when they hold plain folders (a .zip's folder is
     only known once the page resolves it).  Never raises."""
     ss = st.session_state
@@ -4112,7 +4114,7 @@ with st.sidebar:
     # folder the Viewer had to read: the tech's own A and B come back.  No
     # report is dropped, it is the same span.
     if ('_panel_restore' in st.session_state
-            and st.session_state.get('nav_radio') not in ('Viewer', 'Viewer FEC')):
+            and st.session_state.get('nav_radio') != 'Viewer'):
         (st.session_state['view_dir_a_input'],
          st.session_state['view_dir_b_input']) = st.session_state.pop('_panel_restore')
         st.session_state.pop('_ss_nav_folder', None)
@@ -4165,7 +4167,7 @@ with st.sidebar:
     # 2026-09-28): the regular Suite lists the four trace tools.  The App's
     # launcher exports OTDR_SUITE_EDITION; this one does not.  The two pages
     # and their files stay in the tree, so an update's file set is unchanged.
-    _tools = ['Viewer', 'Splice Report', 'Splice Report FEC', 'Viewer FEC',
+    _tools = ['Viewer', 'Splice Report', 'Splice Report FEC',
               'Unidirectional', 'Secret Sauce']
     if os.environ.get('OTDR_SUITE_EDITION'):
         _tools += ['FQA Builder', 'Field Capture']
@@ -4564,9 +4566,10 @@ def _same_folder(p, q):
                 == os.path.normcase(os.path.realpath(q)))
 
 
-def page_viewer(fec=False):
-    """The Trace Viewer.  fec=True is the Viewer FEC tool (Robert 2026-10-01):
-    the same Viewer, opened in FEC mode (?fec=1), which it cannot leave."""
+def page_viewer():
+    """The Trace Viewer.  FEC shots load here too: the Viewer tells them from
+    the files and draws each trace as shot (Robert 2026-10-02, "not have a
+    separate viewer")."""
     port = ensure_trace_server()
 
     with st.sidebar:
@@ -4624,7 +4627,7 @@ def page_viewer(fec=False):
             st.session_state['nav_radio'] = 'Splice Report'
         st.button('← Back to Splice Report', key='view_back_sr',
                   on_click=_back_to_sr)
-    if fec and st.session_state.get('came_from_fec'):
+    if st.session_state.get('came_from_fec'):
         def _back_to_fec():
             st.session_state['came_from_fec'] = False
             st.session_state['nav_radio'] = 'Splice Report FEC'
@@ -4639,21 +4642,11 @@ def page_viewer(fec=False):
 
     # No "Trace Viewer" heading: the sidebar already says where you are
     # (Robert 2026-10-01), and it pushed the Viewer further down the page.
-    # The Viewer FEC page keeps its heading, at half the old size (Robert
-    # 2026-10-01: 0.75rem, the #### was 1.5rem), and its line on FEC mode.
-    if fec:
-        st.markdown('<p style="font-size:0.75rem;font-weight:600;margin:0">'
-                    'Viewer FEC</p>', unsafe_allow_html=True)
-        st.caption('Facility entrance (FEC) shots: the short traces from '
-                   'each end. A and B are drawn as shot and never paired; '
-                   'each trace’s panel connector is graded at the customer '
-                   'profile’s FEC gates, as Splice Report FEC does.')
     # Pop the Viewer into its own window from HERE too — a tech who came to
     # the Viewer page first (rather than clicking a report cell) had no way
     # to detach it.  Same window NAME as the report grids' button, so the two
     # entry points share ONE window: opening from here and then clicking
     # report cells drives this same window instead of spawning a second.
-    # From Viewer FEC it opens in FEC mode (?fec=1).
     _pop_doc = """
 <style>body{margin:0;padding:3px 0}</style>
 <button id="vpop2" style="padding:4px 10px;border:1px solid #c9d5e1;border-radius:4px;
@@ -4664,11 +4657,11 @@ def page_viewer(fec=False):
 <script>
 try { window.top.name = "otdr_hub"; } catch (e) {}
 document.getElementById("vpop2").addEventListener("click", function(){
-  var w = window.open("__ORIGIN__/__POPQ__", "otdr_viewer", "width=1400,height=900");
+  var w = window.open("__ORIGIN__/", "otdr_viewer", "width=1400,height=900");
   if (w) w.focus();
 });
 </script>
-""".replace('__ORIGIN__', f'http://127.0.0.1:{port}').replace('__POPQ__', '?fec=1' if fec else '')
+""".replace('__ORIGIN__', f'http://127.0.0.1:{port}')
     # The OTDR Settings, same box as the report pages and sharing their
     # values (Robert 2026-09-28).  With no report behind it the Viewer judges
     # pass/fail at these and runs its own report with them; a report on
@@ -4720,8 +4713,6 @@ document.getElementById("vpop2").addEventListener("click", function(){
         _b = abs(hash(_key)) % 100000
     st.session_state['_viewer_b'] = _b
     q = {'b': _b}
-    if fec:
-        q['fec'] = 1
     # PERSISTENT deep-link target (read, NOT consumed).  Keeping the last
     # clicked/loaded fiber in the iframe URL makes the src STABLE across
     # Streamlit reruns.  Consuming it with .pop made the very next rerun rebuild
@@ -9539,8 +9530,8 @@ def fec_cmd(dir_a, dir_b, out_xlsx, overrides=None):
 def _fec_resync(key):
     """Re-assign a box's value in THIS run, before it is drawn.  Streamlit
     sends a keyed box's value to the browser only when it was set during the
-    run that draws it; a value set on an earlier run (a Viewer FEC link sets
-    the folders on the Viewer FEC run, a carried save folder lands on the
+    run that draws it; a value set on an earlier run (an FEC row link sets
+    the folders on the Viewer's run, a carried save folder lands on the
     first run) is used by the page but shown as an EMPTY box."""
     if key in st.session_state:
         st.session_state[key] = st.session_state[key]
@@ -9596,7 +9587,7 @@ def _fec_same_gates(ran, now):
 
 
 def _fec_rows_html(rows, dir_a, dir_b):
-    """The FEC fails as a table whose rows open Viewer FEC on that fiber,
+    """The FEC fails as a table whose rows open the Viewer on that fiber,
     from its own end, zoomed to the panel connector.  Every cell of a row is
     the same link (Robert 2026-10-01: a click on a row jumps), so the whole
     row is the target, not just the fiber number."""
@@ -9626,7 +9617,7 @@ def _fec_rows_html(rows, dir_a, dir_b):
         comb = '; '.join(f"{c['loss']:.3f} @ {c['km']:.3f} km"
                          for c in r.get('combined') or [])
         link = (f"<a href='{_h.escape(href, quote=True)}' target='_self' "
-                f"title='Open F{r['fiber']} in Viewer FEC'")
+                f"title='Open F{r['fiber']} in the Viewer'")
         cells = [f"<b>{_h.escape(r['fiber_id'])}</b>",
                  r['failing_at'], r['distance'], r['side'],
                  'Reflectance' if r['kind'] == 'refl' else 'Loss',
@@ -9738,7 +9729,7 @@ def page_splice_report_fec():
         if _ran_boxes:
             manifest['_boxes'] = _ran_boxes
         st.session_state['fec_result'] = manifest
-        # A row click into Viewer FEC is a URL nav that wipes session_state:
+        # A row click into the Viewer is a URL nav that wipes session_state:
         # this is how the page shows the report again on the way back.
         try:
             _paths = [_hub_cache_path('fec_result_cache.json', dir_a, dir_b)]
@@ -9799,7 +9790,7 @@ def page_splice_report_fec():
                        'file(s), not graded.')
     rows = [r for s in sides for r in s.get('rows') or []]
     if rows:
-        st.caption('Click a row to open that fiber in Viewer FEC.')
+        st.caption('Click a row to open that fiber in the Viewer.')
         st.markdown(_fec_rows_html(rows, dir_a, dir_b), unsafe_allow_html=True)
     else:
         st.info('No fiber fails.')
@@ -9860,8 +9851,6 @@ try:
         page_splice_report()
     elif page == 'Splice Report FEC':
         page_splice_report_fec()
-    elif page == 'Viewer FEC':
-        page_viewer(fec=True)
     elif page == 'Unidirectional':
         page_unidirectional()
     elif page == 'FQA Builder':

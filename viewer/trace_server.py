@@ -1785,6 +1785,10 @@ class Handler(BaseHTTPRequestHandler):
             # there is nothing to mirror A on to and the viewer says so
             # instead of mirroring about the acquisition range.
             'cable_end_known_b': frame_facts(CONFIG['dir_b']).get('cable_end_known'),
+            # The same for A.  Both sides short shots (or the one side loaded)
+            # is a facility-entrance (FEC) job: the Viewer draws each trace
+            # as shot and never pairs them (viewer.html fecShots).
+            'cable_end_known_a': frame_facts(CONFIG['dir_a']).get('cable_end_known'),
             # The tech's own span, when they have set one.  It OUTRANKS both
             # the measured frame and the inferred reels — it is the only one of
             # the three that somebody actually knows to be true.
@@ -3909,6 +3913,11 @@ def _run_uni_table(key):
         if man.get('ok') and man.get('viewer_table'):
             with open(man['viewer_table'], encoding='utf-8') as fh:
                 result['suite_table'] = json.load(fh)
+            # Files the report set aside as another direction (fibre numbers
+            # shared with the box's own): suite_tables says so when the
+            # fibres asked for are among them.
+            cov = (man.get('uni') or {}).get('coverage') or {}
+            result['suite_table']['left_out'] = cov.get('dropped_signatures') or []
         else:
             result['error'] = (man.get('error')
                                or (p.stderr or '')[-400:].strip()
@@ -3940,6 +3949,18 @@ def _one_direction_table(direction):
     if not isinstance(hit, dict):
         return None, True, None
     return hit.get('suite_table'), False, hit.get('error')
+
+
+def _range_nums(text):
+    """'3, 5-7' -> {3, 5, 6, 7} (the engine's fiber ranges)."""
+    out = set()
+    for part in str(text or '').split(','):
+        lo, _, hi = part.strip().partition('-')
+        try:
+            out.update(range(int(lo), int(hi or lo) + 1))
+        except ValueError:
+            pass
+    return out
 
 
 def suite_tables(fibers, direction=None):
@@ -3999,6 +4020,17 @@ def suite_tables(fibers, direction=None):
             out['missing'].append(f)
         else:
             out['tables'][str(f)] = _no_flags(cells) if flags_off() else cells
+    # No fibre asked for has a row and the one-direction report set them
+    # aside: say why, so the Viewer's "could not be built" names the cause.
+    left = [d for d in (table.get('left_out') or [])
+            if direction in ('a', 'b')
+            and set(map(int, fibers)) & _range_nums(d.get('fiber_ranges'))]
+    if left and not out['tables']:
+        what = '; '.join(f"{d.get('signature')} (fibers {d.get('fiber_ranges')})"
+                         for d in left)
+        out['error'] = (f"This folder holds a second direction ({what}) that "
+                        "re-uses fiber numbers, and the one-direction report "
+                        "leaves it out. Give each direction its own folder")
     return out
 
 
