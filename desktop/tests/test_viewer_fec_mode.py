@@ -306,7 +306,8 @@ def _paint_fec(switches, with_marks=False, with_nums=False, after='', res_extra=
     js = ("var gInfo=null, gGridGoTo=null, gTableExport=null, gPickKey=null, gDrawerMarks=[];"
           " const FR_ROW_H=22; var window={getSelection:()=>''};\n"
           "function draw(){} function zoomToKm(){} function pinnedFootH(){return 0}"
-          " function setReadout(){} function pickRow(){} function syncGateUI(){}\n"
+          " function setReadout(){} function pickRow(){} function syncGateUI(){}"
+          " function noteTableVerdict(){}\n"
           "var MENUS=[]; function showSpanMenu(x,y,dir,km,fiber,src){MENUS.push([dir,km,fiber,src]);}"
           " function showDirChooser(x,y,picks){MENUS.push(picks);}\n"
           "var OUT='', LIS={}, AFTER=null, QS=() => null;\n"
@@ -327,7 +328,7 @@ def _paint_fec(switches, with_marks=False, with_nums=False, after='', res_extra=
           + line(r"let gFecGates = null;.*") + line(r"let gFecBase = null;.*")
           + line(r"const gFecOverride = .*") + fn('fecOverridden')
           + "let gTableKm = null;\n" + fn('tableKmKey') + fn('tableMarkReset')
-          + fn('tableMark') + fn('inTable')
+          + fn('tableColumnNumber') + fn('tableMark') + fn('inTable')
           + fn('isPicked') + fn('fecGateText') + fn('showColumnMenu') + fn('wireHeaderMenu')
           + fn('paintFecGrid')
           + ''.join(f"{k} = {json.dumps(v)};\n" for k, v in switches.items())

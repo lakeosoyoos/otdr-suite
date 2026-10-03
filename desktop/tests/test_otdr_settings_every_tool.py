@@ -448,8 +448,10 @@ def test_the_viewer_flags_nothing_while_flags_off_is_served():
         assert first_line(fn) == "if (flagsOff()) " + off, fn
     assert "if (e.is_end || flagsOff()) return { flag: false, why: '' };" in html
     assert "if (isBreak && !flagsOff()) cls = ' class=\"fr-brk\"';" in html
-    # every P/F mark goes blank (Suite, FR, one-direction and FEC grids)
-    assert html.count("${pfClass(fail)}") == 4 and html.count("${pfMark(fail)}") == 4
+    # every P/F mark goes blank (Suite, one-direction and FEC grids; the FR
+    # layout's sits on the Average row, for the whole fibre)
+    assert html.count("${pfClass(fail)}") == 3 and html.count("${pfMark(fail)}") == 3
+    assert html.count("${pfClass(fibreFails(fi))}") == 1 and html.count("${pfMark(fibreFails(fi))}") == 1
     assert "const fecHi = x => (x && !flagsOff()) ? 'fr-hi' : '';" in html
     assert "'fr-pf-fail' : 'fr-pf-pass'}\" title=" not in html
     ts = (REPO_ROOT / "viewer" / "trace_server.py").read_text(encoding="utf-8")

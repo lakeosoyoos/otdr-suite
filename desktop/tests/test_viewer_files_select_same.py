@@ -21,12 +21,9 @@ What was seen on FR and is held here:
 * Multiple Option Selection ANDs the ticks against the right-clicked file,
   and remembers them.
 
-A file's own verdict (fileFails) follows the table row the file lands in:
-a file whose fibre has its other direction too sits on an A->B or B->A row
-of the two-direction table (the report's single-direction gates, the
-one-direction connector gate, the mid-span reflectance rule); a file with no
-partner sits in the one-direction table, which grades every loss at the
-gate the report grades that view by.
+A file's verdict is the event table's (Robert 2026-10-02: "P/F should
+always [be the] event table"; pinned in test_viewer_files_pf_follows_table.py):
+a file no table has judged has none, and never matches on Pass/Fail.
 
 The server half: every trace now says when it was shot (acq_time, from
 FxdParams), and /api/traces?facts=1 sends a whole list's headers and events
@@ -125,51 +122,6 @@ def test_facts_1_sends_the_headers_and_events_without_the_samples(span_a):
 
 _CASES = r"""
 var out = {};
-// the gates the file verdict reads, at the Viewer's own defaults
-var gInfo = { launch_a_km: 1.0, launch_b_km: 0.0 };
-var gThresholds = { reburn: 0.160, single_dir: 0.200, connector: 0.500,
-                    connector_uni: 0.649, refl_floor: -45.0,
-                    dead_km: 3.0, dead_frac: 0.25 };
-var OFF = false;
-var gReflOverride = null;
-function flagsOff() { return OFF; }
-function activeGateDb() { return gThresholds.reburn; }
-function E(km, loss, refl, kind) {
-  return { dist_km: km, splice_loss: loss, reflection: refl,
-           is_reflective: kind === 'c' || kind === 'end', is_end: kind === 'end',
-           time_of_travel: kind === 'launch' ? 0 : 1 };
-}
-var endAt = E(41.0, null, -30, 'end');
-// a file on a two-direction table's A->B row (paired)
-out.clean       = fileFails([E(1.0, null, -55, 'launch'), E(10, 0.19, 0, 's'), endAt], 'a', true);
-out.splice      = fileFails([E(1.0, null, -55, 'launch'), E(10, 0.20, 0, 's'), endAt], 'a', true);
-out.connector   = fileFails([E(20, 0.70, -60, 'c'), endAt], 'a', true);
-out.conn_ok     = fileFails([E(20, 0.60, -60, 'c'), endAt], 'a', true);
-out.refl        = fileFails([E(20, 0.10, -40, 'c'), endAt], 'a', true);
-out.refl_dead   = fileFails([E(2.0, 0.10, -40, 'c'), endAt], 'a', true);     // inside the dead zone
-out.launch_only = fileFails([E(1.0, 9.0, -20, 'launch'), endAt], 'a', true);
-out.end_only    = fileFails([E(41.0, 9.0, -20, 'end')], 'a', true);
-// a file with no partner, in the one-direction table: every loss at its gate
-out.solo_splice = fileFails([E(10, 0.17, 0, 's'), endAt], 'a', false);      // 0.17 >= 0.160
-out.solo_clean  = fileFails([E(10, 0.15, 0, 's'), endAt], 'a', false);
-out.solo_conn   = fileFails([E(20, 0.30, -60, 'c'), endAt], 'a', false);    // connectors too
-out.solo_refl   = fileFails([E(20, 0.10, -40, 'c'), endAt], 'a', false);    // no reflectance rule there
-out.solo_ends   = fileFails([E(1.0, 9.0, -20, 'launch'), E(41.0, 9.0, -20, 'end')], 'a', false);
-// a Refl Band typed in the Viewer is the rule instead of the report's
-out.refl_strong      = fileFails([E(20, 0.10, -20, 'c'), endAt], 'a', true);   // no ceiling
-gReflOverride = -60;                       // typed: the number alone
-out.refl_typed_ceil  = fileFails([E(20, 0.10, -40, 'c'), endAt], 'a', true);
-gReflOverride = -50;
-out.refl_typed_floor = fileFails([E(20, 0.10, -47, 'c'), endAt], 'a', true);   // under the report's -45
-out.refl_typed_under = fileFails([E(20, 0.10, -55, 'c'), endAt], 'a', true);   // under the typed -50
-gReflOverride = 0;                         // 0 = the reflectance rule off
-out.refl_typed_off   = fileFails([E(20, 0.10, -40, 'c'), endAt], 'a', true);
-gReflOverride = null;
-out.refl_report      = fileFails([E(20, 0.10, -47, 'c'), endAt], 'a', true);
-OFF = true;
-out.flags_off   = fileFails([E(10, 0.90, 0, 's'), endAt], 'a', true);
-out.flags_off_1 = fileFails([E(10, 0.90, 0, 's'), endAt], 'a', false);
-OFF = false;
 // Select Same / Select By on plain traits
 var K = ['a-1', 'a-2', 'a-3', 'b-1', 'b-2', 'b-3'];
 var TR = {
@@ -198,49 +150,13 @@ print('OUT ' + JSON.stringify(out));
 @pytest.fixture(scope='module')
 def rules(tmp_path_factory):
     funcs = '\n'.join(_js_func(n) for n in
-                      ('clearsAt', 'clearsGate', 'gateFor', 'reflFails', 'reflFloor', 'reflInBand', 'fileFails', 'fileSameKeys', 'fileDay'))
+                      ('fileSameKeys', 'fileDay'))
     path = tmp_path_factory.mktemp('select_same') / 'rules.js'
     path.write_text(COPY_HELPERS_JS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
     out = r.stdout + r.stderr
     assert r.returncode == 0 and 'OUT ' in out, out[-2000:]
     return json.loads(out.split('OUT ', 1)[1].strip())
-
-
-@needs_jsc
-def test_a_paired_files_verdict_is_its_direction_row_at_the_single_direction_gates(rules):
-    assert rules['clean'] is False
-    assert rules['splice'] is True                  # 0.200 at a 0.200 gate
-    assert rules['connector'] is True               # over the one-direction connector gate
-    assert rules['conn_ok'] is False
-    assert rules['refl'] is True                    # a mid-span reflection over the floor
-    assert rules['refl_dead'] is False              # the same one inside the dead zone
-    # no ceiling: a strong mid-span reflection is flagged too
-    assert rules['refl_strong'] is True
-    # the Reflectance box, typed: anything at or above it is flagged, no ceiling
-    # (Robert 2026-10-02: box -80, a -75 reflection is flagged)
-    assert rules['refl_typed_ceil'] is True
-    assert rules['refl_typed_floor'] is True
-    assert rules['refl_typed_under'] is False
-    assert rules['refl_typed_off'] is False
-    assert rules['refl_report'] is False            # -47 is under the report's -45 floor
-    assert rules['launch_only'] is False            # the launch level is never judged
-    assert rules['end_only'] is False               # nor the far end
-    assert rules['flags_off'] is False              # no Settings box, nothing graded
-    assert rules['flags_off_1'] is False
-
-
-@needs_jsc
-def test_a_file_with_no_partner_is_graded_as_the_one_direction_table_grades_it(rules):
-    """The one-direction table grades every loss, connectors included, at
-    the report's gate for that view (here the bidirectional 0.160), with no
-    reflectance rule.  The review caught the FILES column calling a 0.17 dB
-    splice a pass that the table beside it called a fail."""
-    assert rules['solo_splice'] is True
-    assert rules['solo_clean'] is False
-    assert rules['solo_conn'] is True
-    assert rules['solo_refl'] is False
-    assert rules['solo_ends'] is False
 
 
 @needs_jsc
@@ -281,10 +197,10 @@ def test_select_same_replaces_the_selection_through_the_one_load_path():
     assert 'new Set([...gSelectedFiles, refKey].map(k => realFiber(splitFileKey(k)[1])))' in body
     # one read of the list at a time: the one in flight, then the rest
     assert body.index('if (gFactsLoading) await gFactsLoading;') < body.index('await ensureFileFacts(true);')
-    assert 'want = fileSameKeys(keys, k => fileTraits(k, paired), ref, kinds);' in body
-    # a file is graded by the table row it lands in
-    assert 'pf: fileFails(f.events, dir, paired.has(key))' in _body('fileTraits')
-    assert 'if (fiberPairNote(r, effDir).ok) fiberFileKeys(r).forEach(k => out.add(k));' in _body('pairedFileKeys')
+    assert 'want = fileSameKeys(keys, fileTraits, ref, kinds);' in body
+    # a file's Pass/Fail is the event table's
+    assert 'pf: tableFileFails(key)' in _body('fileTraits')
+    assert 'function fileFails(' not in SRC
 
 
 def test_the_list_is_read_once_without_its_samples():
