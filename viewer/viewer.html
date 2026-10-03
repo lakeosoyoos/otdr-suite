@@ -905,6 +905,8 @@
           <input id="set-avg-only" type="checkbox"> Show Averages Only</label>
         <label title="Untick to blank every gainer: a single-direction reading with a negative loss (FastReporter's 'Positive').  A hidden gainer is not judged, so it cannot fail its row.  The bidirectional Average is always shown.">
           <input id="set-gainers" type="checkbox" checked> Show Gainers</label>
+        <label id="fec-comb-lab" style="display:none" title="FEC shots: each trace's panel connector plus the events within the combine reach behind it, added up, as Splice Report FEC prints them.  The Combined Loss is red past the customer profile's FEC loss gate.">
+          <input id="set-fec-combined" type="checkbox" checked> Show Combined Column</label>
         <label title="Label every event of the table on the chart: the A / B losses, the Splice / end tags and their bands.  Off, the chart shows each event's line and number only.">
           <input id="set-event-labels" type="checkbox"> Show Event Labels</label>
         <label title="Every event keeps its line and number on the chart; only the failed events also get their A / B losses and tag.">
@@ -1128,14 +1130,63 @@ function effDir(src, fiber) {
 // opens a single direction; mirroring it about a reel origin with no A side
 // put it backward and ran its event table from the far end.
 let gHaveA = false;                // set in refreshMirrorFrame (renderChips)
-// FEC mode (Robert 2026-10-01): facility-entrance shots are short traces from
-// EACH END of a span, so A and B never see the same glass.  Nothing is
-// mirrored or paired: every trace is drawn the way it was shot, and the event
-// table grades each one's panel connector on its own (see renderFecGrid).
-// Only the hub's Viewer FEC tool turns it on, with a ?fec=1 address; the
-// Viewer tool has no switch for it (Robert 2026-10-01).
+// FEC mode: facility-entrance shots are short traces from EACH END of a
+// span, so A and B never see the same glass.  Nothing is mirrored or paired:
+// every trace is drawn the way it was shot, under the one-direction table,
+// as FastReporter shows them.  The Viewer tells FEC shots from the files
+// themselves (fecShots, set in loadInfo); there is no separate Viewer FEC
+// tool and no switch (Robert 2026-10-02: "load FECs in Viewer and not have a
+// separate viewer", "auto only").
 let gFecMode = false;
-try { gFecMode = new URLSearchParams(location.search).get('fec') === '1'; } catch (e) {}
+// FEC shots: every folder loaded is a short shot, no end-of-fiber event in
+// its traces (the server's frame_facts cable_end_known), so the cable's far
+// end is in no file and the two ends cannot be put on one frame.  A full
+// span (or a broken fiber: its break is an end event) knows its end.  One
+// side short and the other full stays a span, with the short-shot warning.
+function fecShots(info) {
+  const nA = (info.fibers_a || []).length, nB = (info.fibers_b || []).length;
+  if (!nA && !nB) return false;
+  return (!nA || info.cable_end_known_a === false) && (!nB || info.cable_end_known_b === false);
+}
+// The FEC table with the Combined With column and the FEC gates (renderFecGrid)
+// is parked: Robert 2026-10-02 picked "just FR layout for now".  true brings
+// it back in FEC mode, gates in the boxes and all.
+const FEC_COMBINED_TABLE = false;
+function fecTable() { return gFecMode && FEC_COMBINED_TABLE; }
+// The Combined column on FR's table instead (Robert 2026-10-02, "put the
+// combined column back in and have it on/off from a drop down accessible in
+// the gear"): the gear's Show Combined Column, on by default, shown only
+// while FEC shots are loaded.  Remembered like the gear's other items.
+let gFecCombined = true;
+try { gFecCombined = localStorage.getItem('otdr_viewer_fec_combined') !== '0'; } catch (e) {}
+let gFecComb = { sig: null, res: null, seq: 0 };
+// The engine's FEC grades for these traces (/api/fec_table), or
+// {pending: true} while they are being read; the table is laid out again
+// when they land.  A copy (a second file of a fiber, see realFiber) is not
+// the folder's file, so it is not graded.
+function fecCombinedFor(traces) {
+  if (!gFecCombined) return null;
+  const fibers = [...new Set(traces.filter(t => realFiber(t.fiber) === t.fiber).map(t => t.fiber))]
+    .sort((a, b) => a - b);
+  const sig = [fibers.join(','), gInfo && gInfo.dir_a_name, gInfo && gInfo.dir_b_name,
+               JSON.stringify((gInfo && gInfo.fec_gates) || null)].join('|');
+  if (gFecComb.sig === sig && gFecComb.res) return gFecComb.res;
+  if (gFecComb.sig === sig) return { pending: true };   // already asked
+  const seq = ++gFecComb.seq;
+  gFecComb.sig = sig;
+  gFecComb.res = null;
+  if (!fibers.length) { gFecComb.res = { grades: {} }; return gFecComb.res; }
+  const land = res => {
+    if (seq !== gFecComb.seq) return;
+    gFecComb.res = res;
+    if (gFecMode && gFecCombined) renderEventTable();
+  };
+  fetch(`/api/fec_table?fibers=${fibers.join(',')}`)
+    .then(r => r.json())
+    .then(res => land(res || {}))
+    .catch(e => land({ grades: {}, error: `combined column unavailable (${(e && e.message) || 'fetch failed'})` }));
+  return { pending: true };
+}
 function isFlipped(t) { return !gFecMode && gStacked && gHaveA && t.dir === 'b'; }
 function yOffsetFor(t) { return (!gFecMode && gStacked && gHaveA && t.dir === 'b') ? -gStackSpacingDb : 0; }
 
@@ -2362,7 +2413,11 @@ async function loadInfo() {
     // Report's own in OTDR Mode, FastReporter's in FR Mode), so a new mode
     // lays it out again; before, it kept the old layout until Clear All.
     gAnalysisMode = gInfo.analysis_mode === 'fr' ? 'fr' : 'suite';
-    const modeMoved = gAnalysisMode !== wasMode;
+    // FEC shots in, or a span in after them: the frame and the table change
+    const wasFec = gFecMode;
+    gFecMode = fecShots(gInfo);
+    const modeMoved = gAnalysisMode !== wasMode || gFecMode !== wasFec;
+    if (gFecMode !== wasFec) refreshMirrorFrame();
     gLaunchA = Number(gInfo.launch_a_km) || 0;   // null (no reel) → 0
     gSpanDecl = gInfo.span_decl || { a: null, b: null };
     if (gInfo.thresholds) gThresholds = gInfo.thresholds;
@@ -2410,7 +2465,18 @@ async function loadInfo() {
 // Put the seeded gate in the box and name its source beside it.  Called
 // after /api/list and again whenever the source report changes.
 function syncGateUI() {
-  if (gFecMode) { syncFecGateUI(); return; }
+  if (fecTable()) { syncFecGateUI(); return; }
+  // The FEC table's gates leave the boxes when a span comes in after it
+  const hi = document.getElementById('set-refl-hi');
+  if (hi && hi.disabled) {
+    hi.disabled = false;
+    hi.title = '';
+    hi.value = gViewerSettings.reflHi;
+    const lo = document.getElementById('set-refl-lo');
+    if (lo) { lo.value = gViewerSettings.reflLo; lo.step = '1'; }
+    const op = document.getElementById('loss-op');
+    if (op) op.textContent = 'Loss ≥';
+  }
   const el = document.getElementById('set-loss');
   // Empty, not 1e9, when the report graded no loss at all — typing a number
   // still works and is picked up as an override, the usual escape hatch.
@@ -2481,7 +2547,7 @@ document.getElementById('btn-back').addEventListener('click', () => {
 // Report of an A-only load, and of a short shot loaded by itself and drawn
 // as shot, where nothing is aligned.
 function frameWarn() {
-  if (gFecMode) return gFrameWarn;    // Viewer FEC: its note, not a warning
+  if (gFecMode) return gFrameWarn;    // FEC shots: its note, not a warning
   return gFrameWarn && gTraces.some(t => t.visible && t.src === 'b' && isFlipped(t))
     ? gFrameWarn : '';
 }
@@ -6201,21 +6267,22 @@ function wireEventSettings() {
   if (lossEl) lossEl.addEventListener('change', () => {
     const v = parseFloat(lossEl.value);
     if (!Number.isFinite(v)) return;
-    if (gFecMode) { setFecGateOverride('loss', v); return; }
+    if (fecTable()) { setFecGateOverride('loss', v); return; }
     // Back to following the report when the tech types its value back in.
     gGateOverride = (Math.abs(v - reportGateDb()) < 1e-9) ? null : v;
     syncGateUI();
     renderEventTable();
   });
-  if (!gFecMode) {
-    bind('set-refl-lo', 'reflLo');
-    bind('set-refl-hi', 'reflHi');
-    return;
-  }
+  // FEC mode comes and goes with the folders loaded (fecShots), so the
+  // Refl Band's low end asks at each change whose gate it is.
+  bind('set-refl-hi', 'reflHi');
   const reflEl = document.getElementById('set-refl-lo');
   if (reflEl) reflEl.addEventListener('change', () => {
     const v = parseFloat(reflEl.value);
-    if (Number.isFinite(v)) setFecGateOverride('refl', v);
+    if (!Number.isFinite(v)) return;
+    if (fecTable()) { setFecGateOverride('refl', v); return; }
+    gViewerSettings.reflLo = v;
+    renderEventTable();
   });
 }
 
@@ -6245,11 +6312,10 @@ function pollEndVerdicts() {
   gEndPoll = poll;
 }
 function frameWarnText(nB) {
-  if (gFecMode) return '   FEC mode: each end is graded on its own; A and B are not paired.';
+  if (gFecMode) return '   FEC shots: each trace as shot; A and B are not paired.';
   return (nB && gInfo && gInfo.cable_end_known_b === false)
     ? '   ⚠ B never reaches the end of the fiber: cable length unknown, so A/B '
-      + 'cannot be aligned. Check B is the full-length shot, not the short shot. '
-      + 'For facility-entrance (FEC) shots, use the Viewer FEC tool.'
+      + 'cannot be aligned. Check B is the full-length shot, not the short shot.'
     : '';
 }
 function renderEventTable() {
@@ -6291,7 +6357,14 @@ function renderEventTable() {
   // B→A, Average), in the app's analysis mode: the Splice Report's own in
   // OTDR Suite mode, FastReporter's in FastReporter mode.  The
   // single-direction grid stands in when nothing is paired.
-  if (gFecMode && renderFecGrid(visible, host, hint)) return;
+  // FEC shots: every trace on its own, never paired (see fecShots).
+  const combLab = document.getElementById('fec-comb-lab');
+  if (combLab) combLab.style.display = gFecMode ? '' : 'none';
+  if (gFecMode) {
+    if (!(fecTable() && renderFecGrid(visible, host, hint)))
+      renderFastReporterGrid(visible, host, hint, { fec: fecCombinedFor(visible) });
+    return;
+  }
   const server = gAnalysisMode === 'suite'
     ? renderSuiteBidiGrid(visible, host, hint) : renderFrBidiGrid(visible, host, hint);
   if (!server) {
@@ -7334,10 +7407,31 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   });
   // The statistic NAMES belong on their own strip — three header rows already
   // carry group, kind and units, so a fourth would bury the data.
+  // FEC shots with the gear's Show Combined Column on: each trace's panel
+  // connector plus the events the FEC rule adds to it, from the engine's
+  // grade (fecCombinedFor), as Splice Report FEC prints them.  Last on the
+  // row, so every cell before it keeps its place.
+  const fec = opts.fec || null;
+  const NFEC = fec ? 2 : 0;
+  const fecG = ti => {
+    const t = traces[ti];
+    const g = fec && fec.grades ? (fec.grades[t.src === 'b' ? 'B' : 'A'] || {})[String(t.fiber)] : null;
+    return (g && g.found) ? g : null;
+  };
+  // the Combined Loss as printed: blank under a cell filter that drops it
+  // ("failing cells only" keeps an FEC loss fail) and as a hidden gainer
+  const fecLoss = g => (!g || gainerHidden(g.loss)
+    || (cellFilterOn() && !(gFailCellsOnly && g.fail_loss))) ? null : g.loss;
+  const fecRule = fec && fec.gates ? `FEC rule: ${fecGateText(fec.gates)}` : 'FEC rule';
+  if (NFEC) {
+    h1 += `<th colspan="2" rowspan="2" class="fr-stathdr" title="${fecRule}">Combined</th>`;
+    h3 += '<th class="fr-sub fr-stat">With</th><th class="fr-sub fr-stat">Loss<br>(dB)</th>';
+  }
   const statNameRow = '<tr class="fr-statnames">'
     + `<td colspan="${LEAD.length}"></td>`
     + cols.map((_c, i) => keepCol[i] ? `<td colspan="${i < cols.length - 1 ? 2 + NSEC : 2}"></td>` : '').join('')
     + [...STAT_EV, ...STAT_SEC].map(n => `<td colspan="3" class="fr-stat">${n}</td>`).join('')
+    + (NFEC ? `<td colspan="${NFEC}"></td>` : '')
     + '</tr>';
 
   const stats = arr => {
@@ -7419,6 +7513,21 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
                + `<td class="fr-stat">${cellText(f(mx))}</td>`
                + `<td class="fr-stat">${cellText(f(av))}</td>`);
     });
+    if (NFEC) {
+      const g = fecG(ti), v = fecLoss(g);
+      if (fec.pending) {
+        cells.push('<td class="fr-stat" title="reading the FEC grades">…</td><td class="fr-stat">…</td>');
+      } else if (!g) {
+        const why = realFiber(t.fiber) !== t.fiber ? 'a copy is not graded' : 'no panel connector found, not graded';
+        cells.push(`<td class="fr-stat" title="${why}">${cellText('---')}</td><td class="fr-stat">${cellText('---')}</td>`);
+      } else {
+        const comb = (g.combined || []).map(c => `${fmt(c.loss)} @ ${fmtDist(c.km - zeroKm, gDistUnit === 'km' ? 4 : null)}`).join('; ');
+        const hi = v != null && g.fail_loss && !flagsOff() ? ' fr-hi' : '';
+        cells.push(`<td class="fr-stat" data-fec="comb">${v == null ? '' : (comb || '---')}</td>`
+                 + `<td class="fr-stat${hi}" data-fec="loss" title="connector ${fmt(g.conn_loss)} dB`
+                 + `${comb ? ' + ' + comb : ''}; ${fecRule}">${v == null ? '' : fmt(v)}</td>`);
+      }
+    }
     const pick = isPicked(t.key) ? ' class="fr-pick"' : '';
     return `<tr${pick} data-dir="${t.dir}" data-src="${t.src || t.dir}" `
          + `data-fiber="${t.fiber}" data-row="${ti}-${t.dir}">${cells.join('')}</tr>`;
@@ -7488,6 +7597,10 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
       }
     });
     if (NSTAT) cells.push(`<td class="fr-stat" colspan="${NSTAT}"></td>`);
+    if (NFEC) {
+      const fl = shown.map(ti => fecLoss(fecG(ti))).filter(v => v != null && !isNaN(v));
+      cells.push(`<td class="fr-stat"></td><td class="fr-stat">${fl.length ? fmt(fn(fl)) : cellText('---')}</td>`);
+    }
     return `<tr class="fr-agg">${cells.join('')}</tr>`;
   };
   // FR prints the three summary rows even for a single measurement, so a
@@ -7512,7 +7625,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   // and every column BUT THE LAST also contributes the three section cells —
   // the same 5-and-then-2 the statistics name strip above counts.
   const nKept = keepCol.filter(Boolean).length;
-  const NCELL = LEAD.length + nKept * 2 + (showSec ? NSEC * (cols.length - 1) : 0) + NSTAT;
+  const NCELL = LEAD.length + nKept * 2 + (showSec ? NSEC * (cols.length - 1) : 0) + NSTAT + NFEC;
   table.innerHTML =
       `<thead><tr>${h1}</tr><tr>${h2}</tr><tr>${h3}</tr></thead>`
     + `<tbody></tbody>`
@@ -10414,15 +10527,15 @@ async function reportPayload(opt, token, progress) {
     const sorted = [...vis].sort((a, b) => realFiber(a.fiber) - realFiber(b.fiber) || a.fiber - b.fiber
                                          || a.dir.localeCompare(b.dir));
     const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';
-    // Viewer FEC: the mode and the gates the FEC table was graded at, not
-    // the analysis mode's or the Viewer boxes' usual meaning.
-    const meta = [['Mode', gFecMode ? 'FEC' : gAnalysisMode === 'fr' ? 'FastReporter' : PRODUCT_NAME]];
+    // The FEC table: the mode and the gates it was graded at, not the
+    // analysis mode's or the Viewer boxes' usual meaning.
+    const meta = [['Mode', fecTable() ? 'FEC' : gAnalysisMode === 'fr' ? 'FastReporter' : PRODUCT_NAME]];
     if (vis.some(t => t.src === 'a') && folderLabel('a')) meta.push(['A folder', folderLabel('a')]);
     if (vis.some(t => t.src === 'b') && folderLabel('b')) meta.push(['B folder', folderLabel('b')]);
     const nf = new Set(vis.map(t => realFiber(t.fiber))).size;
     meta.push(['Fibers', `${fiberRanges(vis.map(t => realFiber(t.fiber)))} (${nf} fiber${nf === 1 ? '' : 's'})`]);
-    const fg = gFecMode ? fecGatesShown() : null;
-    if (gFecMode) {
+    const fg = fecTable() ? fecGatesShown() : null;
+    if (fecTable()) {
       const src = w => gFecOverride[w] != null ? 'overridden in this window' : 'customer profile';
       meta.push(['FEC loss gate', fg ? `fails ${fg.FEC_LOSS_STRICT ? '>' : '≥'} ${Number(fg.FEC_LOSS_GATE).toFixed(3)} dB, `
         + `connector + events within ${Number(fg.FEC_COMBINE_M).toFixed(0)} m (${src('loss')})` : 'not loaded']);
@@ -11343,6 +11456,12 @@ document.getElementById('set-sections-off').onchange = (e) => {
 document.getElementById('set-avg-only').checked = gAvgOnly;
 document.getElementById('set-avg-only').onchange = (e) => {
   if (e.target.checked !== gAvgOnly) toggleView('avg');
+};
+document.getElementById('set-fec-combined').checked = gFecCombined;
+document.getElementById('set-fec-combined').onchange = (e) => {
+  gFecCombined = e.target.checked;
+  try { localStorage.setItem('otdr_viewer_fec_combined', gFecCombined ? '1' : '0'); } catch (e2) {}
+  renderEventTable();
 };
 document.getElementById('set-gainers').checked = gShowGainers;
 document.getElementById('set-gainers').onchange = (e) => {
