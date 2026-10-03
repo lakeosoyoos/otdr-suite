@@ -155,7 +155,7 @@ _DRIVER = r"""
     await addFibers();
     await __hSleep(200);                                 // the table answers and paints
     out.painted = { asks: __hSrv.frAsked.length, kids: host.children.length,
-                    busy: gTableBusy, pf: gTableExport ? gTableExport.rows()[0].indexOf('✗') >= 0 : null };
+                    busy: gTableBusy, pf: gTableExport ? gTableExport.rows().slice(0, 3).join('').indexOf('✗') >= 0 : null };
     var painted = tableNode();
 
     // the end verdicts land (the poll asks every 3 s)
@@ -164,7 +164,7 @@ _DRIVER = r"""
     await __hSleep(200);
     out.ends = { asks: __hSrv.frAsked.length, same: tableNode() === painted,
                  kids: host.children.length, endRefl: gEndRefl.length,
-                 pf: gTableExport ? gTableExport.rows()[0].indexOf('✗') >= 0 : null };
+                 pf: gTableExport ? gTableExport.rows().slice(0, 3).join('').indexOf('✗') >= 0 : null };
 
     // a repaint of the panel for something else (the distance unit): the
     // table is laid out again from what is kept, not asked for again
@@ -206,7 +206,7 @@ _SLOW_DRIVER = r"""
     out.asks = __hSrv.frAsked.length;
     out.endAsked = __hSrv.endAsked;
     out.landed = gEndRefl.length;
-    out.pf = gTableExport ? gTableExport.rows()[0].indexOf('✗') >= 0 : null;
+    out.pf = gTableExport ? gTableExport.rows().slice(0, 3).join('').indexOf('✗') >= 0 : null;
   } catch (e) { print('THREW ' + e + '\n' + (e && e.stack)); }
   print('OUT ' + JSON.stringify(out));
   quit();
@@ -263,7 +263,8 @@ def test_end_verdicts_landing_update_the_table_in_place(run):
     assert ends['endRefl'] == 1                      # they did land
     assert ends['asks'] == 1, 'the end verdicts asked for the whole table again'
     assert ends['same'] is True, 'the table on screen was thrown away'
-    # F1 A's launch connector now fails on its row (the report's verdict)
+    # F1 A's launch connector now fails (the report's verdict): F1's P/F,
+    # on its Average row, says so
     assert ends['pf'] is True
 
 
