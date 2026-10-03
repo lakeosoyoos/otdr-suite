@@ -297,3 +297,65 @@ def test_the_two_direction_tables_count_their_sections_too():
         body = VIEWER.split(fn, 1)[1].split('\nfunction ', 1)[0]
         assert 'const nSec = have.filter((_p, fi) => secOf(fi, i)).length;' in body, fn
         assert 'Section (${nSec}/${have.length})</th>' in body, fn
+
+
+# ─── the FastReporter-mode A+B table's sections ───────────────────────────
+
+BIDI_DRIVER = r"""
+function T(dir, fiber) {
+  var xs = [], ys = [];
+  for (var i = 0; i <= 200; i++) { xs.push(i / 10); ys.push(-i / 50); }
+  return {key: dir + '-' + fiber, dir: dir, src: dir, fiber: fiber, visible: true,
+          name: 'F' + fiber + '.sor', color: '#2f6fb3',
+          data: {dist_km: xs, trace_db: ys, wavelength_nm: 1550, events: []}};
+}
+function leg(km, type, loss, refl) { return {pos_m: km * 1000, type: type, loss: loss, refl: refl}; }
+function sec(len, la, lb) {
+  return {length_m: len * 1000, loss: (la + lb) / 2, att_db_km: (la + lb) / 2 / len,
+          a: {loss: la, att_db_km: la / len}, b: {loss: lb, att_db_km: lb / len}};
+}
+function row(km, type, loss, s) {
+  return {mean_pos_m: km * 1000, type: type, loss: loss,
+          a: leg(km, type, loss, type === 3 ? -50 : null), b: leg(km, type, loss, type === 3 ? -50 : null),
+          section: s};
+}
+var res = {tables: {
+  t1: [row(0, 3, null, sec(5, 0.931, 0.925)), row(5, 2, 0.05, sec(5, 0.94, 0.93)), row(10, 2, 0.04, null)],
+  t4: [row(0, 3, null, sec(10, 1.889, 1.880)), row(10, 2, 0.039, null)]}};
+var pairs = [{fiber: 1, tkey: 't1', ta: T('a', 1), tb: T('b', 1)},
+             {fiber: 4, tkey: 't4', ta: T('a', 4), tb: T('b', 4)}];
+var out = {};
+try {
+  paintFrBidiGrid(pairs, [], res, document.createElement('div'), document.createElement('div'));
+  out.head = gTableExport.table.innerHTML; out.rows = gTableExport.rows();
+} catch (e) { out.err = String(e) + '\n' + e.stack; }
+print(JSON.stringify(out));
+"""
+
+
+@needs_jsc
+def test_the_ab_table_prints_a_section_after_its_own_row(tmp_path):
+    """Robert 2026-10-03, "fix the bidi sections too".  FastReporter prints a
+    fibre's section under the column of the row it starts at, wherever the
+    fibre's next row sits: on a 4-fibre span fibre 4's A->B prints 0.039 then
+    1.889 / 0.188 after Event 2 with Event 3 blank.  The table needed the next
+    row in the very next column and printed "---" there."""
+    p = tmp_path / 'bidi.js'
+    p.write_text(SHIMS + '\n' + _script() + '\n' + BIDI_DRIVER, encoding='utf-8')
+    res = subprocess.run([str(JSC), str(p)], capture_output=True, text=True, timeout=120)
+    assert res.returncode == 0, res.stderr + res.stdout
+    out = json.loads(res.stdout.strip().splitlines()[-1])
+    assert 'err' not in out, out.get('err')
+    rows = {}
+    for h in out['rows']:
+        cells = [c[0] for c in _cells('<table>' + h + '</table>')[0]]
+        rows[(cells[0], cells[3])] = cells
+    # fibre 1 has a row in every column: unchanged
+    assert rows[('F1', 'A→B')][6:12] == ['0.931', '0.186', '0.050', '---', '0.940', '0.188']
+    # fibre 4 has no 5 km row: its 0 -> 10 km section prints after column 1
+    assert rows[('F4', 'A→B')][6:12] == ['1.889', '0.189', '---', '---', '---', '---']
+    assert rows[('F4', 'B→A')][6:8] == ['1.880', '0.188']
+    assert rows[('F4', 'Average')][6:8] == ['1.885', '0.188']
+    # the heading counts both fibres' sections there
+    top = [c[0] for c in _cells(out['head'])[0]]
+    assert 'Section (2/2)' in top and 'Section (1/2)' in top, top
