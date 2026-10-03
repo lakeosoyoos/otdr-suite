@@ -75,8 +75,9 @@ def test_no_decimation_when_maxpts_absent():
 def test_bulk_route_and_ceiling_exist():
     src = open(os.path.join(ROOT, 'viewer', 'trace_server.py'), encoding='utf-8').read()
     assert "'/api/traces'" in src
-    # a cable is 1152 fibers; a larger query must not be able to pin the server
-    assert '[:1152]' in src
+    # a cable is 1152 fibers (with their copies, COPY_BASE); a larger query
+    # must not be able to pin the server
+    assert '[:TRACES_MAX]' in src and 'TRACES_MAX = 4 * 1152' in src
     assert 'max(200, min(max_pts, 20000))' in src
 
 

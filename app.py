@@ -310,6 +310,8 @@ _MODE_SWITCH_CSS = (
     'box-shadow:0 0 0 2px #22c55e,0 0 8px 2px rgba(34,197,94,.55)}'
     '.st-key-analysis_mode_box .mode-off,.st-key-theme_box .mode-off{display:inline-block;'
     'padding:0 4px;text-align:center;overflow-wrap:normal;word-break:keep-all}'
+    # The name not in use picks its side when clicked (MODE_NAME_CLICK_JS).
+    '.st-key-analysis_mode_box .mode-off,.st-key-theme_box .mode-off{cursor:pointer}'
     '.st-key-analysis_mode_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child,'
     '.st-key-theme_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child'
     '{background-color:var(--otdr-accent,#2c5b8a) !important}'
@@ -345,6 +347,16 @@ def _render_theme_control(where):
     name = 'light' if _right else 'dark'
     if name != st.session_state.get('ui_theme'):
         st.session_state['ui_theme'] = name
+        # Into the config now, at the end of a run that drew every widget,
+        # so the run below starts in the new theme and the repaint rerun at
+        # the top of the page finds nothing to change.  That rerun comes
+        # before the sidebar is drawn, and Streamlit 1.50 then forgets every
+        # box it did not draw: the Tool list fell back to the Viewer and
+        # "Thresholds Carried Over" opened (2026-10-02).
+        try:
+            apply_streamlit_theme(name)
+        except Exception:
+            pass
         st.rerun()
 
 
@@ -1706,9 +1718,23 @@ try:
     _theme_changed = apply_streamlit_theme(st.session_state['ui_theme'])
 except Exception:
     _theme_changed = False
+# This rerun comes before anything is drawn, and Streamlit 1.50 counts a
+# run stopped for a rerun as finished: every widget it did not draw loses
+# its state (1.64 keeps it).  The Theme switch puts the theme in the config
+# itself, so a flip does not come here; a config changed under this session
+# (another tab flipped it) still does.  The boxes drawn on every page are
+# kept in a slot no widget owns and put back on the next run, only when
+# Streamlit forgot them: a page jump written later in that run (a report
+# link, "← Back") still wins.  Page boxes keep their own (`{key}_saved`,
+# see _seed_box).
+_THEME_KEEP = ('nav_radio', 'view_dir_a_input', 'view_dir_b_input')
 if _theme_changed and st.session_state.get('_theme_rerun_for') != st.session_state['ui_theme']:
     st.session_state['_theme_rerun_for'] = st.session_state['ui_theme']
+    st.session_state['_theme_kept'] = {
+        k: st.session_state[k] for k in _THEME_KEEP if k in st.session_state}
     st.rerun()
+for _k, _v in (st.session_state.pop('_theme_kept', None) or {}).items():
+    st.session_state.setdefault(_k, _v)
 try:
     st.markdown(theme_css_vars(), unsafe_allow_html=True)
 except Exception:
@@ -2024,6 +2050,54 @@ def _keep_box(key):
     st.session_state[key + '_saved'] = st.session_state.get(key)
 
 
+# Names Windows keeps for devices: a folder cannot have one, with or
+# without an extension.
+_WIN_RESERVED_NAMES = frozenset(
+    ['CON', 'PRN', 'AUX', 'NUL']
+    + [f'{d}{n}' for d in ('COM', 'LPT') for n in range(1, 10)])
+
+
+def _report_dir_problem(path, pathmod=os.path):
+    """Why reports cannot go to the folder `path`, in plain words, or None
+    when they can: it is a folder already, or one a report run can make.
+    Every run makes the whole missing path before it writes (os.makedirs),
+    so a new folder any number of levels deep is fine as long as the
+    nearest folder above it that is there can be written in.  Only "the
+    folder above is there" was checked before, so a new job folder two
+    levels down (Reports/Job 1, neither there yet) was refused as one that
+    "cannot be created" and the report went to Downloads (2026-10-02).
+
+    Nothing is made here: the box is checked as the tech types, and a
+    folder is only made when a report is written.  `pathmod` is os.path;
+    a test hands it ntpath to try Windows paths (drive letters, a missing
+    drive, \\\\server\\share) on a Mac."""
+    p = pathmod.abspath(path)
+    missing = []                     # the folders a run would have to make
+    while not pathmod.isdir(p):
+        if pathmod.exists(p):
+            return f'{p} is a file, not a folder'
+        up = pathmod.dirname(p)
+        if up == p:                  # a drive or network share that is not there
+            return 'that drive or network share cannot be reached'
+        missing.append(pathmod.basename(p))
+        p = up
+    if not missing:
+        # A folder already.  As before: no write check on it (on Windows,
+        # os.access says every folder can be written in anyway).
+        return None
+    for name in missing:
+        if '\0' in name:
+            return f'"{name}" is not a folder name that can be used'
+        if pathmod.sep == '\\':
+            if any(c in '<>:"|?*' or ord(c) < 32 for c in name):
+                return 'a folder name cannot contain < > : " | ? *'
+            if name.split('.')[0].strip().upper() in _WIN_RESERVED_NAMES:
+                return f'"{name}" is a name Windows keeps for itself'
+    if not os.access(p, os.W_OK):
+        return f'there is no permission to make a folder in {p}'
+    return None
+
+
 def _report_dest_row(key, default_dir):
     """The 'Save reports to' row every report page shows: a Browse button that
     opens the native folder picker, and a path box the tech can paste into.
@@ -2063,9 +2137,10 @@ def _report_dest_row(key, default_dir):
     st.session_state[saved] = st.session_state.get(key) or ''
     chosen = (st.session_state.get(key) or '').strip().strip('"')
     if chosen:
-        parent = os.path.dirname(os.path.abspath(chosen)) or chosen
-        if not os.path.isdir(chosen) and not os.path.isdir(parent):
-            st.warning(f'That folder cannot be created: {chosen}. Reports will go to {default_dir}')
+        problem = _report_dir_problem(chosen)
+        if problem:
+            st.warning(f'Reports cannot be saved to {chosen}: {problem}. '
+                       f'They will go to {default_dir} instead.')
             return default_dir
         return os.path.abspath(chosen)
     return default_dir
@@ -2267,6 +2342,11 @@ def _resolve_bidir_from_single(folder, zip_file):
         key = _sig('drop', zip_uploads + trace_uploads)
     elif folder and os.path.isdir(folder):
         key = f"dir:{os.path.abspath(folder)}"
+    elif folder:
+        # Typed, but not a folder: say so, not "choose a folder" (audit
+        # 2026-10-02).  The left panel names its own the same way.
+        st.warning(f'Folder not found: {folder}')
+        return ('', '')
     else:
         st.info('👆 Choose a folder that contains **both** directions, or '
                 'drop it here: its traces, a .zip, or .bdr files, which '
@@ -2718,10 +2798,57 @@ def _install_title_keep():
         pass
 
 
+# Clicking a name beside a sidebar switch (Dark | Light, FR Mode | OTDR
+# Mode) did nothing: the names are text, and only the knob is the switch.
+# This makes a click on the name not in use click the switch, so the switch
+# itself does the rest, exactly as a click on the knob.  The switches stay
+# keyless (see _render_theme_control) and nothing new runs in Python.  One
+# listener on the page, put back by each load of this frame, which leaves
+# it working whatever Streamlit redraws.  The name's side, not a flip, picks
+# the knob's place, so a second click before the run lands does nothing.
+MODE_NAME_CLICK_JS = """
+<script>
+(function () {
+  var w; try { w = window.parent; void w.document; } catch (e) { return; }
+  var d = w.document;
+  if (w.__otdrModeNameClick) d.removeEventListener('click', w.__otdrModeNameClick);
+  w.__otdrModeNameClick = function (e) {
+    var t = e.target;
+    var name = t && t.closest && t.closest('.mode-off');
+    if (!name) return;
+    var box = name.closest('.st-key-theme_box, .st-key-analysis_mode_box');
+    var sw = box && box.querySelector('[data-testid="stCheckbox"] input[type="checkbox"]');
+    if (!sw || sw.disabled) return;
+    // The name left of the switch wants the knob left (off), the name
+    // right of it wants the knob right (on).
+    var left = !!(name.compareDocumentPosition(sw) & 4);
+    if (sw.checked === left) sw.click();
+  };
+  d.addEventListener('click', w.__otdrModeNameClick);
+})();
+</script>
+"""
+
+
+def _install_mode_name_click():
+    """Render the script above out of the page's flow, as the theme clear
+    does (best effort, never fatal)."""
+    try:
+        box = st.container(key='mode_name_click')
+        box.markdown('<style>[data-testid="stLayoutWrapper"]:has(> .st-key-mode_name_click)'
+                     '{position:absolute;width:0;height:0;overflow:hidden}</style>',
+                     unsafe_allow_html=True)
+        with box:
+            st_components_html(MODE_NAME_CLICK_JS, height=0)
+    except Exception:
+        pass
+
+
 _install_sidebar_drag_fix()
 _install_hub_drop_catch()
 _install_theme_pick_clear()
 _install_title_keep()
+_install_mode_name_click()
 
 # No "Deploy" button in the header (Robert, 2026-09-29): it is Streamlit's
 # developer menu and means nothing to a tech.  New builds turn the whole
@@ -4678,8 +4805,14 @@ def page_duplicate_check():
     st.session_state.pop('_ss_removed_note', None)     # a slot from an earlier run
     # The line that tells the tech to pick a folder is for the page's own
     # loader, which is not drawn when the left panel holds the traces.
-    st.caption(('' if any(_panel_traces()) else
-                'Pick a folder of `.sor` / `.trc` / `.json` files. ')
+    # What the tool does first, as every other tool page says it (audit
+    # 2026-10-02: the page never said it looks for duplicates).
+    st.caption('Finds traces that are copies of each other: one fiber shot '
+               'twice and saved under two fiber numbers, or one file saved '
+               'twice. Every pair of traces is compared by the shape of its '
+               'trace and ranked by how likely it is a duplicate. '
+               + ('' if any(_panel_traces()) else
+                  'Pick a folder of `.sor` / `.trc` / `.json` files. ')
                + 'Reports are saved to the folder you choose below (Downloads '
                'by default) and offered for download.')
 
@@ -7643,6 +7776,40 @@ def _sr_span_inputs(span):
     return dir_a, dir_b, tech_xlsx
 
 
+def _sr_span_problems(span, dir_a, dir_b):
+    """Why an added span cannot run yet, as the lines to show, or [] when
+    both its folders are there.  Every such span used to get "needs both an
+    A and a B folder", also one whose boxes were both filled in with a
+    folder that is not there (audit 2026-10-02).  A box with a path in it
+    is named the way the left panel names its own ("B folder not found:
+    <path>"); only an empty box is asked for."""
+    if dir_a and os.path.isdir(dir_a) and dir_b and os.path.isdir(dir_b):
+        return []
+    _k = f'sr{span}'
+    ss = st.session_state
+
+    def typed(key):
+        return (ss.get(key) or '').strip().strip('"')
+
+    needs_both = (f'Span {span} needs **both** an A and a B folder too, or '
+                  'remove it to run without it.')
+    if ss.get(f'{_k}_input_mode') == 'One folder / zip (both directions)':
+        one = typed(f'{_k}_one_folder')
+        if one and not os.path.exists(one) and not ss.get(f'{_k}_zip'):
+            return [f'Span {span}: folder not found: {one}']
+        return [needs_both]
+    lines, empty = [], False
+    for side, d in (('A', dir_a), ('B', dir_b)):
+        t = typed(f'{_k}_dir_{side.lower()}')
+        if not t:
+            empty = True
+        elif not d:                         # a .zip that would not open
+            lines.append(f'Span {span}: the {side} folder could not be read.')
+        elif not os.path.isdir(d):
+            lines.append(f'Span {span}: {side} folder not found: {t}')
+    return lines + [needs_both] if empty or not lines else lines
+
+
 def _same_direction_sites(dir_a, dir_b):
     """(origin, far end) when two different folders hold traces shot the
     same way, else None.  Read as the site boxes read a folder (_derive_ila),
@@ -8022,11 +8189,10 @@ def page_splice_report():
         return
     _remove_legacy_caches(dir_a)
     _remove_legacy_caches(dir_b)
-    _not_ready = [n for n, (a, b, *_r) in extra.items()
-                  if not (a and os.path.isdir(a) and b and os.path.isdir(b))]
-    if _not_ready:
-        st.info('Span ' + ', '.join(str(n) for n in _not_ready) + ' needs **both** an '
-                'A and a B folder too, or remove it to run without it.')
+    _problems = {n: _sr_span_problems(n, a, b) for n, (a, b, *_r) in extra.items()}
+    _not_ready = [n for n, p in _problems.items() if p]
+    for _n in _not_ready:
+        st.info('  \n'.join(_problems[_n]))
     _seen = {(dir_a, dir_b): 1}
     for _n, (_da, _db, *_r) in extra.items():
         if _n in _not_ready:

@@ -119,7 +119,7 @@ def test_a_mixed_column_gets_fr_s_type_column():
     body = _fn('paintFrBidiGrid')
     assert "cols.forEach(c => { c.mixed = colKinds(c).length > 1; });" in body
     assert "const colKind = c => c.mixed ? '' : colKinds(c).join('');" in body
-    assert "(c.mixed ? '<th class=\"fr-sub\">Type</th>' : '')" in body
+    assert "(c.mixed ? `<th class=\"fr-sub\" data-col=\"${i}\">Type</th>` : '')" in body
     assert "typeCell(c, leg.synthetic ? '' : kind(leg))" in body
     assert "typeCell(c, kind(x.row))" in body
     # the spacer row and the Min/Max/Average strip count the extra cell

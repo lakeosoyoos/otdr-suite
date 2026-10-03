@@ -17,6 +17,7 @@ import pytest
 
 from conftest import (FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, REPO_ROOT,
                       VIEWER_DIR)
+from conftest import COPY_HELPERS_JS  # noqa: E402
 
 RUNNER = REPO_ROOT / "splicereport" / "run_splicereport.py"
 HTML = (VIEWER_DIR / "viewer.html").read_text(encoding="utf-8")
@@ -194,7 +195,8 @@ def _paint_fec(switches, with_marks=False, with_nums=False, after='', res_extra=
           + line(r"const gFecOverride = .*") + fn('fecOverridden')
           + "let gTableKm = null;\n" + fn('tableKmKey') + fn('tableMarkReset')
           + fn('tableMark') + fn('inTable')
-          + fn('isPicked') + fn('fecGateText') + fn('paintFecGrid')
+          + fn('isPicked') + fn('fecGateText') + fn('showColumnMenu') + fn('wireHeaderMenu')
+          + fn('paintFecGrid')
           + ''.join(f"{k} = {json.dumps(v)};\n" for k, v in switches.items())
           + f"var with_nums = {json.dumps(with_nums)};\n"
           + f"var TRS = {json.dumps(traces)}, hint=el(); paintFecGrid(TRS, {json.dumps(res)}, el(), hint);\n"
@@ -203,7 +205,7 @@ def _paint_fec(switches, with_marks=False, with_nums=False, after='', res_extra=
             ".filter(e => inTable(t, e)).map(e => e.dist_km); });\n"
           + "print(hint.textContent); print(JSON.stringify(AFTER != null ? AFTER : with_nums ? NUMS : gDrawerMarks)); print(OUT);\n")
     with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as fh:
-        fh.write(js)
+        fh.write(COPY_HELPERS_JS + js)
     try:
         p = subprocess.run([JSC, fh.name], capture_output=True, text=True)
     finally:
@@ -346,7 +348,9 @@ def test_fec_rows_open_the_span_and_settings_menu():
     body = body[:body.index('\n}\n')]
     # the ⋯ on the Panel Connector header, as on the other tables' headers
     assert '<button class="fr-evmenu" title="span and settings">⋯</button>' in body
-    assert 'showDirChooser(b.left, b.bottom + 2, picks)' in body
+    assert 'showColumnMenu(b.left, b.bottom + 2, picks)' in body
+    # and a right-click on any of its headers opens the same
+    assert 'wireHeaderMenu(table, connPicks);' in body
 
 
 def test_an_event_number_on_the_chart_flashes_its_fec_cell():
@@ -388,7 +392,7 @@ def test_fec_gates_show_in_the_viewer_boxes_and_override_per_window():
           + "setFecGateOverride('loss',0.5); B.push(gFecOverride.loss);\n"
           + "print(JSON.stringify([A,B]));\n")
     with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as fh:
-        fh.write(js)
+        fh.write(COPY_HELPERS_JS + js)
     try:
         p = subprocess.run([JSC, fh.name], capture_output=True, text=True)
     finally:

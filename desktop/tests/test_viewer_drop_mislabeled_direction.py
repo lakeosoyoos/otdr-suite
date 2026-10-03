@@ -64,6 +64,8 @@ def _dirs_of(folder):
     """{fiber: stamped direction} of every file on one side."""
     out = {}
     for f in sorted(os.listdir(folder)):
+        if f == TS.COPIES_DIR:
+            continue
         with open(os.path.join(folder, f), 'rb') as fh:
             out[TS.extract_fiber_num(f)] = TS.read_direction(fh.read())
     return out
@@ -128,12 +130,16 @@ def test_a_third_spelling_joins_the_side_its_fibres_are_missing_from():
     assert set(_dirs_of(out['dir_a']).values()) == {'a'}
 
 
-def test_another_span_in_the_same_drop_is_still_ignored():
-    """A third group whose fibres both sides already hold is not a mislabel."""
+def test_another_span_in_the_same_drop_is_loaded_too():
+    """A third group whose fibres both sides already hold is not a mislabel,
+    so it is not folded in -- but nothing dropped is left out any more
+    (Robert 2026-10-02): it is added, its fibres as copies."""
     other = [('KNOTOO' + n[6:], d) for n, d in _real('a', 6)]
     out = _drop(_real('a'), _real('b'), other)
-    assert out['ignored'] == ['KNOTOO'] and out['folded'] == []
-    assert out['a_count'] == 24 and out['b_count'] == 24
+    assert out['ignored'] == [] and out['folded'] == []
+    assert out['a_count'] + out['b_count'] == 24 + 24 + 6
+    ids = [n for d in (out['dir_a'], out['dir_b']) for n, _ in TS.list_fibers(d)]
+    assert len(ids) == 54 and len([n for n in ids if n >= TS.COPY_BASE]) == 6
 
 
 # ── 3. a mislabeled name that collides ──────────────────────────────────
@@ -154,13 +160,13 @@ def test_an_a_file_under_bs_name_is_loaded_on_the_other_side():
 
 def test_a_retest_of_the_same_direction_is_not_moved_across():
     """Same name, same stamp, different bytes: a re-shot fibre, not the
-    other direction.  It stays reported, as before."""
+    other direction.  It stays on its side, as a copy of its own."""
     a = _real('a', 6)
     retest = [(a[2][0], a[3][1])]                  # another A shot under F3's name
     out = _drop(a, retest)
-    assert out['repeats_placed'] == [] and out['repeated'] == [a[2][0]]
+    assert out['repeats_placed'] == [] and out['repeated'] == []
+    assert out['copies'] == [a[2][0]] and out['a_count'] == 7
     assert out['dir_b'] is None
-
 
 def test_an_identical_copy_is_not_moved_across():
     a = _real('a', 6)
@@ -175,7 +181,8 @@ def test_a_named_repeat_with_no_stamp_is_not_moved_across():
     TS.drop_file(tok, 'ROMTUC001_1550.sor', make_sor(raw_payload=b'\xa1' * 40))
     TS.drop_file(tok, 'ROMTUC001_1550.sor', make_sor(raw_payload=b'\xb2' * 90))
     out = TS.drop_end(tok)
-    assert out['repeats_placed'] == [] and out['repeated'] == ['ROMTUC001_1550.sor']
+    assert out['repeats_placed'] == [] and out['repeated'] == []
+    assert out['copies'] == ['ROMTUC001_1550.sor'] and out['dir_b'] is None
 
 
 # ── the page says what the drop did ─────────────────────────────────────

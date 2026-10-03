@@ -13226,7 +13226,8 @@ def sr_legend_rows(painted, end_texts=()):
 def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_b, span_km,
                launch_cells_a=None, launch_cells_b=None,
                fibers_a=None, fibers_b=None, all_results=None,
-               fiber_avgs=None, span_stats=None, ribbons=None):
+               fiber_avgs=None, span_stats=None, ribbons=None,
+               reburn_results=None):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Splice Report"
@@ -13836,14 +13837,16 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # after the audit insertion below (insert_at=0 for audit, =1 for
     # reburn → ordering becomes [Acquisition, Reburn, Splice Report,
     # Legend]).  Counts ribbon × splice cells that contain at least
-    # one A+B reburn fiber.
+    # one A+B reburn fiber.  `reburn_results` is everything found, before
+    # Show/Hide: with Splice Loss hidden the reburns are still counted,
+    # as the Display sheet says they were found (2026-10-02).
     if all_results is not None:
         try:
             from reburn_summary import compute_reburn_summary, \
                 render_xlsx_sheet as _render_reburn
-            _reburn = compute_reburn_summary(all_results, splices,
-                                              n_fibers, ribbon_size,
-                                              ribbons=ribbons)
+            _reburn = compute_reburn_summary(
+                all_results if reburn_results is None else reburn_results,
+                splices, n_fibers, ribbon_size, ribbons=ribbons)
             _render_reburn(wb, _reburn,
                            insert_at=0,                # before any audit
                            font_name=FONT_NAME, font_size=FSIZE,
@@ -16676,9 +16679,14 @@ def uni_legend_rows(ws, type_row):
 
 def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                    site_a='', site_b='', fibers=None, coverage=None, side='A',
-                   ribbons=None):
+                   ribbons=None, reburn_grid=None):
     """ZK-approved five-sheet workbook: Acquisition Parameters, Reburn
     Percentage, Unidir Events (ribbon grid), Legend, Flagged Events.
+
+    `reburn_grid` is (grid, columns) before the Show/Hide switches: the
+    Reburn Percentage counts every reburn found, so with Splice Loss hidden
+    it still agrees with the Display sheet (2026-10-02).  Omitted, it counts
+    `grid` / `columns`.
 
     Grid header matches the approved sheet: A→B feet, A→B km, a BLANK
     'Handholes:' annotation row (techs fill in HH/section knowledge — the
@@ -16963,7 +16971,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
             print(f"  WARN: acquisition audit skipped: {exc}")
     try:
         summary = uni_build_reburn_summary(
-            grid, columns, n_ribbons,
+            *(reburn_grid or (grid, columns)), n_ribbons,
             ribbon_label_fn=lambda ri: uni_ribbon_label(ri, ribbon_size, n_fibers),
             ribbons=(ribbons or ribbon_rows))
         uni_write_reburn_sheet(wb, summary, insert_at=1)
@@ -17376,6 +17384,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
               + ', '.join(f"{d:.2f} km" for d in demoted))
     n_fibers = max(fibers.keys())
     grid = uni_build_ribbon_grid(fibers, columns, rs)
+    found = (grid, columns)             # before Show/Hide: the reburn count
     grid, columns = uni_apply_show_filter(grid, columns)
 
     side, site_a, site_b = uni_shot_direction_named(fibers, site_a, site_b)
@@ -17385,7 +17394,8 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     ribbons = sorted({(f - 1) // rs for f in fibers})
     wrote = uni_write_xlsx(grid, columns, n_fibers, rs, span, output_path,
                            site_a=site_a, site_b=site_b, fibers=fibers,
-                           coverage=coverage, side=side, ribbons=ribbons)
+                           coverage=coverage, side=side, ribbons=ribbons,
+                           reburn_grid=found)
 
     # In-app clickable grid payload (mirrors the bidir manifest's
     # columns/cells): the hub renders a ribbon × column grid where every

@@ -357,8 +357,10 @@ def test_clears_threshold_uses_the_displayed_value():
 
 def test_manifest_category_matches_the_flag_gate():
     """A 0.1595 bidir flags AND prints '.160', so the hub grid must file it as
-    a reburn — not in the generic 'event' bucket."""
-    assert "round(float(loss), 3) >= 0.160" in RUNNER_SRC, (
-        "run_splicereport._category must round to the report's own 3-decimal "
-        "display before comparing, like the engine's flag gate"
-    )
+    a reburn — not in the generic 'event' bucket.  (The category now asks
+    the engine's own gate; test_grid_color_follows_gate pins the threshold.)"""
+    _run("""
+        assert R._category({'bidir_loss': 0.1595}, 0.160) == 'reburn'
+        assert R._category({'bidir_loss': 0.1594}, 0.160) == 'event'
+        print("OK")
+    """, imports="import run_splicereport as R\n")

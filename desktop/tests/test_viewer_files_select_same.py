@@ -44,6 +44,7 @@ from unittest import mock
 import pytest
 
 from conftest import FIXTURE_A_DIR, VIEWER_DIR, import_trace_server
+from conftest import COPY_HELPERS_JS  # noqa: E402
 
 T = import_trace_server()
 SRC = (VIEWER_DIR / "viewer.html").read_text(encoding="utf-8")
@@ -199,7 +200,7 @@ def rules(tmp_path_factory):
     funcs = '\n'.join(_js_func(n) for n in
                       ('clearsAt', 'clearsGate', 'gateFor', 'reflFails', 'reflFloor', 'reflInBand', 'fileFails', 'fileSameKeys', 'fileDay'))
     path = tmp_path_factory.mktemp('select_same') / 'rules.js'
-    path.write_text(funcs + '\n' + _CASES, encoding='utf-8')
+    path.write_text(COPY_HELPERS_JS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
     out = r.stdout + r.stderr
     assert r.returncode == 0 and 'OUT ' in out, out[-2000:]
@@ -276,7 +277,8 @@ def test_select_same_replaces_the_selection_through_the_one_load_path():
     body = _body('selectSame')
     assert 'await selectFiles(new Set(want));' in body
     # Select Same Fiber takes every selected fiber, both directions
-    assert 'new Set([...gSelectedFiles, refKey].map(k => splitFileKey(k)[1]))' in body
+    # (a fibre's copy, trace_server.COPY_BASE, is the same fibre)
+    assert 'new Set([...gSelectedFiles, refKey].map(k => realFiber(splitFileKey(k)[1])))' in body
     # one read of the list at a time: the one in flight, then the rest
     assert body.index('if (gFactsLoading) await gFactsLoading;') < body.index('await ensureFileFacts(true);')
     assert 'want = fileSameKeys(keys, k => fileTraits(k, paired), ref, kinds);' in body
