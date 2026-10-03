@@ -7446,7 +7446,9 @@ function oneDirTableZeroKm(traces) {
 // FastReporter-style grid for 1–2 traces (a fiber's A/B, OR two fibers of a
 // duplicate pair): events matched by DISPLAYED km into columns; each trace is
 // its own row; Average / Minimum / Maximum (loss) across the traces below.
-function renderFastReporterGrid(traces, host, hint) {
+// `opts.fec`: the FEC combined grades (fecCombinedFor), from renderEventTable's
+// FEC branch; absent everywhere else.
+function renderFastReporterGrid(traces, host, hint, opts = {}) {
   const TOL = columnTolKm(traces);
   const overGate = clearsGate;
   const warnGate = warnFor(false, false);
