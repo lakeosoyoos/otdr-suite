@@ -72,7 +72,7 @@ def test_a_flagged_loss_cell_still_prints_and_the_rest_go_blank():
     """Single-direction grid: only the report's own verdict survives — over
     the gate (fr-hi) or a break (fr-brk).  A gainer is coloured but is not a
     failure, so it empties with everything else."""
-    lc = SRC.split("const lossCell = (v, isBreak, attrs = '') => {", 1)[1].split("\n  };", 1)[0]
+    lc = SRC.split("const lossCell = (v, isBreak, attrs = '', e = null, ti = -1) => {", 1)[1].split("\n  };", 1)[0]
     assert "const keep = (gFailCellsOnly && (cls === ' class=\"fr-hi\"' || cls === ' class=\"fr-brk\"'))" in lc
     # blank AND uncoloured: a shaded empty cell reads as a missing value
     assert "if (cellFilterOn() && !keep) return `<td${attrs}></td>`;" in lc

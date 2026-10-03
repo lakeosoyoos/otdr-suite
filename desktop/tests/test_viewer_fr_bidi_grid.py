@@ -47,7 +47,8 @@ def test_the_fr_grid_is_fr_s_bidirectional_table():
     assert "askServerTable('fr', key, `/api/fr_table?${frTableQuery(pairs)}`," in _fn('renderFrBidiGrid')
     q = _fn('frTableQuery')
     assert "`fibers=${pairs.map(p => p.fiber).join(',')}`" in q
-    assert "`pairs=${pairs.map(p => `${p.fiber}:${p.ta.src}:${p.tb.src}`).join(',')}`" in q
+    # every pair spelt out; span 1's own A and B of one id as 'f:a:b'
+    assert "`pairs=${pairs.map(p => p.tkey === String(p.fiber) ? `${p.fiber}:a:b` : p.tkey).join(',')}`" in q
     # three rows per fibre, in FR's order
     assert "['a', 'b', 'avg']" in body and "w === 'avg'" in body
     assert "which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average'" in body
@@ -66,8 +67,9 @@ def test_the_fr_grid_is_fr_s_bidirectional_table():
     # sections: loss and attenuation per direction, the merged pair on the Average row
     assert "const v = s ? (which === 'avg' ? s : s[which]) : null;" in body
     assert "fmt(v.att_db_km)" in body and "fmt(v.loss)" in body
-    # the section is printed only where the fibre's next row is the next column
-    assert "if (!c || !n || n.k !== c.k + 1) return null;" in body
+    # the section is printed under the row it starts at, to the fibre's next
+    # row wherever that sits, as FR prints it (test_viewer_fr_grid_matches_fr)
+    assert "return have[fi].rows[c.k + 1] ? c.row.section : null;" in body
     # the report's verdict, not FR's, drives P/F -- said so on the cell
     assert "this is OUR verdict, not FastReporter's" in body
     # rows carry what the span menu and the trace-label click need

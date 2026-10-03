@@ -48,11 +48,11 @@ def test_every_grid_records_what_it_printed_and_redraws_the_chart():
     fr = _fn("paintFrBidiGrid")
     assert "tableMarkReset(allT);" in fr
     assert "!leg.synthetic" in fr                    # no event of its own in the file
-    assert "tableMark(t, Number(leg.pos_m) / 1000, `Event ${i + 1}`, bidiMarkTip(w))" in fr
+    assert "tableMark(t, Number(leg.pos_m) / 1000, `Event ${i + 1}`, bidiMarkTip(w), true)" in fr
     suite = _fn("paintSuiteBidiGrid")
     assert "tableMarkReset(have.flatMap(p => [p.ta, p.tb]));" in suite
-    assert "tableMark(have[fi].ta, x.a.km, c.title)" in suite
-    assert "tableMark(have[fi].tb, x.b.km, c.title, !!have[fi].ta && bidiMarkTip('b'))" in suite
+    assert "tableMark(have[fi].ta, x.a.km, c.title, false, bidi)" in suite
+    assert "tableMark(have[fi].tb, x.b.km, c.title, !!have[fi].ta && bidiMarkTip('b'), bidi)" in suite
     for body in (single, fr, suite):
         assert "draw();" in body[body.index("tableMarkReset("):]
 
