@@ -14,7 +14,7 @@ import shutil
 
 import pytest
 
-from conftest import FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, run_streamlit
+from conftest import FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR, go_tab, run_streamlit
 
 
 @pytest.fixture
@@ -122,7 +122,7 @@ def test_job_details_and_the_run_in_shoot_come_back_after_a_cell_click(
     assert any("chosen on the project's Traces tab" in c.value for c in at2.caption)
 
     # Back to Project: FQA Progress reads as it did before the click.
-    at2.button(key="go_project").click().run()
+    go_tab(at2, "Project Status")                # the bar's Project tab
     assert not at2.exception, list(at2.exception)
     assert at2.session_state["nav_radio"] == "Project Status"
     assert _in_hand(at2) == before
@@ -134,7 +134,7 @@ def test_home_leaves_a_project_a_cell_click_brought_back(
     sh = _run_in_splice_report(at)
     at2 = _cell_click(sh)
     assert at2.session_state["app_mode"] == "project"
-    at2.button(key="go_project").click().run()
+    go_tab(at2, "Project Status")                # the bar's Project tab
     at2.button(key="go_home").click().run()
     assert not at2.exception, list(at2.exception)
     assert "app_mode" not in at2.session_state
