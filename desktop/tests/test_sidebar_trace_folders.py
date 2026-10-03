@@ -33,7 +33,7 @@ def test_the_span_box_is_gone_and_a_b_loaders_take_its_place():
     assert md.index('##### Trace Folders') < md.index('##### Select Tool')
 
 
-TRACE_TOOLS = ['Viewer', 'Splice Report', 'Splice Report FEC', 'Viewer FEC',
+TRACE_TOOLS = ['Viewer', 'Splice Report', 'Splice Report FEC',
                'Unidirectional',
                'Secret Sauce']
 APP_TOOLS = ['FQA Builder', 'Field Capture']

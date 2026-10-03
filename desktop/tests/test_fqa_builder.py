@@ -1121,7 +1121,7 @@ def test_the_hub_offers_the_fqa_builder(tmp_path, monkeypatch):
     monkeypatch.setenv('OTDR_SUITE_EDITION', 'OTDR App')
     at = run_streamlit(default_timeout=180).run()           # Quick Analysis
     tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    assert tool.options == ['Viewer', 'Splice Report', 'Splice Report FEC', 'Viewer FEC',
+    assert tool.options == ['Viewer', 'Splice Report', 'Splice Report FEC',
                             'Unidirectional', 'Secret Sauce']
 
 

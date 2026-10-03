@@ -1799,6 +1799,10 @@ class Handler(BaseHTTPRequestHandler):
             # there is nothing to mirror A on to and the viewer says so
             # instead of mirroring about the acquisition range.
             'cable_end_known_b': frame_facts(CONFIG['dir_b']).get('cable_end_known'),
+            # The same for A.  Both sides short shots (or the one side loaded)
+            # is a facility-entrance (FEC) job: the Viewer draws each trace
+            # as shot and never pairs them (viewer.html fecShots).
+            'cable_end_known_a': frame_facts(CONFIG['dir_a']).get('cable_end_known'),
             # The tech's own span, when they have set one.  It OUTRANKS both
             # the measured frame and the inferred reels — it is the only one of
             # the three that somebody actually knows to be true.

@@ -564,7 +564,7 @@ def test_quick_analysis_opens_on_the_suite_screen_with_nothing_loaded(settings_d
     assert not at.exception, list(at.exception)
     assert "qa_stage" not in at.session_state
     tool = next(r for r in at.sidebar.radio if r.label == "Tool")
-    assert tool.options == ["Viewer", "Splice Report", "Splice Report FEC", "Viewer FEC",
+    assert tool.options == ["Viewer", "Splice Report", "Splice Report FEC",
                             "Unidirectional", "Secret Sauce"]
     assert "##### Trace Folders" in [m.value for m in at.sidebar.markdown]
     assert any(e.label == "☁️ From SharePoint" for e in at.sidebar.expander)
@@ -826,10 +826,12 @@ def test_owner_recents_fill_the_boxes_and_saving_puts_an_owner_on_top(settings_d
 
 
 def test_a_shoots_run_in_starts_the_fec_tools(hub, tmp_path, monkeypatch):
-    """Robert, 2026-10-02: in a project the FEC tools start from a shoot's
-    Run In… on the Traces tab (and from the tool list in Quick Analysis)."""
+    """Robert, 2026-10-02: in a project Splice Report FEC starts from a
+    shoot's Run In… on the Traces tab (and from the tool list in Quick
+    Analysis).  FEC shots open in the Viewer itself (main #589): there is
+    no Viewer FEC to start."""
     assert hub.RUN_IN_TOOLS.index("Splice Report FEC") == hub.RUN_IN_TOOLS.index("Splice Report") + 1
-    assert "Viewer FEC" in hub.RUN_IN_TOOLS
+    assert "Viewer FEC" not in hub.RUN_IN_TOOLS and "Viewer FEC" not in hub.TOOLS_PROJECT
     sh = {"id": "2026-05-06", "a": str(tmp_path / "A"), "b": str(tmp_path / "B"),
           "dir": str(tmp_path)}
     ss = {"sr_result": 1, "viewer_target": 2}
@@ -839,8 +841,8 @@ def test_a_shoots_run_in_starts_the_fec_tools(hub, tmp_path, monkeypatch):
     assert (ss["fec_dir_a"], ss["fec_dir_b"]) == (sh["a"], sh["b"])
     assert "sr_result" not in ss and "viewer_target" not in ss
     ss.clear()
-    hub._run_shoot_in("Viewer FEC", sh)
-    assert ss["nav_radio"] == "Viewer FEC"
+    hub._run_shoot_in("Viewer", sh)
+    assert ss["nav_radio"] == "Viewer"
     assert (ss["view_dir_a_input"], ss["view_dir_b_input"]) == (sh["a"], sh["b"])
 
 
