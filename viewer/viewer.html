@@ -1785,7 +1785,9 @@ window.addEventListener('resize', resizeCanvas);
 })();
 
 // ─── Fiber-list parser ────────────────────────────────────────────────
-function parseFibers(str) {
+// `ignored`, when given, gets each part that is not a fiber number or a
+// range ("abc", "x-y"), for the Fibers box to say what it skipped.
+function parseFibers(str, ignored) {
   const out = new Set();
   for (let part of str.split(',')) {
     part = part.trim();
@@ -1797,9 +1799,26 @@ function parseFibers(str) {
       for (let i = lo; i <= hi; i++) out.add(i);
     } else if (/^\d+$/.test(part)) {
       out.add(+part);
+    } else if (ignored) {
+      ignored.push(part);
     }
   }
   return Array.from(out).sort((a,b)=>a-b);
+}
+
+// What the Fibers box says about text that is not a fiber number.  Typing
+// "abc" and clicking Add used to show nothing at all, while "99" said "F99
+// is not in the A/B folder" (audit 2026-10-02).  Both read as failures
+// (READOUT_FAIL_START / _TAIL).
+function noFibersNote(raw) {
+  let t = raw.trim();
+  if (t.length > 40) t = t.slice(0, 40) + '…';
+  return `No fiber numbers in "${t}". Type numbers like 5 or 1-3, 7.`;
+}
+function ignoredPartsNote(parts) {
+  const shown = parts.slice(0, 3).map(p => `"${p}"`).join(', ') +
+                (parts.length > 3 ? ` (+${parts.length - 3} more)` : '');
+  return `ignored ${shown}: not ${parts.length === 1 ? 'a fiber number' : 'fiber numbers'}`;
 }
 
 // ─── Drop target: the FILES panel takes files, folders and zips ──────
@@ -2425,8 +2444,8 @@ function frameWarn() {
   return gFrameWarn && gTraces.some(t => t.visible && t.src === 'b' && isFlipped(t))
     ? gFrameWarn : '';
 }
-const READOUT_FAIL_START = /^(could not |viewer failed|drop failed|nothing written|no [AB/]+ folder is set|F\d+(, F\d+)* (\(\+\d+ more\) )?(is|are) not in the )/;
-const READOUT_FAIL_TAIL = /, (could not load |F\d+(, F\d+)* (\(\+\d+ more\) )?(is|are) not in the )/;
+const READOUT_FAIL_START = /^(could not |viewer failed|drop failed|nothing written|no [AB/]+ folder is set|No fiber numbers in "|F\d+(, F\d+)* (\(\+\d+ more\) )?(is|are) not in the )/;
+const READOUT_FAIL_TAIL = /, (could not load |ignored "|F\d+(, F\d+)* (\(\+\d+ more\) )?(is|are) not in the )/;
 // The status line floats centred over the top of the chart.  The A/B marker
 // readout holds the top right corner, so while it is up the status moves to
 // the left, between the dB axis and that box, and is cut short to fit rather
@@ -2574,12 +2593,18 @@ async function addFibers() {
   // it loads raced it, and a file could end up neither loaded nor failed.
   if (gStateLoad) { try { await gStateLoad; } catch (e) {} }
   gSelNext = null;                   // the box (or a report jump) is the newer ask
-  const fibers = parseFibers(raw);
-  if (!fibers.length) { setReadout('no valid fibers in input'); return; }
+  const ignored = [];
+  const fibers = parseFibers(raw, ignored);
+  if (!fibers.length) {
+    // An empty box says nothing, as before.
+    setReadout(raw.trim() ? noFibersNote(raw) : 'no valid fibers in input');
+    return;
+  }
   const plan = planOrSay(fibers, gAddDir);
   if (!plan) return;                   // nothing to load: the plot stays as it was
   const dirs = plan.dirs;
-  const absentTail = plan.absent.length ? ', ' + absentNote(plan) : '';
+  const absentTail = (plan.absent.length ? ', ' + absentNote(plan) : '') +
+                     (ignored.length ? ', ' + ignoredPartsNote(ignored) : '');
 
   const tasks = [];
   for (const { f, d } of plan.pairs) {
