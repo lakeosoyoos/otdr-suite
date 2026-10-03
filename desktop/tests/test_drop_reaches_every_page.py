@@ -5,8 +5,9 @@ FILES panel point the trace server at a staged folder (trace_server drop_begin
 / drop_file / drop_end stamp CONFIG['dropped_at']).  Only page_viewer looked
 for that stamp, so a tech who dropped 3 + 3 files and then clicked Splice
 Report kept the OLD folders in the sidebar boxes: the report ran on the old
-span while the Viewer showed the dropped one.  The check now sits in the
-sidebar's Trace Folders loader, drawn on every page before the boxes.
+span while the Viewer showed the dropped one.  The check now runs on every
+page before the page draws (it was the sidebar's Trace Folders loader; the
+boxes are on the Traces tab since 2026-10-01).
 """
 from __future__ import annotations
 
@@ -14,8 +15,8 @@ import os
 
 import pytest
 
-from conftest import (run_streamlit, import_trace_server,
-                      FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
+from conftest import (run_streamlit, import_trace_server, go_tab, trace_box,
+                      trace_box_value, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
 from test_sor_writer import make_sor
 
 TS = import_trace_server()
@@ -41,7 +42,13 @@ def _own_temp(tmp_path, monkeypatch):
 
 
 def _box(at, label):
-    return next(t for t in at.sidebar.text_input if t.label == label)
+    """The Traces tab's box (goes to the Traces tab first)."""
+    return trace_box(at, label[0])
+
+
+def _held(at, label):
+    """What a Traces tab box holds, read without leaving the page."""
+    return trace_box_value(at, label[0])
 
 
 def _drop_three_and_three():
@@ -64,6 +71,7 @@ def test_a_drop_then_a_tool_click_loads_the_dropped_folders(page):
     at = run_streamlit().run()
     _box(at, 'A Folder').input(X_A).run()
     _box(at, 'B Folder').input(X_B).run()
+    go_tab(at, 'Viewer')                         # the Viewer shows the old span
     assert not at.exception, at.exception
     assert (TS.CONFIG['dir_a'], TS.CONFIG['dir_b']) == (X_A, X_B)
 
@@ -71,17 +79,20 @@ def test_a_drop_then_a_tool_click_loads_the_dropped_folders(page):
     assert os.path.isdir(y_a) and os.path.isdir(y_b)
 
     # Straight to the tool: no Viewer pass in between.
-    at.sidebar.radio[0].set_value(page).run()
+    go_tab(at, page)
     assert not at.exception, at.exception
     # The boxes name what was dropped, never the staging folder (#31)...
-    assert _box(at, 'A Folder').value == _shown(y_a)
-    assert _box(at, 'B Folder').value == _shown(y_b)
+    assert _held(at, 'A Folder') == _shown(y_a)
+    assert _held(at, 'B Folder') == _shown(y_b)
     # ...and stand for the staged folders, which the tools run on.
     assert (TS.CONFIG['dir_a'], TS.CONFIG['dir_b']) == (y_a, y_b)
     assert at.session_state['_drop_box_a'] == (_shown(y_a), y_a)
     assert at.session_state['_drop_box_b'] == (_shown(y_b), y_b)
     # ...and a hub rerun does not put the old paths back.
     at.run()
+    assert (_held(at, 'A Folder'), _held(at, 'B Folder')) == (_shown(y_a), _shown(y_b))
+    assert (TS.CONFIG['dir_a'], TS.CONFIG['dir_b']) == (y_a, y_b)
+    # ...nor does a trip to the Traces tab, whose boxes show the drop.
     assert (_box(at, 'A Folder').value, _box(at, 'B Folder').value) == (_shown(y_a), _shown(y_b))
     assert (TS.CONFIG['dir_a'], TS.CONFIG['dir_b']) == (y_a, y_b)
 
@@ -89,8 +100,8 @@ def test_a_drop_then_a_tool_click_loads_the_dropped_folders(page):
 def test_a_drop_is_taken_once_so_a_later_pick_stands():
     at = run_streamlit().run()
     y_a, y_b = _drop_three_and_three()
-    at.sidebar.radio[0].set_value('Splice Report').run()
-    assert _box(at, 'A Folder').value == _shown(y_a)
+    go_tab(at, 'Splice Report')
+    assert _held(at, 'A Folder') == _shown(y_a)
     assert TS.CONFIG['dir_a'] == y_a
     _box(at, 'A Folder').input(X_A).run()
     _box(at, 'B Folder').input(X_B).run()

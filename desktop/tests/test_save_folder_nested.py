@@ -20,7 +20,8 @@ import types
 
 import pytest
 
-from conftest import run_streamlit, finish_engine_run, FIXTURE_SPLICE_A_DIR
+from conftest import (run_streamlit, finish_engine_run, go_tab, load_traces,
+                      FIXTURE_SPLICE_A_DIR)
 
 
 def _hub():
@@ -110,10 +111,9 @@ def downloads(tmp_path, monkeypatch):
 
 def _uni_page(dest):
     at = run_streamlit(default_timeout=180).run()
-    next(t for t in at.sidebar.text_input
-         if t.label == 'A Folder').input(str(FIXTURE_SPLICE_A_DIR)).run()
+    load_traces(at, FIXTURE_SPLICE_A_DIR)  # the top bar's Traces tab
     at.session_state['uni_report_dest'] = str(dest)
-    at.sidebar.radio[0].set_value('Unidirectional').run()
+    go_tab(at, 'Unidirectional')
     assert not at.exception, at.exception
     return at
 

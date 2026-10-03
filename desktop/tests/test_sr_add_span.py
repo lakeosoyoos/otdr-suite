@@ -13,7 +13,7 @@ from __future__ import annotations
 import ast
 
 from conftest import (REPO_ROOT, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
-                      run_streamlit)
+                      run_streamlit, go_tab)
 
 SRC = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
 
@@ -26,7 +26,7 @@ def _page(**state):
     at = run_streamlit().run()
     for k, v in state.items():
         at.session_state[k] = v
-    at.sidebar.radio[0].set_value("Splice Report").run()
+    go_tab(at, "Splice Report")
     return at
 
 
@@ -43,7 +43,13 @@ def test_add_span_opens_span_2_boxes_and_the_generate_label_counts_spans():
                view_dir_b_input=str(FIXTURE_SPLICE_B_DIR))
     assert not at.exception, list(at.exception)
     keys = {w.key for w in at.text_input}
-    assert "view_dir_a_input" in keys and "sr2_dir_a" not in keys
+    # span 1 runs on the Traces tab's A and B boxes (drawn on that tab, the
+    # sidebar's until 2026-10-01); span 2 has no boxes yet
+    assert "sr2_dir_a" not in keys
+    assert not keys & {"view_dir_a_input", "view_dir_b_input"}
+    assert at.session_state["view_dir_a_input"] == str(FIXTURE_SPLICE_A_DIR)
+    assert any("the A and B folders loaded on the Traces tab" in c.value
+               for c in at.caption)
     _button(at, "Generate Splice Report")
 
     _button(at, "➕ Add Span…").click().run()

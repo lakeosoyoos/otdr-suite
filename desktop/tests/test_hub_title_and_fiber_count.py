@@ -4,7 +4,8 @@
    resets the title at the start of every run and only sets it back when the
    script reaches st.set_page_config.  A script on the hub page now turns
    that reset into "OTDR Suite".
-6. The sidebar said "A: 1 fibers".  One is "1 fiber".
+6. The sidebar said "A: 1 fibers".  One is "1 fiber" (the counts are on the
+   Traces tab now).
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ import shutil
 import subprocess
 
 from conftest import (APP_PATH, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
-                      run_streamlit)
+                      load_traces, run_streamlit)
 from test_viewer_overview_failures import JSC, needs_jsc
 
 APP = APP_PATH.read_text(encoding="utf-8")
@@ -81,13 +82,13 @@ def _one_file_folder(src, dest):
     return str(dest)
 
 
-def test_the_sidebar_says_one_fiber(tmp_path):
+def test_the_traces_tab_says_one_fiber(tmp_path):
     a = _one_file_folder(FIXTURE_SPLICE_A_DIR, tmp_path / 'A')
     b = _one_file_folder(FIXTURE_SPLICE_B_DIR, tmp_path / 'B')
     at = run_streamlit(default_timeout=180).run()
-    next(t for t in at.sidebar.text_input if t.label == 'A Folder').input(a).run()
-    next(t for t in at.sidebar.text_input if t.label == 'B Folder').input(b).run()
+    load_traces(at, a=a)
+    load_traces(at, b=b)
     assert not at.exception, at.exception
-    caps = ' '.join(str(c.value) for c in at.sidebar.caption)
-    assert 'A: 1 fiber · B: 1 fiber' in caps, caps
-    assert '1 fibers' not in caps
+    caps = [str(c.value) for c in at.caption]
+    assert 'A: 1 fiber' in caps and 'B: 1 fiber' in caps, caps
+    assert '1 fibers' not in ' '.join(caps)

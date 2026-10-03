@@ -1112,34 +1112,37 @@ def test_the_tolerance_scales_with_the_segment(compass_sheet):
 APP_EDITION = 'OTDR Suite App'
 
 
+def _tabs(at):
+    """The pages the hub's top bar has a tab for, left to right."""
+    return [b.key[len('nav_tab_'):] for b in at.button
+            if (b.key or '').startswith('nav_tab_')]
+
+
 def test_the_app_offers_the_fqa_builder_and_the_suite_does_not(monkeypatch):
     from conftest import run_streamlit
     monkeypatch.setenv('OTDR_SUITE_EDITION', APP_EDITION)
     at = run_streamlit(default_timeout=180).run()
     assert not at.exception
-    tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    assert tool.options == ['Viewer', 'Splice Report', 'Splice Report FEC',
-                            'Unidirectional',
-                            'Secret Sauce', 'FQA Builder', 'Field Capture']
+    assert _tabs(at) == ['Traces', 'Splice Report', 'Unidirectional',
+                         'Splice Report FEC', 'Secret Sauce', 'Viewer',
+                         'FQA Builder', 'Field Capture']
     monkeypatch.delenv('OTDR_SUITE_EDITION')
     at = run_streamlit(default_timeout=180).run()
     assert not at.exception
-    tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    assert 'FQA Builder' not in tool.options
+    assert 'FQA Builder' not in _tabs(at)
 
 
 def test_the_hub_page_renders_the_same_ui_as_the_standalone_app(monkeypatch):
     """One copy of the interface, called two ways. If these drift, a fix
     lands in the app the tech is not using."""
-    from conftest import run_streamlit
+    from conftest import run_streamlit, go_tab
     monkeypatch.setenv('OTDR_SUITE_EDITION', APP_EDITION)
     at = run_streamlit(default_timeout=180).run()
-    tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    at = tool.set_value('FQA Builder').run()
+    at = go_tab(at, 'FQA Builder')
     assert not at.exception
     assert any('FQA Builder' in m.value for m in at.markdown)
-    # The hub's own trace drop-zone lives in the sidebar, so count only
-    # the uploader the page itself drew.
+    # Count only the uploader the page itself drew (the hub draws none of
+    # its own: the trace folders are on the Traces tab).
     assert len(at.main.get('file_uploader')) == 1
 
 

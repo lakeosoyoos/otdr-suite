@@ -1,4 +1,4 @@
-"""Secret Sauce on the left panel's A and B folders: the ONE folder the hub
+"""Secret Sauce on the Traces tab's A and B folders: the ONE folder the hub
 builds from the two (app._panel_ss_folder), every trace of both, flat.
 
 It follows the traces on disk.  The folder used to be reused on the pair of
@@ -23,7 +23,7 @@ import shutil
 import pytest
 
 from conftest import (run_streamlit, run_secretsauce, finish_engine_run,
-                      import_trace_server, FIXTURE_A_DIR, FIXTURE_B_DIR)
+                      import_trace_server, go_tab, trace_box, clear_traces, FIXTURE_A_DIR, FIXTURE_B_DIR)
 
 
 def _span(tmp_path, same_names):
@@ -62,7 +62,8 @@ def _swap(path):
 
 
 def _box(at, label):
-    return next(t for t in at.sidebar.text_input if t.label == label)
+    """The Traces tab's box (goes to the Traces tab first)."""
+    return trace_box(at, label[0])
 
 
 def _hub(a, b, tmp_path, monkeypatch):
@@ -70,7 +71,7 @@ def _hub(a, b, tmp_path, monkeypatch):
     at = run_streamlit(default_timeout=180).run()
     _box(at, 'A Folder').input(a).run()
     _box(at, 'B Folder').input(b).run()
-    at.sidebar.radio[0].set_value('Secret Sauce').run()
+    go_tab(at, 'Secret Sauce')
     assert not at.exception, at.exception
     return at
 
@@ -158,17 +159,17 @@ def test_a_run_after_a_swap_runs_on_the_new_trace(tmp_path, monkeypatch):
 
 def test_clear_traces_then_the_same_span_needs_a_fresh_run(tmp_path, monkeypatch):
     """Clear Traces forgets the report saved for the folder built from the
-    panel, so loading the same span again does not bring it back."""
+    Traces tab, so loading the same span again does not bring it back."""
     a, b = _span(tmp_path, same_names=False)
     at = _hub(a, b, tmp_path, monkeypatch)
     _save_pairs_report(at.session_state['_ss_panel_folder'], tmp_path)
     at.run()
     assert 'ss_pairs_result' in at.session_state
-    next(b_ for b_ in at.sidebar.button if b_.label == 'Clear Traces').click().run()
-    next(b_ for b_ in at.button if b_.key == 'clear_traces_allow').click().run()
+    clear_traces(at, allow=True)
     assert not at.exception, at.exception
     _box(at, 'A Folder').input(a).run()
     _box(at, 'B Folder').input(b).run()
+    go_tab(at, 'Secret Sauce')          # the page that would bring it back
     assert not at.exception, at.exception
     assert 'ss_pairs_result' not in at.session_state
 

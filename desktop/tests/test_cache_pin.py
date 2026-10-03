@@ -35,7 +35,7 @@ def _no_pin_leaks():
     only restores what existed before a test, so a variable that was absent
     and then set would leak into every later test, including the AppTest hub
     in test_update_nudge.py, which would then show the pin notice instead of
-    the update banner."""
+    the update offer."""
     os.environ.pop(PIN_ENV, None)
     yield
     os.environ.pop(PIN_ENV, None)
@@ -312,25 +312,46 @@ def test_the_missing_file_page_reports_before_anyone_clicks():
     assert repairs == [], "no click, no repair"
 
 
-def test_the_nudge_shows_the_pin_notice_and_offers_no_restart(tmp_path):
-    """A restart lands on the same bundled engine.  While pinned the nudge
-    must say what is going on and never consult the update state at all."""
-    st = _FakeSt()
+class _MenuSt(_FakeSt):
+    """_FakeSt plus what the top bar's update menu draws with: its box, the
+    popover and the orange flag (markdown)."""
+    def container(self, *a, **k):
+        return self
+
+    def popover(self, *a, **k):
+        self.calls.append(("popover", a[0] if a else ""))
+        return self
+
+    def markdown(self, *a, **k):
+        self.calls.append(("markdown", a[0] if a else ""))
+
+
+@pytest.mark.parametrize("checked", [False, True], ids=["opened", "after-a-check"])
+def test_the_menu_shows_the_pin_notice_and_offers_no_restart(checked):
+    """A restart lands on the same bundled engine.  While pinned the bar's
+    update menu must say what is going on, flag it, and never consult the
+    update state at all, nor offer a restart after the tech's own check."""
+    st = _MenuSt()
+    if checked:
+        st.session_state.update(upd_checked=True, upd_latest=502)
     shown = []
 
-    def boom():
+    def boom(*a, **k):
         raise AssertionError("update state consulted while pinned")
 
-    nudge = _load_app_helper(
-        "_render_update_nudge", st=st, os=os, sys=sys,
-        _restart_marker_path=lambda: str(tmp_path / "no-such-marker"),
-        _update_state=boom,
+    menu = _load_app_helper(
+        "_render_update_menu", st=st, PRODUCT_NAME="OTDR Suite",
+        _app_version=lambda: "build 400 (2026-09-01)",
+        _engine_version=lambda: "bundled (cache pinned)",
+        _parse_engine_version=lambda appv, engv: 400,
+        _update_state=boom, _update_actions=boom,
+        _latest_manifest_version=lambda: 502,
         _cache_pinned=lambda: "engine files disappeared from the cache 2 times in 7 days",
-        _render_cache_pinned_notice=lambda sidebar=False: shown.append("notice"),
-        _relaunch_and_exit=lambda: True, _render_restart_watchdog=lambda: None)
-    nudge()
+        _render_cache_pinned_notice=lambda sidebar=False: shown.append("notice"))
+    menu()
     assert shown == ["notice"]
-    assert not any(c[0] == "button" for c in st.calls)
+    assert [c[1] for c in st.calls if c[0] == "button"] == ["🔄 Check for Updates"]
+    assert ("markdown", '<p class="nav-update-flag">Update</p>') in st.calls
 
 
 def test_the_pin_notice_names_the_installer_and_no_jargon():
@@ -346,9 +367,16 @@ def test_the_pin_notice_names_the_installer_and_no_jargon():
         assert jargon not in text, f"{jargon!r} is not for a tech to read"
 
 
-def test_the_sidebar_update_block_checks_the_pin_before_offering_a_restart():
-    i = APP_SRC.index("key='upd_restart'")
-    assert "_cache_pinned()" in APP_SRC[i - 600:i]
+def test_the_update_menu_checks_the_pin_before_offering_a_restart():
+    """Both of the menu's restart buttons are drawn by _update_actions, which
+    asks about the pin before its button."""
+    tree = ast.parse(APP_SRC)
+    src = ast.get_source_segment(APP_SRC, next(
+        n for n in tree.body if isinstance(n, ast.FunctionDef)
+        and n.name == "_update_actions"))
+    assert src.index("_cache_pinned()") < src.index("st.button(")
+    i = APP_SRC.index("_update_actions(_latest, _cur, 'upd_restart')")
+    assert "not (_nudge or _pinned)" in APP_SRC[i - 200:i]
 
 
 def test_the_app_and_the_launcher_agree_on_the_pin_variable():

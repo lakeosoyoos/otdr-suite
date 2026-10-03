@@ -417,15 +417,18 @@ def test_a_refused_page_that_stalls_does_not_hold_up_the_page(fc, monkeypatch):
 def test_the_app_offers_field_capture_and_the_suite_does_not(monkeypatch):
     """The page belongs to OTDR Suite App (Robert 2026-09-28).  The App's
     launcher exports OTDR_SUITE_EDITION; the regular Suite's does not."""
-    from conftest import run_streamlit
+    from conftest import run_streamlit, go_tab
+
+    def tabs(at):
+        return [b.key for b in at.button if (b.key or '').startswith('nav_tab_')]
+
     monkeypatch.delenv('OTDR_SUITE_EDITION', raising=False)
     at = run_streamlit(default_timeout=180).run()
-    tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    assert 'Field Capture' not in tool.options
+    assert tabs(at) and 'nav_tab_Field Capture' not in tabs(at)
     monkeypatch.setenv('OTDR_SUITE_EDITION', 'OTDR Suite App')
     at = run_streamlit(default_timeout=180).run()
-    tool = next(r for r in at.sidebar.radio if r.label == 'Tool')
-    at = tool.set_value('Field Capture').run()
+    assert 'nav_tab_Field Capture' in tabs(at)
+    at = go_tab(at, 'Field Capture')
     assert not at.exception
     assert any('Field Capture' in m.value for m in at.markdown)
     assert server._server is not None                    # the page started its server

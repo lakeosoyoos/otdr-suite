@@ -28,7 +28,8 @@ import zipfile
 
 import pytest
 
-from conftest import run_streamlit, import_trace_server, VIEWER_DIR, APP_PATH
+from conftest import (run_streamlit, import_trace_server, go_tab, trace_box,
+                      trace_box_value, VIEWER_DIR, APP_PATH)
 from test_sor_writer import make_sor
 
 TS = import_trace_server()
@@ -141,7 +142,13 @@ def test_the_listing_serves_the_drop_name_not_the_staging_folder():
 # ── the hub's A/B boxes ─────────────────────────────────────────────────
 
 def _box(at, label):
-    return next(t for t in at.sidebar.text_input if t.label == label)
+    """The Traces tab's box (goes to the Traces tab first)."""
+    return trace_box(at, label[0])
+
+
+def _held(at, label):
+    """What a Traces tab box holds, read without leaving the page."""
+    return trace_box_value(at, label[0])
 
 
 def test_the_hub_boxes_name_the_drop_and_the_tools_still_run_on_it():
@@ -149,13 +156,16 @@ def test_the_hub_boxes_name_the_drop_and_the_tools_still_run_on_it():
     folders = {n: 'A side' for n in A_NAMES}
     folders.update({n: 'B side' for n in B_NAMES})
     out = _drop(A_NAMES + B_NAMES, folders)
-    at.sidebar.radio[0].set_value('Splice Report').run()
+    go_tab(at, 'Splice Report')
     assert not at.exception, at.exception
+    assert _held(at, 'A Folder') == 'A side (dropped)'
+    assert _held(at, 'B Folder') == 'B side (dropped)'
+    # The Splice Report runs on the staged folders behind the names.
+    assert any('the A and B folders loaded on the Traces tab' in c.value for c in at.caption)
+    assert (TS.CONFIG['dir_a'], TS.CONFIG['dir_b']) == (out['dir_a'], out['dir_b'])
+    # The Traces tab's boxes show the names, not the staging folder.
     assert _box(at, 'A Folder').value == 'A side (dropped)'
     assert _box(at, 'B Folder').value == 'B side (dropped)'
-    # The Splice Report runs on the staged folders behind the names.
-    assert any('the A and B folders loaded in the left panel' in c.value for c in at.caption)
-    assert (TS.CONFIG['dir_a'], TS.CONFIG['dir_b']) == (out['dir_a'], out['dir_b'])
     # A new session seeded from the trace server shows the names as well.
     at2 = run_streamlit().run()
     assert not at2.exception, at2.exception
@@ -178,12 +188,18 @@ def test_a_link_back_with_the_staged_path_shows_the_name():
     at.session_state['view_dir_a_input'] = out['dir_a']
     at.run()
     assert not at.exception, at.exception
+    assert _held(at, 'A Folder') == 'A side (dropped)'
     assert _box(at, 'A Folder').value == 'A side (dropped)'
 
 
 def test_the_hub_label_rule():
+    """The boxes are labeled on every run, after a drop is picked up and
+    before any page (the Traces tab included) draws them."""
     app = open(APP_PATH, encoding='utf-8').read()
-    assert re.search(r'^\s+_label_drop_boxes\(\)$', app, re.M)
+    m = re.search(r'^_label_drop_boxes\(\)$', app, re.M)
+    assert m, 'the boxes are not labeled at module level on every run'
+    assert app.index("_drop_at = trace_server.CONFIG.get('dropped_at')") < m.start()
+    assert m.start() < app.index('\ndef page_traces(')
     body = app.split('def _panel_boxes():', 1)[1].split('\ndef ', 1)[0]
     assert "_drop_box_{side}" in body
 

@@ -11,7 +11,7 @@ and "← Back to Splice Report" the page had reset without a word:
                           back to the stored names, and so did the file name
     Save Reports To       came back empty, so the next report went to Downloads
 
-A trip through the sidebar kept all three; only the link lost them.  Two
+A trip through the sidebar (the top bar's tabs now) kept all three; only the link lost them.  Two
 causes.  The link carried the OTDR Settings and the save box's folder, but
 not the slots the page boxes keep what they show in (`*_saved`), so the new
 session had nothing to put back.  And a box only shows a value written in
@@ -25,7 +25,8 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import run_streamlit, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR
+from conftest import (run_streamlit, go_tab, load_traces, clear_traces,
+                      FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
 
 A, B = str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR)
 SITE_A, SITE_B = 'A-Direction ILA / Site', 'B-Direction ILA / Site'
@@ -52,12 +53,12 @@ def _on_screen(el):
     return p.value
 
 
-def _box(at, label, where='main'):
-    return next(t for t in getattr(at, where).text_input if t.label == label)
+def _box(at, label):
+    return next(t for t in at.main.text_input if t.label == label)
 
 
 def _open(at, page):
-    at.sidebar.radio[0].set_value(page).run()
+    go_tab(at, page)
     assert not at.exception, at.exception
     return at
 
@@ -65,9 +66,9 @@ def _open(at, page):
 def _hub(a=A, b=B):
     at = run_streamlit(default_timeout=180).run()
     if a:
-        _box(at, 'A Folder', 'sidebar').input(a).run()
+        load_traces(at, a=a)
     if b:
-        _box(at, 'B Folder', 'sidebar').input(b).run()
+        load_traces(at, b=b)
     assert not at.exception, at.exception
     return at
 
@@ -188,12 +189,11 @@ def test_cleared_traces_do_not_come_back_through_the_link(tmp_path):
     at = _click(_sr_set_up(tmp_path), '➕ Add Span…')
     at.text_input(key='sr2_dir_a').input(B).run()
     _open(at, 'Viewer')
-    next(b for b in at.sidebar.button if b.label == 'Clear Traces').click().run()
-    next(b for b in at.button if b.key == 'clear_traces_allow').click().run()
+    clear_traces(at, allow=True)
     assert not at.exception, at.exception
     # The span is loaded again, and its cell clicked.
-    _box(at, 'A Folder', 'sidebar').input(A).run()
-    _box(at, 'B Folder', 'sidebar').input(B).run()
+    load_traces(at, a=A)
+    load_traces(at, b=B)
     view = _sr_back(at)
     assert _n_spans(view) == 1
     assert 'HUT-A' not in (_on_screen(_box(view, SITE_A)), _on_screen(_box(view, SITE_B)))

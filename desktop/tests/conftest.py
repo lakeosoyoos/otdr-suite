@@ -259,6 +259,63 @@ def run_streamlit(default_timeout: float = 60.0, **kwargs):
     return AppTest.from_file(str(APP_PATH), default_timeout=default_timeout, **kwargs)
 
 
+# ── The hub's top bar (sandbox/top-tabs-design) ─────────────────────────
+# The sidebar is gone: a tab per page across the top (buttons keyed
+# nav_tab_<Page>, the page name in session_state['nav_radio']), and the A/B
+# Trace Folders boxes, their Browse buttons and Clear Traces on the Traces
+# page only.  Tests reach them through these helpers.
+TRACE_BOX_KEYS = {'a': 'view_dir_a_input', 'b': 'view_dir_b_input'}
+
+
+def page_of(at):
+    """The page the hub shows (session_state['nav_radio'])."""
+    try:
+        return at.session_state['nav_radio']
+    except Exception:
+        return None
+
+
+def go_tab(at, page, timeout=None):
+    """Click the top bar's tab for `page` and run.  Returns `at`."""
+    btn = [b for b in at.button if getattr(b, 'key', None) == f'nav_tab_{page}']
+    assert btn, f'no tab for {page!r} in the top bar'
+    btn[0].click()
+    return at.run(timeout=timeout) if timeout else at.run()
+
+
+def trace_box(at, side):
+    """The Traces page's A or B folder box (goes to the Traces tab first)."""
+    if page_of(at) != 'Traces':
+        go_tab(at, 'Traces')
+    key = TRACE_BOX_KEYS[side.lower()]
+    return next(t for t in at.text_input if t.key == key)
+
+
+def trace_box_value(at, side):
+    """What the A or B folder box holds, read on any page."""
+    key = TRACE_BOX_KEYS[side.lower()]
+    return at.session_state[key] if key in at.session_state else ''
+
+
+def load_traces(at, a=None, b=None):
+    """Type folders into the Traces page's boxes (None leaves a box as it
+    is) and run.  Stays on the Traces tab.  Returns `at`."""
+    for side, v in (('a', a), ('b', b)):
+        if v is not None:
+            trace_box(at, side).input(str(v))
+    return at.run()
+
+
+def clear_traces(at, allow=True):
+    """Press Clear Traces on the Traces tab and answer its pop-up."""
+    if page_of(at) != 'Traces':
+        go_tab(at, 'Traces')
+    at.button(key='side_clear_traces').click().run()
+    if allow:
+        at.button(key='clear_traces_allow').click().run()
+    return at
+
+
 def finish_engine_run(at, prefix, timeout: float = 300.0):
     """Let the report run a page started finish, and run the page so it takes
     the result.  `prefix` is the page's: 'sr', 'uni' or 'ss'.

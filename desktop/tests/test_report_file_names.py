@@ -22,8 +22,8 @@ import types
 
 import pytest
 
-from conftest import (run_streamlit, finish_engine_run, APP_PATH,
-                      FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
+from conftest import (run_streamlit, finish_engine_run, APP_PATH, go_tab,
+                      load_traces, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
 
 A, B = str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR)
 APP_SRC = APP_PATH.read_text(encoding='utf-8')
@@ -160,15 +160,15 @@ def dest(tmp_path, monkeypatch):
 
 def _hub(a='', b=''):
     at = run_streamlit(default_timeout=180).run()
-    for label, v in (('A Folder', a), ('B Folder', b)):
+    for side, v in (('a', a), ('b', b)):
         if v:
-            next(t for t in at.sidebar.text_input if t.label == label).input(v).run()
+            load_traces(at, **{side: v})
     assert not at.exception, at.exception
     return at
 
 
 def _open(at, page):
-    at.sidebar.radio[0].set_value(page).run()
+    go_tab(at, page)
     assert not at.exception, at.exception
     return at
 

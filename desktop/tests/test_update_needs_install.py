@@ -18,8 +18,9 @@ Two halves, tested from both ends:
     (ENGINE_FILES_ENV) so the hub can see it coming;
   * the hub, from either the launcher's verdict or the manifest's file list
     against that published one, says "needs a fresh install" with the
-    installer link — in the banner, the report block and the footer — and
-    offers no restart.  Both lists unknown is fail-open: the restart stays.
+    installer link — in the top bar's update menu (where the banner and the
+    sidebar footer were) and the report block — and offers no restart.
+    Both lists unknown is fail-open: the restart stays.
 """
 from __future__ import annotations
 
@@ -33,7 +34,7 @@ import urllib.request
 import pytest
 
 from conftest import (FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR,
-                      run_streamlit)
+                      go_tab, run_streamlit)
 import error_report as R
 from test_cache_pin import _FakeSt, _app_constant
 from test_engine_self_verify import _load_app_helper, _load_launcher
@@ -48,7 +49,7 @@ NEW_FILE = "fqa/new_tab.py"
 def _no_env_leaks():
     """The launcher SETS these on the real os.environ (see the same fixture
     in test_cache_pin.py): pop them either side so a verdict from one test
-    cannot turn a later AppTest's restart banner into the install notice."""
+    cannot turn a later AppTest's restart offer into the install notice."""
     for k in (NEEDS_ENV, FILES_ENV, "OTDR_SUITE_CACHE_PINNED"):
         os.environ.pop(k, None)
     yield
@@ -174,7 +175,7 @@ def test_the_app_and_the_launcher_agree_on_the_variables():
 
 def test_the_app_and_the_launcher_agree_on_what_needs_an_install():
     """The hub predicts the launcher's verdict off the same two lists.  If
-    the rules ever drift, the banner says 'restart' for a manifest the
+    the rules ever drift, the menu says 'restart' for a manifest the
     launcher refuses (today's bug) or 'install' for one it would take."""
     L = _load_launcher()
     refuse = _load_app_helper("_launcher_would_refuse")
@@ -210,7 +211,7 @@ def test_the_launcher_verdict_alone_is_enough(monkeypatch):
 
 
 def test_the_manifest_file_list_is_enough_before_any_restart(monkeypatch):
-    """The banner can say 'install' the moment the manifest is read, without
+    """The menu can say 'install' the moment the manifest is read, without
     sending the tech through a restart that changes nothing."""
     st = _FakeSt()
     monkeypatch.setenv(FILES_ENV, json.dumps(["app.py"]))
@@ -235,18 +236,21 @@ def test_it_fails_open_when_either_list_is_unknown(monkeypatch):
     assert _needs(st)() == ""
 
 
-def test_the_nudge_says_install_and_offers_no_restart(tmp_path):
+@pytest.mark.parametrize("key", ["upd_menu_restart", "upd_restart"])
+def test_the_menu_says_install_and_offers_no_restart(key):
+    """Both of the update menu's spots (what the bar found, and a manual
+    check) go through _update_actions."""
     st = _FakeSt()
     shown = []
-    nudge = _load_app_helper(
-        "_render_update_nudge", st=st, os=os, sys=sys,
-        _restart_marker_path=lambda: str(tmp_path / "no-such-marker"),
-        _update_state=lambda: (658, 657), _cache_pinned=lambda: "",
+    actions = _load_app_helper(
+        "_update_actions", st=st, os=os, sys=types.SimpleNamespace(frozen=True),
+        _cache_pinned=lambda: "", _deadline_note=lambda running: "",
         _needs_install=lambda: "reason",
         _render_install_notice=lambda latest, running, sidebar=False:
             shown.append((latest, running)),
-        _relaunch_and_exit=lambda: True, _render_restart_watchdog=lambda: None)
-    nudge()
+        _render_cache_pinned_notice=lambda sidebar=False: shown.append("pin"),
+        _relaunch_and_exit=lambda: True)
+    actions(658, 657, key)
     assert shown == [(658, 657)]
     assert not any(c[0] == "button" for c in st.calls), st.calls
     assert not any("is available" in str(c[1]) for c in st.calls), st.calls
@@ -333,12 +337,12 @@ def test_apptest_the_boss_sees_install_not_restart(monkeypatch, tmp_path):
     _arm(monkeypatch, tmp_path, _fake_manifest(658, L.ENGINE_FILES), _old_exe(L))
     at = run_streamlit().run()
     assert not at.exception, f"page raised: {list(at.exception)}"
-    warnings = [w.value for w in at.sidebar.warning]
+    warnings = [w.value for w in at.warning]       # the bar's menu included
     assert any("Update 658 needs a fresh install (running 657)" in w
                and "OTDRSuite-Setup.exe" in w for w in warnings), warnings
-    assert not any("is available" in w for w in warnings), warnings
-    assert not any(b.key == "upd_nudge_restart" for b in at.sidebar.button), (
-        [b.key for b in at.sidebar.button])
+    assert not any("is available" in w for w in warnings + [i.value for i in at.info]), warnings
+    assert not any(b.key in ("upd_menu_restart", "upd_restart") for b in at.button), (
+        [b.key for b in at.button])
 
 
 def test_apptest_a_manifest_this_exe_can_carry_still_offers_the_restart(
@@ -348,9 +352,9 @@ def test_apptest_a_manifest_this_exe_can_carry_still_offers_the_restart(
          list(L.ENGINE_FILES))
     at = run_streamlit().run()
     assert not at.exception, f"page raised: {list(at.exception)}"
-    warnings = [w.value for w in at.sidebar.warning]
+    warnings = [w.value for w in at.warning]       # the bar's menu included
     assert any("Update 658 is available (running 657)" in w for w in warnings), warnings
-    assert any(b.key == "upd_nudge_restart" for b in at.sidebar.button)
+    assert any(b.key == "upd_menu_restart" for b in at.button)
 
 
 def test_apptest_the_report_block_says_install(monkeypatch, tmp_path):
@@ -364,7 +368,7 @@ def test_apptest_the_report_block_says_install(monkeypatch, tmp_path):
     at = run_streamlit().run()
     at.session_state["view_dir_a_input"] = str(FIXTURE_SPLICE_A_DIR)
     at.session_state["view_dir_b_input"] = str(FIXTURE_SPLICE_B_DIR)
-    at.sidebar.radio[0].set_value("Splice Report").run()
+    go_tab(at, "Splice Report")
     assert not at.exception, f"page raised: {list(at.exception)}"
     text = " ".join(e.value for e in at.error)
     assert "needs a fresh install" in text and "OTDRSuite-Setup.exe" in text, text

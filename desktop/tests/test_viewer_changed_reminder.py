@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import REPO_ROOT, run_streamlit, import_trace_server
+from conftest import REPO_ROOT, run_streamlit, import_trace_server, go_tab
 
 TS = import_trace_server()
 VIEWER = (REPO_ROOT / "viewer" / "viewer.html").read_text(encoding="utf-8")
@@ -64,7 +64,7 @@ def _hub():
 
 
 def _open(at, page):
-    at.sidebar.radio[0].set_value(page).run()
+    go_tab(at, page)
     assert not at.exception, at.exception
     return at
 

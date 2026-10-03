@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import run_streamlit
+from conftest import run_streamlit, go_tab
 
 
 def _toggle(at, label):
@@ -25,12 +25,12 @@ def _toggle(at, label):
 def test_a_hidden_category_stays_hidden_after_leaving_the_page(page, label):
     at = run_streamlit()
     at.run()
-    at.sidebar.radio[0].set_value(page).run()
+    go_tab(at, page)
     _toggle(at, label).set_value(False).run()
     assert _toggle(at, label).value is False
 
-    at.sidebar.radio[0].set_value('Viewer').run()        # the switch is not drawn
-    at.sidebar.radio[0].set_value(page).run()
+    go_tab(at, 'Viewer')        # the switch is not drawn
+    go_tab(at, page)
     assert _toggle(at, label).value is False, 'switch reset while away'
     # ...and it can still be switched back on
     _toggle(at, label).set_value(True).run()

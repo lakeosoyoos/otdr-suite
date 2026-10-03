@@ -1,4 +1,4 @@
-"""Clicking a name beside a sidebar switch picks that side (audit
+"""Clicking a name beside a top-bar switch picks that side (audit
 2026-10-02).
 
 The Theme switch (Dark | knob | Light) and the Analysis Mode switch (FR Mode
@@ -22,7 +22,7 @@ import subprocess
 
 import pytest
 
-from conftest import REPO_ROOT, run_streamlit
+from conftest import REPO_ROOT, go_tab, run_streamlit
 from test_viewer_overview_failures import JSC, needs_jsc
 
 SRC = (REPO_ROOT / 'app.py').read_text(encoding='utf-8')
@@ -34,7 +34,7 @@ def _script():
     return m.group(1)
 
 
-# A sidebar switch box, as far as the script looks at it: two names, one
+# A top-bar switch box, as far as the script looks at it: two names, one
 # with class mode-on (in use) and one mode-off, either side of the toggle's
 # checkbox.  Knob right = checked (Light, OTDR Mode).
 _PAGE = r"""
@@ -146,7 +146,7 @@ def _frames(at):
 @pytest.mark.parametrize('page', ['Viewer', 'Splice Report', 'Secret Sauce'])
 def test_the_script_is_on_every_page(page):
     at = run_streamlit().run()
-    at.sidebar.radio[0].set_value(page).run()
+    go_tab(at, page)
     assert not at.exception, list(at.exception)
     assert sum('__otdrModeNameClick' in f for f in _frames(at)) == 1
 
@@ -155,12 +155,12 @@ def test_a_click_on_the_switch_moves_the_theme_and_the_halo():
     """What the script does is click the switch: that path picks the side."""
     at = run_streamlit().run()
     assert at.session_state['ui_theme'] == 'dark'
-    assert any('class="mode-on">Dark<' in m.value for m in at.sidebar.markdown)
-    theme = next(t for t in at.sidebar.toggle if t.label == 'Theme')
+    assert any('class="mode-on">Dark<' in m.value for m in at.markdown)
+    theme = next(t for t in at.toggle if t.label == 'Theme')
     assert theme.value is False and theme.key is None
     theme.set_value(True).run()
     assert not at.exception, list(at.exception)
     assert at.session_state['ui_theme'] == 'light'
-    md = [m.value for m in at.sidebar.markdown]
+    md = [m.value for m in at.markdown]
     assert any('class="mode-on">Light<' in m for m in md)
     assert any('class="mode-off">Dark<' in m for m in md)

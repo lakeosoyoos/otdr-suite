@@ -21,7 +21,7 @@ import shutil
 
 import pytest
 
-from conftest import (APP_PATH, run_streamlit, finish_engine_run,
+from conftest import (APP_PATH, run_streamlit, finish_engine_run, go_tab, load_traces,
                       import_trace_server, FIXTURE_SPLICE_A_DIR,
                       FIXTURE_SPLICE_B_DIR)
 
@@ -184,8 +184,7 @@ def _own_cache(tmp_path, monkeypatch):
 
 def _hub(a, b):
     at = run_streamlit(default_timeout=180).run()
-    next(t for t in at.sidebar.text_input if t.label == 'A Folder').input(a).run()
-    next(t for t in at.sidebar.text_input if t.label == 'B Folder').input(b).run()
+    load_traces(at, a, b)                  # the top bar's Traces tab
     assert not at.exception, at.exception
     return at
 
@@ -202,7 +201,7 @@ def test_splice_report_on_folders_that_filled_up(tmp_path, _own_cache):
     a, b = _span(tmp_path, set(range(1, 13)))
     at = _hub(a, b)
     at.session_state['sr_report_dest'] = str(tmp_path)
-    at.sidebar.radio[0].set_value('Splice Report').run()
+    go_tab(at, 'Splice Report')
     next(x for x in at.main.button if x.label.startswith('Generate')).click().run()
     finish_engine_run(at, 'sr')
     assert not at.exception, at.exception
@@ -223,7 +222,7 @@ def test_splice_report_on_folders_that_filled_up(tmp_path, _own_cache):
 
     # A new session brings the report back from its saved copy, and says so.
     fresh = _hub(a, b)
-    fresh.sidebar.radio[0].set_value('Splice Report').run()
+    go_tab(fresh, 'Splice Report')
     assert not fresh.exception, fresh.exception
     assert '  ·  12 fibers  ·  ' in _summary(fresh)
     assert len(_stale(fresh)) == 1
@@ -239,7 +238,7 @@ def test_splice_report_on_folders_that_filled_up(tmp_path, _own_cache):
     with open(path, 'w', encoding='utf-8') as fh:
         json.dump(saved, fh)
     old = _hub(a, b)
-    old.sidebar.radio[0].set_value('Splice Report').run()
+    go_tab(old, 'Splice Report')
     assert not old.exception, old.exception
     assert '  ·  12 fibers  ·  ' in _summary(old)
     assert _stale(old) == []
@@ -279,7 +278,7 @@ def test_unidirectional_says_so_too(tmp_path, _own_cache):
     a, b = _span(tmp_path, set(range(1, 13)))
     at = _hub(a, b)
     at.session_state['uni_report_dest'] = str(tmp_path)
-    at.sidebar.radio[0].set_value('Unidirectional').run()
+    go_tab(at, 'Unidirectional')
     _run(at, 'Run Unidirectional Report', 'uni')
     assert [s.value for s in at.success if s.value.startswith('Done: 12 fibers')]
     assert _stale(at) == []
@@ -289,7 +288,7 @@ def test_unidirectional_says_so_too(tmp_path, _own_cache):
     assert _stale(at) == ['The A folder changed since this report was made (12 '
                           'fibers then, 24 now). Run the report again to include them.']
     fresh = _hub(a, b)                       # the saved copy, in a new session
-    fresh.sidebar.radio[0].set_value('Unidirectional').run()
+    go_tab(fresh, 'Unidirectional')
     assert not fresh.exception, fresh.exception
     assert len(_stale(fresh)) == 1
 
@@ -298,7 +297,7 @@ def test_secret_sauce_says_so_too(tmp_path, _own_cache):
     a, b = _span(tmp_path, set(range(1, 13)))
     at = _hub(a, b)
     at.session_state['ss_report_dest'] = str(tmp_path / 'ss')
-    at.sidebar.radio[0].set_value('Secret Sauce').run()
+    go_tab(at, 'Secret Sauce')
     _run(at, 'Run Analysis', 'ss')
     assert at.session_state['ss_result'].get('ok')
     assert _stale(at) == []
@@ -316,7 +315,7 @@ def test_splice_report_fec_says_so_too(tmp_path, _own_cache):
     at.session_state['fec_dir_a'] = a
     at.session_state['fec_dir_b'] = b
     at.session_state['fec_report_dest'] = str(tmp_path)
-    at.sidebar.radio[0].set_value('Splice Report FEC').run()
+    go_tab(at, 'Splice Report FEC')
     assert not at.exception, at.exception
     _run(at, 'Run FEC Report', 'fec')
     assert at.session_state['fec_result'].get('ok')

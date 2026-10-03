@@ -26,7 +26,7 @@ import subprocess
 
 import pytest
 
-from conftest import APP_PATH, VIEWER_DIR, import_trace_server, run_streamlit
+from conftest import APP_PATH, VIEWER_DIR, go_tab, import_trace_server, run_streamlit
 from conftest import COPY_HELPERS_JS  # noqa: E402
 
 TS = import_trace_server()
@@ -134,7 +134,7 @@ def _sr_page(tmp_path, ran):
     at.session_state['view_dir_a_input'] = a
     at.session_state['view_dir_b_input'] = b
     at.session_state['sr_click_target_saved'] = 'This tab (Viewer page)'
-    at.sidebar.radio[0].set_value('Splice Report').run()
+    go_tab(at, 'Splice Report')
     assert not at.exception, list(at.exception)
     # Fiber 5 removed in the Viewer (both directions), on the folders loaded.
     TS.set_dirs(a, b)

@@ -1,10 +1,11 @@
 """The Splice Report's site names and every report page's 'Save Reports To'
 folder survive a trip to another tool.
 
-Seen 2026-09-29: with an A and a B folder loaded in the left panel, the
+Seen 2026-09-29: with an A and a B folder loaded in the left panel (the
+Traces tab now), the
 Splice Report's "A-direction ILA / site" and "B-direction ILA / site" boxes
 showed the site names read from the traces, and "Save reports to" showed the
-folder the tech had chosen.  After Select Tool -> Viewer -> Splice Report the
+folder the tech had chosen.  After a trip Viewer -> Splice Report the
 site boxes read "A" and "B" and the save box was empty again, so the next
 report was named A_to_B_SpliceReport.xlsx and landed in Downloads.
 
@@ -18,18 +19,19 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import run_streamlit, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR
+from conftest import (run_streamlit, go_tab, trace_box, clear_traces,
+                      FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
 
 A, B = str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR)
 SITE_A, SITE_B = 'A-Direction ILA / Site', 'B-Direction ILA / Site'
 
 
-def _box(at, label, where='main'):
-    return next(t for t in getattr(at, where).text_input if t.label == label)
+def _box(at, label):
+    return next(t for t in at.main.text_input if t.label == label)
 
 
 def _open(at, page):
-    at.sidebar.radio[0].set_value(page).run()
+    go_tab(at, page)
     assert not at.exception, at.exception
     return at
 
@@ -37,9 +39,9 @@ def _open(at, page):
 def _hub(a=A, b=B):
     at = run_streamlit(default_timeout=180).run()
     if a:
-        _box(at, 'A Folder', 'sidebar').input(a).run()
+        trace_box(at, 'a').input(a).run()
     if b:
-        _box(at, 'B Folder', 'sidebar').input(b).run()
+        trace_box(at, 'b').input(b).run()
     assert not at.exception, at.exception
     return at
 
@@ -79,8 +81,7 @@ def test_clear_traces_on_another_tool_still_puts_the_site_names_back_to_a_and_b(
         _box(at, SITE_A).input('Hut 7').run()
     assert _sites(at) != ('A', 'B')
     _open(at, 'Viewer')
-    next(b for b in at.sidebar.button if b.label == 'Clear Traces').click().run()
-    next(b for b in at.button if b.key == 'clear_traces_allow').click().run()
+    clear_traces(at)                    # on the Traces tab
     assert not at.exception, at.exception
     # A few more runs away from the page: the "A" and "B" that Clear Traces
     # writes into the boxes are dropped too while the page is not drawn.
@@ -95,8 +96,8 @@ def test_a_new_pair_loaded_on_another_tool_does_not_bring_back_the_old_names():
     _box(at, SITE_A).input('Hut 7').run()
     _open(at, 'Viewer')
     # The same two folders, the other way round: a different pair.
-    _box(at, 'A Folder', 'sidebar').input(B).run()
-    _box(at, 'B Folder', 'sidebar').input(A).run()
+    trace_box(at, 'a').input(B).run()
+    trace_box(at, 'b').input(A).run()
     _open(at, 'Splice Report')
     assert 'Hut 7' not in _sites(at)
 

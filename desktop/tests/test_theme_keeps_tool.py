@@ -1,7 +1,7 @@
 """Flipping the Theme switch keeps the tech on the tool they are using.
 
 Seen 2026-10-02: on the Splice Report or Unidirectional page, flipping the
-sidebar Theme switch (Dark <-> Light) sent the tech to the Viewer and opened
+Theme switch (Dark <-> Light) sent the tech to the Viewer and opened
 "Thresholds Carried Over from Previous Tool".  The reports in the session
 were still there; only the Tool choice was lost, and the page did not reload.
 
@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import run_streamlit
+from conftest import go_tab, run_streamlit, trace_box, trace_box_value
 
 TITLE = "Thresholds Carried Over from Previous Tool"
 
@@ -53,18 +53,10 @@ def _theme_config_back():
 
 
 def _shows(at, page):
-    """The Tool list holds `page` and the browser is told nothing else: a
-    radio the run does not set keeps what the tech picked, one it sets shows
-    the option sent.  Streamlit 1.64 (the Windows build) sends a radio's
-    value as the option's text (`raw_value`), 1.50 as its index (`value`)."""
-    el = at.sidebar.radio[0]
-    assert el.value == page
-    p = el.proto
-    if not p.set_value:
-        return True
-    if 'raw_value' in {f.name for f in p.DESCRIPTOR.fields}:
-        return p.raw_value == page
-    return list(p.options)[p.value] == page
+    """The top bar lights `page`'s tab and no other (the bar replaced the
+    sidebar's Tool list; nav_radio is plain state, no widget)."""
+    return [b.key for b in at.button if (b.key or '').startswith('nav_tab_')
+            and b.proto.type == 'primary'] == [f'nav_tab_{page}']
 
 
 def _ok(at):
@@ -77,7 +69,7 @@ def _popup(at):
 
 
 def _theme_switch(at):
-    return next(t for t in at.sidebar.toggle if t.label == "Theme")
+    return next(t for t in at.toggle if t.label == "Theme")
 
 
 def _flip_theme(at):
@@ -90,7 +82,7 @@ def _flip_theme(at):
                                   "Secret Sauce", "Splice Report FEC"])
 def test_theme_switch_keeps_the_tool(page):
     at = _ok(run_streamlit(default_timeout=180).run())
-    _ok(at.sidebar.radio[0].set_value(page).run())
+    _ok(go_tab(at, page))
     if _popup(at):                       # landing from the Viewer asks once
         _ok(next(b for b in at.button if b.key == "carry_ok").click().run())
     assert not _popup(at)
@@ -109,22 +101,26 @@ def test_theme_switch_keeps_the_tool(page):
     assert not _popup(at)
 
 
-def test_theme_switch_keeps_the_trace_folder_boxes(tmp_path):
-    """The sidebar's A and B boxes are keyed widgets with no saved slot:
-    what the tech typed there must not fall back to the trace server's
-    folders on a theme change."""
+@pytest.mark.parametrize("where", ["Traces", "Secret Sauce"])
+def test_theme_switch_keeps_the_trace_folder_boxes(tmp_path, where):
+    """The Traces tab's A and B boxes are keyed widgets: what the tech typed
+    there must not fall back to the trace server's folders on a theme
+    change, flipped on the Traces tab or on a tool's."""
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()
     b.mkdir()
     at = _ok(run_streamlit(default_timeout=180).run())
-    _ok(at.sidebar.radio[0].set_value("Secret Sauce").run())
-    at.sidebar.text_input(key="view_dir_a_input").set_value(str(a))
-    at.sidebar.text_input(key="view_dir_b_input").set_value(str(b))
+    trace_box(at, "a").set_value(str(a))
+    trace_box(at, "b").set_value(str(b))
     _ok(at.run())
+    if where != "Traces":
+        _ok(go_tab(at, where))
     _flip_theme(at)
-    assert at.sidebar.text_input(key="view_dir_a_input").value == str(a)
-    assert at.sidebar.text_input(key="view_dir_b_input").value == str(b)
-    assert at.session_state["nav_radio"] == "Secret Sauce"
+    assert at.session_state["nav_radio"] == where
+    assert trace_box_value(at, "a") == str(a)
+    assert trace_box_value(at, "b") == str(b)
+    assert trace_box(at, "a").value == str(a)       # and the boxes show them
+    assert trace_box(at, "b").value == str(b)
 
 
 
@@ -135,7 +131,7 @@ def test_theme_switch_keeps_a_page_box_with_no_saved_slot(tmp_path):
     f = tmp_path / "both"
     f.mkdir()
     at = _ok(run_streamlit(default_timeout=180).run())
-    _ok(at.sidebar.radio[0].set_value("Secret Sauce").run())
+    _ok(go_tab(at, "Secret Sauce"))
     at.text_input(key="ss_folder_input").set_value(str(f))
     _ok(at.run())
     _flip_theme(at)
@@ -154,18 +150,18 @@ def _config_set_to(theme):
 @pytest.mark.parametrize("page", ["Splice Report", "Unidirectional"])
 def test_theme_changed_under_the_session_keeps_the_tool(page, tmp_path):
     """The repaint rerun still runs when the config changed under this
-    session (another tab).  It comes before the sidebar is drawn: the Tool
-    list and the trace folder boxes must come through it."""
+    session (another tab).  It comes before the top bar is drawn: the page
+    and the trace folder boxes must come through it."""
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()
     b.mkdir()
     at = _ok(run_streamlit(default_timeout=180).run())
-    _ok(at.sidebar.radio[0].set_value(page).run())
+    trace_box(at, "a").set_value(str(a))
+    trace_box(at, "b").set_value(str(b))
+    _ok(at.run())
+    _ok(go_tab(at, page))
     if _popup(at):
         _ok(next(bt for bt in at.button if bt.key == "carry_ok").click().run())
-    at.sidebar.text_input(key="view_dir_a_input").set_value(str(a))
-    at.sidebar.text_input(key="view_dir_b_input").set_value(str(b))
-    _ok(at.run())
     mine = at.session_state["ui_theme"]
 
     _config_set_to("light" if mine == "dark" else "dark")
@@ -175,6 +171,8 @@ def test_theme_changed_under_the_session_keeps_the_tool(page, tmp_path):
     assert at.session_state["nav_radio"] == page
     assert _shows(at, page)
     assert not _popup(at)
-    assert at.sidebar.text_input(key="view_dir_a_input").value == str(a)
-    assert at.sidebar.text_input(key="view_dir_b_input").value == str(b)
+    assert trace_box_value(at, "a") == str(a)
+    assert trace_box_value(at, "b") == str(b)
     assert "_theme_kept" not in at.session_state
+    assert trace_box(at, "a").value == str(a)       # and the boxes show them
+    assert trace_box(at, "b").value == str(b)

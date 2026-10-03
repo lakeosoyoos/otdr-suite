@@ -17,28 +17,36 @@ from conftest import REPO_ROOT, run_streamlit, import_trace_server
 APP = "OTDR App"
 
 
-def _side(at):
-    return [m.value for m in at.sidebar.markdown] + [c.value for c in at.sidebar.caption]
+def _logo(at):
+    """The name at the left of the top bar (it was the sidebar's heading)."""
+    return at.button(key="nav_logo_btn").label
+
+
+def _bar(at):
+    """Every place the top bar names the product: the logo, and the build
+    line in its update menu (it was the sidebar's footer)."""
+    (menu,) = at.get("popover")
+    return [_logo(at)] + [c.value for c in menu.caption]
 
 
 def test_unset_the_hub_says_otdr_suite(monkeypatch):
     monkeypatch.delenv("OTDR_SUITE_EDITION", raising=False)
     at = run_streamlit().run()
     assert not at.exception, list(at.exception)
-    side = _side(at)
-    assert "## 🔬 OTDR Suite" in side
-    assert any(t.startswith("OTDR Suite · ") for t in side)
-    assert not [t for t in side if APP in t]
+    assert _logo(at) == "OTDR Suite"
+    bar = _bar(at)
+    assert any(t.startswith("OTDR Suite · ") for t in bar)
+    assert not [t for t in bar if APP in t]
 
 
 def test_the_edition_names_the_hub(monkeypatch):
     monkeypatch.setenv("OTDR_SUITE_EDITION", APP)
     at = run_streamlit().run()
     assert not at.exception, list(at.exception)
-    side = _side(at)
-    assert f"## 🔬 {APP}" in side
-    assert any(t.startswith(f"{APP} · ") for t in side)
-    assert not [t for t in side if "OTDR Suite" in t]
+    assert _logo(at) == APP
+    bar = _bar(at)
+    assert any(t.startswith(f"{APP} · ") for t in bar)
+    assert not [t for t in bar if "OTDR Suite" in t]
 
 
 def _get(make):

@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import shutil
 
-from conftest import (run_streamlit, finish_engine_run, FIXTURE_SPLICE_A_DIR,
-                      FIXTURE_SPLICE_B_DIR)
+from conftest import (run_streamlit, finish_engine_run, go_tab, load_traces,
+                      FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
 
 
 def _copy(src, dest, fibers):
@@ -21,9 +21,9 @@ def _copy(src, dest, fibers):
 
 def _hub(a, b=''):
     at = run_streamlit(default_timeout=180).run()
-    next(t for t in at.sidebar.text_input if t.label == 'A Folder').input(a).run()
+    load_traces(at, a=a)                     # on the Traces tab
     if b:
-        next(t for t in at.sidebar.text_input if t.label == 'B Folder').input(b).run()
+        load_traces(at, b=b)
     assert not at.exception, at.exception
     return at
 
@@ -32,7 +32,7 @@ def test_uni_one_fiber_says_one_fiber(tmp_path):
     a = _copy(FIXTURE_SPLICE_A_DIR, tmp_path / 'A', {20})
     at = _hub(a)
     at.session_state['uni_report_dest'] = str(tmp_path)
-    at.sidebar.radio[0].set_value('Unidirectional').run()
+    go_tab(at, 'Unidirectional')
     next(b for b in at.main.button if b.label == 'Run Unidirectional Report').click().run()
     finish_engine_run(at, 'uni')
     assert not at.exception, at.exception
@@ -46,7 +46,7 @@ def test_sr_one_ribbon_counts_its_fibers_and_draws_one_row(tmp_path):
     b = _copy(FIXTURE_SPLICE_B_DIR, tmp_path / 'B', fibers)
     at = _hub(a, b)
     at.session_state['sr_report_dest'] = str(tmp_path)
-    at.sidebar.radio[0].set_value('Splice Report').run()
+    go_tab(at, 'Splice Report')
     next(x for x in at.main.button if x.label.startswith('Generate')).click().run()
     finish_engine_run(at, 'sr')
     assert not at.exception, at.exception
