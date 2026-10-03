@@ -14628,9 +14628,21 @@ UNI_LANDMARK_DEMOTE_KM   = 0.10   # km — tighter demote radius: LAMBEY's HH5
                                   # true closure at labeling distance
 
 
+# The Files panel's Dir column words for the two stamp values.
+UNI_STAMP_SIGNATURES = {1: 'A→B', 2: 'B→A'}
+
+
 def uni_direction_signature(r):
-    """Direction identity of one record from its GenParams: 'LAM->BEY' style
-    when locations are present, else the cable id, else '?' (still groups)."""
+    """Direction identity of one record.  The file's own Direction stamp
+    (LocationsDirection: 1 = A->B, 2 = B->A) when it has one: what
+    FastReporter's Direction column shows and the Viewer's Files panel
+    right-click > Direction writes, so a tech's fix there counts here
+    (Robert 2026-10-02: "uni should go to stamp").  A file without one
+    (another make, a .json) falls back to GenParams: 'LAM->BEY' style when
+    locations are present, else the cable id, else '?' (still groups)."""
+    stamp = UNI_STAMP_SIGNATURES.get(r.get('exfo_locations_direction'))
+    if stamp:
+        return stamp
     a = (r.get('gen_loc_a') or '').strip()
     b = (r.get('gen_loc_b') or '').strip()
     if a or b:
@@ -14757,7 +14769,18 @@ def uni_coverage_lines(cov):
         return []
     out = []
     chosen = cov.get('chosen')
+    stamps = set(UNI_STAMP_SIGNATURES.values())
     for ds in cov.get('dropped_signatures') or ():
+        if ds['signature'] in stamps:
+            out.append(
+                f"{ds['n_files']} file(s) are stamped '{ds['signature']}', not "
+                f"the analyzed '{chosen}' (fibers {ds['fiber_ranges']}).  A "
+                f"report covers ONE direction, so these were set aside.  If "
+                f"they belong with the rest, set their Direction to "
+                f"'{chosen}' (Viewer: Files, right-click > Direction) and "
+                f"re-run; if they are a genuine second direction, run them as "
+                f"their own report.")
+            continue
         out.append(
             f"{ds['n_files']} file(s) were shot as direction "
             f"'{ds['signature']}', not the analyzed '{chosen}' (fibers "
@@ -14785,11 +14808,11 @@ def uni_load_dir(d, direction=None, one_box=False):
 
     `one_box`: the folder is one side of the Viewer (a sidebar A/B box, or
     the A or B folder a drop on its Files panel split off), and that side,
-    not GenParams, names its direction (the Viewer draws every file in it as
-    that leg).  Every other signature whose fiber numbers are disjoint from the
-    loaded ones is then folded in too, whatever its site codes.  El Paso B
-    (2026-10-02): 36 files said ELP->LSC like the A side, the 4 re-shots said
-    LSC->ELP; B alone left out fibers 241/245/252/264 while A+B showed them.
+    not the files' labels, names its direction (the Viewer draws every file
+    in it as that leg).  Every other signature whose fiber numbers are
+    disjoint from the loaded ones is then folded in too, whatever its stamp
+    or site codes.  El Paso B (2026-10-02): the 4 re-shots were stamped A;
+    B alone left out fibers 241/245/252/264 while A+B showed them.
     A signature that re-uses fiber numbers is a real second direction and
     stays out.
 
@@ -14912,10 +14935,10 @@ def uni_load_dir(d, direction=None, one_box=False):
             fibers.update(grp)
             merged.append({'signature': sig, 'n_fibers': len(grp),
                            'fibers': sorted(grp)})
-            print(f"  ** {len(grp)} file(s) in this box say '{sig}' where the "
-                  f"rest say '{chosen}'. Read as the box's direction (fibers "
-                  f"{_uni_fiber_ranges(grp)}); check the GenParams site codes "
-                  "on those shots.")
+            print(f"  ** {len(grp)} file(s) on this side say '{sig}' where the "
+                  f"rest say '{chosen}'. Read as this side's direction (fibers "
+                  f"{_uni_fiber_ranges(grp)}); check the labels on those "
+                  "shots.")
     coverage = _uni_coverage(d, ext, candidates, n_other_format, drops,
                              chosen, groups, merged)
     return fibers, chosen, counts, merged, coverage
