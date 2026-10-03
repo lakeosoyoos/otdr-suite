@@ -194,7 +194,7 @@ def _paint_fec(switches, with_marks=False, with_nums=False, after='', res_extra=
           + line(r"let gFecGates = null;.*") + line(r"let gFecBase = null;.*")
           + line(r"const gFecOverride = .*") + fn('fecOverridden')
           + "let gTableKm = null;\n" + fn('tableKmKey') + fn('tableMarkReset')
-          + fn('tableMark') + fn('inTable')
+          + fn('tableColumnNumber') + fn('tableMark') + fn('inTable')
           + fn('isPicked') + fn('fecGateText') + fn('paintFecGrid')
           + ''.join(f"{k} = {json.dumps(v)};\n" for k, v in switches.items())
           + f"var with_nums = {json.dumps(with_nums)};\n"

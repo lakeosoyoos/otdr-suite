@@ -1057,11 +1057,15 @@ let gMouse = null;                 // {px, py}
 let gMarkerMode = false;
 let gMarkers = { a: null, b: null };   // display-km of each marker, or null
 let gDragMarker = null;                // 'a' | 'b' while dragging a placed marker
+// The table column numbers printed on the chart this frame: each once
+// (see drawEventMarkers).
+let gNumbersDrawn = new Set();
 let gLabelHits = [];                   // [{x0,y0,x1,y1,t,e,go?}] event numbers and drawer marks drawn this frame
 let gLabelClick = null;                // label under the mouse at mousedown, until mouseup
 let gGridGoTo = null;                  // set by the grid: (trace, event) => scroll to its cell
                                        // (event null: just the trace's row)
-let gTableKm = null;                   // set by the grid: trace -> km keys of the events it printed
+let gTableKm = null;                   // set by the grid: trace -> (km key -> its column) of the events it printed
+let gReportColumnNames = null;         // Summary Report fibre page: table's "Event n" -> the page's own name
 let gHoverKey = null;                  // the trace nearest the cursor, if one is on it
 let gTraceClick = null;                // trace under the mouse at mousedown, until mouseup
 let gTableExport = null;               // set by the grid: {table, rows(), headExtra} for the Report
@@ -4650,6 +4654,7 @@ function draw() {
 
   const r = plotRect();
   gLabelHits = [];
+  gNumbersDrawn = new Set();
   if (r.w <= 0 || r.h <= 0) return;      // folded away behind the event panel
   chartLabels(r);                        // this frame's empty label pool
 
@@ -4688,10 +4693,13 @@ function draw() {
   let covered = null;
   if (gShowEvents && gDrawerMarks.length) covered = drawPairing(gDrawerMarks, r);
   else if (gShowFailedLabels && gDrawerMarks.length) drawPairing(gDrawerMarks, r, true);
-  // A picked trace's numbers take their spots before the others'.
+  // A picked trace's numbers take their spots before the others', and an
+  // A->B trace's before a B->A one's: a column number prints once, on the
+  // first trace that has the event (FastReporter's way, see drawEventMarkers).
+  const aFirst = ts => [...ts.filter(t => t.dir === 'a'), ...ts.filter(t => t.dir !== 'a')];
   const numOrder = gPickKey
-    ? [...order.filter(t => isPicked(t.key)), ...order.filter(t => !isPicked(t.key))]
-    : order;
+    ? [...aFirst(order.filter(t => isPicked(t.key))), ...aFirst(order.filter(t => !isPicked(t.key)))]
+    : aFirst(order);
   for (const t of numOrder) {
     if (!t.visible || (covered && covered.has(t))) continue;
     drawEventMarkers(t, r);        // dims itself: its ticks set their own alpha
@@ -5105,20 +5113,54 @@ function upperBound(arr, v) {
 // until it paints -- the FastReporter table of a whole cable takes a while,
 // and every setting change re-reads it.  A trace no table has taken yet (or
 // none can be built for) draws every event, as before, rather than none.
+//
+// Each mark also keeps the column it was printed in, so the number beside the
+// event on the chart is that column's (a customer-demo audit, 2026-10-02: a
+// splice the table headed "Event 10" read 7 on the A trace and 4 on the B
+// trace, each counting its own file's events).  `title` is the column's
+// header as the table prints it; `num` the number in it, or null when the
+// header carries none (an end, a Connector, Bends, the FEC Panel Connector).
+// Worked out here, once per table build, not per frame.  The first column to
+// claim an event keeps it.  `keep` (the one-direction table under an A+B one)
+// adds that table's traces without dropping the A+B table's marks.
 function tableKmKey(km) { return Math.round(Number(km) * 1e4); }
 function tableMarkReset(traces) {
   gTableKm = new Map();
-  for (const t of traces) gTableKm.set(t, new Set());
+  for (const t of traces) if (t) gTableKm.set(t, new Map());
 }
-function tableMark(t, km) {
+function tableColumnNumber(title) {
+  const m = /^(?:Event|Splice) (\d+)$/.exec(String(title == null ? '' : title).trim());
+  return m ? m[1] : null;
+}
+function tableMark(t, km, title) {
   if (!t || km == null || !Number.isFinite(Number(km))) return;
   let s = gTableKm.get(t);
-  if (!s) gTableKm.set(t, s = new Set());
-  s.add(tableKmKey(km));
+  if (!s) gTableKm.set(t, s = new Map());
+  const k = tableKmKey(km);
+  if (!s.has(k)) s.set(k, { title: title == null ? '' : String(title), num: tableColumnNumber(title) });
 }
 function inTable(t, e) {
   const s = gTableKm && gTableKm.get(t);
   return !s || s.has(tableKmKey(e.dist_km));
+}
+// The column a table printed this event in ({title, num}); null when it
+// printed none, undefined when no table has taken the trace.
+function tableColumnOf(t, e) {
+  const s = gTableKm && gTableKm.get(t);
+  if (!s) return undefined;
+  return s.get(tableKmKey(e.dist_km)) || null;
+}
+// A column's name and number as the chart prints them.  On a Summary Report
+// fibre page the page numbers that fibre's own events 1..n ("Event n" only;
+// a named column keeps its name, see reportFibreTables), so its chart reads
+// the page's numbers; an "Event n" that page does not print gets none.
+function chartColumnTitle(title) {
+  if (!gReportColumnNames || !/^Event \d+$/.test(title)) return title;
+  return gReportColumnNames.get(title) || null;
+}
+function chartColumnNumber(col) {
+  if (!col) return null;
+  return gReportColumnNames ? tableColumnNumber(chartColumnTitle(col.title)) : col.num;
 }
 
 // ─── Labels on the chart never run together ───────────────────────────
@@ -5208,9 +5250,15 @@ function drawLabelTip() {
 
 function drawEventMarkers(t, r) {
   const evs = t.data.events || [];
-  // Marker labels carry the same numbers as the table's columns: counted from
-  // the declared span start when there is one.  An event outside the span
-  // keeps its tick, dimmed and unnumbered, so the reel is still visible.
+  // Marker labels carry the same numbers as the table's columns: each event
+  // the table printed takes the number of the column it sits in (see
+  // tableMark), in every table the panel shows -- OTDR Suite's Event n /
+  // Splice n, FastReporter's Event n, the one-direction table's, FEC's.  A
+  // column with no number in its name (A-End / B-End, End, Connector, the
+  // FEC Panel Connector) keeps its tick with no number, and its name on the
+  // hover tip.  A trace no table has taken yet counts its own events from
+  // the declared span start, as before.  An event outside the span keeps its
+  // tick, dimmed and unnumbered, so the reel is still visible.
   const nums = spanEventNumbers(t);
   // A picked trace dims everything else, its markers and numbers included —
   // they set their own alpha below, so the dimming has to be folded in here
@@ -5235,6 +5283,8 @@ function drawEventMarkers(t, r) {
     // the dim unnumbered tick stays: it is how the tech puts the span start
     // back on the port or the reel.
     if (n != null && !inTable(t, e)) continue;
+    const col = n == null ? null : tableColumnOf(t, e);
+    const label = n == null ? null : col === undefined ? String(n) : chartColumnNumber(col);
     ctx.strokeStyle = e.is_reflective ? '#b8860b' : t.color;
     ctx.globalAlpha = (n == null ? 0.35 : 0.55) * dimA;
     ctx.beginPath();
@@ -5249,18 +5299,39 @@ function drawEventMarkers(t, r) {
       gLabelHits.push({ x0: px - 4, x1: px + 4, y0: py - 10, y1: py + 10, t, e });
       continue;
     }
+    const color = LIGHT_EDGE[t.color] || t.color;
+    if (label == null) {
+      // A column with no number (an end, a Connector): no number of the
+      // file's own stands in for it.  The tick is its target, and the hover
+      // tip names the column.
+      const name = col ? chartColumnTitle(col.title) : null;
+      gLabelHits.push({ x0: px - 4, x1: px + 4, y0: py - 10, y1: py + 10, t, e,
+                        ...(name ? { hiddenText: name, hiddenColor: color } : {}) });
+      continue;
+    }
+    // A table column's number prints ONCE on the chart, as FastReporter
+    // prints it (Robert 2026-10-02: the table's Event numbers, not one per
+    // trace or per fibre): the first trace to place it keeps it, A->B before
+    // B->A; every other trace's tick at that column keeps the number for the
+    // hover tip.  A trace no table has taken counts, and prints, its own.
+    const txt = label;
+    const once = col !== undefined;
+    if (once && gNumbersDrawn.has(txt)) {
+      gLabelHits.push({ x0: px - 4, x1: px + 4, y0: py - 10, y1: py + 10, t, e,
+                        hiddenText: txt, hiddenColor: color });
+      continue;
+    }
     // The number takes the first clear spot round its tick (above it, where
     // it always sat, when there is room).  None clear: it is left off and
     // the tick keeps it for the hover tip.
-    const txt = String(n);
-    const tw = ctx.measureText(String(n)).width;
-    const color = LIGHT_EDGE[t.color] || t.color;
+    const tw = ctx.measureText(txt).width;
     const spot = labels.place(eventNumberSpots(px, py, tw));
     if (!spot) {
       gLabelHits.push({ x0: px - 4, x1: px + 4, y0: py - 10, y1: py + 10, t, e,
                         hiddenText: txt, hiddenColor: color });
       continue;
     }
+    if (once) gNumbersDrawn.add(txt);
     ctx.fillStyle = color;
     ctx.textAlign = spot.align;
     ctx.textBaseline = spot.base;
@@ -5522,7 +5593,10 @@ function drawPairing(sets, r, failedOnly = false) {
                   go: () => D.goCell(cell.fi, D.single ? (p.ta ? 'a' : 'b') : 'avg', col.i) });
     };
     for (const col0 of D.cols) {
-      const col = { ...col0, cells: col0.cells.filter(c => shown.has(c.fi)) };
+      // A Summary Report fibre page names the column as that page does
+      // (see chartColumnTitle); on screen it is the table's own title.
+      const col = { ...col0, title: chartColumnTitle(col0.title) || col0.title,
+                    cells: col0.cells.filter(c => shown.has(c.fi)) };
       if (!col.cells.length) continue;
       if (detail) {
         col.cells.forEach(cell => fullCell(col, cell, shown.size > 1));
@@ -6332,7 +6406,8 @@ function paintFecGrid(traces, res, host, hint) {
         if (d <= FEC_MARK_TOL_KM && (!best || d < best.d)) best = { d, e };
       }
       if (!best) return;
-      tableMark(t, best.e.dist_km);
+      // the table's own headers: no number in either, so no number on the chart
+      tableMark(t, best.e.dist_km, k === 0 ? 'Panel Connector' : 'Combined With');
       evCol.set(`${t.key}|${tableKmKey(best.e.dist_km)}`, k === 0 ? 'conn' : 'comb');
       if (k === 0) own.conn = best.e.dist_km; else own.comb.push(best.e.dist_km);
     });
@@ -7054,8 +7129,17 @@ function renderFastReporterGrid(traces, host, hint) {
 
   // Cluster into columns; a column holds at most one event per trace.
   const cols = clusterColumns(traces, items, TOL);
+  // Each column's header as the table prints it (h1 below): "End" for a
+  // column of fibre ends only, else "Event n" in the full table's numbering.
+  const colTitle = (c, i) => {
+    const present = c.ev.filter(x => x);
+    return present.length > 0 && present.every(x => x.is_end) ? 'End' : `Event ${i + 1}`;
+  };
   tableMarkReset(traces);
-  cols.forEach(c => c.ev.forEach((e, ti) => { if (e) tableMark(traces[ti], e.dist_km); }));
+  cols.forEach((c, i) => {
+    const title = colTitle(c, i);
+    c.ev.forEach((e, ti) => { if (e) tableMark(traces[ti], e.dist_km, title); });
+  });
   draw();                                  // the chart may have drawn before the table
 
   // ─── FastReporter event-table layout ────────────────────────────────
@@ -7183,8 +7267,7 @@ function renderFastReporterGrid(traces, host, hint) {
   const marks = { mode: gAnalysisMode, single: true, goCell: () => {},
     have: traces.map(t => ({ fiber: t.fiber, ta: t.dir === 'a' ? t : null, tb: t.dir === 'b' ? t : null })),
     cols: cols.map((c, i) => {
-      const present = c.ev.filter(x => x);
-      const title = present.length > 0 && present.every(x => x.is_end) ? 'End' : `Event ${i + 1}`;
+      const title = colTitle(c, i);
       return { i, title, km: c.km, cells: keepCol[i]
         ? c.ev.map((e, ti) => {
           if (!e) return null;
@@ -7202,10 +7285,8 @@ function renderFastReporterGrid(traces, host, hint) {
   let h2 = '', h3 = '';
   cols.forEach((c, i) => {
     if (!keepCol[i]) return;
-    const present = c.ev.filter(x => x);
-    const isEnd = present.length > 0 && present.every(x => x.is_end);
     h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.km}" `
-        + `title="zoom to ${c.km.toFixed(3)} km">${isEnd ? 'End' : 'Event ' + (i + 1)}`
+        + `title="zoom to ${c.km.toFixed(3)} km">${colTitle(c, i)}`
         + `<button class="fr-evmenu" data-col="${i}" title="span and settings">⋯</button></th>`;
     h2 += `<th colspan="2" class="fr-evsub">${colKind(c)}<br>`
         + `<span class="fr-km">${kmFt(c.km - zeroKm)}</span></th>`;
@@ -7733,11 +7814,12 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const cols = clusterColumns(have, items, columnTolKm(have.flatMap(p => [p.ta, p.tb])));
   // A synthesised leg has no event of its own in the file, so it marks nothing.
   tableMarkReset(have.flatMap(p => [p.ta, p.tb]));
-  cols.forEach(c => c.ev.forEach((x, fi) => {
+  // Each leg is numbered as its column is headed: "Event n" (h1 below).
+  cols.forEach((c, i) => c.ev.forEach((x, fi) => {
     if (!x) return;
     for (const [w, t] of [['a', have[fi].ta], ['b', have[fi].tb]]) {
       const leg = x.row[w];
-      if (leg && !leg.synthetic && leg.pos_m != null) tableMark(t, Number(leg.pos_m) / 1000);
+      if (leg && !leg.synthetic && leg.pos_m != null) tableMark(t, Number(leg.pos_m) / 1000, `Event ${i + 1}`);
     }
   }));
   draw();                                  // painted after a fetch: the chart follows
@@ -8505,10 +8587,12 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // The report's columns are the closures and the two ends: the chart marks
   // each direction's own reading there and nothing else.
   tableMarkReset(have.flatMap(p => [p.ta, p.tb]));
+  // Each direction's reading takes its column's header (the report's own
+  // title: "Event n", "Splice n", the two ends), A's and B's alike.
   cols.forEach(c => c.ev.forEach((x, fi) => {
     if (!x) return;
-    if (x.a && x.a.km != null) tableMark(have[fi].ta, x.a.km);
-    if (x.b && x.b.km != null) tableMark(have[fi].tb, x.b.km);
+    if (x.a && x.a.km != null) tableMark(have[fi].ta, x.a.km, c.title);
+    if (x.b && x.b.km != null) tableMark(have[fi].tb, x.b.km, c.title);
   }));
   draw();                                  // painted after a fetch: the chart follows
   const fmt  = v => (v == null || isNaN(v)) ? '---' : v.toFixed(3);
@@ -10038,28 +10122,35 @@ function snapChart(fit, view) {
 // to the whole span.  Each goes to the server as it is drawn (a whole cable
 // is a thousand of them, far past one request); map fibre -> 'ref:<name>'.
 const REPORT_FIBRE_W = 1000, REPORT_FIBRE_H = 360;     // CSS px, drawn at 1.5x
-function reportFibreCharts(fibres, token, progress) {
+// `names(f)`, when given, is fibre f's page's own event names (see
+// reportFibreTables): its chart prints the numbers its table prints.
+function reportFibreCharts(fibres, token, progress, names = null) {
   return withPrintCanvas(REPORT_FIBRE_W, REPORT_FIBRE_H, 1.5, async (fit) => {
     const vis = gTraces.map(t => t.visible);
     const out = new Map();
-    for (let k = 0; k < fibres.length; k++) {
-      const f = fibres[k];
-      if (progress) progress(k, fibres.length);
-      gPickKey = null;                        // no dimming on a page of its own
-      gTraces.forEach((t, i) => { t.visible = vis[i] && t.fiber === f; });
-      const b = dataBounds();
-      if (!b) continue;
-      snapChart(fit, b);
-      const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
-      if (!blob) continue;
-      const name = `fibre-${f}`;
-      const r = await fetch(`/api/report_image?token=${encodeURIComponent(token)}&name=${name}`,
-                            { method: 'POST', body: blob });
-      if (!r.ok) {
-        const j = await r.json().catch(() => ({}));
-        throw new Error(j.error || `a fiber chart did not reach the server (${r.status})`);
+    try {
+      for (let k = 0; k < fibres.length; k++) {
+        const f = fibres[k];
+        if (progress) progress(k, fibres.length);
+        gPickKey = null;                        // no dimming on a page of its own
+        gReportColumnNames = names ? (names(f) || new Map()) : null;
+        gTraces.forEach((t, i) => { t.visible = vis[i] && t.fiber === f; });
+        const b = dataBounds();
+        if (!b) continue;
+        snapChart(fit, b);
+        const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+        if (!blob) continue;
+        const name = `fibre-${f}`;
+        const r = await fetch(`/api/report_image?token=${encodeURIComponent(token)}&name=${name}`,
+                              { method: 'POST', body: blob });
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}));
+          throw new Error(j.error || `a fiber chart did not reach the server (${r.status})`);
+        }
+        out.set(f, 'ref:' + name);
       }
-      out.set(f, 'ref:' + name);
+    } finally {
+      gReportColumnNames = null;            // the screen's chart: the table's own numbers
     }
     return out;
   });
@@ -10153,6 +10244,7 @@ function reportFibreTables(ev, S) {
   for (const [f, dirs] of byFibre) {
     const defs = dirs.flatMap(d => kinds.map(k => ({ d, k })));
     const body = [];
+    const names = new Map();               // the table's "Event n" -> this page's
     let n = 0;
     for (const g of groups) {
       const vals = defs.map(({ d, k }) => {
@@ -10183,6 +10275,7 @@ function reportFibreTables(ev, S) {
       // FastReporter numbers a fibre's events 1..n; the combined table's
       // numbers are the whole load's columns.  A named column keeps its name.
       const name = section ? '' : (/^Event \d+$/.test(g.title) ? `Event ${++n}` : g.title);
+      if (/^Event \d+$/.test(name) && !names.has(g.title)) names.set(g.title, name);
       body.push([{ t: name, s: S.B }, { t: type, s: S.B }, { t: loc, s: S.C }, ...vals]);
     }
     const LEAD = 3;
@@ -10199,6 +10292,7 @@ function reportFibreTables(ev, S) {
     const avg = dirs.find(d => /average/i.test(d.dir)) || dirs[0];
     out.set(f, {
       pf: avg && avg.pf ? avg.pf.t : '',
+      names,                               // for the page's chart (reportFibreCharts)
       table: { title: 'Events', lead: typed ? LEAD : LEAD - 1, head: [head0, head1],
                body: body.map(row => [row[0], ...(typed ? [row[1]] : []), row[2],
                                       ...row.slice(LEAD).filter((_v, i) => keep[i])]),
@@ -10320,7 +10414,8 @@ async function reportPayload(opt, token, progress) {
       const byTable = reportFibreTables(ev, { H, B, C });
       let list = [...new Set(sorted.map(t => t.fiber))];
       if (ev && (gFlaggedOnly || cellFilterOn())) list = list.filter(f => byTable.has(f));
-      const charts = await reportFibreCharts(list, token, progress);
+      const charts = await reportFibreCharts(list, token, progress,
+                                             ev ? (f => byTable.has(f) ? byTable.get(f).names : null) : null);
       const one = (ts, fn) => [...new Set(ts.map(fn).filter(v => v != null && v !== ''))].join(' / ');
       for (const f of list) {
         const ts = sorted.filter(t => t.fiber === f);

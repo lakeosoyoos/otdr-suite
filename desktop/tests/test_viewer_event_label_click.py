@@ -38,7 +38,8 @@ def test_the_grid_fills_the_panel_instead_of_capping_its_own_height():
 def test_every_drawn_event_number_records_a_hit_box():
     fn = SRC.split("function drawEventMarkers(", 1)[1].split("\nfunction ", 1)[0]
     assert "gLabelHits.push({" in fn
-    assert "ctx.measureText(String(n)).width" in fn
+    # the number printed is the table column's (test_viewer_chart_numbers_match_table)
+    assert "ctx.measureText(txt).width" in fn
     # cleared once per frame, before anything is drawn
     draw = SRC.split("function draw() {", 1)[1].split("\nfunction ", 1)[0]
     assert draw.index("gLabelHits = [];") < draw.index("drawGrid(r);")
