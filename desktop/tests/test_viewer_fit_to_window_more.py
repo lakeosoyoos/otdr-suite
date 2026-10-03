@@ -80,9 +80,8 @@ def test_profile_and_pop_out_share_one_row_above_settings():
     assert row < pick < pop < box
     # the line beside the button is its tooltip now
     assert 'title="Keeps this page free for the report.' in page
-    # Viewer FEC keeps a heading, half the old size, and opens the pop-out in FEC mode
-    assert '<p style="font-size:0.75rem;font-weight:600;margin:0">' in page
-    assert ".replace('__POPQ__', '?fec=1' if fec else '')" in page
+    # no Viewer FEC heading or FEC pop-out: FEC shots load in this Viewer
+    assert 'Viewer FEC</p>' not in page and '__POPQ__' not in page
     assert 'keeps this page free for the report &middot;' not in page
 
 

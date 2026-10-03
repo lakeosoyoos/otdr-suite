@@ -40,6 +40,19 @@ def _fixture_sor():
     return None
 
 
+def _restamp(paths, side):
+    """Set the Direction stamp as Files panel right-click > Direction does
+    (trace_server.set_direction), run apart: the Viewer has its own reader."""
+    import subprocess
+    viewer = os.path.join(os.path.dirname(SPLICE_DIR), 'viewer')
+    code = ("import sys; sys.path.insert(0, sys.argv[1]); import trace_server as T\n"
+            "for p in sys.argv[3:]:\n"
+            "    raw = open(p, 'rb').read()\n"
+            "    open(p, 'wb').write(T.set_direction(raw, sys.argv[2]))\n")
+    subprocess.run([sys.executable, '-c', code, viewer, side, *map(str, paths)],
+                   check=True, capture_output=True)
+
+
 def _clone_with_locations(src, dst, old_a, new_a):
     """Copy a real .sor, swapping a GenParams location string of equal length."""
     raw = open(src, 'rb').read()
@@ -232,6 +245,12 @@ def test_mixed_signature_folder_end_to_end(tmp_path):
             made += 1
     if made != 3:
         pytest.skip('could not relabel the fixture GenParams')
+    stamp = rec.get('exfo_locations_direction')
+    if stamp in (1, 2):
+        # A stamped file groups on its Direction stamp, not its site codes
+        # (Robert 2026-10-02): the other three are stamped the other way.
+        _restamp([d / f'SPAN{i:04d}.sor' for i in range(7, 10)],
+                 'a' if stamp == 2 else 'b')
 
     fibers, chosen, counts, merged, cov = E.uni_load_dir(str(d))
     assert len(counts) == 2, counts

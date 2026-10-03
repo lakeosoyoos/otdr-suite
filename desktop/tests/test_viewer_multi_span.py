@@ -56,11 +56,14 @@ var gSpanDecl = { a: null, b: null }, gTableBusy = false, gHeldNodes = [], gTabl
 var gGridGoTo = null, gTableExport = null, gDrawerMarks = [];
 var MIRROR_MAX_FIBERS = 40, MIRROR_SNAP_KM = 0.01;
 var host = { innerHTML: 'old table', childNodes: [], classList: { remove: function () {} } };
-var hint = { textContent: 'old hint' };
-var document = { getElementById: function (id) { return id === 'event-tbody-wrap' ? host : hint; } };
+var hint = { textContent: 'old hint', style: {} };
+var other = { style: {}, closest: function () { return other; } };
+var document = { getElementById: function (id) {
+  return id === 'event-tbody-wrap' ? host : id === 'event-hint' ? hint : other; } };
 var built = [];
 function queueMicrotask() {} function tableStepEnd() {} function suiteTableReset() {}
 function syncGateUI() {} function renderFecGrid() { built.push('fec'); return true; }
+function fecTable() { return false; } function fecCombinedFor() { return null; }
 function renderSuiteBidiGrid() { built.push('suite'); return true; }
 function renderFrBidiGrid() { built.push('fr'); return true; }
 function renderFastReporterGrid() { built.push('onedir'); }
