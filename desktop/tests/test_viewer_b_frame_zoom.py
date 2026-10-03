@@ -96,7 +96,7 @@ function load(info, traces) {
 function r4(v) { return Math.round(v * 1e4) / 1e4; }
 var out = {};
 """
-    code = "\n".join([prelude, _const("SPAN_SNAP_KM")] + [
+    code = "\n".join([prelude, _const("SPAN_SNAP_KM"), "function unpairedB() { return new Set(); }  // every B paired: a frame test, not a pairing one"] + [
         _fn(n) for n in ("eofKm", "isFlipped", "dispKm", "reelOriginKm", "declaredEdgeKm",
                          "declaredOriginKm", "mirrorOriginKm", "linkDispKm", "axisZeroKm")
     ] + [body, "print(JSON.stringify(out));"])

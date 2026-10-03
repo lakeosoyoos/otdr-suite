@@ -65,7 +65,7 @@ function run(name, warn, stacked, traces) {
   gHaveA = traces.some(function (t) { return t.dir === 'a'; });
   out[name] = frameWarn() ? 'warn' : '';
 }
-""", _fn("isFlipped"), _fn("frameWarn"), r"""
+""", "function unpairedB() { return new Set(); }  // every B paired: a frame test, not a pairing one", _fn("isFlipped"), _fn("frameWarn"), r"""
 run('a_and_short_b', true, true, [T('a', 'a'), T('b', 'b')]);
 run('a_only', true, true, [T('a', 'a')]);
 run('short_b_alone', true, true, [T('b', 'b')]);

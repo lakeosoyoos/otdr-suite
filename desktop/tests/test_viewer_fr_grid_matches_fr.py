@@ -350,12 +350,36 @@ def test_the_ab_table_prints_a_section_after_its_own_row(tmp_path):
     for h in out['rows']:
         cells = [c[0] for c in _cells('<table>' + h + '</table>')[0]]
         rows[(cells[0], cells[3])] = cells
-    # fibre 1 has a row in every column: unchanged
-    assert rows[('F1', 'A→B')][6:12] == ['0.931', '0.186', '0.050', '---', '0.940', '0.188']
-    # fibre 4 has no 5 km row: its 0 -> 10 km section prints after column 1
-    assert rows[('F4', 'A→B')][6:12] == ['1.889', '0.189', '---', '---', '---', '---']
+    # fibre 1 has a row in every column: unchanged (a Non-reflective column
+    # is Loss alone, as FR lays it out)
+    assert rows[('F1', 'A→B')][4:12] == ['---', '-50.0', '0.931', '0.186', '0.050', '0.940', '0.188', '0.040']
+    # fibre 4 has no 5 km row: its 0 -> 10 km section prints after column 1,
+    # and the column and section it has nothing in are BLANK, as FR prints
+    # them (Robert 2026-10-03, "fix the blank vs --- cells to follow FR")
+    assert rows[('F4', 'A→B')][4:12] == ['---', '-50.0', '1.889', '0.189', '', '', '', '0.039']
     assert rows[('F4', 'B→A')][6:8] == ['1.880', '0.188']
-    assert rows[('F4', 'Average')][6:8] == ['1.885', '0.188']
+    assert rows[('F4', 'Average')][4:8] == ['---', '---', '1.885', '0.188']
     # the heading counts both fibres' sections there
     top = [c[0] for c in _cells(out['head'])[0]]
     assert 'Section (2/2)' in top and 'Section (1/2)' in top, top
+
+
+@needs_jsc
+def test_blank_where_there_is_nothing_dashes_where_a_reading_is_missing(grid):
+    """Robert 2026-10-03, "fix the blank vs --- cells to follow FR".  FR
+    prints "---" where the trace HAS the event but no reading of it (a Launch
+    Level's loss, a Continuous Fiber's loss, a non-reflective event's
+    reflectance) and leaves the cell BLANK where the trace has no event or
+    section in the column, and where a statistic has nothing to summarise."""
+    f1, f3 = _row(grid['plain'], 1), _row(grid['plain'], 3)
+    # F3: launch, panel, then nothing until its continuous fiber
+    assert f3[4:6] == ['---', '-57.1']                    # the launch has no loss of its own
+    # 1.0541 (Loss) + its Section + 3.14 (Type, Loss, Refl.) + its Section
+    assert f3[14:24] == [''] * 10
+    assert f3[24] == '---'                                # the Continuous Fiber's loss
+    assert f3[25:28] == ['', '', '']                      # Splice Loss Min / Max / Avg: no splice
+    # F1 has the 3.14 km event: its missing reflectance is "---"
+    assert f1[18:21] == ['Non-reflective', '0.123', '---']
+    # a Minimum over a column nobody has a figure in is blank: the launch's Loss
+    mins = [r for r in _cells('<table>' + grid['plain']['head'] + '</table>') if r and r[0][0] == 'Minimum']
+    assert mins and mins[0][4][0] == '' and mins[0][5][0] == '-57.1', mins

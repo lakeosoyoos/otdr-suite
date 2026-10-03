@@ -41,14 +41,14 @@ def test_window_helpers_exist_and_snap_to_the_fibers_own_event():
 
 def test_grid_only_clusters_events_inside_the_declared_span():
     grid = SRC.split("function renderFastReporterGrid")[1]
-    assert "if (inDeclaredSpan(t, e)) items.push({ km: dispKm(t, e.dist_km), ti, e });" in grid
+    assert "if (inDeclaredSpan(t, e)) items.push({ km: tableKm(t, e.dist_km), ti, e });" in grid
 
 
 def test_grid_distances_read_from_the_declared_start():
     grid = SRC.split("function renderFastReporterGrid")[1]
     assert "const zeroKm = oneDirTableZeroKm(traces);" in grid
     zero = SRC.split("function oneDirTableZeroKm(traces) {")[1].split("\n}\n")[0]
-    assert "if (zeroT) return dispKm(zeroT, ownSpanWindow(zeroT).lo);" in zero
+    assert "if (zeroT) return tableKm(zeroT, ownSpanWindow(zeroT).lo);" in zero
     # The header prints km and feet in one cell (kmFt); what matters here is
     # that it is measured from the declared start.
     assert "kmFt(c.km - zeroKm)" in grid

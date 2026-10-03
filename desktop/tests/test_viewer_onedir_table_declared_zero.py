@@ -81,10 +81,10 @@ function run(name, c) {
 }
 """
     calls = "\n".join("run(%s, %s);" % (json.dumps(k), json.dumps(v)) for k, v in cases.items())
-    code = "\n".join([prelude, _const("SPAN_SNAP_KM")] + [
-        _fn(n) for n in ("eofKm", "isFlipped", "dispKm", "reelOriginKm", "declaredEdgeKm",
-                         "declaredOriginKm", "mirrorOriginKm", "ownSpanWindow", "axisZeroKm",
-                         "oneDirTableZeroKm")
+    code = "\n".join([prelude, _const("SPAN_SNAP_KM"), "function unpairedB() { return new Set(); }  // every B paired: a frame test, not a pairing one"] + [
+        _fn(n) for n in ("eofKm", "isFlipped", "frameFlipped", "dispKm", "tableKm", "reelOriginKm",
+                         "declaredEdgeKm", "declaredOriginKm", "mirrorOriginKm", "ownSpanWindow",
+                         "axisZeroKm", "oneDirTableZeroKm")
     ] + [calls, "print(JSON.stringify(out));"])
     p = tmp_path / "zero.js"
     p.write_text(code, encoding="utf-8")
