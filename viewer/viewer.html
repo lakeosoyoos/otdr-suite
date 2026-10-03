@@ -627,10 +627,8 @@
   #event-tbody-wrap > .tbl-updating { flex: none; padding: 2px 12px; font-size: 11px;
                                       color: var(--text-sec); font-style: italic; }
   #event-tbody-wrap.tbl-stale > :not(.tbl-updating) { opacity: .5; }
-  /* the one-direction fibres' own table, under the A+B one */
-  .onedir-box { flex: 0 1 auto; max-height: 45%; min-height: 0; display: flex;
-                flex-direction: column; border-top: 2px solid #b0bdcc; }
-  .onedir-cap { font-size: 11px; padding: 3px 8px; color: #56657a; background: #f3f6f9; }
+  /* the line naming the fibres loaded one way, over the A+B table */
+  .onedir-cap { flex: none; font-size: 11px; padding: 3px 8px; color: #56657a; background: #f3f6f9; }
   /* Columns fit their contents (fitColumns); the table no longer stretches
      to the panel's width and spreads the spare room across every column. */
   table.fr-table { font-size: 11px; width: max-content; }
@@ -1097,11 +1095,15 @@ let gMouse = null;                 // {px, py}
 let gMarkerMode = false;
 let gMarkers = { a: null, b: null };   // display-km of each marker, or null
 let gDragMarker = null;                // 'a' | 'b' while dragging a placed marker
+// The table column numbers printed on the chart this frame: each once
+// (see drawEventMarkers).
+let gNumbersDrawn = new Set();
 let gLabelHits = [];                   // [{x0,y0,x1,y1,t,e,go?}] event numbers and drawer marks drawn this frame
 let gLabelClick = null;                // label under the mouse at mousedown, until mouseup
 let gGridGoTo = null;                  // set by the grid: (trace, event) => scroll to its cell
                                        // (event null: just the trace's row)
-let gTableKm = null;                   // set by the grid: trace -> km keys of the events it printed
+let gTableKm = null;                   // set by the grid: trace -> (km key -> its column) of the events it printed
+let gReportColumnNames = null;         // Summary Report fibre page: table's "Event n" -> the page's own name
 let gHoverKey = null;                  // the trace nearest the cursor, if one is on it
 let gTraceClick = null;                // trace under the mouse at mousedown, until mouseup
 let gTableExport = null;               // set by the grid: {table, rows(), headExtra} for the Report
@@ -1115,6 +1117,42 @@ let gTableGoKm = null;                 // a report link's km: the table column t
 // for the traces that asked for them: kind -> {key, res, pending}.  See
 // serverTableKey.
 const gServerTables = new Map();
+// FILES' P/F is the event table's (Robert 2026-10-02: "P/F should always
+// [be the] event table"): each table records each file's verdict here as it
+// judges its rows, keyed as the FILES list keys a file ("a-12").  Only a
+// one-direction row is a file's own verdict; a fibre loaded both ways has one
+// verdict, on its Average row, as FR shows a bidirectional measurement, and
+// once any fibre on screen has both directions FILES shows no P/F at all
+// (Robert 2026-10-02), the one-way fibres' files included.  A file no table
+// has judged (not added) has no P/F either.  One render of the tables is one
+// pass: the first note of a new pass starts afresh, so a fibre taken out
+// leaves with it.
+let gTableFails = new Map(), gTableHasBidi = false;
+let gTableFailsPass = 0, gTablePass = 0, gFilesPfQueued = false;
+function tableFailsFresh() {
+  if (gTableFailsPass === gTablePass) return;
+  gTableFails = new Map(); gTableHasBidi = false; gTableFailsPass = gTablePass;
+}
+function noteTableVerdict(t, fail) {
+  if (!t || !t.key) return;
+  tableFailsFresh();
+  gTableFails.set(t.key, !!fail);
+  filesPfChanged();
+}
+// An A+B table is on screen this pass: FILES carries no P/F.
+function noteTableBidi() {
+  tableFailsFresh();
+  gTableHasBidi = true;
+  filesPfChanged();
+}
+function tableFileFails(key) {
+  return (!gTableHasBidi && gTableFails.has(key)) ? gTableFails.get(key) : null;
+}
+function filesPfChanged() {
+  if (gFilesPfQueued || !(gFileCols.has('pf') || (gFileSort && gFileSort.col === 'pf'))) return;
+  gFilesPfQueued = true;
+  queueMicrotask(() => { gFilesPfQueued = false; renderFilesPanel(); });
+}
 let gTableLive = null;                 // the server-built table on screen, see endVerdictsLanded
 let gHeldNodes = [];                   // the last table, held up while the next one is built
 let gBase = null;                      // the chart without its overlay (keepBase)
@@ -3662,7 +3700,6 @@ function renderFilesPanel() {
   const loaded = new Map(gTraces.map(t => [t.key, t]));
   const cols = shownFileCols();
   const wantFacts = filesNeedFacts();
-  const paired = wantFacts ? pairedFileKeys() : null;
   const rows = [];
   for (const dir of ['a', 'b']) {
     const fibers = (gInfo && gInfo['fibers_' + dir]) || [];
@@ -3672,12 +3709,14 @@ function renderFilesPanel() {
       const t = loaded.get(`${dir}-${f}`);
       const eff = effDir(dir, f);
       const arrow = eff === 'a' ? 'A→B' : 'B→A';
-      // P/F, wavelength and date, once the file's details are read.
-      const tr = wantFacts ? fileTraits(`${dir}-${f}`, paired) : null;
+      // Wavelength and date, once the file's details are read; P/F is the
+      // event table's (see noteTableVerdict).
+      const tr = wantFacts ? fileTraits(`${dir}-${f}`) : null;
+      const pf = tableFileFails(`${dir}-${f}`);
       const acq = tr ? (gFileFacts.get(`${dir}-${f}`) || {}).acq : null;
       const cell = {
-        pf: `<span class="file-pf${tr ? (tr.pf ? ' fpf-fail' : flagsOff() ? '' : ' fpf-pass') : ''}">`
-          + `${tr ? pfMark(tr.pf) : ''}</span>`,
+        pf: `<span class="file-pf${pf == null ? '' : pf ? ' fpf-fail' : flagsOff() ? '' : ' fpf-pass'}">`
+          + `${pf == null ? '' : pfMark(pf)}</span>`,
         // A second file of a fibre can carry the first one's very name, so
         // the row says which copy it is even with the Fiber column hidden.
         name: `<span class="file-name"><bdi>${esc(files[i] || 'F' + fiberLabel(f))}`
@@ -3690,7 +3729,7 @@ function renderFilesPanel() {
           + `${tr && tr.day ? tr.day : ''}</span>`,
       };
       rows.push({
-        order: rows.length, name: files[i] || '', eff, fiber: f, tr, acq,
+        order: rows.length, name: files[i] || '', eff, fiber: f, tr, acq, pf,
         html: `<div class="file-row${t ? ' loaded' : ''}${t && !t.visible ? ' faded' : ''}`
           + `${gSelectedFiles.has(`${dir}-${f}`) ? ' selected' : ''}`
           + `${gFileFocus === `${dir}-${f}` ? ' focus' : ''}" `
@@ -3718,14 +3757,14 @@ function renderFilesPanel() {
 // header to sort by it, again to reverse.  FR has no unsorted state either;
 // Restore Default puts the Viewer's own order back (A then B, by fiber).
 // Ties keep that order, where FR scrambles them.  File Name always shows.
-// P/F, λ and Date need every file's header and events, so they are off
+// λ and Date need every file's header, so they are off
 // until asked for, and then read in the background (ensureFileFacts) while
 // the header counts them in.
 const FILE_COLS = [
   // [key, header, width, header tooltip]
   // Narrow enough that all six fit the panel's 300 px; the name gives way
   // first and says itself in full on hover.
-  ['pf', 'P/F', '30px', 'each file at the gates of the table row it lands in'],
+  ['pf', 'P/F', '30px', "the event table's verdict, with one direction loaded; once a fiber has both, P/F is on the table's Average rows only"],
   ['name', 'File Name', 'minmax(40px, 1fr)', ''],
   ['dir', 'Dir.', '34px', ''],
   ['fiber', 'Fiber', '30px', ''],
@@ -3749,7 +3788,7 @@ function saveFilesView() {
 function shownFileCols() {
   return FILE_COLS.filter(([c]) => c === 'name' || gFileCols.has(c));
 }
-const FACT_COLS = ['pf', 'wl', 'date'];
+const FACT_COLS = ['wl', 'date'];
 function filesNeedFacts() {
   return FACT_COLS.some(c => gFileCols.has(c)) || !!(gFileSort && FACT_COLS.includes(gFileSort.col));
 }
@@ -3761,7 +3800,7 @@ function fileSortValue(r, col) {
     case 'name': return r.name.toLowerCase();
     case 'dir': return r.eff;
     case 'fiber': return realFiber(r.fiber) + r.fiber / 1e7;   // a copy sorts under its fiber
-    case 'pf': return r.tr ? (r.tr.pf ? 1 : 0) : null;
+    case 'pf': return r.pf == null ? null : (r.pf ? 1 : 0);
     case 'wl': return r.tr && r.tr.wl ? r.tr.wl : null;
     case 'date': return r.acq || null;
     default: return null;
@@ -4283,7 +4322,8 @@ function splitFileKey(key) {
 // Type and Date, and Multiple Option Selection, which takes any of them
 // together against the right-clicked file.  Here they sit in the FILES menu,
 // named for what the Viewer calls the same things:
-//   Select Same Pass/Fail Status   every file with the same verdict (fileFails)
+//   Select Same Pass/Fail Status   every file with the same verdict (the
+//                                  event table's, tableFileFails)
 //   Select Same Fiber              FR's Identifiers: both directions of the
 //                                  selected fibers (FR takes one fiber at a
 //                                  time; this takes every fiber selected)
@@ -4317,49 +4357,14 @@ function fileDay(acq) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
        + `-${String(d.getDate()).padStart(2, '0')}`;
 }
-// A file's own verdict, FR's per-measurement P/F, by the gates of the table
-// row the file lands in.  A file whose fibre has its other direction too
-// (`paired`) sits on an A→B or B→A row of the two-direction table: a splice
-// at the single-direction gate, a connector at the one-direction connector
-// gate, a reflection at the report's mid-span reflectance rule.  A file with
-// no partner sits in the one-direction table, which grades every loss at the
-// gate the report grades that view by (activeGateDb: the Uni report's, the
-// loss box's override ...).  Neither judges the launch level or the far end
-// here, and the report's own flags (a break, an end connector) need the
-// report, so a file's row can still carry one this does not.
-function fileFails(events, dir, paired) {
-  if (flagsOff()) return false;
-  if (!paired) {
-    return events.some(e => e.time_of_travel !== 0 && !e.is_end && clearsGate(e.splice_loss));
-  }
-  const own = Number(gInfo && (dir === 'a' ? gInfo.launch_a_km : gInfo.launch_b_km)) || 0;
-  const far = Number(gInfo && (dir === 'a' ? gInfo.launch_b_km : gInfo.launch_a_km)) || 0;
-  const end = events.find(e => e.is_end);
-  const eof = end ? end.dist_km - own - far : null;
-  return events.some(e => {
-    if (e.time_of_travel === 0 || e.is_end) return false;
-    if (clearsAt(e.splice_loss, gateFor(!!e.is_reflective, true))) return true;
-    return !!e.is_reflective && reflFails(e.reflection, e.dist_km - own, eof);
-  });
-}
 // What Select Same compares for one row, or null for a file not read yet.
-// `paired`: the files whose fibre makes a pair (pairedFileKeys), worked out
-// once per pass over the list rather than once per file.
-function fileTraits(key, paired) {
+// Its Pass/Fail is the event table's (tableFileFails): null, never matching,
+// for a file the table has not judged.
+function fileTraits(key) {
   const f = gFileFacts.get(key);
   if (!f) return null;
-  paired = paired || pairedFileKeys();
-  const [dir, fiber] = splitFileKey(key);
-  return { fiber: realFiber(fiber), wl: f.wl, day: fileDay(f.acq), pf: fileFails(f.events, dir, paired.has(key)) };
-}
-// Every file whose fibre has both directions, drawn as opposite ones: the
-// files that sit on a two-direction table's A→B or B→A row.
-function pairedFileKeys() {
-  const out = new Set();
-  for (const r of fiberTable()) {
-    if (fiberPairNote(r, effDir).ok) fiberFileKeys(r).forEach(k => out.add(k));
-  }
-  return out;
+  const [, fiber] = splitFileKey(key);
+  return { fiber: realFiber(fiber), wl: f.wl, day: fileDay(f.acq), pf: tableFileFails(key) };
 }
 // The rows that match `ref` on every one of `kinds` ('pf', 'fiber', 'wl',
 // 'day').  A row not read, or with nothing recorded for a property, never
@@ -4373,8 +4378,7 @@ function fileSameKeys(keys, traits, ref, kinds) {
 // Do the files agree on `p`?  Only the ones read so far can say; a file
 // still loading does not stop the item.
 function filesAgreeOn(keys, p) {
-  const paired = pairedFileKeys();
-  const seen = new Set(keys.map(k => fileTraits(k, paired)).filter(Boolean).map(t => t[p]));
+  const seen = new Set(keys.map(k => fileTraits(k)).filter(Boolean).map(t => t[p]));
   return seen.size <= 1 && !seen.has(null);
 }
 
@@ -4427,10 +4431,9 @@ async function selectSame(kinds, refKey) {
     // read at a time, so the columns and this never ask for the list twice.
     if (gFactsLoading) await gFactsLoading;
     await ensureFileFacts(true);
-    const paired = pairedFileKeys();
-    const ref = fileTraits(refKey, paired);
+    const ref = fileTraits(refKey);
     if (!ref) { setReadout(`could not read ${fileNameOf(refKey)}`); return; }
-    want = fileSameKeys(keys, k => fileTraits(k, paired), ref, kinds);
+    want = fileSameKeys(keys, fileTraits, ref, kinds);
   }
   if (!want.length) return;
   gFileAnchor = gFileFocus = refKey;
@@ -4879,6 +4882,7 @@ function draw() {
 
   const r = plotRect();
   gLabelHits = [];
+  gNumbersDrawn = new Set();
   if (r.w <= 0 || r.h <= 0) return;      // folded away behind the event panel
   chartLabels(r);                        // this frame's empty label pool
 
@@ -4917,10 +4921,13 @@ function draw() {
   let covered = null;
   if (gShowEvents && gDrawerMarks.length) covered = drawPairing(gDrawerMarks, r);
   else if (gShowFailedLabels && gDrawerMarks.length) drawPairing(gDrawerMarks, r, true);
-  // A picked trace's numbers take their spots before the others'.
+  // A picked trace's numbers take their spots before the others', and an
+  // A->B trace's before a B->A one's: a column number prints once, on the
+  // first trace that has the event (FastReporter's way, see drawEventMarkers).
+  const aFirst = ts => [...ts.filter(t => t.dir === 'a'), ...ts.filter(t => t.dir !== 'a')];
   const numOrder = gPickKey
-    ? [...order.filter(t => isPicked(t.key)), ...order.filter(t => !isPicked(t.key))]
-    : order;
+    ? [...aFirst(order.filter(t => isPicked(t.key))), ...aFirst(order.filter(t => !isPicked(t.key)))]
+    : aFirst(order);
   for (const t of numOrder) {
     if (!t.visible || (covered && covered.has(t))) continue;
     drawEventMarkers(t, r);        // dims itself: its ticks set their own alpha
@@ -5334,20 +5341,54 @@ function upperBound(arr, v) {
 // until it paints -- the FastReporter table of a whole cable takes a while,
 // and every setting change re-reads it.  A trace no table has taken yet (or
 // none can be built for) draws every event, as before, rather than none.
+//
+// Each mark also keeps the column it was printed in, so the number beside the
+// event on the chart is that column's (a customer-demo audit, 2026-10-02: a
+// splice the table headed "Event 10" read 7 on the A trace and 4 on the B
+// trace, each counting its own file's events).  `title` is the column's
+// header as the table prints it; `num` the number in it, or null when the
+// header carries none (an end, a Connector, Bends, the FEC Panel Connector).
+// Worked out here, once per table build, not per frame.  The first column to
+// claim an event keeps it.  `keep` (the one-direction table under an A+B one)
+// adds that table's traces without dropping the A+B table's marks.
 function tableKmKey(km) { return Math.round(Number(km) * 1e4); }
 function tableMarkReset(traces) {
   gTableKm = new Map();
-  for (const t of traces) gTableKm.set(t, new Set());
+  for (const t of traces) if (t) gTableKm.set(t, new Map());
 }
-function tableMark(t, km) {
+function tableColumnNumber(title) {
+  const m = /^(?:Event|Splice) (\d+)$/.exec(String(title == null ? '' : title).trim());
+  return m ? m[1] : null;
+}
+function tableMark(t, km, title) {
   if (!t || km == null || !Number.isFinite(Number(km))) return;
   let s = gTableKm.get(t);
-  if (!s) gTableKm.set(t, s = new Set());
-  s.add(tableKmKey(km));
+  if (!s) gTableKm.set(t, s = new Map());
+  const k = tableKmKey(km);
+  if (!s.has(k)) s.set(k, { title: title == null ? '' : String(title), num: tableColumnNumber(title) });
 }
 function inTable(t, e) {
   const s = gTableKm && gTableKm.get(t);
   return !s || s.has(tableKmKey(e.dist_km));
+}
+// The column a table printed this event in ({title, num}); null when it
+// printed none, undefined when no table has taken the trace.
+function tableColumnOf(t, e) {
+  const s = gTableKm && gTableKm.get(t);
+  if (!s) return undefined;
+  return s.get(tableKmKey(e.dist_km)) || null;
+}
+// A column's name and number as the chart prints them.  On a Summary Report
+// fibre page the page numbers that fibre's own events 1..n ("Event n" only;
+// a named column keeps its name, see reportFibreTables), so its chart reads
+// the page's numbers; an "Event n" that page does not print gets none.
+function chartColumnTitle(title) {
+  if (!gReportColumnNames || !/^Event \d+$/.test(title)) return title;
+  return gReportColumnNames.get(title) || null;
+}
+function chartColumnNumber(col) {
+  if (!col) return null;
+  return gReportColumnNames ? tableColumnNumber(chartColumnTitle(col.title)) : col.num;
 }
 
 // ─── Labels on the chart never run together ───────────────────────────
@@ -5437,9 +5478,15 @@ function drawLabelTip() {
 
 function drawEventMarkers(t, r) {
   const evs = t.data.events || [];
-  // Marker labels carry the same numbers as the table's columns: counted from
-  // the declared span start when there is one.  An event outside the span
-  // keeps its tick, dimmed and unnumbered, so the reel is still visible.
+  // Marker labels carry the same numbers as the table's columns: each event
+  // the table printed takes the number of the column it sits in (see
+  // tableMark), in every table the panel shows -- OTDR Suite's Event n /
+  // Splice n, FastReporter's Event n, the one-direction table's, FEC's.  A
+  // column with no number in its name (A-End / B-End, End, Connector, the
+  // FEC Panel Connector) keeps its tick with no number, and its name on the
+  // hover tip.  A trace no table has taken yet counts its own events from
+  // the declared span start, as before.  An event outside the span keeps its
+  // tick, dimmed and unnumbered, so the reel is still visible.
   const nums = spanEventNumbers(t);
   // A picked trace dims everything else, its markers and numbers included —
   // they set their own alpha below, so the dimming has to be folded in here
@@ -5464,6 +5511,8 @@ function drawEventMarkers(t, r) {
     // the dim unnumbered tick stays: it is how the tech puts the span start
     // back on the port or the reel.
     if (n != null && !inTable(t, e)) continue;
+    const col = n == null ? null : tableColumnOf(t, e);
+    const label = n == null ? null : col === undefined ? String(n) : chartColumnNumber(col);
     ctx.strokeStyle = e.is_reflective ? '#b8860b' : t.color;
     ctx.globalAlpha = (n == null ? 0.35 : 0.55) * dimA;
     ctx.beginPath();
@@ -5478,18 +5527,39 @@ function drawEventMarkers(t, r) {
       gLabelHits.push({ x0: px - 4, x1: px + 4, y0: py - 10, y1: py + 10, t, e });
       continue;
     }
+    const color = LIGHT_EDGE[t.color] || t.color;
+    if (label == null) {
+      // A column with no number (an end, a Connector): no number of the
+      // file's own stands in for it.  The tick is its target, and the hover
+      // tip names the column.
+      const name = col ? chartColumnTitle(col.title) : null;
+      gLabelHits.push({ x0: px - 4, x1: px + 4, y0: py - 10, y1: py + 10, t, e,
+                        ...(name ? { hiddenText: name, hiddenColor: color } : {}) });
+      continue;
+    }
+    // A table column's number prints ONCE on the chart, as FastReporter
+    // prints it (Robert 2026-10-02: the table's Event numbers, not one per
+    // trace or per fibre): the first trace to place it keeps it, A->B before
+    // B->A; every other trace's tick at that column keeps the number for the
+    // hover tip.  A trace no table has taken counts, and prints, its own.
+    const txt = label;
+    const once = col !== undefined;
+    if (once && gNumbersDrawn.has(txt)) {
+      gLabelHits.push({ x0: px - 4, x1: px + 4, y0: py - 10, y1: py + 10, t, e,
+                        hiddenText: txt, hiddenColor: color });
+      continue;
+    }
     // The number takes the first clear spot round its tick (above it, where
     // it always sat, when there is room).  None clear: it is left off and
     // the tick keeps it for the hover tip.
-    const txt = String(n);
-    const tw = ctx.measureText(String(n)).width;
-    const color = LIGHT_EDGE[t.color] || t.color;
+    const tw = ctx.measureText(txt).width;
     const spot = labels.place(eventNumberSpots(px, py, tw));
     if (!spot) {
       gLabelHits.push({ x0: px - 4, x1: px + 4, y0: py - 10, y1: py + 10, t, e,
                         hiddenText: txt, hiddenColor: color });
       continue;
     }
+    if (once) gNumbersDrawn.add(txt);
     ctx.fillStyle = color;
     ctx.textAlign = spot.align;
     ctx.textBaseline = spot.base;
@@ -5771,7 +5841,10 @@ function drawPairing(sets, r, failedOnly = false) {
                   go: () => D.goCell(cell.fi, D.single ? (p.ta ? 'a' : 'b') : 'avg', col.i) });
     };
     for (const col0 of D.cols) {
-      const col = { ...col0, cells: col0.cells.filter(c => shown.has(c.fi)) };
+      // A Summary Report fibre page names the column as that page does
+      // (see chartColumnTitle); on screen it is the table's own title.
+      const col = { ...col0, title: chartColumnTitle(col0.title) || col0.title,
+                    cells: col0.cells.filter(c => shown.has(c.fi)) };
       if (!col.cells.length) continue;
       if (detail) {
         col.cells.forEach(cell => fullCell(col, cell, shown.size > 1));
@@ -5845,21 +5918,18 @@ function drawPairing(sets, r, failedOnly = false) {
   return covered;
 }
 
-// A fibre loaded one way among paired ones has no A+B table in either mode
-// (FastReporter builds none for it either), but it is not left out: its own
-// single-direction table sits under the A+B one, judged at the report's
-// single-direction gate, and the drawer marks it as it marks an A-only load.
-function appendOneDirGrid(singles, host) {
-  const traces = gTraces.filter(t => t.visible && singles.includes(t.fiber));
-  if (!traces.length) return;
-  const box = document.createElement('div');
-  box.className = 'onedir-box';
+// A fibre loaded one way among paired ones has no A+B row in either mode
+// (FastReporter builds none for it either).  The event panel is ONE table
+// (Robert 2026-10-02: "we don't get two event panels"), so such a fibre is
+// left out of it, named on one line over the table; its trace still draws,
+// with its file's own event numbers (inTable: no table holds it).
+function noteOneDirFibers(singles, host) {
+  const fibers = [...new Set(gTraces.filter(t => t.visible && singles.includes(t.fiber)).map(t => t.fiber))];
+  if (!fibers.length) return;
   const cap = document.createElement('div');
   cap.className = 'onedir-cap';
-  cap.textContent = `One direction only: F${[...new Set(traces.map(t => t.fiber))].map(fiberLabel).join(', F')}`;
-  box.appendChild(cap);
-  host.appendChild(box);
-  renderFastReporterGrid(traces, box, document.createElement('div'), { oneDir: true });
+  cap.textContent = `One direction only, not in the table: F${fibers.map(fiberLabel).join(', F')}`;
+  host.insertBefore(cap, host.firstChild);
 }
 
 // Take the panel to one cell: row `fi`'s line for `which` ('a', 'b' or
@@ -6229,6 +6299,14 @@ function warnFor(reflective, leg) {
   const g = gateFor(reflective, leg);
   return (w > 0 && w < g && g < GATE_OFF) ? w : null;
 }
+// A direction's own loss in the two-direction tables.  A splice is judged on
+// its Average alone (Robert 2026-10-02: the bidirectional loss box "can't flag
+// one direction of a fiber even if the loss is greater"), so its A->B / B->A
+// cells are never red or yellow for loss, whatever they read.  A connector
+// keeps its one-direction gate (the boss, 2026-09-29: "we have to see them
+// separately"), and the report's own flag on a direction still shows.
+function legGateFor(reflective) { return reflective ? gateFor(true, true) : null; }
+function legWarnFor(reflective) { return reflective ? warnFor(true, true) : null; }
 function clearsAt(loss, gate) {
   if (loss == null || isNaN(loss) || gate == null) return false;
   return Math.round(Math.abs(loss) * 1000) / 1000 >= gate - 1e-9;
@@ -6493,11 +6571,13 @@ function renderEventTable() {
   gTableExport = null;
   gDrawerMarks = [];                 // the drawer waits for the mode's table
   suiteTableReset();
+  gTablePass++;                      // the verdicts FILES shows start again
 
   syncGateUI();   // the gate follows what is on screen (see oneDirOnly)
   const visible = gTraces.filter(t => t.visible);
   if (visible.length === 0) {
     hint.textContent = gLoadingKeys.size ? 'loading traces…' : 'add a trace to see events';
+    if (gTableFails.size || gTableHasBidi) { gTableFails = new Map(); gTableHasBidi = false; filesPfChanged(); }
     return;
   }
 
@@ -6646,7 +6726,8 @@ function paintFecGrid(traces, res, host, hint) {
         if (d <= FEC_MARK_TOL_KM && (!best || d < best.d)) best = { d, e };
       }
       if (!best) return;
-      tableMark(t, best.e.dist_km);
+      // the table's own headers: no number in either, so no number on the chart
+      tableMark(t, best.e.dist_km, k === 0 ? 'Panel Connector' : 'Combined With');
       evCol.set(`${t.key}|${tableKmKey(best.e.dist_km)}`, k === 0 ? 'conn' : 'comb');
       if (k === 0) own.conn = best.e.dist_km; else own.comb.push(best.e.dist_km);
     });
@@ -6695,6 +6776,7 @@ function paintFecGrid(traces, res, host, hint) {
   const fecHi = x => (x && !flagsOff()) ? 'fr-hi' : '';
   // a loss cell: blank when the cell filter drops it or it is a hidden gainer
   const lossTxt = (g, v) => (!kept(g, 'loss') || hideG(v)) ? '' : f3(v);
+  rows.forEach(({ t, g }) => { if (g && g.found) noteTableVerdict(t, g.fail_loss || g.fail_refl); });
   const body = rows.map(({ t, side, g }, ti) => {
     const dot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;`
       + `background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>`;
@@ -7349,14 +7431,10 @@ function oneDirTableZeroKm(traces) {
 // FastReporter-style grid for 1–2 traces (a fiber's A/B, OR two fibers of a
 // duplicate pair): events matched by DISPLAYED km into columns; each trace is
 // its own row; Average / Minimum / Maximum (loss) across the traces below.
-// `opts.oneDir`: these are the fibres loaded ONE way among paired ones,
-// shown under the A+B table (see appendOneDirGrid).  They are judged as the
-// report judges a single direction, at its single-direction gate, and the
-// A+B table keeps the event-number clicks and the Report's rows.
-function renderFastReporterGrid(traces, host, hint, opts = {}) {
+function renderFastReporterGrid(traces, host, hint) {
   const TOL = columnTolKm(traces);
-  const overGate = opts.oneDir ? (v => clearsAt(v, gateFor(false, true))) : clearsGate;
-  const warnGate = warnFor(false, !!opts.oneDir);
+  const overGate = clearsGate;
+  const warnGate = warnFor(false, false);
   const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';
 
   // Collect every event tagged with its trace index, at its displayed km
@@ -7376,8 +7454,17 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
 
   // Cluster into columns; a column holds at most one event per trace.
   const cols = clusterColumns(traces, items, TOL);
+  // Each column's header as the table prints it (h1 below): "End" for a
+  // column of fibre ends only, else "Event n" in the full table's numbering.
+  const colTitle = (c, i) => {
+    const present = c.ev.filter(x => x);
+    return present.length > 0 && present.every(x => x.is_end) ? 'End' : `Event ${i + 1}`;
+  };
   tableMarkReset(traces);
-  cols.forEach(c => c.ev.forEach((e, ti) => { if (e) tableMark(traces[ti], e.dist_km); }));
+  cols.forEach((c, i) => {
+    const title = colTitle(c, i);
+    c.ev.forEach((e, ti) => { if (e) tableMark(traces[ti], e.dist_km, title); });
+  });
   draw();                                  // the chart may have drawn before the table
 
   // ─── FastReporter event-table layout ────────────────────────────────
@@ -7496,7 +7583,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   const warnsGate = v => !overGate(v) && clearsAt(v, warnGate);
   // Reflectance is judged here only once the tech types a Reflectance number (FR's
   // own one-direction table has no reflectance verdict): a reflective
-  // event in that band, in the report's mid-span window, as fileFails
+  // event in that band, in the report's mid-span window, framed as the report
   // frames it (past this direction's launch reel, short of the far one).
   const reflFrame = traces.map(t => {
     const own = Number(gInfo && (t.dir === 'a' ? gInfo.launch_a_km : gInfo.launch_b_km)) || 0;
@@ -7519,8 +7606,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   const marks = { mode: gAnalysisMode, single: true, goCell: () => {},
     have: traces.map(t => ({ fiber: t.fiber, ta: t.dir === 'a' ? t : null, tb: t.dir === 'b' ? t : null })),
     cols: cols.map((c, i) => {
-      const present = c.ev.filter(x => x);
-      const title = present.length > 0 && present.every(x => x.is_end) ? 'End' : `Event ${i + 1}`;
+      const title = colTitle(c, i);
       return { i, title, km: c.km, cells: keepCol[i]
         ? c.ev.map((e, ti) => {
           if (!e) return null;
@@ -7538,10 +7624,8 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   let h2 = '', h3 = '';
   cols.forEach((c, i) => {
     if (!keepCol[i]) return;
-    const present = c.ev.filter(x => x);
-    const isEnd = present.length > 0 && present.every(x => x.is_end);
     h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.km}" data-col="${i}" `
-        + `title="zoom to ${c.km.toFixed(3)} km, span and settings">${isEnd ? 'End' : 'Event ' + (i + 1)}`
+        + `title="zoom to ${c.km.toFixed(3)} km, span and settings">${colTitle(c, i)}`
         + `<button class="fr-evmenu" data-col="${i}" title="span and settings">⋯</button></th>`;
     h2 += `<th colspan="2" class="fr-evsub" data-col="${i}">${colKind(c)}<br>`
         + `<span class="fr-km">${kmFt(c.km - zeroKm)}</span></th>`;
@@ -7613,6 +7697,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   // difference between reading the grid and scrolling it.  Arithmetic only, no
   // DOM, so it costs nothing next to the render it saves.
   const rowFails = traces.map((_t, ti) => cols.some(c => overGate(evLoss(c.ev[ti])) || reflBad(c.ev[ti], ti)));
+  traces.forEach((t, ti) => noteTableVerdict(t, rowFails[ti]));
   const rowKept = traces.map((_t, ti) => cols.some(c => keepsAt(c.ev[ti], ti)));
   const shown = traces.map((_t, i) => i)
     .filter(i => (!gFlaggedOnly || rowFails[i]) && (!collapse || rowKept[i]));
@@ -7802,7 +7887,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     + `<tfoot>${aggRows.join('')}</tfoot>`;
   const tb = table.querySelector('tbody');
   // Every row, for the Report: the body on screen is only a slice.
-  if (!opts.oneDir) gTableExport = { table, headExtra: statNameRow, rows: () => shown.map(rowHtml) };
+  gTableExport = { table, headExtra: statNameRow, rows: () => shown.map(rowHtml) };
   scroller.appendChild(table);
   host.appendChild(scroller);
 
@@ -7907,7 +7992,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   // A click on an event number on the trace lands here: scroll the row into
   // the window (the body is virtual, so paint it first), then the cell into
   // view sideways, and mark it for a moment.
-  if (!opts.oneDir) gGridGoTo = (t, e) => {
+  gGridGoTo = (t, e) => {
     const ti = traces.indexOf(t);
     const k = shown.indexOf(ti);
     if (k < 0) return;                       // hidden by "flagged rows"
@@ -8075,6 +8160,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const tables = res.tables || {};
   const have = pairs.filter(p => Array.isArray(tables[String(p.fiber)]) && tables[String(p.fiber)].length);
   const missing = pairs.filter(p => !have.includes(p)).map(p => p.fiber);
+  if (have.length) noteTableBidi();      // FILES carries no P/F (see noteTableVerdict)
   if (!have.length) {
     gTableKm = null; draw();             // no table: every event, as before
     hint.textContent = 'FastReporter table: ' + (res.error
@@ -8104,11 +8190,12 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const cols = clusterColumns(have, items, columnTolKm(have.flatMap(p => [p.ta, p.tb])));
   // A synthesised leg has no event of its own in the file, so it marks nothing.
   tableMarkReset(have.flatMap(p => [p.ta, p.tb]));
-  cols.forEach(c => c.ev.forEach((x, fi) => {
+  // Each leg is numbered as its column is headed: "Event n" (h1 below).
+  cols.forEach((c, i) => c.ev.forEach((x, fi) => {
     if (!x) return;
     for (const [w, t] of [['a', have[fi].ta], ['b', have[fi].tb]]) {
       const leg = x.row[w];
-      if (leg && !leg.synthetic && leg.pos_m != null) tableMark(t, Number(leg.pos_m) / 1000);
+      if (leg && !leg.synthetic && leg.pos_m != null) tableMark(t, Number(leg.pos_m) / 1000, `Event ${i + 1}`);
     }
   }));
   draw();                                  // painted after a fetch: the chart follows
@@ -8221,25 +8308,27 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const rawKm = m => Math.round(m / 1000 * 1e4) / 1e4;
 
   // ── Rows: A→B, B→A, Average per fibre ──
-  // Each row on its own, as FR judges it: the Average at the bidirectional
-  // gates, a direction row at the single-direction gates plus reflectance
-  // (FR grades reflectance per direction, never on the Average).  A launch
+  // Each row on its own: the Average at the bidirectional gates, a direction
+  // row on its reflectance (FR grades reflectance per direction, never on the
+  // Average) and a connector's loss; a splice's loss on its Average alone
+  // (see legGateFor).  A launch
   // level or a synthesised leg is not a reading and is never judged.
   const cellFails = (x, which) => {
     if (which === 'avg') return clearsAt(x.row.loss, gateFor(isRefl(x), false));
     if (legReflFails(x, which)) return true;
     const leg = x.row[which];
     if (!legOk(leg) || gainerHidden(leg.loss)) return false;
-    return clearsAt(leg.loss, gateFor(isRefl(x), true));
+    return clearsAt(leg.loss, legGateFor(isRefl(x)));
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c.ev[fi], which));
-  const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));
+  const fibreFails = fi => ['a', 'b', 'avg'].some(w => legFails(fi, w));
+  const rowFails = have.map((_p, fi) => fibreFails(fi));
   // A yellow loss: at or over its Warning, under its Fail (see warnFor).
   const cellWarns = (x, which) => {
     if (cellFails(x, which)) return false;
     if (which === 'avg') return clearsAt(x.row.loss, warnFor(isRefl(x), false));
     const leg = x.row[which];
-    return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, warnFor(isRefl(x), true));
+    return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, legWarnFor(isRefl(x)));
   };
   // What the cell filters keep: failures, warnings, or both.  A splice's
   // loss is judged on the Average row alone (the boss, 2026-09-29: "we only
@@ -8320,16 +8409,18 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
-    const fail = legFails(fi, which);
     const label = which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average';
     const cells = [
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
       + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${fiberLabel(p.fiber)}</td>`,
-      // Every row carries its own verdict, as FR's do (driven 2026-09-25).
-      `<td class="${pfClass(fail)}" title="${which === 'avg'
-        ? `A+B average at the report's gates (${gateLabel()})`
-        : "this direction at the report's single-direction, connector and reflectance gates"}`
-      + `, this is OUR verdict, not FastReporter's">${pfMark(fail)}</td>`,
+      // One verdict per fibre, on its Average row, as FR shows a
+      // bidirectional measurement (Robert 2026-10-02, from FR): the
+      // direction rows' P/F is blank, their failing cells still red.
+      // Judged as the row paints, so end verdicts landing (refreshVerdicts) move it.
+      which === 'avg'
+        ? `<td class="${pfClass(fibreFails(fi))}" title="the fiber at the report's gates (${gateLabel()})`
+          + `, this is OUR verdict, not FastReporter's">${pfMark(fibreFails(fi))}</td>`
+        : '<td></td>',
       `<td>${t.data.wavelength_nm || '---'}</td>`,
       `<td>${label}</td>`,
     ];
@@ -8354,8 +8445,8 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
         cells.push(typeCell(c, leg.synthetic ? '' : kind(leg))
                  + (gainerHidden(leg.loss) ? `<td${at}></td>`
                     : lossCell(leg.loss, !legOk(leg), at,
-                               gated ? gateFor(isRefl(x), true) : null,
-                               judged ? warnFor(isRefl(x), true) : null))
+                               gated ? legGateFor(isRefl(x)) : null,
+                               judged ? legWarnFor(isRefl(x)) : null))
                  + reflCell(x, which));
       }
       if (showSec && i < cols.length - 1) {
@@ -8499,7 +8590,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     gDrawerMarks.push(marks);
   }
   wireAggJump({ scroller, table, tb, descs, paintRows }, have);   // Minimum / Maximum -> its row
-  appendOneDirGrid(singles, host);
+  noteOneDirFibers(singles, host);
   draw();
   requestAnimationFrame(() => {
     const hrows = table.tHead ? [...table.tHead.rows] : [];
@@ -8962,10 +9053,12 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // The report's columns are the closures and the two ends: the chart marks
   // each direction's own reading there and nothing else.
   tableMarkReset(have.flatMap(p => [p.ta, p.tb]));
+  // Each direction's reading takes its column's header (the report's own
+  // title: "Event n", "Splice n", the two ends), A's and B's alike.
   cols.forEach(c => c.ev.forEach((x, fi) => {
     if (!x) return;
-    if (x.a && x.a.km != null) tableMark(have[fi].ta, x.a.km);
-    if (x.b && x.b.km != null) tableMark(have[fi].tb, x.b.km);
+    if (x.a && x.a.km != null) tableMark(have[fi].ta, x.a.km, c.title);
+    if (x.b && x.b.km != null) tableMark(have[fi].tb, x.b.km, c.title);
   }));
   draw();                                  // painted after a fetch: the chart follows
   const fmt  = v => (v == null || isNaN(v)) ? '---' : v.toFixed(3);
@@ -8978,14 +9071,16 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // A stored reading; a leg the report measured itself is never judged.
   const legOk = leg => !!leg && !leg.grey && leg.loss != null;
   const LEGS = oneDir ? [oneDir] : ['a', 'b', 'avg'];
-  // The loss box's typed gate replaces the report's on a one-direction
-  // table, as it does on the Average of a two-direction one.
+  // The loss box's typed number replaces the report's gate on a
+  // one-direction table (Robert 2026-10-02: "Suite mode one direction needs
+  // to use the number entered into the box"), as it does on the Average of a
+  // two-direction one.
   const oneGate = !oneDir ? null : flagsOff() ? Infinity
     : gGateOverride != null ? gGateOverride
     : res.gate_db != null ? Number(res.gate_db) : null;
   // A cell whose report verdict is a loss over the gate and nothing else:
   // the Splice Report's plain two-direction reading ('bidir'), the Uni
-  // report's splice and off-splice readings.  A typed loss gate judges these
+  // report's splice and off-splice readings.  A typed number judges these
   // alone, up or down; a break, the Splice Report's bend (its wavelength
   // rule), a connector, a reflective event or damage keep the report's flag.
   const LOSS_ONLY = oneDir ? new Set(['splice', 'bend', 'passing'])
@@ -8995,8 +9090,9 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
 
   // ── Verdicts ──
   // The report's flag first.  A loss is also judged at the report's gates,
-  // row by row: the Average at the bidirectional gate, a direction at the
-  // single-direction gate.  The two ends take the report's verdict only.
+  // row by row: the Average at the bidirectional gate, a connector's
+  // direction at its one-direction gate; a splice's direction is not judged
+  // on loss (see legGateFor).  The two ends take the report's verdict only.
   const lossFails = (c, x, which) => {
     if (which === 'avg') {
       if (typedGate(c, x)) return clearsAt(x.loss, gateFor(false, false));
@@ -9010,7 +9106,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
                             && legOk(leg) && clearsAt(leg.loss, oneGate));
     }
     return !!leg.flag
-        || (!c.isEnd && legOk(leg) && clearsAt(leg.loss, gateFor(!!x.reflective, true)));
+        || (!c.isEnd && legOk(leg) && clearsAt(leg.loss, legGateFor(!!x.reflective)));
   };
   // Reflectance: the report's verdict, until the tech types a Reflectance number.
   // Then every reading off the two ends is judged by that band with the
@@ -9030,10 +9126,12 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     if (oneDir || c.isEnd || lossFails(c, x, which)) return false;
     if (which === 'avg') return clearsAt(x.loss, warnFor(!!x.reflective, false));
     const leg = x[which];
-    return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, warnFor(!!x.reflective, true));
+    return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, legWarnFor(!!x.reflective));
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c, c.ev[fi], which));
   const rowFails = have.map((_p, fi) => LEGS.some(w => legFails(fi, w)));
+  if (oneDir) have.forEach((p, fi) => noteTableVerdict(legOf(p), rowFails[fi]));
+  else if (have.length) noteTableBidi();   // FILES carries no P/F (see noteTableVerdict)
   // What the cell filters keep of a loss (the boss, 2026-09-29: "we only
   // need to see if it's failing Bidi Average"): the Average row's verdict
   // alone, never a direction at the single-direction gate.  A direction
@@ -9167,15 +9265,20 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
-    const fail = legFails(fi, which);
     const label = which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average';
+    // An A+B table carries one verdict per fibre, on its Average row (FR's
+    // bidirectional layout, Robert 2026-10-02); a one-direction table's rows
+    // carry their own.  Judged as the row paints, so end verdicts landing
+    // (refreshVerdicts) move it.
+    const fail = LEGS.some(w => legFails(fi, w));
     const cells = [
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
       + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${fiberLabel(p.fiber)}</td>`,
-      `<td class="${pfClass(fail)}" title="${which === 'avg'
-        ? `the Splice Report's flags, and the A+B value at its gates (${gateLabel()})`
-        : "the Splice Report's flags, and this direction at its single-direction gates"}`
-      + `">${pfMark(fail)}</td>`,
+      (!oneDir && which !== 'avg') ? '<td></td>'
+        : `<td class="${pfClass(fail)}" title="${which === 'avg'
+            ? `the Splice Report's flags, and the fiber at its gates (${gateLabel()})`
+            : "the Splice Report's flags, and this direction at its gates"}`
+          + `">${pfMark(fail)}</td>`,
       `<td>${t.data.wavelength_nm || '---'}</td>`,
       `<td>${label}</td>`,
     ];
@@ -9338,7 +9441,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     gDrawerMarks.push(marks);
   }
   wireAggJump({ scroller, table, tb, descs, paintRows }, have);   // Minimum / Maximum -> its row
-  appendOneDirGrid(singles, host);
+  noteOneDirFibers(singles, host);
   draw();
   requestAnimationFrame(() => {
     const hrows = table.tHead ? [...table.tHead.rows] : [];
@@ -10516,28 +10619,35 @@ function snapChart(fit, view) {
 // to the whole span.  Each goes to the server as it is drawn (a whole cable
 // is a thousand of them, far past one request); map fibre -> 'ref:<name>'.
 const REPORT_FIBRE_W = 1000, REPORT_FIBRE_H = 360;     // CSS px, drawn at 1.5x
-function reportFibreCharts(fibres, token, progress) {
+// `names(f)`, when given, is fibre f's page's own event names (see
+// reportFibreTables): its chart prints the numbers its table prints.
+function reportFibreCharts(fibres, token, progress, names = null) {
   return withPrintCanvas(REPORT_FIBRE_W, REPORT_FIBRE_H, 1.5, async (fit) => {
     const vis = gTraces.map(t => t.visible);
     const out = new Map();
-    for (let k = 0; k < fibres.length; k++) {
-      const f = fibres[k];
-      if (progress) progress(k, fibres.length);
-      gPickKey = null;                        // no dimming on a page of its own
-      gTraces.forEach((t, i) => { t.visible = vis[i] && t.fiber === f; });
-      const b = dataBounds();
-      if (!b) continue;
-      snapChart(fit, b);
-      const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
-      if (!blob) continue;
-      const name = `fibre-${f}`;
-      const r = await fetch(`/api/report_image?token=${encodeURIComponent(token)}&name=${name}`,
-                            { method: 'POST', body: blob });
-      if (!r.ok) {
-        const j = await r.json().catch(() => ({}));
-        throw new Error(j.error || `a fiber chart did not reach the server (${r.status})`);
+    try {
+      for (let k = 0; k < fibres.length; k++) {
+        const f = fibres[k];
+        if (progress) progress(k, fibres.length);
+        gPickKey = null;                        // no dimming on a page of its own
+        gReportColumnNames = names ? (names(f) || new Map()) : null;
+        gTraces.forEach((t, i) => { t.visible = vis[i] && t.fiber === f; });
+        const b = dataBounds();
+        if (!b) continue;
+        snapChart(fit, b);
+        const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+        if (!blob) continue;
+        const name = `fibre-${f}`;
+        const r = await fetch(`/api/report_image?token=${encodeURIComponent(token)}&name=${name}`,
+                              { method: 'POST', body: blob });
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}));
+          throw new Error(j.error || `a fiber chart did not reach the server (${r.status})`);
+        }
+        out.set(f, 'ref:' + name);
       }
-      out.set(f, 'ref:' + name);
+    } finally {
+      gReportColumnNames = null;            // the screen's chart: the table's own numbers
     }
     return out;
   });
@@ -10631,6 +10741,7 @@ function reportFibreTables(ev, S) {
   for (const [f, dirs] of byFibre) {
     const defs = dirs.flatMap(d => kinds.map(k => ({ d, k })));
     const body = [];
+    const names = new Map();               // the table's "Event n" -> this page's
     let n = 0;
     for (const g of groups) {
       const vals = defs.map(({ d, k }) => {
@@ -10661,6 +10772,7 @@ function reportFibreTables(ev, S) {
       // FastReporter numbers a fibre's events 1..n; the combined table's
       // numbers are the whole load's columns.  A named column keeps its name.
       const name = section ? '' : (/^Event \d+$/.test(g.title) ? `Event ${++n}` : g.title);
+      if (/^Event \d+$/.test(name) && !names.has(g.title)) names.set(g.title, name);
       body.push([{ t: name, s: S.B }, { t: type, s: S.B }, { t: loc, s: S.C }, ...vals]);
     }
     const LEAD = 3;
@@ -10677,6 +10789,7 @@ function reportFibreTables(ev, S) {
     const avg = dirs.find(d => /average/i.test(d.dir)) || dirs[0];
     out.set(f, {
       pf: avg && avg.pf ? avg.pf.t : '',
+      names,                               // for the page's chart (reportFibreCharts)
       table: { title: 'Events', lead: typed ? LEAD : LEAD - 1, head: [head0, head1],
                body: body.map(row => [row[0], ...(typed ? [row[1]] : []), row[2],
                                       ...row.slice(LEAD).filter((_v, i) => keep[i])]),
@@ -10798,7 +10911,8 @@ async function reportPayload(opt, token, progress) {
       const byTable = reportFibreTables(ev, { H, B, C });
       let list = [...new Set(sorted.map(t => t.fiber))];
       if (ev && (gFlaggedOnly || cellFilterOn())) list = list.filter(f => byTable.has(f));
-      const charts = await reportFibreCharts(list, token, progress);
+      const charts = await reportFibreCharts(list, token, progress,
+                                             ev ? (f => byTable.has(f) ? byTable.get(f).names : null) : null);
       const one = (ts, fn) => [...new Set(ts.map(fn).filter(v => v != null && v !== ''))].join(' / ');
       for (const f of list) {
         const ts = sorted.filter(t => t.fiber === f);

@@ -480,7 +480,7 @@ def test_the_report_s_flag_is_the_verdict_and_the_ends_take_nothing_else():
     assert "return !!x.flag || (!c.isEnd && clearsAt(x.loss, gateFor(!!x.reflective, false)));" in body
     # ...until the tech types a loss gate: then it judges a plain loss alone
     assert "if (typedGate(c, x)) return clearsAt(x.loss, gateFor(false, false));" in body
-    assert "|| (!c.isEnd && legOk(leg) && clearsAt(leg.loss, gateFor(!!x.reflective, true)));" in body
+    assert "|| (!c.isEnd && legOk(leg) && clearsAt(leg.loss, legGateFor(!!x.reflective)));" in body
     assert "isEnd: c.kind === 'end' || !!c.end," in body
     # reflectance is the report's verdict, until the tech types a Refl Band
     assert "if (gReflOverride == null || c.isEnd) return !!(leg && leg.flag_refl);" in body

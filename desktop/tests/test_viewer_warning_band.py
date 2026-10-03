@@ -186,18 +186,18 @@ def test_both_tables_colour_the_band_yellow_and_never_as_a_failure():
     assert ("else if (overGate(v)) cls = ' class=\"fr-hi\"';   // the REPORT's verdict\n"
             "      else if (clearsAt(v, warnGate)) cls = ' class=\"fr-warn\"';"
             ) in VIEWER
-    # the report's gate and its Warning; a mixed load's one-way fibres at
-    # the single-direction ones
-    assert "const overGate = opts.oneDir ? (v => clearsAt(v, gateFor(false, true))) : clearsGate;" in VIEWER
-    assert "const warnGate = warnFor(false, !!opts.oneDir);" in VIEWER
+    # the report's gate and its Warning
+    assert "const overGate = clearsGate;" in VIEWER
+    assert "const warnGate = warnFor(false, false);" in VIEWER
     # A+B table: every loss cell gets its own row's Warning
     assert "else if (!synthetic && clearsAt(v, warn)) cls.push('fr-warn');" in VIEWER
     assert 'gateFor(isRefl(x), false),\n' in VIEWER and 'warnFor(isRefl(x), false))' in VIEWER
-    # a direction's loss has its gate and warning with the cell filters off
-    # (under them only the Average judges a loss, boss 2026-09-29, except
-    # an end connector's direction, at its fail gate with no warning)
-    assert 'gated ? gateFor(isRefl(x), true) : null,' in VIEWER
-    assert 'judged ? warnFor(isRefl(x), true) : null)' in VIEWER
+    # a connector's direction has its gate and warning with the cell filters
+    # off (under them only the Average judges a loss, boss 2026-09-29, except
+    # an end connector's direction, at its fail gate with no warning); a
+    # splice's direction has neither (Robert 2026-10-02, see legGateFor)
+    assert 'gated ? legGateFor(isRefl(x)) : null,' in VIEWER
+    assert 'judged ? legWarnFor(isRefl(x)) : null)' in VIEWER
     assert "lossCell(v, false, '', g, warnFor(refl, false))" in VIEWER
     # "failing cells only" keeps failures only; a yellow cell is not one
     assert "const keep = (gFailCellsOnly && cls.includes('fr-hi'))" in VIEWER
