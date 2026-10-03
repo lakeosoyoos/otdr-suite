@@ -118,6 +118,21 @@ def test_a_section_runs_between_a_fibre_s_readings_in_neighbouring_columns():
         E.viewer_table_sections({{'1': one}}, {{'b': rec['b']}}, cols[:2])
         s = one[0]['section']
         assert s['a'] is None and (s['length_m'], s['loss'], s['att_db_km']) == (3000.0, 0.9, 0.3), s
+        # a fibre with no reading in the next column: its section runs to its
+        # next reading wherever it sits, as FastReporter prints it (Robert
+        # 2026-10-03, "make sections work properly in suite mode too")
+        calls.clear()
+        E._section_stats_from_trace = fit
+        gap = [{{'col': 0, 'a': leg(1.0), 'b': leg(9.0)}}, {{'col': 2, 'a': leg(4.0), 'b': leg(6.0)}}]
+        E.viewer_table_sections({{'1': gap}}, rec, cols)
+        s = gap[0]['section']
+        assert s['a'] == {{'length_m': 3000.0, 'loss': 0.6, 'att_db_km': 0.2}}, s
+        assert s['b'] == {{'length_m': 3000.0, 'loss': 0.9, 'att_db_km': 0.3}}, s
+        assert 'section' not in gap[1]                      # its last reading
+        # ... but never across the report's own Section column
+        tie = [{{'col': 1, 'a': leg(3.0), 'b': leg(7.0)}}, {{'col': 4, 'a': leg(7.0), 'b': leg(3.0)}}]
+        E.viewer_table_sections({{'1': tie}}, rec, cols)
+        assert 'section' not in tie[0]
         # a fit that fails costs that section, never the table
         def boom(*a):
             raise ValueError('no trace')
@@ -136,13 +151,20 @@ def test_a_section_runs_between_a_fibre_s_readings_in_neighbouring_columns():
 def test_the_report_run_measures_each_fibre_s_sections(splice):
     table = splice
     secs = _sections(table)
-    # 24 fibres, ~16 columns: nearly every neighbouring pair has a section
+    # 24 fibres, ~16 columns: every reading but a fibre's last has a section
     assert len(secs) >= 300, len(secs)
+    for f, cells in table["fibers"].items():
+        cs = sorted(cells, key=lambda x: x["col"])
+        kinds = [c["kind"] for c in table["columns"]]
+        for c, n in zip(cs, cs[1:]):
+            if "section" not in kinds[c["col"]:n["col"] + 1] and c.get("section") is None:
+                # only when no direction could be measured
+                assert not (c.get("a") and n.get("a")) and not (c.get("b") and n.get("b")), (f, c["col"])
     both = 0
     for f, c in secs:
         s = c["section"]
-        cells = {x["col"]: x for x in table["fibers"][f]}
-        nxt = cells[c["col"] + 1]                     # the next column, never further
+        later = sorted((x for x in table["fibers"][f] if x["col"] > c["col"]), key=lambda x: x["col"])
+        nxt = later[0]                                # the fibre's NEXT reading, wherever it sits
         for w in "ab":
             leg = s[w]
             if leg is None:
@@ -192,8 +214,9 @@ def test_a_one_direction_table_has_that_direction_s_sections(tmp_path):
 
 def test_the_suite_table_prints_sections_behind_the_switch():
     body = _fn('paintSuiteBidiGrid')
-    # the report's figures, printed only: a section to the NEXT column
-    assert "return x && x.section && cols[i + 1] && cols[i + 1].ev[fi] ? x.section : null;" in body
+    # the report's figures, printed only: a section to the fibre's next
+    # reading, after its own column, wherever that reading sits
+    assert "return x && x.section && i < cols.length - 1 ? x.section : null;" in body
     # the same switch as FastReporter mode's, and the cell filters fold them
     assert "const showSec = gShowSections && !collapse;" in body
     assert "const secCol = cols.map((_c, i) => showSec && keepCol[i] && i < cols.length - 1" in body

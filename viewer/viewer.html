@@ -9710,15 +9710,17 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const marks = { mode: 'suite', single: !!oneDir, have, goCell: () => {}, cols: markCols() };
 
   // ── Sections (Robert 2026-10-02: "in Suite mode, we want Sections back") ──
-  // The glass between a fibre's reading in column i and its reading in
-  // column i + 1, as the report measured it off each trace
+  // The glass between a fibre's reading in column i and its NEXT reading,
+  // in whichever later column that sits, printed after column i as
+  // FastReporter prints it (Robert 2026-10-03, "make sections work properly
+  // in suite mode too"), as the report measured it off each trace
   // (E.viewer_table_sections): one per direction, the Average row their
   // mean.  Nothing here computes a figure.  A pair of columns no fibre has
   // a section between (a panel tie's own Section columns sit there) gets
   // none; with Sections Off, or a cell filter on, there are none at all.
   const secOf = (fi, i) => {
     const x = cols[i].ev[fi];
-    return x && x.section && cols[i + 1] && cols[i + 1].ev[fi] ? x.section : null;
+    return x && x.section && i < cols.length - 1 ? x.section : null;
   };
   const anySec = cols.some((_c, i) => have.some((_p, fi) => secOf(fi, i)));
   const secLab = document.getElementById('set-sections-off').closest('label');

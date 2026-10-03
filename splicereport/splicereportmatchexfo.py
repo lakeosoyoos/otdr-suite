@@ -7848,9 +7848,13 @@ def _viewer_leg_section(rec, km_from, km_to):
 
 def viewer_table_sections(fibers_out, recs, columns=None, km_of=None):
     """Each fibre's Sections in the Viewer's OTDR Suite table, in place: a
-    cell gets `section`, the glass from its column to the NEXT column, when
-    the fibre has a reading in both (Robert 2026-10-02: "in Suite mode, we
-    want Sections back").
+    cell gets `section`, the glass from its reading to the fibre's NEXT
+    reading, in whichever later column that sits (Robert 2026-10-02: "in
+    Suite mode, we want Sections back"; 2026-10-03: "make sections work
+    properly in suite mode too").  FastReporter prints a fibre's section
+    after its own event wherever the next one is; this used to need a
+    reading in the very next column, and 36 of 260 sections on a 24-fibre
+    span went missing.
 
         {'length_m', 'loss', 'att_db_km', 'a': leg | None, 'b': leg | None}
 
@@ -7863,7 +7867,7 @@ def viewer_table_sections(fibers_out, recs, columns=None, km_of=None):
     that direction's own.  `km_of(side, fnum, cell)` places a leg the
     report gave no km of its own (grey); without it, or for a break, that
     leg has none.  `recs` is {'a': {fnum: rec}, 'b': {fnum: rec}}.
-    Next to a report's own Section column (a panel-to-panel tie) nothing is
+    Across a report's own Section column (a panel-to-panel tie) nothing is
     added: that column already describes the same glass.
 
     Display only: the report and its verdicts never read these."""
@@ -7873,14 +7877,12 @@ def viewer_table_sections(fibers_out, recs, columns=None, km_of=None):
             fnum = int(fkey)
         except (TypeError, ValueError):
             continue
-        by_col = {c.get('col'): c for c in cells}
-        for cell in cells:
-            ci = cell.get('col')
-            nxt = by_col.get(ci + 1) if ci is not None else None
-            if nxt is None:
-                continue
-            if 'section' in (kinds[ci] if ci < len(kinds) else None,
-                             kinds[ci + 1] if ci + 1 < len(kinds) else None):
+        placed = sorted((c for c in cells if c.get('col') is not None),
+                        key=lambda c: c.get('col'))
+        for cell, nxt in zip(placed, placed[1:]):
+            ci, cn = cell.get('col'), nxt.get('col')
+            if any((kinds[k] if k < len(kinds) else None) == 'section'
+                   for k in range(ci, cn + 1)):
                 continue
             legs = {}
             for side in ('a', 'b'):
