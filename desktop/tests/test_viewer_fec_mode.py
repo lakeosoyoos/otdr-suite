@@ -96,7 +96,8 @@ def test_fec_mode_has_its_own_table_ahead_of_the_pairing_grids():
     assert body.index('renderFecGrid') < body.index('renderSuiteBidiGrid')
     # FR's one-direction table for now (Robert 2026-10-02), never a pairing
     fec = body[body.index('if (gFecMode) {'):body.index('renderSuiteBidiGrid')]
-    assert 'renderFastReporterGrid(visible, host, hint);' in fec and 'return;' in fec
+    assert 'renderFastReporterGrid(visible, host, hint, { fec: fecCombinedFor(visible) });' in fec
+    assert 'return;' in fec
     assert 'const FEC_COMBINED_TABLE = false;' in HTML
     assert 'function fecTable() { return gFecMode && FEC_COMBINED_TABLE; }' in HTML
     assert "fetch(`/api/fec_table?fibers=" in HTML
@@ -108,7 +109,7 @@ def test_fec_mode_comes_from_the_files_only():
     """Robert 2026-10-02 "auto only": no switch, no address, nothing
     remembered.  Each /api/list read decides it again."""
     assert 'id="set-fec"' not in HTML
-    assert 'otdr_viewer_fec' not in HTML
+    assert "'otdr_viewer_fec'" not in HTML      # FEC mode itself is never remembered
     assert "get('fec')" not in HTML
     assert "'FEC mode'].filter(Boolean)" not in HTML
     info = HTML[HTML.index('async function loadInfo() {'):]
@@ -163,6 +164,77 @@ def test_the_server_says_whether_each_side_reaches_the_cable_end(tmp_path):
         assert cap[0]['cable_end_known_b'] is True
         print('OK')
     """, tmp_path)
+
+
+# ── The Combined column on FR's table, on/off from the gear (Robert
+#    2026-10-02: "put the combined column back in and have it on/off from a
+#    drop down accessible in the gear") ──────────────────────────────────────
+
+def test_the_gear_drop_down_offers_show_combined_column_in_fec_mode_only():
+    menu = HTML[HTML.index('<span id="evt-view-menu"'):]
+    menu = menu[:menu.index('</span>\n')]
+    assert '<label id="fec-comb-lab" style="display:none"' in menu
+    assert '<input id="set-fec-combined" type="checkbox" checked> Show Combined Column</label>' in menu
+    body = HTML[HTML.index('function renderEventTable() {'):]
+    body = body[:body.index('\n}\n')]
+    assert "if (combLab) combLab.style.display = gFecMode ? '' : 'none';" in body
+    assert 'renderFastReporterGrid(visible, host, hint, { fec: fecCombinedFor(visible) });' in body
+    # on by default, remembered like the gear's other items
+    assert "gFecCombined = localStorage.getItem('otdr_viewer_fec_combined') !== '0';" in HTML
+    assert "localStorage.setItem('otdr_viewer_fec_combined', gFecCombined ? '1' : '0');" in HTML
+
+
+def test_the_fr_table_ends_with_the_combined_columns():
+    uni = HTML.split('function renderFastReporterGrid(', 1)[1].split('\nfunction renderFrBidiGrid(', 1)[0]
+    assert 'const NFEC = fec ? 2 : 0;' in uni
+    assert 'class="fr-stathdr" title="${fecRule}">Combined</th>' in uni
+    assert '<th class="fr-sub fr-stat">With</th><th class="fr-sub fr-stat">Loss<br>(dB)</th>' in uni
+    # every row, the name strip and the spacer count the two cells
+    assert "+ (NFEC ? `<td colspan=\"${NFEC}\"></td>` : '')" in uni
+    assert '+ NSTAT + NFEC;' in uni
+    # red at the FEC rule's verdict, never the Viewer's loss box
+    assert "const hi = v != null && g.fail_loss && !flagsOff() ? ' fr-hi' : '';" in uni
+    # the side is the folder the trace came from, as Splice Report FEC grades it
+    assert "fec.grades[t.src === 'b' ? 'B' : 'A']" in uni
+    # Minimum / Maximum / Average over the rows on screen
+    assert 'const fl = shown.map(ti => fecLoss(fecG(ti)))' in uni
+
+
+def test_the_combined_grades_are_asked_once_and_copies_are_not_graded():
+    """Real fecCombinedFor under JavaScriptCore with fetch stubbed."""
+    if not os.path.exists(JSC):
+        pytest.skip('JavaScriptCore shell not available')
+    import json, tempfile
+    i = HTML.index('function fecCombinedFor(')
+    fn = HTML[i:HTML.index('\n}\n', i) + 3]
+    js = ("var gFecMode = true, gFecCombined = true, RENDERS = 0, URLS = [], DONE = null;\n"
+          "var gInfo = {dir_a_name: 'A', dir_b_name: 'B', fec_gates: null};\n"
+          "var gFecComb = { sig: null, res: null, seq: 0 };\n"
+          "var gCopies = {'100006': [6, 2]};\n"
+          "function realFiber(id) { const c = gCopies[String(id)]; return c ? c[0] : Number(id); }\n"
+          "function renderEventTable() { RENDERS++; }\n"
+          "function fetch(u) { URLS.push(u); return Promise.resolve({ json: () => Promise.resolve({grades: {A: {'6': {found: true}}}}) }); }\n"
+          + fn +
+          "var T = [{fiber: 6, src: 'a'}, {fiber: 6, src: 'b'}, {fiber: 100006, src: 'a'}, {fiber: 2, src: 'a'}];\n"
+          "var out = {first: fecCombinedFor(T), again: fecCombinedFor(T)};\n"
+          "Promise.resolve().then(() => 0).then(() => 0).then(() => 0).then(() => {\n"
+          "  out.landed = fecCombinedFor(T); out.urls = URLS; out.renders = RENDERS;\n"
+          "  gFecCombined = false; out.off = fecCombinedFor(T);\n"
+          "  print(JSON.stringify(out));\n"
+          "});\n")
+    with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as fh:
+        fh.write(js)
+    try:
+        p = subprocess.run([JSC, fh.name], capture_output=True, text=True)
+    finally:
+        os.unlink(fh.name)
+    assert p.returncode == 0 and p.stdout.strip(), p.stdout + p.stderr
+    out = json.loads(p.stdout.strip().splitlines()[-1])
+    assert out['first'] == {'pending': True} and out['again'] == {'pending': True}
+    assert out['urls'] == ['/api/fec_table?fibers=2,6']     # once; the copy is not sent
+    assert out['renders'] == 1                               # laid out again when they land
+    assert out['landed'] == {'grades': {'A': {'6': {'found': True}}}}
+    assert out['off'] is None
 
 
 def test_the_short_shot_warning_no_longer_names_a_viewer_fec_tool():
