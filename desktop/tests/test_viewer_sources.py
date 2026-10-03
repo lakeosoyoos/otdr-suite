@@ -177,7 +177,7 @@ def test_each_trace_carries_the_ids_it_states(tmp_path):
     (d / 'AAABBB003_1550.sor').write_bytes(
         TS.set_identifiers(make_sor(), cable_id='CAB1', fiber_id='0003'))
     assert TS._file_ids(str(d), 'AAABBB003_1550.sor') == ('CAB1', '0003')
-    (d / 'x.json').write_text('{}')
+    (d / 'x.json').write_text('{}', encoding='utf-8')
     assert TS._file_ids(str(d), 'x.json') == (None, None)
 
 
