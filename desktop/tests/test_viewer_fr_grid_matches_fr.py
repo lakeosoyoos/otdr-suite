@@ -280,3 +280,20 @@ def test_a_heading_prints_its_first_rows_event_as_fr_does(grid):
     assert heads[7] == '1.8543 km', heads[7]
     assert heads[3] == '0.0491 km', heads[3]           # 1.0541 - 1.0050
     assert heads[5] == '2.0847 km', heads[5]           # 3.1388 - 1.0541
+
+
+@needs_jsc
+def test_headings_count_the_rows_with_an_event_or_section(grid):
+    """Robert 2026-10-02: FR's heading says how many rows have the event:
+    "Event 5 (6/12)", and the section after it: "Section (6/12)"."""
+    top = [c[0] for c in _cells(grid['plain']['head'])[0]][4:]
+    assert top[:9] == ['Event 1 (3/3)⋯', 'Section (3/3)', 'Event 2 (3/3)⋯', 'Section (3/3)',
+                       'Event 3 (1/3)⋯', 'Section (1/3)', 'Event 4 (2/3)⋯', 'Section (2/3)',
+                       'Event 5 (3/3)⋯'], top
+
+
+def test_the_two_direction_tables_count_their_sections_too():
+    for fn in ('function paintFrBidiGrid(', 'function paintSuiteBidiGrid('):
+        body = VIEWER.split(fn, 1)[1].split('\nfunction ', 1)[0]
+        assert 'const nSec = have.filter((_p, fi) => secOf(fi, i)).length;' in body, fn
+        assert 'Section (${nSec}/${have.length})</th>' in body, fn

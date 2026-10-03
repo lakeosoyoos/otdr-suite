@@ -201,7 +201,8 @@ def test_the_suite_table_prints_sections_behind_the_switch():
     assert "if (secLab) secLab.style.display = anySec ? '' : 'none';" in body
     assert "secLab.style.display = 'none';       // the report has no sections" not in VIEWER
     # FastReporter's header and cells: Section, its length, Loss and Att.
-    assert "h1 += '<th colspan=\"2\" class=\"fr-sechdr\">Section</th>';" in body
+    # with FR's count of the fibers that have a section there
+    assert "h1 += `<th colspan=\"2\" class=\"fr-sechdr\">Section (${nSec}/${have.length})</th>`;" in body
     assert "<th class=\"fr-sub fr-sec\">Att.<br>(dB/km)</th>" in body
     assert "const v = secFig(secOf(fi, i), which);" in body
     assert "(which === 'avg' || oneDir) ? s : s[which]" in body
