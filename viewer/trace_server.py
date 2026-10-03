@@ -227,7 +227,7 @@ _ENGINE_SRC = os.path.join(os.path.dirname(HERE), 'splicereport',
                            'splicereportmatchexfo.py')
 _THRESHOLD_DEFAULTS = {'reburn': 0.160, 'uni_bend': 0.250, 'single_dir': 0.200,
                        'connector': 0.500, 'refl': -50.0,
-                       'refl_floor': -80.0, 'refl_ceil': 0.0,
+                       'refl_floor': -80.0,
                        'dead_km': 3.0, 'dead_frac': 0.25,
                        'connector_uni': 0.649,
                        # Viewer-only Warning levels (0 = no warning band):
@@ -242,10 +242,9 @@ _THRESHOLD_NAMES = {'reburn': 'REBURN_THRESHOLD',
                     'connector': 'BIDIR_CONNECTOR_LOSS',
                     'refl': 'LAUNCH_BAD_REFL_DB',
                     # the report's mid-span reflectance rule: flag at or above
-                    # the floor, below an optional ceiling (0 = none), outside
-                    # min(dead_km, dead_frac x fibre) of either end
+                    # the number, outside min(dead_km, dead_frac x fiber) of
+                    # either end
                     'refl_floor': 'MIDSPAN_REFL_WARN_DB',
-                    'refl_ceil': 'MIDSPAN_REFL_CEIL_DB',
                     'dead_km': 'LAUNCH_FIBER_MAX',
                     'dead_frac': 'MIDSPAN_DEAD_SPAN_FRAC',
                     # a connector in ONE direction (0 = off; off on a panel span)
@@ -256,7 +255,7 @@ _THRESHOLD_NAMES = {'reburn': 'REBURN_THRESHOLD',
                     'connector_warn': 'BIDIR_CONNECTOR_WARN_DB',
                     'connector_uni_warn': 'LAUNCH_CONN_UNI_WARN_DB'}
 # Reflectance settings are signed dB (0 or below); every other gate is positive.
-_NEGATIVE_GATES = {'refl', 'refl_floor', 'refl_ceil'}
+_NEGATIVE_GATES = {'refl', 'refl_floor'}
 # ...and these may be 0, which switches them off.
 _ZERO_OFF_GATES = {'connector_uni', 'reburn_warn', 'single_dir_warn',
                    'connector_warn', 'connector_uni_warn'}
@@ -1692,6 +1691,36 @@ REFUSED_BODY_MAX = 1024 * 1024
 REFUSED_BODY_WAIT_S = 5.0
 
 
+
+def _num_or_none(v):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return v if abs(v) < 1e6 else None
+
+
+def set_viewer_changed(changed):
+    """File the Viewer's typed loss / Reflectance ({'loss_name', 'loss',
+    'loss_report', 'refl', 'refl_report'}, numbers in dB), or clear it with
+    None / {}.  Kept only when something differs from the report."""
+    out = None
+    if isinstance(changed, dict):
+        loss = _num_or_none(changed.get('loss'))
+        refl = _num_or_none(changed.get('refl'))
+        if loss is not None or refl is not None:
+            name = str(changed.get('loss_name') or 'Loss')[:40]
+            out = {'loss_name': name, 'loss': loss,
+                   'loss_report': _num_or_none(changed.get('loss_report')),
+                   'refl': refl,
+                   'refl_report': _num_or_none(changed.get('refl_report'))}
+    CONFIG['viewer_changed'] = out
+
+
+def viewer_changed():
+    """What set_viewer_changed filed last, or None."""
+    return CONFIG.get('viewer_changed')
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -2139,6 +2168,21 @@ class Handler(BaseHTTPRequestHandler):
                 raise RuntimeError(msg)               # give report_error an exc + a frame
             except Exception as exc:
                 report_error("viewer (browser JS)", exc, {"js_stack": stack, "url": page})
+            self._send_json({'ok': True})
+            return
+        if u.path == '/api/viewer_changed':
+            # The Viewer's own loss / Reflectance boxes, when the tech typed
+            # something other than the report's (or None).  The hub reads it
+            # to remind the tech on the way to a report.
+            if not self._origin_is_local():
+                self._refuse_foreign()
+                return
+            try:
+                n = int(self.headers.get('Content-Length', 0) or 0)
+                data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
+            except Exception:
+                data = {}
+            set_viewer_changed(data.get('changed'))
             self._send_json({'ok': True})
             return
         if u.path == '/api/span':

@@ -52,6 +52,7 @@ ACTIONS = ('report_error', 'span_decl_set', 'drop_begin', 'drop_file', 'drop_fil
            'pick_folder_native', 'report_begin', 'report_put_image', 'write_viewer_report',
            'open_report', 'find_originals', 'locate_originals', 'rename_files', 'edit_traces',
            'unload_sides', 'set_viewer_state', 'olts_load', 'write_olts_report',
+           'set_viewer_changed',
            # OTDR Suite App: the Viewer pop-out's Back raises the App window.
            'raise_app_window')
 

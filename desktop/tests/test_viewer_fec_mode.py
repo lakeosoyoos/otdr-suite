@@ -518,8 +518,8 @@ def test_fec_gates_show_in_the_viewer_boxes_and_override_per_window():
           + re.search(r"const gFecOverride = .*", HTML).group(0) + "\n"
           + fn('fecOverridden') + fn('fecGateText') + fn('fecGatesShown') + fn('fecGateLabel')
           + fn('syncFecGateUI') + fn('setFecGateOverride')
-          + "syncFecGateUI(); var A=[E['set-loss'].value,E['set-refl-lo'].value,E['set-refl-hi'].value,"
-            "E['set-refl-hi'].disabled,E['loss-op'].textContent,E['gate-src'].textContent];\n"
+          + "syncFecGateUI(); var A=[E['set-loss'].value,E['set-refl'].value,"
+            "E['refl-op'].textContent,E['loss-op'].textContent,E['gate-src'].textContent];\n"
           + "gFecBase=gInfo.fec_gates; setFecGateOverride('loss',0.3); var B=[gFecOverride.loss,RENDERS,fecGateLabel()];\n"
           + "gFecGates=Object.assign({},gFecBase,{FEC_LOSS_GATE:0.3}); syncFecGateUI(); B.push(E['set-loss'].value,E['gate-src'].textContent);\n"
           + "setFecGateOverride('loss',0.5); B.push(gFecOverride.loss);\n"
@@ -532,15 +532,19 @@ def test_fec_gates_show_in_the_viewer_boxes_and_override_per_window():
         os.unlink(fh.name)
     assert p.returncode == 0 and 'Exception' not in p.stdout, p.stdout + p.stderr
     A, B = json.loads(p.stdout.strip().splitlines()[-1])
-    assert A == ['0.500', '-50.0', '0', True, 'Loss >', '']
+    assert A == ['0.500', '-50.0', 'Reflectance >', 'Loss >', '']
     assert B[0] == 0.3 and B[1] == 1 and 'overridden in this window' in B[2]
     assert B[3] == '0.300' and B[4] == '(FEC gates overridden)'
     assert B[5] is None                              # the profile's value lets go
-    # the Viewer's boxes hand over to FEC's under the FEC table
+    # the Viewer's boxes hand over to FEC's under the FEC table, asked at
+    # each change (FEC comes and goes with the folders loaded)
     assert 'if (fecTable()) { syncFecGateUI(); return; }' in HTML
-    assert "if (fecTable()) { setFecGateOverride('loss', v); return; }" in HTML
-    assert "if (fecTable()) { setFecGateOverride('refl', v); return; }" in HTML
-    assert '<span id="loss-op">Loss &ge;</span> <input id="set-loss"' in HTML
+    wire = HTML[HTML.index('function wireEventSettings'):]
+    wire = wire[:wire.index('\n}\n')]
+    assert "if (final && Number.isFinite(v)) setFecGateOverride('loss', v);" in wire
+    assert "if (final && Number.isFinite(v)) setFecGateOverride('refl', v);" in wire
+    assert wire.count('if (fecTable()) {') == 2
+    assert '<span id="loss-op">Bidirectional Loss &ge;</span> <input id="set-loss"' in HTML
     assert '&loss_gate=${gFecOverride.loss}' in HTML and '&refl_gate=${gFecOverride.refl}' in HTML
 
 

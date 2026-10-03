@@ -5651,6 +5651,42 @@ _CARRY_PROFILE_BOX = (
     '{name}</span></div>')
 
 
+# The Viewer's own boxes changed (Robert 2026-10-01: "if we leave viewer to
+# go to splice report or uni we need a window that reminds the tech they had
+# changed the setting").  Amber, the colour the Viewer marks a typed box in.
+_CARRY_VIEWER_BOX = (
+    '<div style="background:#fff4e5;border:1px solid #f0b46a;'
+    'border-radius:6px;padding:8px 12px;font-size:1rem;color:#7a3e00;margin-top:8px;'
+    'margin-bottom:8px">'
+    '<div style="font-weight:600">You changed these in the Viewer:</div>'
+    '<ul style="margin:4px 0 6px 0;padding-left:20px">{lines}</ul>'
+    '<div>They changed only what the Viewer flagged. <b>{to}</b> flags at its '
+    'OTDR Settings, so it will not flag the same way. To match, click '
+    '<b>Edit Settings</b> and change them there.</div></div>')
+
+
+def _viewer_change_lines(c):
+    """The Viewer's typed boxes (trace_server.viewer_changed()) as lines:
+    "Bidirectional Loss: 0.150 dB (the report uses 0.160 dB)"."""
+    if not isinstance(c, dict):
+        return []
+
+    def refl(v):
+        return 'off' if not v < 0 else f'{v:g} dB'
+    out = []
+    if c.get('loss') is not None:
+        line = f"{c.get('loss_name') or 'Loss'}: {c['loss']:.3f} dB"
+        if c.get('loss_report') is not None:
+            line += f" (the report uses {c['loss_report']:.3f} dB)"
+        out.append(line)
+    if c.get('refl') is not None:
+        line = f"Reflectance: {refl(c['refl'])}"
+        if c.get('refl_report') is not None:
+            line += f" (the report uses {refl(c['refl_report'])})"
+        out.append(line)
+    return out
+
+
 def _carry_ok():
     st.session_state.pop('_carry_popup', None)
 
@@ -5676,6 +5712,11 @@ def _thresholds_carried_dialog(info):
     _prof = st.session_state.get('otdr_profile') or next(iter(CUSTOMER_PROFILES))
     st.markdown(_CARRY_PROFILE_BOX.format(name=html.escape(_profile_label(_prof))),
                 unsafe_allow_html=True)
+    _lines = _viewer_change_lines(info.get('viewer_changed'))
+    if _lines:
+        st.markdown(_CARRY_VIEWER_BOX.format(
+            lines=''.join(f'<li>{html.escape(l)}</li>' for l in _lines),
+            to=html.escape(str(info.get('to')))), unsafe_allow_html=True)
     st.markdown(_CARRY_OK_CSS, unsafe_allow_html=True)
     _c1, _c2 = st.columns(2)
     if _c1.button('Edit Settings', key='carry_edit', use_container_width=True,
@@ -5701,8 +5742,21 @@ def _note_tool_change(page):
     # on (Viewer -> Secret Sauce -> Viewer), or with no Settings tool before
     # it, nothing is carried and the pop-up stays away.
     _from = ss.get('_last_settings_tool')
+    _popup = None
     if page in SETTINGS_TOOLS and _from and _from != page:
-        ss['_carry_popup'] = {'to': page, 'from': _from}
+        _popup = {'to': page, 'from': _from}
+    # Leaving the Viewer for a report with one of its boxes changed: the
+    # pop-up says so (the report never sees the Viewer's boxes).
+    if page in SETTINGS_TOOLS and _prev == 'Viewer':
+        try:
+            _changed = trace_server.viewer_changed()
+        except Exception:
+            _changed = None
+        if _changed:
+            _popup = _popup or {'to': page, 'from': None}
+            _popup['viewer_changed'] = _changed
+    if _popup:
+        ss['_carry_popup'] = _popup
     else:
         ss.pop('_carry_popup', None)
 
@@ -7336,13 +7390,10 @@ OTDR_ROWS = [
     ("bidir_connector_loss",      "Bidir Connector Loss",       0.500,        "dB",    True),
     ("splitter_loss",             "Splitter Loss",              4.500,        "dB",    False),
     ("reflectance",               "Reflectance",                -50.0,        "dB",    True),
-    ("reflectance_ceiling",       "Reflectance Ceiling",        0.0,          "dB",    True),
-    ("midspan_reflectance",       "Mid-Span Reflectance Band",  -50.0,        "dB",    True),
-    # Optional BAND ceiling for the row above: tick it to flag ONLY the
-    # band [warn floor, ceiling] — e.g. -80..-40 isolates faint fusion
-    # glints while connector-grade reflections stay with the connector
-    # rules.  Unticked (default) = no ceiling, shipped behavior.
-    ("midspan_refl_ceiling",      "Mid-Span Refl Ceiling",      -40.0,        "dB",    True),
+    ("midspan_reflectance",       "Mid-Span Reflectance",       -80.0,        "dB",    True),
+    # Mid-span reflectance is one number, no ceiling (Robert 2026-10-02):
+    # the optional "Mid-Span Refl Ceiling" row is gone.  A saved setting
+    # that still names it is ignored (nothing maps it any more).
     # NOTE: the launch-connector loss gates used to live here as two rows.
     # They moved to the 'Connector & launch' knobs panel below, which carries
     # per-knob help text and holds the REST of the connector path beside them
@@ -7374,35 +7425,19 @@ OTDR_ROWS = [
 # Pre-checked rows (match what the splice report flags out of the box):
 OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
                        "unidir_connector_loss", "bidir_connector_loss", "reflectance",
-                       "reflectance_ceiling",
                        "midspan_reflectance", "bend_fold_distance"}
 
 # Rows whose Warning threshold differs from Fail (most rows use a single
-# threshold, warning == fail).  Mid-span reflectance is a BAND: Fail at the
-# strong end (-50 dB), Warning floor at the weak end (-80 dB).
-_OTDR_WARN_DEFAULT = {"midspan_reflectance": -80.0}
+# threshold, warning == fail).  None since Robert 2026-10-02: mid-span
+# reflectance was a WARN floor (-80) .. FAIL (-50) band and is now one number.
+_OTDR_WARN_DEFAULT = {}
 
-# Rows that are really a BAND rather than a fail/warning pair, and the label
-# each end carries in the panel.  The values stay in their semantic columns
-# — the strong end IS the fail threshold, the weak end IS the warning floor
-# — so nothing about the profiles, the key->global maps or the override path
-# changes.  What changes is that the panel now SAYS it is a band, which is
-# how the engine has described it since the row was introduced (see the
-# comment above) and how the unidirectional panel renders its own bands.
+# Rows that render as a BAND (two ends of one range) instead of a Fail /
+# Warning pair, with the label each end carries in the panel:
 #   ("weak end label", "strong end label")
-_OTDR_BAND_ROWS = {
-    "midspan_reflectance": ("Band Low", "Band High"),
-    # Launch/tailbox reflectance reads as a band for the same reason: a
-    # connector has an acceptable WINDOW, not a single edge.  -49.9 was
-    # calibrated for a fusion-spliced launch pigtail (Tulsa measures -51.8
-    # median, 0 of 60 flagged).  A mechanical connector legitimately reflects
-    # near -45 — two polished ferrules always leave an index step — so a
-    # tie-panel job reads -44.9 across every fiber (Reubensville: 60 fibers
-    # inside 0.15 dB) and every one of them trips a fusion-splice threshold.
-    # With a band the panel job sets the low end to -40 and only genuinely bad
-    # mates flag; FTH's -39.2 outliers still stand out at 12x the floor.
-    "reflectance": ("Band Low", "Band High"),
-}
+# None since Robert 2026-10-02 ("we don't need the band high/low"): both
+# reflectance rules are one number, at or above it is flagged.
+_OTDR_BAND_ROWS = {}
 
 # ── Customer threshold profiles ──────────────────────────────────────
 # Each entry is a named preset that overrides the per-row 'fail' values
@@ -7446,7 +7481,6 @@ CUSTOMER_PROFILES = {
         # Bidir splice 0.160, not the template's 0.15 (Robert 2026-09-26).
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -7466,7 +7500,6 @@ CUSTOMER_PROFILES = {
         # reflectance rows unticked.
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -7484,7 +7517,6 @@ CUSTOMER_PROFILES = {
         # bidir connector 0.5, reflectance -40, ORL 30, span end kept.
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -7503,7 +7535,6 @@ CUSTOMER_PROFILES = {
         # Only template with a 4th macrobend pair: 1550/1625 at 0.3 dB.
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -7522,7 +7553,6 @@ CUSTOMER_PROFILES = {
         # template of the set (rotary/mechanical splicing).
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -7540,7 +7570,6 @@ CUSTOMER_PROFILES = {
         # 0.5, reflectance -50, ORL 30, span end kept.
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -7558,7 +7587,6 @@ CUSTOMER_PROFILES = {
         # bidir splice 0.15, connectors 0.5, reflectance -50, ORL 30).
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -7578,7 +7606,6 @@ CUSTOMER_PROFILES = {
         # Widest warn-to-fail gaps of the set; the fail values grade here.
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -7602,7 +7629,6 @@ CUSTOMER_PROFILES = {
         # for MT.1085 deliverables; this one reproduces the FR template.
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -7620,7 +7646,6 @@ CUSTOMER_PROFILES = {
         # -50, ORL 30, span end kept.
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -7638,7 +7663,6 @@ CUSTOMER_PROFILES = {
         # -50, ORL 29, IncludeSpanEnd=False.
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -7697,7 +7721,6 @@ CUSTOMER_PROFILES = {
     "AWS / IIG MT.1085": {
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "avg_splice_loss", "fiber_section_atten", "span_orl"},
         "thresholds": {
@@ -7809,18 +7832,15 @@ _OTDR_KEY_TO_ENGINE_GLOBAL = {
     "unidir_connector_loss": "LAUNCH_CONN_UNI_MIN_DB",
     "bidir_connector_loss": "BIDIR_CONNECTOR_LOSS",
     "reflectance":          "LAUNCH_BAD_REFL_DB",
-    "reflectance_ceiling":  "LAUNCH_REFL_CEIL_DB",
-    "midspan_reflectance":  "MIDSPAN_REFL_FAIL_DB",
-    "midspan_refl_ceiling": "MIDSPAN_REFL_CEIL_DB",
+    "midspan_reflectance":  "MIDSPAN_REFL_WARN_DB",   # one number: at or above flags
     "bend_fold_distance":   "BEND_SPLICE_FOLD_KM",
     "avg_splice_loss":      "AVG_SPLICE_LOSS_DB",
     "fiber_section_atten":  "FIBER_ATTEN_DB_KM",
     "span_orl":             "SPAN_ORL_MIN_DB",
 }
 # Rows that ALSO push a separate Warning-threshold global to the engine.
-_OTDR_KEY_TO_WARN_GLOBAL = {
-    "midspan_reflectance":  "MIDSPAN_REFL_WARN_DB",
-}
+# None since mid-span reflectance became one number (Robert 2026-10-02).
+_OTDR_KEY_TO_WARN_GLOBAL = {}
 # Loss rows whose Warning colours the Viewer's event panel ONLY (Robert
 # 2026-09-26): a reading at or over Warning but under Fail prints bright
 # yellow there.  The report and the uni report never see these -- the engine
@@ -7849,12 +7869,6 @@ _OTDR_DISABLE_SENTINEL = 1.0e9
 # behavior instead (75 m = CLOSURE_MATCH_KM, the pre-panel hard-wired gate).
 _OTDR_KEY_DISABLE_VALUE = {
     "bend_fold_distance": 0.075,
-    # Unticked ceiling = NO ceiling (0.0 sentinel — the engine only applies
-    # the band when the value is negative), NOT the 1e9 detection-off value.
-    "midspan_refl_ceiling": 0.0,
-    # Unticked ceiling = NO ceiling (0.0 sentinel — the engine only applies the
-    # band's top when the value is negative), NOT the 1e9 detection-off value.
-    "reflectance_ceiling": 0.0,
     # Unticked average-splice gate = OFF in the engine (0 = no sheet, no
     # Legend row).  The 1e9 sentinel would still compute and print a sheet
     # of all-PASS averages for every customer, which is not "off".
@@ -8564,19 +8578,16 @@ def _report_overrides():
 # OTDR Settings rows that mean the same thing on a one-direction shot, and
 # the Unidirectional engine global each one drives (Robert 2026-09-28):
 #   row key -> (which value of the row, Uni engine global)
-# An unticked row sends 0, the Uni engine's own "off" for all three: no
-# connector flag, no reflectance band, no ceiling.  The Default profile lands
-# exactly on the Uni engine's defaults (0.649, -80, 0), so a default Uni run
-# is unchanged; a customer profile's one-direction connector gate now reaches
-# Uni too.  These three globals left the Unidirectional box, so each still
-# has one control.
+# An unticked row sends 0, the Uni engine's own "off" for both: no
+# connector flag, no reflectance rule.  The Default profile lands exactly on
+# the Uni engine's defaults (0.649, -80), so a default Uni run is unchanged;
+# a customer profile's one-direction connector gate now reaches Uni too.
+# These globals left the Unidirectional box, so each still has one control.
 _OTDR_KEY_TO_UNI_GLOBAL = {
     'unidir_connector_loss': ('fail',    'UNI_CONN_LOSS_DB'),
-    # The band's weak end (its Warning column) is the floor the
-    # bidirectional report flags from (MIDSPAN_REFL_WARN_DB), and the Uni
-    # rule reads the same floor.
-    'midspan_reflectance':   ('warning', 'UNI_REFL_FLOOR_DB'),
-    'midspan_refl_ceiling':  ('fail',    'UNI_REFL_CEIL_DB'),
+    # The one number the bidirectional report flags from
+    # (MIDSPAN_REFL_WARN_DB); the Uni rule reads the same number.
+    'midspan_reflectance':   ('fail',    'UNI_REFL_FLOOR_DB'),
 }
 
 
@@ -10499,11 +10510,11 @@ _UNI_ROWS = [
      'int': False,
      'help': 'How close an event must sit to a closure to count as at it.'},
 
-    # The mid-span reflectance band (UNI_REFL_FLOOR_DB / UNI_REFL_CEIL_DB)
+    # The mid-span reflectance number (UNI_REFL_FLOOR_DB)
     # and the one-direction connector gate (UNI_CONN_LOSS_DB) moved to the
     # OTDR Settings on 2026-09-28: the same rows there drive both reports
     # (_OTDR_KEY_TO_UNI_GLOBAL).  What they do on a Uni run is unchanged:
-    # a glint flags at or above the band's floor and below its ceiling, and
+    # a glint flags at or above the number, and
     # is confirmed as a spike in the raw trace; a connector flags at or above
     # the gate in the one direction shot, an upper bound on its true loss
     # because one direction cannot separate the backscatter step between the
@@ -10922,17 +10933,17 @@ def page_unidirectional():
     st.session_state.pop('_uni_removed_note', None)    # a slot from an earlier run
 
     # The OTDR Settings, same box as the Splice Report's and sharing its
-    # values (Robert 2026-09-28).  Three of its rows drive the Uni engine:
-    # the one-direction connector gate and the mid-span reflectance band
-    # with its ceiling (_OTDR_KEY_TO_UNI_GLOBAL).
+    # values (Robert 2026-09-28).  Two of its rows drive the Uni engine:
+    # the one-direction connector gate and the mid-span reflectance number
+    # (_OTDR_KEY_TO_UNI_GLOBAL).
     _render_profile_picker_box('unidirectional')
     # Blocks like the Splice Report (Robert 2026-09-28: "block uni too"): the
-    # three rows below reach the Uni engine, and a report at thresholds the
+    # two rows below reach the Uni engine, and a report at thresholds the
     # tech never saw is worse than no report.  Uni's own settings panel,
     # further down, blocks the same way.
     _settings_exc = _render_settings_box('unidirectional', blocks_report=True)
-    st.caption('Unidirectional reads three of these settings: Connector Loss '
-               '(1 Direction), Mid-Span Reflectance Band and Mid-Span Refl Ceiling. '
+    st.caption('Unidirectional reads two of these settings: Connector Loss '
+               '(1 Direction) and Mid-Span Reflectance. '
                'The others grade the bidirectional report.')
 
     # The page's own boxes keep what they show across a trip to another
