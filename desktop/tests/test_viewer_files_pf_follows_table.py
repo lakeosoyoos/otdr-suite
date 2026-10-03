@@ -9,8 +9,10 @@ the average row and then we don't show it at all in the files panel", and
     P/F cells are empty (their failing cells still print red);
   - a one-direction table: every row keeps its P/F;
   - FILES: a file's P/F is the one-direction table's verdict for its row
-    (noteTableVerdict / tableFileFails); a file of a fibre loaded both ways,
-    or one no table has judged (not added), shows none;
+    (noteTableVerdict / tableFileFails), while no fibre has both directions;
+    once any does ("no P/F anywhere in FILES as soon as any fiber has both
+    directions"), FILES shows none, the one-way fibres' files included; a
+    file no table has judged (not added) shows none either;
   - the FILES P/F column stays optional, on or off from its header's
     right-click.
 No Node here, so the JS is checked at the source, like the other Viewer tests.
@@ -38,7 +40,12 @@ def test_a_two_direction_table_shows_p_f_on_the_average_row_only():
 
 
 def test_only_one_direction_tables_hand_files_a_verdict():
-    assert 'noteTableVerdict' not in _fn('paintFrBidiGrid')
+    assert 'noteTableVerdict(' not in _fn('paintFrBidiGrid')
+    # an A+B table on screen silences FILES' P/F, every file
+    assert '  if (have.length) noteTableBidi();' in _fn('paintFrBidiGrid')
+    assert '  else if (have.length) noteTableBidi();' in _fn('paintSuiteBidiGrid')
+    assert 'gTableHasBidi = true;' in _fn('noteTableBidi')
+    assert "return (!gTableHasBidi && gTableFails.has(key)) ? gTableFails.get(key) : null;" in SRC
     assert ('  if (oneDir) have.forEach((p, fi) => noteTableVerdict(legOf(p), rowFails[fi]));'
             in _fn('paintSuiteBidiGrid'))
     assert 'traces.forEach((t, ti) => noteTableVerdict(t, rowFails[ti]));' in _fn('renderFastReporterGrid')
@@ -49,11 +56,11 @@ def test_only_one_direction_tables_hand_files_a_verdict():
 def test_the_store_starts_afresh_each_render():
     note = _fn('noteTableVerdict')
     assert 'gTableFails.set(t.key, !!fail);' in note
-    assert 'if (gTableFailsPass !== gTablePass) { gTableFails = new Map(); gTableFailsPass = gTablePass; }' in note
+    assert 'tableFailsFresh();' in note
+    assert 'gTableFails = new Map(); gTableHasBidi = false; gTableFailsPass = gTablePass;' in _fn('tableFailsFresh')
     ret = _fn('renderEventTable')
     assert 'gTablePass++;' in ret
-    assert "if (gTableFails.size) { gTableFails = new Map(); filesPfChanged(); }" in ret
-    assert 'return gTableFails.has(key) ? gTableFails.get(key) : null;' in SRC
+    assert "if (gTableFails.size || gTableHasBidi) { gTableFails = new Map(); gTableHasBidi = false; filesPfChanged(); }" in ret
     # FILES repaints only when its P/F shows or sorts
     assert "gFileCols.has('pf') || (gFileSort && gFileSort.col === 'pf')" in _fn('filesPfChanged')
 
@@ -68,3 +75,19 @@ def test_files_reads_the_table_and_the_column_stays_optional():
     assert 'pf: tableFileFails(key)' in _fn('fileTraits')       # Select Same Pass/Fail too
     # nothing judges a file on its own any more
     assert 'function fileFails(' not in SRC and 'function pairedFileKeys(' not in SRC
+
+
+def test_suite_one_direction_follows_the_typed_box():
+    """Robert 2026-10-02: "Suite mode one direction needs to be fixed to use
+    the number entered into the box".  The typed number replaces the report's
+    gate on a plain loss (up or down); a break, a bend by wavelength, a
+    connector, a reflective event or damage keep the report's flag."""
+    suite = _fn('paintSuiteBidiGrid')
+    assert ("  const oneGate = !oneDir ? null : flagsOff() ? Infinity\n"
+            "    : gGateOverride != null ? gGateOverride\n"
+            "    : res.gate_db != null ? Number(res.gate_db) : null;") in suite
+    assert ("  const LOSS_ONLY = oneDir ? new Set(['splice', 'bend', 'passing'])\n"
+            "                           : new Set(['bidir', 'passing']);") in suite
+    assert ("  const typedGate = (c, x) => gGateOverride != null && !c.isEnd && !x.reflective\n"
+            "    && !x.is_break && LOSS_ONLY.has(x.category);") in suite
+    assert "      if (typedGate(c, x)) return legOk(leg) && clearsAt(leg.loss, oneGate);" in suite

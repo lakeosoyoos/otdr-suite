@@ -101,9 +101,8 @@ UNI = SRC.split("function renderFastReporterGrid(", 1)[1].split("\nfunction rend
 def test_uni_columns_nobody_fails_leave():
     assert "traces.some((_t, ti) => keeps(evLoss(c.ev[ti])))" in UNI
     assert "const keeps = v => (gFailCellsOnly && overGate(v))" in UNI
-    # overGate is the report's gate (clearsGate) unless the table holds the
-    # one-way fibres of a mixed load, judged at the single-direction gate
-    assert "const overGate = opts.oneDir ? (v => clearsAt(v, gateFor(false, true))) : clearsGate;" in UNI
+    # overGate is the report's gate (clearsGate)
+    assert "const overGate = clearsGate;" in UNI
     assert UNI.count("if (!keepCol[i]) return;") == 3     # header, rows, footer
 
 

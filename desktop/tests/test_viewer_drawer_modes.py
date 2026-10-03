@@ -110,8 +110,8 @@ def test_both_tables_name_their_rows_and_wire_the_drawer():
         assert "marks.goCell = (fi, which, col) => gridGoCell(" in fn, name
         # a click anywhere on a row, its fibre name included, picks it
         assert "pickRow(tr.dataset.avg ? [p.ta.key, p.tb.key]" in fn, name
-        # a fibre loaded one way among paired ones gets its own table
-        assert "appendOneDirGrid(singles, host);" in fn, name
+        # a fibre loaded one way among paired ones is named, not tabled
+        assert "noteOneDirFibers(singles, host);" in fn, name
     one = _fn("renderFastReporterGrid")
     assert 'data-row="${ti}-${t.dir}"' in one
     assert "marks.goCell = (ti, which, col) => gridGoCell(" in one
@@ -157,17 +157,18 @@ def test_one_direction_is_marked_in_either_mode():
         assert cell in fn, cell
 
 
-def test_one_way_fibres_among_pairs_are_judged_one_way():
+def test_one_way_fibres_among_pairs_are_left_out_on_one_line():
+    """Robert 2026-10-02: "we don't get two event panels".  A fibre loaded
+    one way among paired ones gets no table of its own under the A+B one; it
+    is named on one line over that table, and its trace keeps its own event
+    numbers (no table holds it)."""
+    note = _fn("noteOneDirFibers")
+    assert "cap.textContent = `One direction only, not in the table: F${fibers.join(', F')}`;" in note
+    assert "host.insertBefore(cap, host.firstChild);" in note
+    assert "renderFastReporterGrid" not in note
+    assert "function appendOneDirGrid(" not in SRC
     fn = _fn("renderFastReporterGrid")
-    assert "const overGate = opts.oneDir ? (v => clearsAt(v, gateFor(false, true))) : clearsGate;" in fn
-    assert "const warnGate = warnFor(false, !!opts.oneDir);" in fn
-    assert "clearsGate(" not in fn.replace("opts.oneDir ? (v => clearsAt(v, gateFor(false, true))) : clearsGate;", "")
-    # the A+B table keeps the event-number clicks and the Report's rows
-    assert "if (!opts.oneDir) gGridGoTo = (t, e) => {" in fn
-    assert "if (!opts.oneDir) gTableExport = " in fn
-    app = _fn("appendOneDirGrid")
-    assert "renderFastReporterGrid(traces, box, document.createElement('div'), { oneDir: true })" in app
-    assert "One direction only: F" in app
+    assert "const overGate = clearsGate;" in fn and "opts" not in fn.split("\n", 1)[0]
 
 
 # ─── the real functions, in JavaScriptCore ───────────────────────────────

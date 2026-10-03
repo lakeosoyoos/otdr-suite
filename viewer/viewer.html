@@ -611,10 +611,8 @@
   #event-tbody-wrap > .tbl-updating { flex: none; padding: 2px 12px; font-size: 11px;
                                       color: var(--text-sec); font-style: italic; }
   #event-tbody-wrap.tbl-stale > :not(.tbl-updating) { opacity: .5; }
-  /* the one-direction fibres' own table, under the A+B one */
-  .onedir-box { flex: 0 1 auto; max-height: 45%; min-height: 0; display: flex;
-                flex-direction: column; border-top: 2px solid #b0bdcc; }
-  .onedir-cap { font-size: 11px; padding: 3px 8px; color: #56657a; background: #f3f6f9; }
+  /* the line naming the fibres loaded one way, over the A+B table */
+  .onedir-cap { flex: none; font-size: 11px; padding: 3px 8px; color: #56657a; background: #f3f6f9; }
   /* Columns fit their contents (fitColumns); the table no longer stretches
      to the panel's width and spreads the spare room across every column. */
   table.fr-table { font-size: 11px; width: max-content; }
@@ -1081,19 +1079,33 @@ const gServerTables = new Map();
 // [be the] event table"): each table records each file's verdict here as it
 // judges its rows, keyed as the FILES list keys a file ("a-12").  Only a
 // one-direction row is a file's own verdict; a fibre loaded both ways has one
-// verdict, on its Average row, and its files show none, as FR shows a
-// bidirectional measurement (Robert 2026-10-02).  A file no table has judged
-// (not added) has no P/F either.  One render of the tables is one pass: the first verdict
-// of a new pass starts the map afresh, so a fiber taken out leaves with it.
-let gTableFails = new Map();
+// verdict, on its Average row, as FR shows a bidirectional measurement, and
+// once any fibre on screen has both directions FILES shows no P/F at all
+// (Robert 2026-10-02), the one-way fibres' files included.  A file no table
+// has judged (not added) has no P/F either.  One render of the tables is one
+// pass: the first note of a new pass starts afresh, so a fibre taken out
+// leaves with it.
+let gTableFails = new Map(), gTableHasBidi = false;
 let gTableFailsPass = 0, gTablePass = 0, gFilesPfQueued = false;
+function tableFailsFresh() {
+  if (gTableFailsPass === gTablePass) return;
+  gTableFails = new Map(); gTableHasBidi = false; gTableFailsPass = gTablePass;
+}
 function noteTableVerdict(t, fail) {
   if (!t || !t.key) return;
-  if (gTableFailsPass !== gTablePass) { gTableFails = new Map(); gTableFailsPass = gTablePass; }
+  tableFailsFresh();
   gTableFails.set(t.key, !!fail);
   filesPfChanged();
 }
-function tableFileFails(key) { return gTableFails.has(key) ? gTableFails.get(key) : null; }
+// An A+B table is on screen this pass: FILES carries no P/F.
+function noteTableBidi() {
+  tableFailsFresh();
+  gTableHasBidi = true;
+  filesPfChanged();
+}
+function tableFileFails(key) {
+  return (!gTableHasBidi && gTableFails.has(key)) ? gTableFails.get(key) : null;
+}
 function filesPfChanged() {
   if (gFilesPfQueued || !(gFileCols.has('pf') || (gFileSort && gFileSort.col === 'pf'))) return;
   gFilesPfQueued = true;
@@ -3520,7 +3532,7 @@ const FILE_COLS = [
   // [key, header, width, header tooltip]
   // Narrow enough that all six fit the panel's 300 px; the name gives way
   // first and says itself in full on hover.
-  ['pf', 'P/F', '30px', "the event table's verdict for a one-direction file; a fiber loaded both ways has its P/F on the table's Average row"],
+  ['pf', 'P/F', '30px', "the event table's verdict, with one direction loaded; once a fiber has both, P/F is on the table's Average rows only"],
   ['name', 'File Name', 'minmax(40px, 1fr)', ''],
   ['dir', 'Dir.', '34px', ''],
   ['fiber', 'Fiber', '30px', ''],
@@ -5582,21 +5594,18 @@ function drawPairing(sets, r, failedOnly = false) {
   return covered;
 }
 
-// A fibre loaded one way among paired ones has no A+B table in either mode
-// (FastReporter builds none for it either), but it is not left out: its own
-// single-direction table sits under the A+B one, judged at the report's
-// single-direction gate, and the drawer marks it as it marks an A-only load.
-function appendOneDirGrid(singles, host) {
-  const traces = gTraces.filter(t => t.visible && singles.includes(t.fiber));
-  if (!traces.length) return;
-  const box = document.createElement('div');
-  box.className = 'onedir-box';
+// A fibre loaded one way among paired ones has no A+B row in either mode
+// (FastReporter builds none for it either).  The event panel is ONE table
+// (Robert 2026-10-02: "we don't get two event panels"), so such a fibre is
+// left out of it, named on one line over the table; its trace still draws,
+// with its file's own event numbers (inTable: no table holds it).
+function noteOneDirFibers(singles, host) {
+  const fibers = [...new Set(gTraces.filter(t => t.visible && singles.includes(t.fiber)).map(t => t.fiber))];
+  if (!fibers.length) return;
   const cap = document.createElement('div');
   cap.className = 'onedir-cap';
-  cap.textContent = `One direction only: F${[...new Set(traces.map(t => t.fiber))].join(', F')}`;
-  box.appendChild(cap);
-  host.appendChild(box);
-  renderFastReporterGrid(traces, box, document.createElement('div'), { oneDir: true });
+  cap.textContent = `One direction only, not in the table: F${fibers.join(', F')}`;
+  host.insertBefore(cap, host.firstChild);
 }
 
 // Take the panel to one cell: row `fi`'s line for `which` ('a', 'b' or
@@ -6180,7 +6189,7 @@ function renderEventTable() {
   const visible = gTraces.filter(t => t.visible);
   if (visible.length === 0) {
     hint.textContent = gLoadingKeys.size ? 'loading traces…' : 'add a trace to see events';
-    if (gTableFails.size) { gTableFails = new Map(); filesPfChanged(); }
+    if (gTableFails.size || gTableHasBidi) { gTableFails = new Map(); gTableHasBidi = false; filesPfChanged(); }
     return;
   }
 
@@ -7022,14 +7031,10 @@ function oneDirTableZeroKm(traces) {
 // FastReporter-style grid for 1–2 traces (a fiber's A/B, OR two fibers of a
 // duplicate pair): events matched by DISPLAYED km into columns; each trace is
 // its own row; Average / Minimum / Maximum (loss) across the traces below.
-// `opts.oneDir`: these are the fibres loaded ONE way among paired ones,
-// shown under the A+B table (see appendOneDirGrid).  They are judged as the
-// report judges a single direction, at its single-direction gate, and the
-// A+B table keeps the event-number clicks and the Report's rows.
-function renderFastReporterGrid(traces, host, hint, opts = {}) {
+function renderFastReporterGrid(traces, host, hint) {
   const TOL = columnTolKm(traces);
-  const overGate = opts.oneDir ? (v => clearsAt(v, gateFor(false, true))) : clearsGate;
-  const warnGate = warnFor(false, !!opts.oneDir);
+  const overGate = clearsGate;
+  const warnGate = warnFor(false, false);
   const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';
 
   // Collect every event tagged with its trace index, at its displayed km
@@ -7419,7 +7424,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     + `<tfoot>${aggRows.join('')}</tfoot>`;
   const tb = table.querySelector('tbody');
   // Every row, for the Report: the body on screen is only a slice.
-  if (!opts.oneDir) gTableExport = { table, headExtra: statNameRow, rows: () => shown.map(rowHtml) };
+  gTableExport = { table, headExtra: statNameRow, rows: () => shown.map(rowHtml) };
   scroller.appendChild(table);
   host.appendChild(scroller);
 
@@ -7523,7 +7528,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   // A click on an event number on the trace lands here: scroll the row into
   // the window (the body is virtual, so paint it first), then the cell into
   // view sideways, and mark it for a moment.
-  if (!opts.oneDir) gGridGoTo = (t, e) => {
+  gGridGoTo = (t, e) => {
     const ti = traces.indexOf(t);
     const k = shown.indexOf(ti);
     if (k < 0) return;                       // hidden by "flagged rows"
@@ -7698,6 +7703,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const tables = res.tables || {};
   const have = pairs.filter(p => Array.isArray(tables[String(p.fiber)]) && tables[String(p.fiber)].length);
   const missing = pairs.filter(p => !have.includes(p)).map(p => p.fiber);
+  if (have.length) noteTableBidi();      // FILES carries no P/F (see noteTableVerdict)
   if (!have.length) {
     gTableKm = null; draw();             // no table: every event, as before
     hint.textContent = 'FastReporter table: ' + (res.error
@@ -8120,7 +8126,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     gDrawerMarks.push(marks);
   }
   wireAggJump({ scroller, table, tb, descs, paintRows }, have);   // Minimum / Maximum -> its row
-  appendOneDirGrid(singles, host);
+  noteOneDirFibers(singles, host);
   draw();
   requestAnimationFrame(() => {
     const hrows = table.tHead ? [...table.tHead.rows] : [];
@@ -8515,7 +8521,22 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // A stored reading; a leg the report measured itself is never judged.
   const legOk = leg => !!leg && !leg.grey && leg.loss != null;
   const LEGS = oneDir ? [oneDir] : ['a', 'b', 'avg'];
-  const oneGate = oneDir && res.gate_db != null ? Number(res.gate_db) : null;
+  // The loss box's typed number replaces the report's gate on a
+  // one-direction table (Robert 2026-10-02: "Suite mode one direction needs
+  // to use the number entered into the box"), as it does on the Average of a
+  // two-direction one.
+  const oneGate = !oneDir ? null : flagsOff() ? Infinity
+    : gGateOverride != null ? gGateOverride
+    : res.gate_db != null ? Number(res.gate_db) : null;
+  // A cell whose report verdict is a loss over the gate and nothing else:
+  // the Splice Report's plain two-direction reading ('bidir'), the Uni
+  // report's splice and off-splice readings.  A typed number judges these
+  // alone, up or down; a break, the Splice Report's bend (its wavelength
+  // rule), a connector, a reflective event or damage keep the report's flag.
+  const LOSS_ONLY = oneDir ? new Set(['splice', 'bend', 'passing'])
+                           : new Set(['bidir', 'passing']);
+  const typedGate = (c, x) => gGateOverride != null && !c.isEnd && !x.reflective
+    && !x.is_break && LOSS_ONLY.has(x.category);
 
   // ── Verdicts ──
   // The report's flag first.  A loss is also judged at the report's gates,
@@ -8524,11 +8545,13 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // on loss (see legGateFor).  The two ends take the report's verdict only.
   const lossFails = (c, x, which) => {
     if (which === 'avg') {
+      if (typedGate(c, x)) return clearsAt(x.loss, gateFor(false, false));
       return !!x.flag || (!c.isEnd && clearsAt(x.loss, gateFor(!!x.reflective, false)));
     }
     const leg = x[which];
     if (!leg || gainerHidden(leg.loss)) return false;
     if (oneDir) {
+      if (typedGate(c, x)) return legOk(leg) && clearsAt(leg.loss, oneGate);
       return !!leg.flag || (!c.isEnd && !x.reflective && oneGate != null
                             && legOk(leg) && clearsAt(leg.loss, oneGate));
     }
@@ -8546,6 +8569,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c, c.ev[fi], which));
   const rowFails = have.map((_p, fi) => LEGS.some(w => legFails(fi, w)));
   if (oneDir) have.forEach((p, fi) => noteTableVerdict(legOf(p), rowFails[fi]));
+  else if (have.length) noteTableBidi();   // FILES carries no P/F (see noteTableVerdict)
   // What the cell filters keep of a loss (the boss, 2026-09-29: "we only
   // need to see if it's failing Bidi Average"): the Average row's verdict
   // alone, never a direction at the single-direction gate.  A direction
@@ -8853,7 +8877,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     gDrawerMarks.push(marks);
   }
   wireAggJump({ scroller, table, tb, descs, paintRows }, have);   // Minimum / Maximum -> its row
-  appendOneDirGrid(singles, host);
+  noteOneDirFibers(singles, host);
   draw();
   requestAnimationFrame(() => {
     const hrows = table.tHead ? [...table.tHead.rows] : [];
