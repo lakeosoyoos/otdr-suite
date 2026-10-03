@@ -33,6 +33,7 @@ import subprocess
 import pytest
 
 from conftest import VIEWER_DIR
+from conftest import with_copy_helpers  # noqa: E402
 from test_viewer_overview_failures import (  # noqa: F401 (real_trace is a fixture)
     JSC, _SHIMS, _viewer_script, needs_jsc, real_trace)
 
@@ -255,7 +256,7 @@ print(JSON.stringify({
 }));
 """
     path = tmp_path / 'helpers.js'
-    path.write_text(prog, encoding='utf-8')
+    path.write_text(with_copy_helpers(prog), encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stdout + r.stderr
     got = json.loads(r.stdout)
@@ -329,7 +330,7 @@ def _boot(tmp_path, listing, good):
     prog = ('var __hScenario = %s;\n' % json.dumps(sc) + shims + '\n'
             + _viewer_script(SRC) + '\n' + _DRIVER)
     path = tmp_path / 'viewer_audit.js'
-    path.write_text(prog, encoding='utf-8')
+    path.write_text(with_copy_helpers(prog), encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=120)
     out = r.stdout + r.stderr
     assert 'THREW' not in out and r.returncode == 0, out[-3000:]

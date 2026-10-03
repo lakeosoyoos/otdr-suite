@@ -45,13 +45,16 @@ def _box(at, label):
 
 
 def _drop_three_and_three():
-    """What the Viewer page does when the tech drops both directions."""
+    """What the Viewer page does when the tech drops both directions: they
+    are ADDED to the folders the boxes hold (Robert 2026-10-02), which the
+    drop copies into its own staging -- the tech's folders are not written."""
     tok = TS.drop_begin()
     for name in ('ROMTUC001_1550.sor', 'ROMTUC002_1550.sor', 'ROMTUC003_1550.sor',
                  'TUCROM001_1550.sor', 'TUCROM002_1550.sor', 'TUCROM003_1550.sor'):
         assert TS.drop_file(tok, name, make_sor(ior=1.47))['files'] == 1
     out = TS.drop_end(tok)
-    assert out['a_count'] == 3 and out['b_count'] == 3
+    assert out['added'] == 'AB' and len(out['new_keys']) == 6
+    assert out['dir_a'] != X_A and out['dir_b'] != X_B
     return out['dir_a'], out['dir_b']
 
 

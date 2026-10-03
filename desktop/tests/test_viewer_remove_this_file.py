@@ -26,6 +26,7 @@ import subprocess
 import pytest
 
 from conftest import VIEWER_DIR
+from conftest import COPY_HELPERS_JS  # noqa: E402
 
 SRC = (VIEWER_DIR / 'viewer.html').read_text(encoding='utf-8')
 JSC = ('/System/Library/Frameworks/JavaScriptCore.framework/'
@@ -112,7 +113,7 @@ _CASES = r"""
 def res(tmp_path_factory):
     funcs = '\n'.join(_js_func(n) for n in ('removeOnly', 'putBackRemovedFiles'))
     path = tmp_path_factory.mktemp('remove_this') / 'rt.js'
-    path.write_text(_STUBS + funcs + '\n' + _CASES, encoding='utf-8')
+    path.write_text(_STUBS + COPY_HELPERS_JS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
     out = r.stdout + r.stderr
     assert r.returncode == 0 and 'OUT ' in out, out[-2000:]
@@ -155,13 +156,13 @@ def test_removing_the_last_file_on_the_chart_moves_to_the_next(res):
 
 def test_the_menu_offers_this_file_this_fiber_and_the_marked_set():
     menu = SRC.split('function showFileDirMenu(', 1)[1].split('\nasync function ', 1)[0]
-    assert "const fileLabel = `F${fiber} ${effDir(src, fiber) === 'a' ? 'A→B' : 'B→A'}`;" in menu
+    assert "const fileLabel = `F${fiberLabel(fiber)} ${effDir(src, fiber) === 'a' ? 'A→B' : 'B→A'}`;" in menu
     assert 'splitFileKey(key)[1] === +fiber' in menu
     assert '<button data-remove-one="1">Remove This File (${fileLabel})</button>' in menu
-    assert '<button data-remove-fiber="1">Remove This Fiber (F${fiber}, Both Directions)</button>' in menu
+    assert '<button data-remove-fiber="1">Remove This Fiber (F${fiberLabel(fiber)}, Both Directions)</button>' in menu
     assert 'fiberKeys.length > 1' in menu
     assert "removeOnly([k], fileLabel)" in menu
-    assert "removeOnly(fiberKeys, `F${fiber} (both directions)`)" in menu
+    assert "removeOnly(fiberKeys, `F${fiberLabel(fiber)} (both directions)`)" in menu
     # one file marked: only Remove This File
     single = menu.split(': `<button data-remove="1">', 1)[1]
     assert single.startswith('Remove This File (${fileLabel})</button>`)')

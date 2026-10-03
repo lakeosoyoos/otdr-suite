@@ -260,6 +260,7 @@
   #files-list:focus { outline: none; }
   #files-list:focus .file-row.focus { outline: 1px dotted var(--accent); outline-offset: -2px; }
   .file-row .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-row .file-copy { opacity: .7; font-style: italic; }
   /* Cut from the front, not the end (window-size audit 2026-10-01): at the
      panel's narrowest every name read the same "AAA_BBB…", the part they share,
      and the fiber number that tells them apart was gone.  Right to left
@@ -1019,6 +1020,21 @@ let gTraces = [];                  // [{key, fiber, dir, color, visible, data}]
 // is the selection, so a removed file is neither shown nor loadable until the
 // Viewer is opened again; the file on disk is untouched.
 const gRemovedFiles = new Set();     // "<dir>-<fiber>" keys
+// A second (third...) file of one fibre on one side is listed under an id of
+// its own: the fibre plus COPY_BASE per file before it (trace_server
+// COPY_BASE), so 100012 is fibre 12's second file.  Keys, fetches, selection
+// and Remove use the id; what the tech reads, the colour and the order use
+// the fibre.  /api/list says which ids are copies (copies_a / copies_b).
+const COPY_BASE = 100000;
+let gCopies = {};                    // id -> [fibre, copy]
+function realFiber(id) {
+  const c = gCopies[String(id)];
+  return c ? c[0] : Number(id);
+}
+function fiberLabel(id) {
+  const c = gCopies[String(id)];
+  return c ? `${c[0]} (copy ${c[1]})` : String(id);
+}
 // Per-file direction the tech set from the Files panel's right-click menu,
 // the way FastReporter's Files > Direction does.  Keyed by folder + fiber;
 // in memory only, like FR until it saves.  A trace keeps `src` (the folder it
@@ -1309,7 +1325,8 @@ function declaredOriginKm(t) {
   // that fiber's A side not loaded there is nothing better than the reference.
   let launch = gLaunchA;
   if (launchRef != null) {
-    const aT = gTraces.find(x => x.dir === 'a' && x.fiber === t.fiber && x.data);
+    const aT = gTraces.find(x => x.dir === 'a' && x.fiber === t.fiber && x.data)
+      || gTraces.find(x => x.dir === 'a' && realFiber(x.fiber) === realFiber(t.fiber) && x.data);
     launch = aT ? declaredEdgeKm(aT, launchRef) : launchRef;
   }
   return far + launch;
@@ -1362,7 +1379,8 @@ function halfSpanWarning() {
   if ((startRef == null) === (endRef == null)) return '';   // none, or both set
   for (const bT of gTraces) {
     if (!bT.data || bT.dir !== 'b') continue;
-    const aT = gTraces.find(x => x.dir === 'a' && x.fiber === bT.fiber && x.data);
+    const aT = gTraces.find(x => x.dir === 'a' && x.fiber === bT.fiber && x.data)
+      || gTraces.find(x => x.dir === 'a' && realFiber(x.fiber) === realFiber(bT.fiber) && x.data);
     if (!aT) continue;
     const origin = reelOriginKm(bT);          // B's far connector + A's reel
     if (startRef != null) {
@@ -1370,13 +1388,13 @@ function halfSpanWarning() {
       if (start - gLaunchA <= SPAN_HALF_WARN_KM) return '';
       return `⚠ Span START is set on A only, ${fmtDist(start)} in: B is drawn as if `
         + `A had a launch reel that long. Set B's span END too, at about `
-        + `${fmtDist(origin - start)} on F${bT.fiber}'s B→A trace, so the two line up.`;
+        + `${fmtDist(origin - start)} on F${fiberLabel(bT.fiber)}'s B→A trace, so the two line up.`;
     }
     const end = declaredEdgeKm(bT, endRef);
     if (origin - gLaunchA - end <= SPAN_HALF_WARN_KM) return '';
     return `⚠ Span END is set on B only, ${fmtDist(origin - gLaunchA - end)} short of its `
       + `far end: A is drawn as if B had a receive reel that long. Set A's span START `
-      + `too, at about ${fmtDist(origin - end)} on F${bT.fiber}'s A→B trace, so the two line up.`;
+      + `too, at about ${fmtDist(origin - end)} on F${fiberLabel(bT.fiber)}'s A→B trace, so the two line up.`;
   }
   return '';
 }
@@ -1428,7 +1446,7 @@ function axisZeroKm() {
 const COLORS_USED = new Map();
 function nextColor(key) {
   if (COLORS_USED.has(key)) return COLORS_USED.get(key);
-  const fiber = parseInt(String(key).split('-').pop(), 10);
+  const fiber = realFiber(parseInt(String(key).split('-').pop(), 10));   // a copy wears its fiber's colour
   let c;
   if (!gFiberColors) {
     // `key` is "<dir>-<fiber>"; anything not B-side draws in FR's A blue.
@@ -2078,13 +2096,19 @@ async function handleFilesDrop(dt) {
     const j = await post(`/api/drop_end?token=${token}&emptied=${emptiedSides()}`,
                          JSON.stringify({ folders: from }));
     at.stage = 'after';
-    // Whatever was loaded off a folder this drop REPLACED is now pointing at
-    // another span's fibers, so that side is forgotten.  A side the drop left
-    // alone keeps its traces on the chart — which is the point of dropping the
-    // A side and then the B side.
+    // A drop ADDS (Robert 2026-10-02: "keep adding and nothing gets reset
+    // until the person does it"): a side it grew keeps everything on it,
+    // even when the server moved it to a copy of a folder picked in the hub
+    // (`grown`).  Only a side that went away -- the tech emptied it with
+    // Remove -- is forgotten.
+    const grown = String(j.grown || '').toLowerCase();
     for (const d of ['a', 'b']) {
-      if ((j['dir_' + d] || '') !== before[d]) forgetSide(d);
+      if ((j['dir_' + d] || '') !== before[d] && !grown.includes(d)) forgetSide(d);
     }
+    // A file dropped again that the tech had removed: dragging it in asks
+    // for it back.
+    const back = (j.already_keys || []).filter(k => gRemovedFiles.has(k));
+    back.forEach(k => gRemovedFiles.delete(k));
     await loadInfo();
     // A side whose names carry no site at all has a COUNT and no name: the
     // whole file name is not a direction, and printing '0001_1550.SOR' here
@@ -2098,7 +2122,7 @@ async function handleFilesDrop(dt) {
     msg += j.added_by === 'file'
       ? (j.added === 'AB' ? ', A and B as the files name them'
                           : `, the files name this folder the ${j.added} side`)
-      : (j.added === 'AB' ? '' : `, dropped into the ${j.added} side`);
+      : (j.added === 'AB' || !j.added ? '' : `, dropped into the ${j.added} side`);
     // And HOW the drop was split, when it was not by the file names.  Nothing
     // could split it: 0001_1550.sor and 0002_1550.sor are two FIBERS of one
     // direction, so the drop is kept whole and lands on one side instead of
@@ -2159,6 +2183,23 @@ async function handleFilesDrop(dt) {
     // A dragged PARENT folder arrives FLAT, without its subfolders.  A repeat
     // the drop could not put on the other side (see _place_repeats) is not
     // loaded; say so, or those files go missing in silence.
+    // Byte for byte a file the Viewer has: not loaded twice (Robert
+    // 2026-10-02: "it should tell us that they are already in there").
+    if (j.already && j.already.length) {
+      const n = j.already.length;
+      const shown = j.already.slice(0, 6).join(', ') + (n > 6 ? `, … (+${n - 6} more)` : '');
+      warn.push((j.added ? `${n} file(s) already in the Viewer, not added again: `
+                         : `nothing added: ${n === 1 ? 'that file is' : `all ${n} files are`}`
+                           + ' already in the Viewer: ') + shown
+                + (back.length ? ` (${back.length} removed file(s) put back)` : ''));
+    }
+    // A different file of a fiber a side already has: its own row.
+    if (j.copies && j.copies.length) {
+      const n = j.copies.length;
+      const shown = j.copies.slice(0, 6).join(', ') + (n > 6 ? `, … (+${n - 6} more)` : '');
+      warn.push(`${n} file(s) added as another copy of a fiber already loaded,`
+           + ` listed as "(copy 2)": ${shown}`);
+    }
     if (j.repeated && j.repeated.length) {
       const uniq = [...new Set(j.repeated)].sort();
       const shown = uniq.slice(0, 6).join(', ')
@@ -2171,13 +2212,11 @@ async function handleFilesDrop(dt) {
     // each side this drop wrote is selected, beside whatever the other side
     // already had on the chart; a whole cable goes through the overview, as
     // a Select All does.
+    // Only what this drop added (`new_keys`) and put back joins the chart:
+    // the rows already there stay as the tech left them.
     const want = new Set(gTraces.map(t => t.key));
-    for (const d of ['a', 'b']) {
-      if (!String(j.added || '').toLowerCase().includes(d)) continue;
-      for (const f of ((gInfo && gInfo['fibers_' + d]) || [])) {
-        const key = `${d}-${f}`;
-        if (!gRemovedFiles.has(key)) want.add(key);
-      }
+    for (const key of [...(j.new_keys || []), ...back]) {
+      if (!gRemovedFiles.has(key)) want.add(key);
     }
     gDropInFlight = false;             // the load below is the page's own, not the drop's
     const loading = want.size !== gTraces.length;
@@ -2317,6 +2356,7 @@ async function loadInfo() {
     const wasGate = activeGateDb();
     const wasMode = gAnalysisMode;
     gInfo = await r.json();
+    gCopies = Object.assign({}, gInfo.copies_a || {}, gInfo.copies_b || {});
     // The hub's Analysis Mode switch moves CONFIG under a Viewer that already
     // has traces on screen.  The table is laid out per mode (the Splice
     // Report's own in OTDR Mode, FastReporter's in FR Mode), so a new mode
@@ -2346,7 +2386,8 @@ async function loadInfo() {
     setReadout('viewer server not ready yet…');
     return false;                       // signal not-ready → the boot loop retries
   }
-  const nA = (gInfo.fibers_a || []).length, nB = (gInfo.fibers_b || []).length;
+  const nA = new Set((gInfo.fibers_a || []).map(realFiber)).size,
+        nB = new Set((gInfo.fibers_b || []).map(realFiber)).size;
   if (nA === 0 && nB === 0) {
     setReadout('pick / paste A + B folders in the sidebar →');
     return true;
@@ -2738,7 +2779,7 @@ function planFiberLoad(fibers, addDir, info) {
     if (!has.length) { absent.push(f); continue; }
     for (const d of dirs) {
       if (has.includes(d)) pairs.push({ f, d });
-      else gaps.push(`F${f} ${d.toUpperCase()}: not in the folder`);
+      else gaps.push(`F${fiberLabel(f)} ${d.toUpperCase()}: not in the folder`);
     }
   }
   return { dirs, pairs, absent, gaps, noFolder: false };
@@ -2749,7 +2790,7 @@ function absentNote(plan) {
   const where = plan.dirs.map(d => d.toUpperCase()).join('/');
   if (plan.noFolder) return `no ${where} folder is set`;
   const a = plan.absent;
-  return a.slice(0, 3).map(f => 'F' + f).join(', ') +
+  return a.slice(0, 3).map(f => 'F' + fiberLabel(f)).join(', ') +
          (a.length > 3 ? ` (+${a.length - 3} more)` : '') +
          ` ${a.length === 1 ? 'is' : 'are'} not in the ${where} folder`;
 }
@@ -2771,7 +2812,7 @@ function sayRemovedTarget(plan) {
   if (!plan.pairs.length || !plan.pairs.every(({ f, d }) => gRemovedFiles.has(`${d}-${f}`)))
     return false;
   const fibers = [...new Set(plan.pairs.map(p => p.f))];
-  const names = fibers.slice(0, 3).map(f => 'F' + f).join(', ') +
+  const names = fibers.slice(0, 3).map(f => 'F' + fiberLabel(f)).join(', ') +
                 (fibers.length > 3 ? ` (+${fibers.length - 3} more)` : '');
   const one = fibers.length === 1;
   setReadout('', { warn: `${names} ${one ? 'was' : 'were'} removed from the Viewer. ` +
@@ -2884,8 +2925,8 @@ async function loadOverview(tasks, ld = null) {
       const failed = new Map((payload.failed || []).map(x => [x.fiber, x.error]));
       const D = dir.toUpperCase();
       for (const f of (payload.missing || [])) {
-        gLoadFailures.push(failed.has(f) ? `F${f} ${D}: unreadable (${failed.get(f)})`
-                                         : `F${f} ${D}: not found`);
+        gLoadFailures.push(failed.has(f) ? `F${fiberLabel(f)} ${D}: unreadable (${failed.get(f)})`
+                                         : `F${fiberLabel(f)} ${D}: not found`);
       }
     } catch (err) {
       console.warn('bulk load failed', err);
@@ -3128,14 +3169,14 @@ async function loadOne(key, fiber, dir) {
     if (epoch !== gLoadEpoch) return;     // cleared or replaced: push nothing
     if (!r.ok) {
       console.warn('fail', key, r.status);
-      gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: HTTP ${r.status}`);
+      gLoadFailures.push(`F${fiberLabel(fiber)} ${dir.toUpperCase()}: HTTP ${r.status}`);
       return;
     }
     const data = await r.json();
     if (epoch !== gLoadEpoch) return;
     if (data.error) {
       console.warn('err', key, data.error);
-      gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: ${data.error}`);
+      gLoadFailures.push(`F${fiberLabel(fiber)} ${dir.toUpperCase()}: ${data.error}`);
       return;
     }
     if (data.stored_dir && data.stored_dir !== dir) gStoredDir[key] = data.stored_dir;
@@ -3147,7 +3188,7 @@ async function loadOne(key, fiber, dir) {
     gTraces.push(t);
   } catch (e) {
     console.warn(e);
-    gLoadFailures.push(`F${fiber} ${dir.toUpperCase()}: ${e && e.message || 'fetch failed'}`);
+    gLoadFailures.push(`F${fiberLabel(fiber)} ${dir.toUpperCase()}: ${e && e.message || 'fetch failed'}`);
   } finally {
     if (epoch === gLoadEpoch) gLoadingKeys.delete(key);
   }
@@ -3169,7 +3210,7 @@ function removeFile(key, fiber) {
   const next = fileAfterRemove(fileRowKeys(), new Set([key]));
   gRemovedFiles.add(key);
   removeTrace(key);
-  const msg = `F${fiber} removed from the viewer and its reports (right-click a file to put it back)`;
+  const msg = `F${fiberLabel(fiber)} removed from the viewer and its reports (right-click a file to put it back)`;
   setReadout(msg);
   selectAfterRemove(next, msg);
   unloadEmptiedSides();
@@ -3403,7 +3444,7 @@ function syncFiberBox() {
   // the Dir on "A →", so a Clear All there left the next load to fetch A
   // only (audit 2026-10-01).  The load syncs both when it settles.
   if (gLoadingKeys.size && !gLoadsInFlight.size) return;
-  box.value = fiberRangeText(fibers);
+  box.value = fiberRangeText(fibers.map(realFiber));
   if (!dirs.size) return;
   setAddDir(dirs.size === 1 ? [...dirs][0] : 'both');
 }
@@ -3432,9 +3473,9 @@ function renderFilesPanel() {
   const list = document.getElementById('files-list');
   if (!list) return;
   const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-  // Say what the NEXT drop will do.  A one-direction drop fills the empty
-  // side (trace_server._single_drop_side), so the hint names it rather than
-  // leaving the tech to find out by losing the folder they just dropped.
+  // Say what the NEXT drop will do.  A drop adds to what is loaded (its
+  // files go to the side named like them, see trace_server._choose_side),
+  // so the hint says nothing loaded goes away.
   const sayNextDrop = () => {
     const hint = document.getElementById('files-drop-hint');
     if (!hint) return;
@@ -3442,7 +3483,7 @@ function renderFilesPanel() {
     const hasA = !!(gInfo && gInfo.dir_a) && !gone.includes('a');
     const hasB = !!(gInfo && gInfo.dir_b) && !gone.includes('b');
     hint.textContent =
-      (hasA && hasB) ? 'both sides loaded, dropping a folder here starts a new span'
+      (hasA && hasB) ? 'drop more files here, they are added to what is loaded'
       : hasA ? 'drop the other direction here, A stays loaded'
       : hasB ? 'drop the other direction here, B stays loaded'
       : 'drop .sor / .json / .trc / .olts files, a folder, or a .zip here';
@@ -3471,10 +3512,13 @@ function renderFilesPanel() {
       const cell = {
         pf: `<span class="file-pf${tr ? (tr.pf ? ' fpf-fail' : flagsOff() ? '' : ' fpf-pass') : ''}">`
           + `${tr ? pfMark(tr.pf) : ''}</span>`,
-        name: `<span class="file-name"><bdi>${esc(files[i] || 'F' + f)}</bdi></span>`,
+        // A second file of a fibre can carry the first one's very name, so
+        // the row says which copy it is even with the Fiber column hidden.
+        name: `<span class="file-name"><bdi>${esc(files[i] || 'F' + fiberLabel(f))}`
+          + `${gCopies[String(f)] && files[i] ? ` <span class="file-copy">(copy ${gCopies[String(f)][1]})</span>` : ''}</bdi></span>`,
         dir: `<span class="file-dir"${eff !== dir ? ' title="direction changed from the folder\'s"' : ''}>`
           + `${arrow}${eff !== dir ? '*' : ''}</span>`,
-        fiber: `<span class="file-num">${f}</span>`,
+        fiber: `<span class="file-num">${fiberLabel(f)}</span>`,
         wl: `<span class="file-num">${tr && tr.wl ? tr.wl : ''}</span>`,
         date: `<span class="file-date"${acq ? ` title="shot ${new Date(acq * 1000).toLocaleString()}"` : ''}>`
           + `${tr && tr.day ? tr.day : ''}</span>`,
@@ -3484,7 +3528,7 @@ function renderFilesPanel() {
         html: `<div class="file-row${t ? ' loaded' : ''}${t && !t.visible ? ' faded' : ''}`
           + `${gSelectedFiles.has(`${dir}-${f}`) ? ' selected' : ''}`
           + `${gFileFocus === `${dir}-${f}` ? ' focus' : ''}" `
-          + `data-dir="${dir}" data-fiber="${f}" data-name="${esc(files[i] || '')}" title="${esc(files[i] || 'F' + f)}">`
+          + `data-dir="${dir}" data-fiber="${f}" data-name="${esc(files[i] || '')}" title="${esc(files[i] || 'F' + fiberLabel(f))}">`
           + `<span class="file-vis"${t ? ` style="color:${t.color};text-shadow:0 0 1px #333" title="show / hide"` : ''}>`
           + `${t ? (t.visible ? '●' : '○') : ''}</span>`
           + cols.map(([c]) => cell[c]).join('') + '</div>',
@@ -3550,7 +3594,7 @@ function fileSortValue(r, col) {
   switch (col) {
     case 'name': return r.name.toLowerCase();
     case 'dir': return r.eff;
-    case 'fiber': return r.fiber;
+    case 'fiber': return realFiber(r.fiber) + r.fiber / 1e7;   // a copy sorts under its fiber
     case 'pf': return r.tr ? (r.tr.pf ? 1 : 0) : null;
     case 'wl': return r.tr && r.tr.wl ? r.tr.wl : null;
     case 'date': return r.acq || null;
@@ -3704,10 +3748,10 @@ function fiberTable() {
     fibers.forEach((f, i) => {
       if (gRemovedFiles.has(`${dir}-${f}`)) return;
       if (!by.has(f)) by.set(f, { fiber: f, a: [], b: [] });
-      by.get(f)[dir].push(files[i] || `F${f}`);
+      by.get(f)[dir].push(files[i] || `F${fiberLabel(f)}`);
     });
   }
-  return [...by.values()].sort((x, y) => x.fiber - y.fiber);
+  return [...by.values()].sort((x, y) => realFiber(x.fiber) - realFiber(y.fiber) || x.fiber - y.fiber);
 }
 // Whether a fibre's files make a pair, and if not, why.  The Viewer pairs on
 // the fibre number and the direction each file is drawn as.
@@ -3745,7 +3789,7 @@ function renderFibersView(list, esc) {
     return `<div class="fiber-row ${fiberState(r)}${gFiberFocus === String(r.fiber) ? ' focus' : ''}"`
       + ` data-fkey="${r.fiber}">`
       + `<span class="file-vis"${t ? ` style="color:${t.color};text-shadow:0 0 1px #333"` : ''}>${t ? '●' : ''}</span>`
-      + `<span class="file-num">${r.fiber}</span>`
+      + `<span class="file-num">${fiberLabel(r.fiber)}</span>`
       + `<span title="${esc(r.a.join(', '))}">${esc(r.a.join(', ') || '---')}</span>`
       + `<span title="${esc(r.b.join(', '))}">${esc(r.b.join(', ') || '---')}</span>`
       + `<span class="fib-pair${pair.ok ? '' : ' bad'}" title="${why}">${pair.text}</span></div>`;
@@ -3809,7 +3853,7 @@ function fileNameOf(key) {
   const [d, f] = splitFileKey(key);
   const fibers = (gInfo && gInfo['fibers_' + d]) || [], files = (gInfo && gInfo['files_' + d]) || [];
   const i = fibers.indexOf(f);
-  return (i >= 0 && files[i]) || `F${f}`;
+  return (i >= 0 && files[i]) || `F${fiberLabel(f)}`;
 }
 const sameKeys = (a, b) => a.size === b.size && [...a].every(k => b.has(k));
 
@@ -4140,7 +4184,7 @@ function fileTraits(key, paired) {
   if (!f) return null;
   paired = paired || pairedFileKeys();
   const [dir, fiber] = splitFileKey(key);
-  return { fiber, wl: f.wl, day: fileDay(f.acq), pf: fileFails(f.events, dir, paired.has(key)) };
+  return { fiber: realFiber(fiber), wl: f.wl, day: fileDay(f.acq), pf: fileFails(f.events, dir, paired.has(key)) };
 }
 // Every file whose fibre has both directions, drawn as opposite ones: the
 // files that sit on a two-direction table's A→B or B→A row.
@@ -4210,8 +4254,8 @@ async function selectSame(kinds, refKey) {
   const keys = fileRowKeys();
   let want;
   if (kinds.length === 1 && kinds[0] === 'fiber') {
-    const fibers = new Set([...gSelectedFiles, refKey].map(k => splitFileKey(k)[1]));
-    want = keys.filter(k => fibers.has(splitFileKey(k)[1]));
+    const fibers = new Set([...gSelectedFiles, refKey].map(k => realFiber(splitFileKey(k)[1])));
+    want = keys.filter(k => fibers.has(realFiber(splitFileKey(k)[1])));
   } else {
     // The read already in flight first, then whatever it did not cover: one
     // read at a time, so the columns and this never ask for the list twice.
@@ -4288,7 +4332,7 @@ function selectSameMenuHtml(marks) {
     ? `<button data-same="${p}" disabled style="opacity:.45" title="${why}">${label}</button>`
     : `<button data-same="${p}">${label}</button>`;
   const differ = p => filesAgreeOn(marks, p) ? '' : `the selected files differ in ${SAME_NAMES[p].toLowerCase()}`;
-  const fibers = new Set(marks.map(k => splitFileKey(k)[1])).size;
+  const fibers = new Set(marks.map(k => realFiber(splitFileKey(k)[1]))).size;
   return '<div class="span-menu-hd">Select</div>'
     + item('pf', 'Select Same Pass/Fail Status',
            flagsOff() ? 'the Settings box did not load, so nothing is graded' : differ('pf'))
@@ -4324,7 +4368,7 @@ function showFileDirMenu(x, y, src, fiber, name) {
   // Remove This File / Remove This Fiber (Robert 2026-10-01): with the whole
   // span marked, "Remove N Marked Files" was the only Remove, so one file
   // could not come off without first narrowing the chart down to it.
-  const fileLabel = `F${fiber} ${effDir(src, fiber) === 'a' ? 'A→B' : 'B→A'}`;
+  const fileLabel = `F${fiberLabel(fiber)} ${effDir(src, fiber) === 'a' ? 'A→B' : 'B→A'}`;
   const fiberKeys = fileRowKeys().filter(key => splitFileKey(key)[1] === +fiber);
   m.innerHTML = `<div class="span-menu-hd">Direction${marked ? ` (${marked} Marked)` : ''}</div>`
     + [['a', 'A→B'], ['b', 'B→A']].map(([d, label]) =>
@@ -4353,7 +4397,7 @@ function showFileDirMenu(x, y, src, fiber, name) {
     + (marked
        ? `<button data-remove-one="1">Remove This File (${fileLabel})</button>`
          + (fiberKeys.length > 1
-            ? `<button data-remove-fiber="1">Remove This Fiber (F${fiber}, Both Directions)</button>`
+            ? `<button data-remove-fiber="1">Remove This Fiber (F${fiberLabel(fiber)}, Both Directions)</button>`
             : '')
          + `<button data-remove="1">Remove ${marked} Marked Files from Viewer</button>`
        : `<button data-remove="1">Remove This File (${fileLabel})</button>`)
@@ -4390,7 +4434,7 @@ function showFileDirMenu(x, y, src, fiber, name) {
   const rf = m.querySelector('button[data-remove-fiber]');
   if (rf) rf.onclick = () => {
     closeSpanMenu();
-    removeOnly(fiberKeys, `F${fiber} (both directions)`);
+    removeOnly(fiberKeys, `F${fiberLabel(fiber)} (both directions)`);
   };
   const rm = m.querySelector('button[data-remove]');
   if (rm) rm.onclick = () => {
@@ -4415,7 +4459,7 @@ async function saveFilesDirection(keys) {
     if (!groups.has(g)) groups.set(g, { src, dir, fibers: [] });
     groups.get(g).fibers.push(fiber);
   }
-  const one = keys.length === 1 ? `F${splitFileKey(keys[0])[1]}` : `${keys.length} files`;
+  const one = keys.length === 1 ? `F${fiberLabel(splitFileKey(keys[0])[1])}` : `${keys.length} files`;
   setReadout(`writing ${one}…`);
   const written = [], skipped = [];
   let dest = '';
@@ -4441,7 +4485,7 @@ async function saveFilesDirection(keys) {
     setReadout(`nothing written: ${(skipped[0] || {}).reason || 'no file could be written'}`);
     return;
   }
-  setReadout(`${written.length === 1 ? 'F' + written[0] : written.length + ' files'} saved`
+  setReadout(`${written.length === 1 ? 'F' + fiberLabel(written[0]) : written.length + ' files'} saved`
     + ` → ${dest} (original${written.length === 1 ? '' : 's'} untouched)`
     + (skipped.length ? ` · ${skipped.length} not written: ${skipped[0].reason}` : ''));
 }
@@ -4465,7 +4509,7 @@ function setFilesDirection(keys, dir) {
   renderEventTable();
   const arrow = dir === 'a' ? 'A→B' : 'B→A';
   setReadout(keys.length === 1
-    ? `F${splitFileKey(keys[0])[1]} set to ${arrow}`
+    ? `F${fiberLabel(splitFileKey(keys[0])[1])} set to ${arrow}`
     : `${keys.length} files set to ${arrow}`);
 }
 document.getElementById('files-list').addEventListener('click', (ev) => onFileClick(ev));
@@ -4898,7 +4942,7 @@ function updateMarkerReadout() {
           }
         }
         const arrow = t.dir === 'a' ? 'A→B' : 'B→A';
-        html += `<tr><td><span style="color:${t.color};text-shadow:0 0 1px #333">■</span> F${t.fiber} ${arrow}</td>` +
+        html += `<tr><td><span style="color:${t.color};text-shadow:0 0 1px #333">■</span> F${fiberLabel(t.fiber)} ${arrow}</td>` +
                 `<td>${va == null ? '---' : va.toFixed(3)}</td>` +
                 `<td>${vb == null ? '---' : vb.toFixed(3)}</td>` +
                 `<td>${dloss}</td><td>${slope}</td></tr>`;
@@ -5534,7 +5578,7 @@ function drawPairing(sets, r, failedOnly = false) {
       band(lo, hi, color, 0.13);
       qs.forEach(q => legMark(q, cell.fi, col.i, !D.single, 1));
       const v = (col.fmt || fmtV)(cell.avg);
-      const who = many ? `F${p.fiber}${D.single ? ((p.ta ? ' A' : ' B')) : ''} ` : '';
+      const who = many ? `F${fiberLabel(p.fiber)}${D.single ? ((p.ta ? ' A' : ' B')) : ''} ` : '';
       tags.push({ x: (xToPx(lo, r) + xToPx(hi, r)) / 2, color,
                   full: `${who}${col.title}${v ? `  ${col.word || word} ${v}` : ''}${cell.avgFail ? '  FAIL' : ''}`,
                   short: `${who}${v || col.title}`,
@@ -5624,7 +5668,7 @@ function appendOneDirGrid(singles, host) {
   box.className = 'onedir-box';
   const cap = document.createElement('div');
   cap.className = 'onedir-cap';
-  cap.textContent = `One direction only: F${[...new Set(traces.map(t => t.fiber))].join(', F')}`;
+  cap.textContent = `One direction only: F${[...new Set(traces.map(t => t.fiber))].map(fiberLabel).join(', F')}`;
   box.appendChild(cap);
   host.appendChild(box);
   renderFastReporterGrid(traces, box, document.createElement('div'), { oneDir: true });
@@ -5715,7 +5759,7 @@ function aggOwnAttrs(have, fi, which, col, refl) {
   const p = have[fi];
   const dir = which === 'a' ? ' A→B' : which === 'b' ? ' B→A' : '';
   return ` class="fr-own" data-own-fi="${fi}" data-own-w="${which}" data-own-col="${col}"`
-       + (refl ? ' data-own-refl="1"' : '') + ` title="F${p.fiber}${dir}: click to find it"`;
+       + (refl ? ' data-own-refl="1"' : '') + ` title="F${fiberLabel(p.fiber)}${dir}: click to find it"`;
 }
 function wireAggJump(g, have) {
   const footer = g.table.tFoot;
@@ -5732,12 +5776,12 @@ function wireAggJump(g, have) {
     gPickKey = keys.length === 1 ? keys[0] : keys;
     if (!g.descs.some(d => d[0] === fi)) {   // its rows are filtered out of the grid
       g.paintRows(); draw();
-      setReadout(`F${p.fiber}${dir} holds it. Its row is hidden by "Show only flagged rows"`);
+      setReadout(`F${fiberLabel(p.fiber)}${dir} holds it. Its row is hidden by "Show only flagged rows"`);
       return;
     }
     gridGoCell(g, fi, which, +td.dataset.ownCol, { centre: true, refl: !!td.dataset.ownRefl });
     draw();                                  // bold above, the rest dimmed
-    setReadout(`F${p.fiber}${dir} holds it. Click the cell again to let go`);
+    setReadout(`F${fiberLabel(p.fiber)}${dir} holds it. Click the cell again to let go`);
   });
 }
 function labelHit(px, py) {
@@ -5823,7 +5867,7 @@ function hoverTrace() {
 // The box beside the cursor: a color swatch and "F0002 A→B", flipped to the
 // cursor's other side near an edge.
 function drawHoverBox(t) {
-  const text = `F${t.fiber} ${t.dir === 'a' ? 'A→B' : 'B→A'}`;
+  const text = `F${fiberLabel(t.fiber)} ${t.dir === 'a' ? 'A→B' : 'B→A'}`;
   const PAD = 6, SW = 10, GAP = 6, OFF = 14, BH = 24;
   ctx.font = "12px 'Segoe UI', sans-serif";
   const bw = PAD * 2 + SW + GAP + ctx.measureText(text).width;
@@ -6396,7 +6440,7 @@ function paintFecGrid(traces, res, host, hint) {
   const body = rows.map(({ t, side, g }, ti) => {
     const dot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;`
       + `background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>`;
-    const lead = `<td class="fr-rowlab">${dot}F${t.fiber}</td>`;
+    const lead = `<td class="fr-rowlab">${dot}F${fiberLabel(t.fiber)}</td>`;
     const attrs = ` data-ti="${ti}" data-key="${t.key}"${isPicked(t.key) ? ' class="fr-pick"' : ''}`;
     if (!g || !g.found) {
       return `<tr${attrs}>${lead}<td></td><td>${(t.data && t.data.wavelength_nm) || '---'}</td><td>${side}</td>`
@@ -6434,7 +6478,7 @@ function paintFecGrid(traces, res, host, hint) {
     const own = owned ? have.find(r => fmt(get(r.g)) === fmt(v)) : null;
     return own
       ? `<td class="fr-own" data-ti="${own.ti}" data-own-col="${key}"`
-        + ` title="F${own.t.fiber} ${own.side}: click to find it">${fmt(v)}</td>`
+        + ` title="F${fiberLabel(own.t.fiber)} ${own.side}: click to find it">${fmt(v)}</td>`
       : `<td>${fmt(v)}</td>`;
   };
   const aggRow = (label, fn, owned) => {
@@ -6494,7 +6538,7 @@ function paintFecGrid(traces, res, host, hint) {
     markPick();
     const tr = tb.querySelector(`tr[data-key="${t.key}"]`);
     if (!tr) {
-      setReadout(`F${t.fiber}: its row is hidden by "${gFlaggedOnly ? 'Show Only Flagged Rows' : 'Show Failing Cells Only'}"`);
+      setReadout(`F${fiberLabel(t.fiber)}: its row is hidden by "${gFlaggedOnly ? 'Show Only Flagged Rows' : 'Show Failing Cells Only'}"`);
       return;
     }
     centre(tr);
@@ -6660,7 +6704,7 @@ function buildEventRows(traces) {
       });
     }
   }
-  out.sort((a, b) => a.fiber - b.fiber || a.km - b.km);
+  out.sort((a, b) => realFiber(a.fiber) - realFiber(b.fiber) || a.fiber - b.fiber || a.km - b.km);
   return out;
 }
 
@@ -6800,7 +6844,7 @@ function renderVirtualEventList(rows, host) {
       tr.className = (r.flag ? 'flagged ' : '') +
                      (r.isEnd ? 'end' : (r.isRefl ? 'refl' : ''));
       tr.innerHTML =
-        `<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${r.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${r.fiber} ${r.arrow}</td>` +
+        `<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${r.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${fiberLabel(r.fiber)} ${r.arrow}</td>` +
         `<td>${r.num}</td>` +
         `<td>${kmFt(r.km)}</td>` +
         `<td>${r.loss == null ? '---' : r.loss.toFixed(3)}</td>` +
@@ -7302,7 +7346,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
 
     const cells = [
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
-      + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${t.fiber}</td>`,
+      + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${fiberLabel(t.fiber)}</td>`,
       `<td class="${pfClass(fail)}" title="following `
       + `${gateLabel()}, this is OUR verdict, not FastReporter's`
       + `">${pfMark(fail)}</td>`,
@@ -7379,7 +7423,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
         : -1;
       const own = owner >= 0
         ? ` class="fr-own" data-ti="${owner}" data-own-col="${i}"`
-          + ` title="F${traces[owner].fiber} ${arrow(traces[owner])}: click to find it"`
+          + ` title="F${fiberLabel(traces[owner].fiber)} ${arrow(traces[owner])}: click to find it"`
         : '';
       // `isBreak` is false here — evLoss already drops End-of-Fiber events, so
       // an aggregate is never a break.
@@ -7393,7 +7437,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
         : -1;
       const rOwn = rOwner >= 0
         ? ` class="fr-own" data-ti="${rOwner}" data-own-col="${i}" data-own-refl="1"`
-          + ` title="F${traces[rOwner].fiber} ${arrow(traces[rOwner])}: click to find it"`
+          + ` title="F${fiberLabel(traces[rOwner].fiber)} ${arrow(traces[rOwner])}: click to find it"`
         : '';
       cells.push((gated ? lossCell(v, false) : `<td${own}>${aggText(fmt(v))}</td>`)
                + `<td${rOwn}>${cellText(fmtR(r))}</td>`);
@@ -7599,7 +7643,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     const k = shown.indexOf(ti);
     if (k < 0) {                       // its row is filtered out of the grid
       draw();
-      setReadout(`F${t.fiber} ${arrow(t)} holds it. Its row is hidden by "Show only flagged rows"`);
+      setReadout(`F${fiberLabel(t.fiber)} ${arrow(t)} holds it. Its row is hidden by "Show only flagged rows"`);
       return;
     }
     const headH = table.tHead ? table.tHead.offsetHeight : 0;
@@ -7631,7 +7675,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
       setTimeout(() => cell.classList.remove('fr-hit', 'fading'), 2200);
     }
     draw();                            // bold above, the rest dimmed
-    setReadout(`F${t.fiber} ${arrow(t)} holds it. Click the cell again to let go`);
+    setReadout(`F${fiberLabel(t.fiber)} ${arrow(t)} holds it. Click the cell again to let go`);
   });
 
   // A click on a row: its trace to the front, FastReporter's current
@@ -7960,7 +8004,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     const label = which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average';
     const cells = [
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
-      + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${p.fiber}</td>`,
+      + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${fiberLabel(p.fiber)}</td>`,
       // Every row carries its own verdict, as FR's do (driven 2026-09-25).
       `<td class="${pfClass(fail)}" title="${which === 'avg'
         ? `A+B average at the report's gates (${gateLabel()})`
@@ -8013,8 +8057,8 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // Like the Suite table's: no headline, no right-click tip and no "Suite
   // table unavailable" note; only gaps, errors and the ticked filters (Robert).
   hint.textContent = [
-    missing.length ? `no FR table for F${missing.join(', F')}` : '',
-    singles.length ? `one direction only: F${singles.join(', F')}` : '',
+    missing.length ? `no FR table for F${missing.map(fiberLabel).join(', F')}` : '',
+    singles.length ? `one direction only: F${singles.map(fiberLabel).join(', F')}` : '',
     res.error || '',
     gFlaggedOnly ? 'flagged rows only' : '',
     gFailCellsOnly ? (descs.length ? 'failing cells only' : 'failing cells only: nothing fails') : '',
@@ -8322,7 +8366,7 @@ function showSpanMenu(x, y, dir, km, fiber, src) {
   // fiber in the folder, not a property of the row that was clicked.  The row
   // only says which event was meant, and each fiber snaps to its own.
   m.innerHTML = `<div class="span-menu-hd">${arrow} Span: All Fibers in This Folder`
-    + `<br><span class="span-menu-sub">picked on F${fiber} at ${fmtDist(km)}; `
+    + `<br><span class="span-menu-sub">picked on F${fiberLabel(fiber)} at ${fmtDist(km)}; `
     + `each fiber uses its own event there</span></div>`
     + items.map(([e, label]) =>
         `<button data-edge="${e}"${e === useful ? ' class="primary"' : ''}>${label}</button>`).join('')
@@ -8694,7 +8738,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     const label = which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average';
     const cells = [
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
-      + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${p.fiber}</td>`,
+      + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${fiberLabel(p.fiber)}</td>`,
       `<td class="${pfClass(fail)}" title="${which === 'avg'
         ? `the Splice Report's flags, and the A+B value at its gates (${gateLabel()})`
         : "the Splice Report's flags, and this direction at its single-direction gates"}`
@@ -8739,7 +8783,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // stays is what the table cannot show: fibres the report left out, and
   // which filter is ticked.
   hint.textContent = [
-    missing.length ? `not in the report: F${missing.join(', F')}` : '',
+    missing.length ? `not in the report: F${missing.map(fiberLabel).join(', F')}` : '',
     gFlaggedOnly ? 'flagged rows only' : '',
     gFailCellsOnly ? (descs.length ? 'failing cells only' : 'failing cells only: nothing fails') : '',
     gWarnCellsOnly ? (descs.length ? 'warning cells only' : 'warning cells only: no warnings') : '',
@@ -9031,10 +9075,10 @@ async function showEditDialog(dir, fiber) {
     const r = await fetch(`/api/trace_settings?dir=${dir}&fiber=${fiber}`);
     s = await r.json();
     if (seq !== gEditDlgSeq) return;
-    if (!r.ok || s.error) { setReadout(`could not read F${fiber}: ${s.error || r.status}`); return; }
+    if (!r.ok || s.error) { setReadout(`could not read F${fiberLabel(fiber)}: ${s.error || r.status}`); return; }
   } catch (e) {
     if (seq !== gEditDlgSeq) return;
-    setReadout(`could not read F${fiber}: ${(e && e.message) || e}`); return;
+    setReadout(`could not read F${fiberLabel(fiber)}: ${(e && e.message) || e}`); return;
   }
   closeEditDialog();
   const bg = document.createElement('div'); bg.id = 'edit-dlg-bg';
@@ -9051,7 +9095,7 @@ async function showEditDialog(dir, fiber) {
   d.innerHTML = `<h3>Trace Settings: ${arrow}</h3>`
     + `<div class="sub">read from ${esc(s.filename)}${s.editable ? '' : ': <b>' + esc(s.why) + '</b>'}</div>`
     + `<div class="scope"><label><input type="radio" name="edit-scope" value="all" checked> All Fibers in This Folder</label>`
-    + `<label><input type="radio" name="edit-scope" value="one"> Only F${fiber}</label></div>`
+    + `<label><input type="radio" name="edit-scope" value="one"> Only F${fiberLabel(fiber)}</label></div>`
     + (s.panel
        ? frPanelHtml(s.panel, iorVal, bsVal)
        : `<div class="row"><label>IOR</label><input type="number" id="edit-ior" step="0.00001" min="1.40" max="1.55" value="${iorVal}"></div>`)
@@ -9074,7 +9118,7 @@ async function showEditDialog(dir, fiber) {
   const syncScope = () => {
     const all = d.querySelector('input[name=edit-scope]:checked').value === 'all';
     fid.disabled = all;
-    fid.title = all ? 'a fiber id is per-fiber; pick "only F' + fiber + '" to change it' : '';
+    fid.title = all ? 'a fiber id is per-fiber; pick "only F' + fiberLabel(fiber) + '" to change it' : '';
   };
   d.querySelectorAll('input[name=edit-scope]').forEach(r => r.onchange = syncScope);
   syncScope();
@@ -10118,9 +10162,9 @@ function reportFibreTables(ev, S) {
   const byFibre = new Map();
   for (let r = nh; r < rows.length; r++) {
     const lab = cover[r][0], dir = cover[r][lead - 1];
-    const m = lab && /^F(\d+)/.exec(lab.cell.t);
+    const m = lab && /^F(\d+)(?: \(copy (\d+)\))?/.exec(lab.cell.t);
     if (!m || !dir || !dir.cell.t) continue;
-    const f = +m[1];
+    const f = +m[1] + (m[2] ? COPY_BASE * (m[2] - 1) : 0);   // fiberLabel, read back
     if (!byFibre.has(f)) byFibre.set(f, []);
     byFibre.get(f).push({ dir: dir.cell.t, r, pf: cover[r][1] ? cover[r][1].cell : null });
   }
@@ -10219,7 +10263,7 @@ function reportJob() {
   return [...new Set([folderLabel('a'), folderLabel('b')].filter(Boolean))].join(' / ');
 }
 function reportDefaultName(vis) {
-  const fibers = [...new Set(vis.map(t => t.fiber))].sort((a, b) => a - b);
+  const fibers = [...new Set(vis.map(t => realFiber(t.fiber)))].sort((a, b) => a - b);
   const f = fibers.length === 1 ? `F${fibers[0]}`
           : (fibers[fibers.length - 1] - fibers[0] === fibers.length - 1)
             ? `F${fibers[0]}-F${fibers[fibers.length - 1]}` : `${fibers.length} fibers`;
@@ -10233,15 +10277,16 @@ async function reportPayload(opt, token, progress) {
   const vis = gTraces.filter(t => t.visible);
   const probe = reportStyleProbe();
   try {
-    const sorted = [...vis].sort((a, b) => a.fiber - b.fiber || a.dir.localeCompare(b.dir));
+    const sorted = [...vis].sort((a, b) => realFiber(a.fiber) - realFiber(b.fiber) || a.fiber - b.fiber
+                                         || a.dir.localeCompare(b.dir));
     const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';
     // Viewer FEC: the mode and the gates the FEC table was graded at, not
     // the analysis mode's or the Viewer boxes' usual meaning.
     const meta = [['Mode', gFecMode ? 'FEC' : gAnalysisMode === 'fr' ? 'FastReporter' : PRODUCT_NAME]];
     if (vis.some(t => t.src === 'a') && folderLabel('a')) meta.push(['A folder', folderLabel('a')]);
     if (vis.some(t => t.src === 'b') && folderLabel('b')) meta.push(['B folder', folderLabel('b')]);
-    const nf = new Set(vis.map(t => t.fiber)).size;
-    meta.push(['Fibers', `${fiberRanges(vis.map(t => t.fiber))} (${nf} fiber${nf === 1 ? '' : 's'})`]);
+    const nf = new Set(vis.map(t => realFiber(t.fiber))).size;
+    meta.push(['Fibers', `${fiberRanges(vis.map(t => realFiber(t.fiber)))} (${nf} fiber${nf === 1 ? '' : 's'})`]);
     const fg = gFecMode ? fecGatesShown() : null;
     if (gFecMode) {
       const src = w => gFecOverride[w] != null ? 'overridden in this window' : 'customer profile';
@@ -10286,7 +10331,7 @@ async function reportPayload(opt, token, progress) {
         const d = t.data || {};
         const end = (d.events || []).find(e => e.is_end);
         return [
-          { t: `F${t.fiber} ${arrow(t)}`, s: B, dot: colorHex(t.color) },
+          { t: `F${fiberLabel(t.fiber)} ${arrow(t)}`, s: B, dot: colorHex(t.color) },
           { t: d.filename || '', s: B },
           { t: d.wavelength_nm ? String(d.wavelength_nm) : '---', s: C },
           { t: d.pulse_ns ? String(d.pulse_ns) : '---', s: C },
@@ -10319,9 +10364,9 @@ async function reportPayload(opt, token, progress) {
         }
         if (tab && tab.pf) meta.push(['P/F', tab.pf]);
         fibres.push({
-          title: `F${f}`, meta: meta.filter(([, v]) => v),
+          title: `F${fiberLabel(f)}`, meta: meta.filter(([, v]) => v),
           png: charts.get(f) || '',
-          key: ts.map(t => ({ label: `F${t.fiber} ${arrow(t)}`, color: colorHex(t.color) })),
+          key: ts.map(t => ({ label: `F${fiberLabel(t.fiber)} ${arrow(t)}`, color: colorHex(t.color) })),
           table: tab ? tab.table : null,
           note: tab ? '' : 'This fiber has no rows in the event table on screen.',
         });
@@ -10368,7 +10413,7 @@ async function showReportDialog() {
   if (seq !== gReportDlgSeq) return;    // a later click builds the dialog
   closeReportDialog();
   const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-  const nFib = new Set(vis.map(t => t.fiber)).size;
+  const nFib = new Set(vis.map(t => realFiber(t.fiber))).size;
   const bg = document.createElement('div'); bg.id = 'report-dlg-bg';
   const d = document.createElement('div'); d.id = 'report-dlg';
   d.innerHTML = `<h3>Summary Report</h3>`
