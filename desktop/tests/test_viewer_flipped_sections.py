@@ -68,13 +68,21 @@ def _viewer_src():
 # numbers below fail.
 
 def att_rule_from_source(src=None):
-    """Return 'flip-aware' | 'always-b' | 'always-a' for section()'s `att`."""
+    """Return 'own-frame' | 'flip-aware' | 'always-b' | 'always-a' for
+    section()'s `att`.  'own-frame' (2026-10-02, FR's own-next-event
+    sections): the slope of whichever bounding event lies further out in the
+    trace's OWN frame, which is the event the section ends at whether or not
+    the row is mirrored."""
     src = src if src is not None else _viewer_src()
     i = src.index('function section(ti, i)')
     body = src[i:src.index('\n  }', i)]
     m = re.search(r'const att = (.+?);', body)
     assert m, 'section() no longer assigns `const att` — update this test'
     expr = ' '.join(m.group(1).split())
+    if expr == 'hi.slope':
+        assert 'const lo = a.dist_km <= b.dist_km ? a : b, hi = lo === a ? b : a;' in body, \
+            "section()'s `hi` is no longer the event further out in the trace's own frame"
+        return 'own-frame'
     if expr == 'isFlipped(traces[ti]) ? a.slope : b.slope':
         return 'flip-aware'
     if expr == 'b.slope':
@@ -289,6 +297,8 @@ def section(cols, traces, ti, i, rule):
         att = b['slope']
     elif rule == 'always-a':
         att = a['slope']
+    elif rule == 'own-frame':
+        att = terminating_slope(a, b)
     else:
         att = (a if traces[ti]['flipped'] else b)['slope']
     if not length > 0 or att is None or att == 0:
@@ -426,9 +436,11 @@ def test_unstacking_puts_the_b_row_back_on_the_plain_rule():
     for s, want in _b_sections(rule, flipped=False):
         assert s['att'] == want
     src = _viewer_src()
-    body = src[src.index('function section(ti, i)'):][:600]
-    assert 'isFlipped(traces[ti])' in body, \
-        'the rule must key on isFlipped, not on direction'
+    body = src[src.index('function section(ti, i)'):][:900]
+    # own-frame distances settle it in either state; never the direction
+    assert 'isFlipped(traces[ti])' in body or 'a.dist_km <= b.dist_km' in body, \
+        'the rule must key on isFlipped or on own-frame km, not on direction'
+    assert "t.dir === 'b'" not in body and ".dir === 'b'" not in body
 
 
 # ─── D3: the >=3-trace flat list must speak the displayed frame ───────────
@@ -453,7 +465,7 @@ def test_the_flat_list_and_the_grid_use_the_same_transform():
     """Two copies of the mirror is how the frames drifted apart in the first
     place; both call dispKm."""
     src = _viewer_src()
-    grid = src[src.index('function renderFastReporterGrid'):][:1200]
+    grid = src[src.index('function renderFastReporterGrid'):][:3600]
     assert 'dispKm(t, e.dist_km)' in grid
 
 
@@ -472,7 +484,7 @@ def test_only_the_average_row_is_gate_highlighted():
     """
     src = _viewer_src()
     fn = src[src.index('const aggRow = (label, fn, gated)'):][:3500]
-    assert 'gated ? lossCell(' in fn, 'the Average cell no longer goes through lossCell'
+    assert 'gated && !gFecMode ? lossCell(' in fn, 'the Average cell no longer goes through lossCell'
 
     rows = src[src.index('const aggRows = ['):][:400]
     for label, want in (('Minimum', 'false'), ('Maximum', 'false'), ('Average', 'true')):
@@ -501,8 +513,10 @@ def test_the_aggregate_highlight_uses_the_reports_gate():
     src = _viewer_src()
     # `lossCell` gained an `attrs` argument when grid cells started carrying
     # the data-km the span menu reads; the gate it applies is unchanged.
-    fn = src[src.index('const lossCell = (v, isBreak'):][:400]
-    assert 'overGate(v)' in fn
+    fn = src[src.index('const lossCell = (v, isBreak'):][:500]
+    assert 'evFails(v, e, ti)' in fn
+    # ... which outside FEC shots is overGate
+    assert ': overGate(v);' in src
     # ... which is clearsGate itself
     assert 'const overGate = clearsGate;' in src
 
