@@ -463,10 +463,15 @@ def test_the_flat_event_list_lists_displayed_km_not_raw():
 
 def test_the_flat_list_and_the_grid_use_the_same_transform():
     """Two copies of the mirror is how the frames drifted apart in the first
-    place; both call dispKm."""
+    place; there is one mirror (mirrorOriginKm).  The grid reads A's frame
+    (tableKm), as FastReporter's tables do, which is the chart's frame for
+    every trace but a B->A file with no partner: the chart draws that one as
+    shot, as FR draws it (Robert 2026-10-03)."""
     src = _viewer_src()
     grid = src[src.index('function renderFastReporterGrid'):][:3600]
-    assert 'dispKm(t, e.dist_km)' in grid
+    assert 'tableKm(t, e.dist_km)' in grid
+    assert "function tableKm(t, dataKm) { return frameFlipped(t) ? (mirrorOriginKm(t) - dataKm) : dataKm; }" in src
+    assert "function dispKm(t, dataKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dataKm) : dataKm; }" in src
 
 
 # ─── D4: the Average row carries the report's verdict ────────────────────

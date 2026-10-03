@@ -130,6 +130,11 @@ out.tags = ['a', 'a2', 'b31'].map(srcTag);
 gTraces = [T('a', 1), T('b', 1), T('b2', 1)];
 refreshMirrorFrame();
 out.flip = gTraces.map(function (t) { return [t.key, isFlipped(t)]; });
+// a B->A file with no partner is drawn as shot; every table still reads it
+// in A's frame (FastReporter, drop audit S08 / S13 / S14)
+gTraces = [T('a', 1), T('b', 1), T('b', 3)];
+refreshMirrorFrame();
+out.unpaired = gTraces.map(function (t) { return [t.key, isFlipped(t), frameFlipped(t), yOffsetFor(t) !== 0]; });
 gTraces = [T('a2', 1), T('b2', 1)];
 refreshMirrorFrame();
 out.flip2 = gTraces.map(function (t) { return [t.key, isFlipped(t), mirrorOriginKm(t)]; });
@@ -142,11 +147,12 @@ def res(tmp_path_factory):
     funcs = '\n'.join([_const('SRC_RE'), _const('MULTI_SPAN_NOTE')]
                       + [_js_func(n) for n in (
                           'srcParts', 'sideOf', 'spanOf', 'srcLabel', 'srcTag', 'spanInfo',
-                          'launchAOf', 'spanDeclOf', 'isFlipped', 'yOffsetFor', 'reelOriginKm',
+                          'launchAOf', 'spanDeclOf', 'isFlipped', 'frameFlipped', 'unpairedB',
+                          'yOffsetFor', 'reelOriginKm',
                           'measuredDeltas', 'measuredDelta', 'refreshMirrorFrame', 'spanIsDeclared',
                           'declaredOriginKm', 'declaredEdgeKm', 'mirrorOriginKm',
                           'renderEventTable', 'realFiber', 'idsMatch', 'pairTraces', 'frTableQuery')])
-    funcs += '\nconst gMirrorDeltas = new Map();\nvar gCopies = {};\n'
+    funcs += '\nconst gMirrorDeltas = new Map();\nvar gCopies = {};\nvar gUnpairedB = { sig: null, keys: new Set() };\n'
     path = tmp_path_factory.mktemp('multi_span') / 'ms.js'
     path.write_text(_STUBS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
@@ -200,6 +206,16 @@ def test_files_pair_only_when_their_cable_and_fiber_ids_match(res):
     carry different Fiber IDs pairs nothing (S13), matching IDs pair (S01),
     and a file with no IDs to read pairs by the fibre as before."""
     assert res['ids'] == [[0, 2], [0, 2], [0, 2], [1, 0], [1, 0]]
+
+
+@needs_jsc
+def test_an_unpaired_b_is_drawn_as_shot_and_tabled_in_as_frame(res):
+    """Robert 2026-10-03, as FastReporter: fibre 3's B->A file has no A->B
+    partner, so the chart draws it as shot (not mirrored, not stacked); the
+    tables still list it in A's frame (frameFlipped).  Fibre 1's B meets its
+    A and is mirrored as ever."""
+    assert res['unpaired'] == [['a-1', False, False, False], ['b-1', True, True, True],
+                               ['b-3', False, True, False]]
 
 
 @needs_jsc

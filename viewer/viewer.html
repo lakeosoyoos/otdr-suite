@@ -1321,8 +1321,36 @@ function fecGradesFor(traces) {
   return { pending: true };
 }
 // `t.alone`: no A trace of its own span is on the chart (refreshMirrorFrame).
-function isFlipped(t) { return !gFecMode && gStacked && gHaveA && t.dir === 'b' && !t.alone; }
-function yOffsetFor(t) { return (!gFecMode && gStacked && gHaveA && t.dir === 'b' && !t.alone) ? -gStackSpacingDb : 0; }
+//
+// Two frames, as FastReporter keeps them (drop audit S08, S13, S14; Robert
+// 2026-10-03).  Every TABLE lists a B->A file in A's frame, paired or not
+// (frameFlipped, tableKm).  The CHART mirrors a B->A trace only to meet its
+// partner: one with no A->B file of its fibre paired to it (pairTraces) is
+// drawn as shot, in its own frame and level, as FR draws it (isFlipped).
+function frameFlipped(t) { return !gFecMode && gStacked && gHaveA && t.dir === 'b' && !t.alone; }
+function isFlipped(t) { return !gFecMode && gStacked && gHaveA && t.dir === 'b' && !t.alone && !unpairedB().has(t.key); }
+function yOffsetFor(t) { return (!gFecMode && gStacked && gHaveA && t.dir === 'b' && !t.alone && !unpairedB().has(t.key)) ? -gStackSpacingDb : 0; }
+function tableKm(t, dataKm) { return frameFlipped(t) ? (mirrorOriginKm(t) - dataKm) : dataKm; }
+// The B->A traces that pair with nothing, worked out again only when the
+// traces, their directions or their files change.  Hidden traces count: a B
+// mirrored to meet its A stays mirrored while that A is hidden.
+let gUnpairedB = { sig: null, keys: new Set() };
+function unpairedB() {
+  const sig = gTraces.map(t => `${t.key}${t.dir}${t.data ? 1 : 0}${t.span || 1}`).join(',');
+  if (sig === gUnpairedB.sig) return gUnpairedB.keys;
+  const keys = new Set();
+  const bySpan = new Map();
+  for (const t of gTraces) {
+    const sp = t.span || 1;
+    if (!bySpan.has(sp)) bySpan.set(sp, []);
+    bySpan.get(sp).push(t);
+  }
+  for (const ts of bySpan.values()) {
+    for (const t of pairTraces(ts).singles) if (t.dir === 'b') keys.add(t.key);
+  }
+  gUnpairedB = { sig, keys };
+  return keys;
+}
 
 // Mirror origin for a flipped B trace — the B-frame distance that must land on
 // display 0... or rather, on A's launch connector, because THAT is the frame
@@ -7761,10 +7789,10 @@ function clusterColumns(traces, items, tolKm) {
 // the B-only table under it.  A's declared start is its zero too.
 // With nothing declared the zero is the port, as FR's own table prints.
 function oneDirTableZeroKm(traces) {
-  const zeroT = traces.find(t => !isFlipped(t) && ownSpanWindow(t) && ownSpanWindow(t).lo != null);
-  if (zeroT) return dispKm(zeroT, ownSpanWindow(zeroT).lo);
+  const zeroT = traces.find(t => !frameFlipped(t) && ownSpanWindow(t) && ownSpanWindow(t).lo != null);
+  if (zeroT) return tableKm(zeroT, ownSpanWindow(zeroT).lo);
   const A = gSpanDecl && gSpanDecl.a;
-  if (A && A.start_km != null && traces.some(isFlipped)) return axisZeroKm();
+  if (A && A.start_km != null && traces.some(frameFlipped)) return axisZeroKm();
   return 0;
 }
 
@@ -7811,7 +7839,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   // with no declaration every event does, as before.
   const items = [];
   traces.forEach((t, ti) => (t.data.events || []).forEach(e => {
-    if (inDeclaredSpan(t, e)) items.push({ km: dispKm(t, e.dist_km), ti, e });
+    if (inDeclaredSpan(t, e)) items.push({ km: tableKm(t, e.dist_km), ti, e });
   }));
   items.sort((p, q) => p.km - q.km);
   // Distances in the table read from the declared start, as FR's do once a
@@ -8039,7 +8067,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     ? e.dist_km + (e.fr_pos_km - Math.round(e.fr_pos_km * 1e4) / 1e4) : e.dist_km;
   const headKm = cols.map(c => {
     const ti = c.ev.findIndex(x => x);
-    return ti < 0 ? c.km : dispKm(traces[ti], exactKm(c.ev[ti]));
+    return ti < 0 ? c.km : tableKm(traces[ti], exactKm(c.ev[ti]));
   });
 
   // ── Header: three rows (group / kind+distance / units) ──
@@ -8630,7 +8658,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const soloOf = t => {
     const w = t.dir;
     const evs = (t.data.events || []).filter(e => inDeclaredSpan(t, e))
-      .map(e => ({ e, km: dispKm(t, e.dist_km) })).sort((x, y) => x.km - y.km);
+      .map(e => ({ e, km: tableKm(t, e.dist_km) })).sort((x, y) => x.km - y.km);
     const rows = evs.map(({ e, km }, k) => {
       const type = e.is_reflective ? 3 : (e.splice_loss != null && e.splice_loss < 0) ? 1 : 2;
       const leg = { pos_m: e.dist_km * 1000, type, refl: e.is_reflective ? e.reflection : null,
@@ -8645,13 +8673,13 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
         // drop audit's S08 reads 1.029 there, where length x the stored
         // slope (rounded to 0.001 dB/km) gave 1.031.  Without EXFO's block
         // the slope stands in, as before.
-        const own = isFlipped(t) ? n.e : e;
+        const own = frameFlipped(t) ? n.e : e;
         const len = Math.abs(n.e.dist_km - e.dist_km);
         if (own.sec_loss != null && own.sec_len_km > 0) {
           section = { length_m: own.sec_len_km * 1000,
                       [w]: { loss: own.sec_loss, att_db_km: own.sec_loss / own.sec_len_km } };
         } else {
-          const att = isFlipped(t) ? e.slope : n.e.slope;
+          const att = frameFlipped(t) ? e.slope : n.e.slope;
           const ok = len > 0 && att != null && !isNaN(att) && att !== 0;
           section = { length_m: len * 1000, [w]: { loss: ok ? len * att : null, att_db_km: ok ? att : null } };
         }

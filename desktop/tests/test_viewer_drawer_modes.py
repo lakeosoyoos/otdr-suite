@@ -172,7 +172,8 @@ def test_one_way_files_among_pairs_are_rows_of_the_one_table():
     fr = _fn("paintFrBidiGrid")
     assert "have.push(...singles.filter(t => t.visible && t.data).map(soloOf));" in fr
     # its events join the columns at their displayed km, as on the chart
-    assert ".map(e => ({ e, km: dispKm(t, e.dist_km) }))" in fr
+    # A's frame, as FR's table lists it, even when the chart draws it as shot
+    assert ".map(e => ({ e, km: tableKm(t, e.dist_km) }))" in fr
     assert "return { mean_pos_m: km * 1000, type, loss: null, solo: w, [w]: leg, section };" in fr
     # one row, its own direction's; P/F on it; fibre order
     assert "? ((!collapse || legKept(fi, have[fi].solo)) ? [[fi, have[fi].solo]] : [])" in fr
@@ -598,6 +599,6 @@ def test_an_unpaired_row_prints_frs_own_section():
     slope gave 1.031); a mirrored trace's section starts at the next row's
     event in its own frame."""
     fr = _fn("paintFrBidiGrid")
-    assert "const own = isFlipped(t) ? n.e : e;" in fr
+    assert "const own = frameFlipped(t) ? n.e : e;" in fr
     assert "if (own.sec_loss != null && own.sec_len_km > 0) {" in fr
     assert "[w]: { loss: own.sec_loss, att_db_km: own.sec_loss / own.sec_len_km } };" in fr

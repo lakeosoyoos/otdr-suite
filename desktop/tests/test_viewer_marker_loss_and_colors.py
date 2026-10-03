@@ -103,7 +103,7 @@ function rows() {
 }
 var out = {};
 """
-    code = "\n".join([prelude, _line("const FR_COLORS = ")] + [
+    code = "\n".join([prelude, _line("const FR_COLORS = "), "function unpairedB() { return new Set(); }  // every B paired: a frame test, not a pairing one"] + [
         _fn(n) for n in ("isFlipped", "dataKmFromDisp", "lowerBound", "traceDbAtDispKm",
                          "capReadoutRows", "updateMarkerReadout", "nextColor", "traceColor",
                          "effDir", "splitFileKey", "setFilesDirection")
