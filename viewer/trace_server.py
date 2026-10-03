@@ -1469,6 +1469,7 @@ def _load_trace_cached(directory, filename, mtime):
     except (TypeError, ValueError):
         pulse_ns = None
 
+    _ids = _file_ids(directory, filename)
     return {
         'filename': filename,
         'wavelength_nm': wl,
@@ -1514,7 +1515,30 @@ def _load_trace_cached(directory, filename, mtime):
         # Range), for the Summary Report.  None on a JSON export or a file
         # with no EXFO block: no range is made up from the samples.
         'range_km': _range_km(r),
+        # What the file says it is (GenParams Cable ID / Fiber ID): the
+        # pairing key FastReporter uses, with the opposite Direction stamps
+        # (see pairTraces).  None when the file says nothing readable.
+        'cable_id': _ids[0],
+        'fiber_id': _ids[1],
     }
+
+
+def _file_ids(directory, filename):
+    """(cable_id, fiber_id) the file states in GenParams (a .trc's
+    Identifier for the fibre), stripped; (None, None) for a JSON export or a
+    header that cannot be read.  FastReporter pairs an A->B file with a B->A
+    one only when both match (drop audit S11-S13), and the Viewer does too."""
+    if filename.lower().endswith('.json'):
+        return None, None
+    try:
+        with open(os.path.join(directory, filename), 'rb') as fh:
+            head = fh.read(_GENPARAMS_READ_CAP)
+    except OSError:
+        return None, None
+    ids = trc_head(head) if filename.lower().endswith('.trc') else parse_genparams(head)
+    if not ids:
+        return None, None
+    return (ids.get('cable_id') or '').strip(), (ids.get('fiber_id') or '').strip()
 
 
 def _acq_time(r):
