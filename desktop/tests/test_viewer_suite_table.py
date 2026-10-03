@@ -441,12 +441,22 @@ def test_the_table_follows_the_analysis_mode():
     reset = _fn('suiteTableReset')
     assert "gSuiteTableSeq++;" in reset
     assert "if (gSuitePoll) { clearTimeout(gSuitePoll); gSuitePoll = null; }" in reset
-    # no report table: an error saying why, never FastReporter's table in
-    # its place (Robert 2026-09-30: "Error, no FR stand-in")
-    assert "renderFrBidiGrid" not in ask and "renderFastReporterGrid" not in ask
-    assert "noTable(res.error || 'The report has no table for these fibers');" in ask
-    assert "table could not be built." in ask      # the App: "OTDR App table ..."
-    assert "switch to FastReporter mode for FastReporter's table." in ask
+    # No report table yet, or none at all: the fibres' own tables stand in,
+    # so a fiber always shows its events and losses (Robert 2026-10-02: "we
+    # should always be able to see a fiber one at a time and see its events
+    # and losses").  Still never FastReporter's numbers in this mode (Robert
+    # 2026-09-30: "Error, no FR stand-in"): the per-fibre table is built by
+    # the server in the APP's analysis mode, named as OTDR Suite's own.
+    assert "if (!standing) { standing = true; standIn('the Splice Report is still running for them'); }" in ask
+    assert "standIn(res.error || 'the report has no table for these fibers');" in ask
+    assert "else if (!renderFrBidiGrid(traces, host, hint))" in ask
+    assert "gFrTableSeq++;" in ask              # a stand-in on its way never paints over the report
+    name = _fn('tableName')
+    assert "gAnalysisMode === 'fr' ? 'FastReporter table' : `${PRODUCT_NAME} table (per fiber)`" in name
+    srv = (REPO_ROOT / 'viewer' / 'trace_server.py').read_text(encoding='utf-8')
+    fr = srv[srv.index('def fr_tables('):]
+    assert "mode = CONFIG.get('analysis_mode') if CONFIG.get('analysis_mode') in ('suite', 'fr') else 'suite'" in fr
+    assert "cmd = _engine_argv() + ['--fr-table-file', spec, '--analysis', mode]" in fr
     assert 'gSuiteNote' not in VIEWER
 
 

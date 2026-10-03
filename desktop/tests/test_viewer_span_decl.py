@@ -157,15 +157,16 @@ def test_the_listing_ships_the_declaration(tmp_path, monkeypatch):
 def test_declared_outranks_measured_outranks_guessed():
     fn = SRC[SRC.index('function mirrorOriginKm(t) {'):][:400]
     assert 'declaredOriginKm(t)' in fn
-    assert 'reelOriginKm(t) + gMirrorDelta' in fn
+    assert 'reelOriginKm(t) + (t.span > 1 ? (gMirrorDeltas.get(t.span) || 0) : gMirrorDelta)' in fn       # each span its own measured correction
     assert re.search(r'return d != null \? d :', fn), (
         'a declared span has to win outright — applying the measured '
         'correction on top would re-correct what the tech already fixed')
 
 
 def test_the_measurement_stands_down_when_a_span_is_declared():
-    fn = SRC[SRC.index('function refreshMirrorFrame()'):][:600]
-    assert 'if (spanIsDeclared())' in fn
+    fn = SRC[SRC.index('function refreshMirrorFrame()'):][:1600]
+    assert 'if (spanIsDeclared())' in fn                 # span 1
+    assert 'if (span === 1 || spanIsDeclared(span)) continue;' in fn   # each other span
 
 
 def test_only_the_two_edges_that_move_b_reach_the_picture():
