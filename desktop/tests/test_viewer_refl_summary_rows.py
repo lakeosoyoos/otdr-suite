@@ -33,7 +33,8 @@ def test_one_direction_summary_rows_carry_reflectance():
             ".filter(r => r != null && !isNaN(r) && r !== 0);") in agg
     # the row's own statistic, at the 0.1 dB FR prints reflectance to
     assert "const r = rs.length ? fn(rs, 1) : null;" in agg
-    assert "`<td${rOwn}>${cellText(fmtR(r))}</td>`" in agg
+    # nothing to summarise: blank, as FastReporter prints it
+    assert "`<td${rOwn}>${cellText(none(r) ? '' : fmtR(r))}</td>`" in agg
     assert "`<td>${cellText('-')}</td>`" not in agg
 
 
@@ -42,7 +43,8 @@ def test_fr_bidi_summary_rows_take_reflectance_from_both_directions():
     assert "flatMap(x => ['a', 'b'].map(w => x.row[w]))" in agg
     assert ".filter(leg => leg && !leg.synthetic).map(leg => leg.refl).filter(num);" in agg
     assert "const r = rs.length ? fn(rs) : null;" in agg
-    assert "`<td${aggOwnAttrs(have, reflFi, reflW, i, true)}>${cellText(rs.length ? fmtR(r) : '---')}</td>`" in agg
+    # only in a column FR gives a Refl. (c.refl); blank with nothing to summarise
+    assert "(c.refl ? `<td${aggOwnAttrs(have, reflFi, reflW, i, true)}>${cellText(rs.length ? fmtR(r) : '')}</td>` : '')" in agg
     assert "+ '<td></td>');" not in agg
 
 
@@ -51,7 +53,7 @@ def test_suite_bidi_summary_rows_take_reflectance_from_both_directions():
     assert "const rs = xs.flatMap(x => [x.a, x.b]).filter(leg => leg && !leg.grey)" in agg
     assert ".map(leg => leg.refl).filter(num);" in agg
     assert "const r = rs.length ? fn(rs) : null;" in agg
-    assert "`<td${aggOwnAttrs(have, reflFi, reflW, i, true)}>${cellText(rs.length ? fmtR(r) : '---')}</td>`" in agg
+    assert "`<td${aggOwnAttrs(have, reflFi, reflW, i, true)}>${cellText(rs.length ? fmtR(r) : '')}</td>`" in agg
     assert "+ '<td></td>');" not in agg
 
 

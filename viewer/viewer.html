@@ -7849,8 +7849,14 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     gShowGainers ? '' : 'gainers hidden',
   ].filter(Boolean).join(' · ');
 
-  // An empty cell is '---', as in the A+B tables and FastReporter's own.
+  // As FastReporter prints them (Robert 2026-10-03, "fix the blank vs ---
+  // cells to follow FR"): '---' where the trace HAS the event (or section)
+  // but no reading of it (a Launch Level's loss, a non-reflective event's
+  // reflectance); a BLANK cell where the trace has no event or section in
+  // the column at all, and where a statistic has nothing to summarise (a
+  // fibre with no splice, a Minimum over a column no row has a figure in).
   const fmt  = v => (v == null || isNaN(v)) ? '---' : v.toFixed(3);
+  const none = v => v == null || isNaN(v);
   const fmtK = v => (v == null || isNaN(v)) ? '---' : v.toFixed(4);
   const fmtR = v => (v == null || isNaN(v) || v === 0) ? '---' : v.toFixed(1);
   // `e`/`ti` name the trace's event, for the FEC rule; a summary cell has none.
@@ -8184,7 +8190,9 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
       // `data-km` is the event's OWN raw km, not the displayed one: a declared
       // span is stored in the direction's own frame, which is the only frame
       // that survives the mirror being re-derived.
-      if (gainerHidden(evLossRaw(e))) {       // a hidden gainer: blank, unjudged
+      if (!e) {                               // no event here: blank, as FR
+        cells.push(typeTd + '<td></td>' + (colLay[i].refl ? '<td></td>' : ''));
+      } else if (gainerHidden(evLossRaw(e))) {       // a hidden gainer: blank, unjudged
         cells.push(typeTd + `<td data-col="${i}" data-km="${e.dist_km}"></td>` + reflTd);
       } else
       cells.push(typeTd + lossCell(evLoss(e), e && e.is_end,
@@ -8192,9 +8200,9 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
                + reflTd);
       if (showSec && i < cols.length - 1) {
         const s = section(ti, i);
-        cells.push(`<td class="fr-sec">${cellText(s ? fmtK(s.len) : '---')}</td>`
-                 + `<td class="fr-sec">${cellText(s ? fmt(s.loss) : '---')}</td>`
-                 + `<td class="fr-sec">${cellText(s ? fmt(s.att) : '---')}</td>`);
+        cells.push(`<td class="fr-sec">${cellText(s ? fmtK(s.len) : '')}</td>`
+                 + `<td class="fr-sec">${cellText(s ? fmt(s.loss) : '')}</td>`
+                 + `<td class="fr-sec">${cellText(s ? fmt(s.att) : '')}</td>`);
       }
     });
     const statArrs = [splice, connLoss, connRefl];
@@ -8202,9 +8210,9 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     if (!collapse) statArrs.forEach(arr => {
       const [mn, mx, av] = stats(arr, arr === connRefl ? 1 : 3);
       const f = (arr === connRefl) ? fmtR : fmt;
-      cells.push(`<td class="fr-stat">${cellText(f(mn))}</td>`
-               + `<td class="fr-stat">${cellText(f(mx))}</td>`
-               + `<td class="fr-stat">${cellText(f(av))}</td>`);
+      cells.push(`<td class="fr-stat">${cellText(none(mn) ? '' : f(mn))}</td>`
+               + `<td class="fr-stat">${cellText(none(mx) ? '' : f(mx))}</td>`
+               + `<td class="fr-stat">${cellText(none(av) ? '' : f(av))}</td>`);
     });
     if (NFEC) {
       const g = fecG(ti), v = fecLoss(g);
@@ -8279,15 +8287,16 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
           + ` title="F${fiberLabel(traces[rOwner].fiber)} ${arrow(traces[rOwner])}: click to find it"`
         : '';
       cells.push((colLay[i].mixed ? '<td></td>' : '')
-               + (gated && !gFecMode ? lossCell(v, false) : `<td${own}>${aggText(fmt(v))}</td>`)
-               + (colLay[i].refl ? `<td${rOwn}>${cellText(fmtR(r))}</td>` : ''));
+               + (none(v) ? '<td></td>'
+                  : gated && !gFecMode ? lossCell(v, false) : `<td${own}>${aggText(fmt(v))}</td>`)
+               + (colLay[i].refl ? `<td${rOwn}>${cellText(none(r) ? '' : fmtR(r))}</td>` : ''));
       if (showSec && i < cols.length - 1) {
         const ss = traces.map((_t, ti) => section(ti, i)).filter(Boolean);
         const pick = k => ss.map(s => s[k]).filter(v => v != null && !isNaN(v));
         const [pl, pa] = [pick('loss'), pick('att')];
-        cells.push(`<td class="fr-sec">${cellText('---')}</td>`
-                 + `<td class="fr-sec">${cellText(fmt(pl.length ? fn(pl) : null))}</td>`
-                 + `<td class="fr-sec">${cellText(fmt(pa.length ? fn(pa) : null))}</td>`);
+        cells.push('<td class="fr-sec"></td>'
+                 + `<td class="fr-sec">${cellText(pl.length ? fmt(fn(pl)) : '')}</td>`
+                 + `<td class="fr-sec">${cellText(pa.length ? fmt(fn(pa)) : '')}</td>`);
       }
     });
     if (NSTAT) cells.push(`<td class="fr-stat" colspan="${NSTAT}"></td>`);
@@ -8704,6 +8713,11 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // does not count: FR keeps one header type when only the averages agree.
   const colKinds = c => [...new Set(c.ev.filter(x => x).map(x => kind(x.row)))];
   cols.forEach(c => { c.mixed = colKinds(c).length > 1; });
+  // Refl. only where the column can hold a reflectance, as FR lays its A+B
+  // table out (FR 3, 2026-10-03: "Event 2 Non-reflective" is Loss alone): a
+  // Reflective column, or a mixed one (Type, Loss, Refl.).  Robert's "6a
+  // follow FR", as the single-direction grid already does.
+  cols.forEach(c => { c.refl = c.mixed || colKinds(c).includes('Reflective'); });
   const colKind = c => c.mixed ? '' : colKinds(c).join('');
   const typeCell = (c, txt) => c.mixed ? `<td class="fr-type">${cellText(txt)}</td>` : '';
   // `gate` -- the report's gate for this cell (gateFor); null never flags.
@@ -8872,13 +8886,14 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   cols.forEach((c, i) => {
     if (!keepCol[i]) return;
     const n = c.ev.filter(x => x).length;
-    const span = c.mixed ? 3 : 2;
+    const span = (c.mixed ? 1 : 0) + 1 + (c.refl ? 1 : 0);
     h1 += `<th colspan="${span}" class="fr-evhdr" data-km="${c.km}" data-col="${i}" title="zoom to ${c.km.toFixed(3)} km, span and settings">`
         + `Event ${i + 1} (${n}/${have.length})`
         + `<button class="fr-evmenu" data-col="${i}" title="span and settings">⋯</button></th>`;
     h2 += `<th colspan="${span}" class="fr-evsub" data-col="${i}">${colKind(c)}<br><span class="fr-km">${kmFt(c.km - zeroKm)}</span></th>`;
     h3 += (c.mixed ? `<th class="fr-sub" data-col="${i}">Type</th>` : '')
-        + `<th class="fr-sub" data-col="${i}">Loss<br>(dB)</th><th class="fr-sub" data-col="${i}">Refl.<br>(dB)</th>`;
+        + `<th class="fr-sub" data-col="${i}">Loss<br>(dB)</th>`
+        + (c.refl ? `<th class="fr-sub" data-col="${i}">Refl.<br>(dB)</th>` : '');
     if (showSec && i < cols.length - 1) {
       const lens = have.map((_p, fi) => secOf(fi, i)).filter(s => s && s.length_m != null)
                        .map(s => s.length_m / 1000);
@@ -8927,12 +8942,14 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       if (!keepCol[i]) return;
       const x = c.ev[fi];
       if (!x) {
-        cells.push(typeCell(c, '') + `<td>${cellText('---')}</td><td>${cellText('---')}</td>`);
+        // no row of this fibre here: blank, as FastReporter prints it (a
+        // reading it has but cannot make is "---"; see renderFastReporterGrid)
+        cells.push(typeCell(c, '') + '<td></td>' + (c.refl ? '<td></td>' : ''));
       } else if (which === 'avg') {
         // FR prints no reflectance on the Average row
         cells.push(typeCell(c, kind(x.row)) + lossCell(x.row.loss, false, ` data-col="${i}"`, gateFor(isRefl(x), false),
                                                      warnFor(isRefl(x), false))
-                 + `<td>${cellText('---')}</td>`);
+                 + (c.refl ? `<td>${cellText('---')}</td>` : ''));
       } else {
         const leg = x.row[which];
         // under the cell filters a direction's loss is not judged (its
@@ -8946,13 +8963,15 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
                     : lossCell(leg.loss, !legOk(leg), at,
                                gated ? (x.row.solo ? soloGate(x) : legGateFor(isRefl(x))) : null,
                                judged ? (x.row.solo ? soloWarn(x) : legWarnFor(isRefl(x))) : null))
-                 + reflCell(x, which));
+                 + (c.refl ? reflCell(x, which) : ''));
       }
       if (showSec && i < cols.length - 1) {
         const s = secOf(fi, i);
         const v = s ? (which === 'avg' ? s : s[which]) : null;
-        cells.push(`<td class="fr-sec">${cellText(v ? fmt(v.loss) : '---')}</td>`
-                 + `<td class="fr-sec">${cellText(v ? fmt(v.att_db_km) : '---')}</td>`);
+        // no section from this row: blank; one this direction did not measure: ---
+        const no = s ? '---' : '';
+        cells.push(`<td class="fr-sec">${cellText(v ? fmt(v.loss) : no)}</td>`
+                 + `<td class="fr-sec">${cellText(v ? fmt(v.att_db_km) : no)}</td>`);
       }
     });
     // The picked row is marked: a direction's row for its own trace, the
@@ -8981,7 +9000,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const table = document.createElement('table');
   table.className = 'fr-table';
   const kept = cols.filter((_c, i) => keepCol[i]);
-  const NCELL = LEAD.length + kept.length * 2 + kept.filter(c => c.mixed).length
+  const NCELL = LEAD.length + kept.length + kept.filter(c => c.mixed).length + kept.filter(c => c.refl).length
               + (showSec ? NSEC * (cols.length - 1) : 0);
   // ── Minimum / Maximum / Average down the column, as FR prints them under
   // the fibres: taken over the fibres' AVERAGE rows (every fibre loaded, not
@@ -9021,15 +9040,16 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
         }));
       }
       cells.push((c.mixed ? '<td></td>' : '')
-               + (gated ? lossCell(v, false, '', g, warnFor(refl, false))
+               + (v == null || isNaN(v) ? '<td></td>'       // nothing to summarise: blank, as FR
+                  : gated ? lossCell(v, false, '', g, warnFor(refl, false))
                         : `<td${aggOwnAttrs(have, lossFi, 'avg', i, false)}>${txt(fmt(v))}</td>`)
-               + `<td${aggOwnAttrs(have, reflFi, reflW, i, true)}>${cellText(rs.length ? fmtR(r) : '---')}</td>`);
+               + (c.refl ? `<td${aggOwnAttrs(have, reflFi, reflW, i, true)}>${cellText(rs.length ? fmtR(r) : '')}</td>` : ''));
       if (showSec && i < cols.length - 1) {
         const ss = have.map((_p, fi) => secOf(fi, i)).filter(Boolean);
         const pick = k => ss.map(x => x[k]).filter(num);
         const [pl, pa] = [pick('loss'), pick('att_db_km')];
-        cells.push(`<td class="fr-sec">${cellText(pl.length ? fmt(fn(pl)) : '---')}</td>`
-                 + `<td class="fr-sec">${cellText(pa.length ? fmt(fn(pa)) : '---')}</td>`);
+        cells.push(`<td class="fr-sec">${cellText(pl.length ? fmt(fn(pl)) : '')}</td>`
+                 + `<td class="fr-sec">${cellText(pa.length ? fmt(fn(pa)) : '')}</td>`);
       }
     });
     return `<tr class="fr-agg">${cells.join('')}</tr>`;
@@ -9816,7 +9836,9 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
       if (!keepCol[i]) return;
       const x = c.ev[fi];
       if (!x) {
-        cells.push(`<td>${cellText('---')}</td><td>${cellText('---')}</td>`);
+        // no row of this fibre here: blank, as FastReporter prints it (a
+        // reading it has but cannot make is "---"; see renderFastReporterGrid)
+        cells.push('<td></td><td></td>');
       } else if (which === 'avg') {
         // no reflectance on the Average row, as in the FastReporter table
         cells.push(lossCell(c, x, 'avg', ` data-col="${i}"`) + `<td>${cellText('---')}</td>`);
@@ -9831,8 +9853,10 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
       }
       if (secCol[i]) {
         const v = secFig(secOf(fi, i), which);
-        cells.push(`<td class="fr-sec">${cellText(v && v.loss != null ? fmt(v.loss) : '---')}</td>`
-                 + `<td class="fr-sec">${cellText(v && v.att_db_km != null ? fmt(v.att_db_km) : '---')}</td>`);
+        // no section from this reading: blank; one this direction did not measure: ---
+        const no = secOf(fi, i) ? '---' : '';
+        cells.push(`<td class="fr-sec">${cellText(v && v.loss != null ? fmt(v.loss) : no)}</td>`
+                 + `<td class="fr-sec">${cellText(v && v.att_db_km != null ? fmt(v.att_db_km) : no)}</td>`);
       }
     });
     // The picked row is marked: a direction's row for its own trace, the
@@ -9904,15 +9928,15 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
         }));
       }
       cells.push((cellFilterOn() && !keep ? '<td></td>'
-                  : `<td${aggOwnAttrs(have, lossFi, 'avg', i, false) || cls}>${fmt(v)}</td>`)
-               + `<td${aggOwnAttrs(have, reflFi, reflW, i, true)}>${cellText(rs.length ? fmtR(r) : '---')}</td>`);
+                  : `<td${aggOwnAttrs(have, lossFi, 'avg', i, false) || cls}>${v == null || isNaN(v) ? '' : fmt(v)}</td>`)
+               + `<td${aggOwnAttrs(have, reflFi, reflW, i, true)}>${cellText(rs.length ? fmtR(r) : '')}</td>`);
       if (secCol[i]) {
         // over the fibres' Average-row sections, as FastReporter's table
         const ss = have.map((_p, fi) => secFig(secOf(fi, i), 'avg')).filter(Boolean);
         const pick = k => ss.map(x => x[k]).filter(num);
         const [pl, pa] = [pick('loss'), pick('att_db_km')];
-        cells.push(`<td class="fr-sec">${cellText(pl.length ? fmt(fn(pl)) : '---')}</td>`
-                 + `<td class="fr-sec">${cellText(pa.length ? fmt(fn(pa)) : '---')}</td>`);
+        cells.push(`<td class="fr-sec">${cellText(pl.length ? fmt(fn(pl)) : '')}</td>`
+                 + `<td class="fr-sec">${cellText(pa.length ? fmt(fn(pa)) : '')}</td>`);
       }
     });
     return `<tr class="fr-agg">${cells.join('')}</tr>`;

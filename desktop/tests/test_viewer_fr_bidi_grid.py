@@ -59,7 +59,7 @@ def test_the_fr_grid_is_fr_s_bidirectional_table():
     assert "lossCell(x.row.loss, false, ` data-col=\"${i}\"`, gateFor(isRefl(x), false)," in body
     # ... and its reflectance cell is empty (cellText blanks it again under
     # "only failing events", which is the only thing that wraps it)
-    assert "+ `<td>${cellText('---')}</td>`" in body
+    assert "+ (c.refl ? `<td>${cellText('---')}</td>` : ''));" in body
     # synthesised legs are grey, in both the loss and the reflectance cell
     assert "if (synthetic) cls.push('fr-synth');" in body
     assert "leg.synthetic ? 'fr-synth' : ''" in body   # a synthesised leg is greyed
