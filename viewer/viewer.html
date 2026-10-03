@@ -72,7 +72,9 @@
   #toolbar.collapsed #tb-strip .tb-more { display: none; }
   #tb-scroll .group:first-of-type { border-left: 1px solid var(--border); padding-left: 6px; }
   #tb-right { margin-left: auto; }
-  #tb-gear { font-size: 16px; line-height: 1; padding: 3px 7px; }
+  /* A word, not a gear glyph (Robert 2026-10-02), styled like Generate
+     Report beside it. */
+  #tb-gear { white-space: nowrap; }
   /* Fixed, not absolute: the toolbar clips its overflow. */
   #tb-gear-menu {
     position: fixed; z-index: 50; display: flex; flex-direction: column; gap: 6px;
@@ -268,6 +270,11 @@
      A name that fits sits left as before. */
   .file-row .file-name { direction: rtl; text-align: left; }
   .file-row .file-vis { text-align: center; }
+  /* Several spans loaded: each span's files under its own heading. */
+  .tbl-multispan { padding: 10px 12px; font-weight: 600; color: #b91c1c; }
+  html[data-theme="dark"] .tbl-multispan { color: #f87171; }
+  .file-span-head { font-size: 11px; font-weight: 600; color: var(--text-sec);
+                    padding: 4px 8px 2px; border-bottom: 1px solid var(--border); background: var(--chip-bg); }
   .file-row.loaded .file-vis:hover { opacity: 0.6; }
   .chip {
     display: inline-flex; align-items: center; gap: 6px;
@@ -630,7 +637,6 @@
                                       color: var(--text-sec); font-style: italic; }
   #event-tbody-wrap.tbl-stale > :not(.tbl-updating) { opacity: .5; }
   /* the line naming the fibres loaded one way, over the A+B table */
-  .onedir-cap { flex: none; font-size: 11px; padding: 3px 8px; color: #56657a; background: #f3f6f9; }
   /* Columns fit their contents (fitColumns); the table no longer stretches
      to the panel's width and spreads the spare room across every column. */
   table.fr-table { font-size: 11px; width: max-content; }
@@ -877,14 +883,15 @@
           title="More controls to the right">&raquo;</button>
   </div>
 
-  <!-- Generate Report, then the chart's settings behind the gear, at the
-       bar's right end (Robert 2026-10-01).  One button for both reports
+  <!-- Generate Report, then the chart's settings behind the Settings
+       button (a gear until Robert 2026-10-02), at the bar's right end
+       (Robert 2026-10-01).  One button for both reports
        (Robert 2026-10-02): the Summary Report of the traces, or the OLTS
        Report of a dropped PMT (.olts) file, by what is loaded. -->
   <div class="group" id="tb-right">
     <button id="btn-report" title="The Summary Report of the traces on the chart, or the OLTS Report of the PMT (.olts) file on the Measurements tab, as a PDF or an Excel workbook">Generate Report…</button>
     <button id="tb-gear" type="button" title="Chart settings"
-            aria-haspopup="true" aria-expanded="false">&#9881;</button>
+            aria-haspopup="true" aria-expanded="false">Settings</button>
     <span id="tb-gear-menu" role="menu" hidden>
       <label><input type="checkbox" id="cb-stack" checked> Stack A/B</label>
       <label id="lbl-yspace"
@@ -1186,13 +1193,64 @@ function eofKm(t) {
 }
 function effDir(src, fiber) {
   const k = `${src}-${fiber}`;
-  return gDirOverride[k] || gStoredDir[k] || src;
+  return gDirOverride[k] || gStoredDir[k] || src[0];      // 'a2' -> 'a'
+}
+// ─── Sources (Robert 2026-10-02) ───
+// Every folder the Viewer holds is a SOURCE (trace_server.sources): 'a' and
+// 'b' are span 1's, the hub's boxes; 'a2' / 'b2' are span 2's sides.  A
+// trace keys by its source ('a2-17'), so span 2's fiber 17 never meets span
+// 1's; t.dir stays 'a' or 'b', the direction it is drawn as.  A second file
+// of a fiber is a copy row inside its source (COPY_BASE), not a source.
+const SRC_RE = /^([ab])(\d+)?$/;
+function srcParts(src) {
+  const m = SRC_RE.exec(String(src || ''));
+  return m ? { side: m[1], span: +(m[2] || 1) } : null;
+}
+function sideOf(src) { const p = srcParts(src); return p ? p.side : src; }
+function spanOf(src) { const p = srcParts(src); return p ? p.span : 1; }
+function allSrcs() {
+  return (gInfo && gInfo.srcs && gInfo.srcs.length) ? gInfo.srcs : ['a', 'b'];
+}
+// 'A', 'S2 A': what a source is called on the page.
+function srcLabel(src) {
+  const p = srcParts(src);
+  if (!p) return String(src).toUpperCase();
+  return (p.span > 1 ? `S${p.span} ` : '') + p.side.toUpperCase();
+}
+// ' S2' after another span's trace's name; '' for span 1's, so a span-1
+// Viewer reads as it always has.
+function srcTag(src) {
+  const p = srcParts(src);
+  return p && p.span > 1 ? ` S${p.span}` : '';
+}
+function spanInfo(span) {
+  return ((gInfo && gInfo.spans) || []).find(s => s.span === span) || null;
+}
+// {src: folder} of every source loaded now.
+function srcDirs() {
+  const out = {};
+  for (const s of allSrcs()) if (gInfo && gInfo['dir_' + s]) out[s] = gInfo['dir_' + s];
+  return out;
 }
 // B is mirrored into A's frame only while an A trace is loaded to meet it.
 // B on its own is drawn the way it was shot, port at 0 km, as FastReporter
 // opens a single direction; mirroring it about a reel origin with no A side
 // put it backward and ran its event table from the far end.
 let gHaveA = false;                // set in refreshMirrorFrame (renderChips)
+// Each span is drawn in its own frame (Robert 2026-10-02): its B mirrors to
+// meet ITS A, by its own reels, measured offset and declared span.  Span 1's
+// values stay in gLaunchA / gMirrorDelta / gSpanDecl; another span's come
+// from /api/list's `spans` (launchAOf, spanDeclOf) and gMirrorDeltas.
+function launchAOf(span) {
+  if (span === 1) return gLaunchA;
+  const si = spanInfo(span);
+  return (si && Number(si.launch_a_km)) || 0;
+}
+function spanDeclOf(span) {
+  if (span === 1) return gSpanDecl;
+  const si = spanInfo(span);
+  return (si && si.span_decl) || { a: null, b: null };
+}
 // FEC mode: facility-entrance shots are short traces from EACH END of a
 // span, so A and B never see the same glass.  Nothing is mirrored or paired:
 // every trace is drawn the way it was shot, under the one-direction table,
@@ -1250,8 +1308,9 @@ function fecCombinedFor(traces) {
     .catch(e => land({ grades: {}, error: `combined column unavailable (${(e && e.message) || 'fetch failed'})` }));
   return { pending: true };
 }
-function isFlipped(t) { return !gFecMode && gStacked && gHaveA && t.dir === 'b'; }
-function yOffsetFor(t) { return (!gFecMode && gStacked && gHaveA && t.dir === 'b') ? -gStackSpacingDb : 0; }
+// `t.alone`: no A trace of its own span is on the chart (refreshMirrorFrame).
+function isFlipped(t) { return !gFecMode && gStacked && gHaveA && t.dir === 'b' && !t.alone; }
+function yOffsetFor(t) { return (!gFecMode && gStacked && gHaveA && t.dir === 'b' && !t.alone) ? -gStackSpacingDb : 0; }
 
 // Mirror origin for a flipped B trace — the B-frame distance that must land on
 // display 0... or rather, on A's launch connector, because THAT is the frame
@@ -1273,7 +1332,7 @@ function yOffsetFor(t) { return (!gFecMode && gStacked && gHaveA && t.dir === 'b
 function reelOriginKm(t) {
   const far = (t.data && t.data.far_conn_km != null) ? t.data.far_conn_km
                                                      : eofKm(t);
-  return far + gLaunchA;
+  return far + (t.span > 1 ? launchAOf(t.span) : gLaunchA);
 }
 
 // ─── The frame, MEASURED — because the reel rule above is a guess ──────
@@ -1319,6 +1378,7 @@ const MIRROR_SNAP_KM     = 0.100;  // leave the reel frame alone unless it is ou
 const MIRROR_MAX_FIBERS  = 12;     // enough to settle it; keeps a 1152-fiber load cheap
 
 let gMirrorDelta = 0;   // km added to every flipped trace's reel origin
+const gMirrorDeltas = new Map();   // the same for each span past span 1
 let gMirrorNote  = '';  // what the correction did, appended to the readout
 
 // The origin this A/B pair votes for, or null when the two do not agree on one.
@@ -1349,23 +1409,14 @@ function measuredOriginKm(a, b) {
 
 // Recomputed whenever the trace set changes, never inside the draw loop —
 // dispKm() runs per sample and has to stay O(1).
-function refreshMirrorFrame() {
-  gMirrorDelta = 0;
-  gMirrorNote = '';
-  gHaveA = gTraces.some(t => t.dir === 'a');
-  if (gFecMode || !gStacked || !gHaveA) return;
-  if (spanIsDeclared()) {          // the tech has settled it; measuring is noise
-    // The warning takes the note's place: the status line is one line, cut
-    // at the window edge, and the warning is the part the tech must read.
-    gMirrorNote = '   ' + (halfSpanWarning()
-      || 'ⓘ B mirrored on the span you set for these folders (every fiber uses its own event there).');
-    return;
-  }
+// The measured frame correction of one span's traces: each loaded A+B pair
+// of a fiber votes (a copy pairs as its side does), sorted.
+function measuredDeltas(traces) {
   const byFiber = new Map();
-  for (const t of gTraces) {
+  for (const t of traces) {
     if (!t.visible || !t.data) continue;
     const pair = byFiber.get(t.fiber) || {};
-    pair[t.dir] = t;
+    if (!pair[t.dir]) pair[t.dir] = t;
     byFiber.set(t.fiber, pair);
   }
   const deltas = [];
@@ -1375,8 +1426,40 @@ function refreshMirrorFrame() {
     if (m != null) deltas.push(m - reelOriginKm(pair.b));
     if (deltas.length >= MIRROR_MAX_FIBERS) break;
   }
+  return deltas.sort((p, q) => p - q);
+}
+function measuredDelta(traces) {
+  const d = measuredDeltas(traces);
+  if (!d.length) return null;
+  const m = d[Math.floor(d.length / 2)];
+  return Math.abs(m) <= MIRROR_SNAP_KM ? null : m;
+}
+function refreshMirrorFrame() {
+  gMirrorDelta = 0;
+  gMirrorDeltas.clear();
+  gMirrorNote = '';
+  gHaveA = gTraces.some(t => t.dir === 'a');
+  // Each span mirrors its B only to meet its OWN A (Robert 2026-10-02:
+  // spans drawn together, each in its own frame).
+  const withA = new Set(gTraces.filter(t => t.dir === 'a').map(t => t.span || 1));
+  for (const t of gTraces) t.alone = !withA.has(t.span || 1);
+  if (gFecMode || !gStacked || !gHaveA) return;
+  // Every span past span 1 measures its own frame; span 1 below, as ever.
+  for (const span of withA) {
+    if (span === 1 || spanIsDeclared(span)) continue;
+    const d = measuredDelta(gTraces.filter(t => t.span === span));
+    if (d != null) gMirrorDeltas.set(span, d);
+  }
+  if (!withA.has(1)) return;
+  if (spanIsDeclared()) {          // the tech has settled it; measuring is noise
+    // The warning takes the note's place: the status line is one line, cut
+    // at the window edge, and the warning is the part the tech must read.
+    gMirrorNote = '   ' + (halfSpanWarning()
+      || 'ⓘ B mirrored on the span you set for these folders (every fiber uses its own event there).');
+    return;
+  }
+  const deltas = measuredDeltas(gTraces.filter(t => (t.span || 1) === 1));
   if (!deltas.length) return;
-  deltas.sort((p, q) => p - q);
   const d = deltas[Math.floor(deltas.length / 2)];
   // Inside the tolerance the reel rule already agrees with the events, so
   // leaving it alone keeps every span that draws correctly today untouched.
@@ -1427,7 +1510,9 @@ function declaredEdgeKm(t, refKm) {
 }
 
 function declaredOriginKm(t) {
-  const A = gSpanDecl && gSpanDecl.a, B = gSpanDecl && gSpanDecl.b;
+  const span = (t && t.span) || 1;
+  const decl = span > 1 ? spanDeclOf(span) : gSpanDecl;
+  const A = decl && decl.a, B = decl && decl.b;
   const launchRef = (A && A.start_km != null) ? Number(A.start_km) : null;
   const farRef    = (B && B.end_km   != null) ? Number(B.end_km)   : null;
   if (launchRef == null && farRef == null) return null;
@@ -1437,10 +1522,11 @@ function declaredOriginKm(t) {
   // ...and A's half against the SAME fiber's A trace, so the two halves
   // describe one piece of glass rather than an average of the folder.  With
   // that fiber's A side not loaded there is nothing better than the reference.
-  let launch = gLaunchA;
+  let launch = span > 1 ? launchAOf(span) : gLaunchA;
   if (launchRef != null) {
-    const aT = gTraces.find(x => x.dir === 'a' && x.fiber === t.fiber && x.data)
-      || gTraces.find(x => x.dir === 'a' && realFiber(x.fiber) === realFiber(t.fiber) && x.data);
+    const aT = gTraces.find(x => x.dir === 'a' && x.fiber === t.fiber && x.data && (x.span || 1) === span)
+      || gTraces.find(x => x.dir === 'a' && realFiber(x.fiber) === realFiber(t.fiber) && x.data
+                           && (x.span || 1) === span);
     launch = aT ? declaredEdgeKm(aT, launchRef) : launchRef;
   }
   return far + launch;
@@ -1449,7 +1535,8 @@ function declaredOriginKm(t) {
 // fiber's event: { lo, hi } in km (either may be null), or null when this
 // direction has no declaration.
 function ownSpanWindow(t) {
-  const d = gSpanDecl && t && gSpanDecl[t.dir];
+  const decl = t && t.span > 1 ? spanDeclOf(t.span) : gSpanDecl;
+  const d = decl && t && decl[t.dir];
   if (!d) return null;
   const lo = d.start_km != null ? declaredEdgeKm(t, Number(d.start_km)) : null;
   const hi = d.end_km   != null ? declaredEdgeKm(t, Number(d.end_km))   : null;
@@ -1492,9 +1579,10 @@ function halfSpanWarning() {
   const endRef   = (B && B.end_km   != null) ? Number(B.end_km)   : null;
   if ((startRef == null) === (endRef == null)) return '';   // none, or both set
   for (const bT of gTraces) {
-    if (!bT.data || bT.dir !== 'b') continue;
-    const aT = gTraces.find(x => x.dir === 'a' && x.fiber === bT.fiber && x.data)
-      || gTraces.find(x => x.dir === 'a' && realFiber(x.fiber) === realFiber(bT.fiber) && x.data);
+    if (!bT.data || bT.dir !== 'b' || bT.span > 1) continue;
+    const aT = gTraces.find(x => x.dir === 'a' && x.fiber === bT.fiber && x.data && !(x.span > 1))
+      || gTraces.find(x => x.dir === 'a' && realFiber(x.fiber) === realFiber(bT.fiber) && x.data
+                           && !(x.span > 1));
     if (!aT) continue;
     const origin = reelOriginKm(bT);          // B's far connector + A's reel
     if (startRef != null) {
@@ -1512,16 +1600,18 @@ function halfSpanWarning() {
   }
   return '';
 }
-function spanIsDeclared() {
-  return !!((gSpanDecl && gSpanDecl.a && gSpanDecl.a.start_km != null) ||
-            (gSpanDecl && gSpanDecl.b && gSpanDecl.b.end_km != null));
+function spanIsDeclared(span = 1) {
+  const decl = span > 1 ? spanDeclOf(span) : gSpanDecl;
+  return !!((decl && decl.a && decl.a.start_km != null) ||
+            (decl && decl.b && decl.b.end_km != null));
 }
 // Declared beats measured beats guessed.  A half-declaration still wins on the
 // half it covers, and the measured correction stands down entirely — applying
 // it on top would correct a number the tech had already fixed.
 function mirrorOriginKm(t) {
   const d = declaredOriginKm(t);
-  return d != null ? d : reelOriginKm(t) + gMirrorDelta;
+  // span 1's measured correction, or the trace's own span's
+  return d != null ? d : reelOriginKm(t) + (t.span > 1 ? (gMirrorDeltas.get(t.span) || 0) : gMirrorDelta);
 }
 function dispKm(t, dataKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dataKm) : dataKm; }
 function dataKmFromDisp(t, dKm) { return isFlipped(t) ? (mirrorOriginKm(t) - dKm) : dKm; }
@@ -1538,23 +1628,29 @@ function dispDb(t, v) { return v + yOffsetFor(t); }
 // FROM: an A-folder file set to B→A is still drawn in the A folder's frame,
 // and a B-folder file set to A→B in the B folder's (it read 38 m out).
 function axisZeroKm() {
-  if (!gTraces.some(t => t.dir === 'a') && gTraces.some(t => t.dir === 'b')) {
-    const bT = gTraces.find(x => x.dir === 'b' && x.data);
-    const B = gSpanDecl && gSpanDecl.b;
+  // Several spans on the chart each keep their own frame; the printed zero
+  // is the first span's (the lowest number on the chart).
+  const span = gTraces.length ? Math.min(...gTraces.map(t => t.span || 1)) : 1;
+  const ts = span > 1 ? gTraces.filter(t => t.span === span) : gTraces.filter(t => !(t.span > 1));
+  const decl = span > 1 ? spanDeclOf(span) : gSpanDecl;
+  const info = span > 1 ? spanInfo(span) : gInfo;
+  if (!ts.some(t => t.dir === 'a') && ts.some(t => t.dir === 'b')) {
+    const bT = ts.find(x => x.dir === 'b' && x.data);
+    const B = decl && decl.b;
     if (B && B.start_km != null) {
       return bT ? declaredEdgeKm(bT, Number(B.start_km)) : Number(B.start_km);
     }
-    const reel = (bT && bT.src === 'a') ? 'launch_a_km' : 'launch_b_km';
-    return Number(gInfo && gInfo[reel]) || 0;          // null (no reel) → 0
+    const reel = (bT && bT.src[0] === 'a') ? 'launch_a_km' : 'launch_b_km';
+    return Number(info && info[reel]) || 0;            // null (no reel) → 0
   }
-  const A = gSpanDecl && gSpanDecl.a;
+  const A = decl && decl.a;
   if (A && A.start_km != null) {
-    const aT = gTraces.find(x => x.dir === 'a' && x.data && !isFlipped(x));
+    const aT = ts.find(x => x.dir === 'a' && x.data && !isFlipped(x));
     return aT ? declaredEdgeKm(aT, Number(A.start_km)) : Number(A.start_km);
   }
-  const aT = gTraces.find(x => x.dir === 'a' && x.data);
-  if (aT && aT.src === 'b') return Number(gInfo && gInfo.launch_b_km) || 0;
-  return gLaunchA;
+  const aT = ts.find(x => x.dir === 'a' && x.data);
+  if (aT && aT.src[0] === 'b') return Number(info && info.launch_b_km) || 0;
+  return span > 1 ? launchAOf(span) : gLaunchA;
 }
 
 const COLORS_USED = new Map();
@@ -1662,7 +1758,8 @@ function setToolbarCollapsed(on) {
   sync();
 })();
 
-// The gear at the bar's right end: Stack A/B, Y Spacing, Fiber Colors.
+// The Settings button (the gear until 2026-10-02) at the bar's right end:
+// Stack A/B, Y Spacing, Fiber Colors.
 // A click anywhere else or Escape shuts it.
 function setTbGearMenu(open) {
   const btn = document.getElementById('tb-gear');
@@ -2008,7 +2105,7 @@ const FIBERS_PLACEHOLDER = '64, 67, 169-180';
 const FIBERS_OFF_PLACEHOLDER = 'e.g. 354, add files first';
 function filesListed() {
   if (!gInfo) return true;                  // not asked yet: stay usable
-  return ['a', 'b'].some(dir => (gInfo['dir_' + dir] || '')
+  return ((gInfo.srcs && gInfo.srcs.length) ? gInfo.srcs : ['a', 'b']).some(dir => (gInfo['dir_' + dir] || '')
     && ((gInfo['fibers_' + dir]) || []).some(f => !gRemovedFiles.has(`${dir}-${f}`)));
 }
 function syncFiberBoxEnabled() {
@@ -2022,12 +2119,19 @@ function syncFiberBoxEnabled() {
   box.title = on ? '' : 'Load an A or B folder, or drop files on the Viewer, to type fiber numbers';
   if (!on) box.value = '';
 }
+// The sources every file of which the tech removed, as /api/unload_sides
+// and /api/drop_end read them: 'ab' for span 1's two sides as ever, a
+// comma list once a copy or another span is among them ('a,b2').
 function emptiedSides() {
-  return ['a', 'b'].filter(dir => {
+  const srcs = (gInfo && gInfo.srcs && gInfo.srcs.length) ? gInfo.srcs : ['a', 'b'];
+  const gone = srcs.filter(dir => {
     const fibers = (gInfo && gInfo['fibers_' + dir]) || [];
     return fibers.length > 0 && fibers.every(f => gRemovedFiles.has(`${dir}-${f}`));
-  }).join('');
+  });
+  return gone.every(d => d.length === 1) ? gone.join('') : gone.join(',');
 }
+// emptiedSides() as a list.
+function emptiedList(s) { return s.includes(',') ? s.split(',') : s.split(''); }
 
 // Every file of a side removed: that side is empty to the tech, so the
 // server lets go of its folder and the hub's A/B box clears with it.
@@ -2207,9 +2311,13 @@ async function handleFilesDrop(dt) {
       const dir = gDropFolder.get(f);
       if (dir) from[f.name] = dir;
     }
-    const j = await post(`/api/drop_end?token=${token}&emptied=${emptiedSides()}`,
+    const gone = emptiedSides();
+    const j = await post(`/api/drop_end?token=${token}&emptied=${gone}`,
                          JSON.stringify({ folders: from }));
     at.stage = 'after';
+    // Another span's source the tech emptied with Remove: let go of, so
+    // forgotten too (span 1's below, as ever).
+    for (const d of emptiedList(gone)) if (d.length > 1) forgetSide(d);
     // A drop ADDS (Robert 2026-10-02: "keep adding and nothing gets reset
     // until the person does it"): a side it grew keeps everything on it,
     // even when the server moved it to a copy of a folder picked in the hub
@@ -2289,6 +2397,22 @@ async function handleFilesDrop(dt) {
       warn.push(`${n} file(s) share a name with a file of the other direction,`
            + ` so they went on the other side: ${shown}`);
       moved = true;
+    }
+    // Files whose name reads as the other direction of where their stamp
+    // put them: the stamp decides (Robert 2026-10-02: "they will always
+    // have an A or B label"; the stamp wins over the name), and the tech
+    // checks these by hand.
+    if (j.against_name && j.against_name.length) {
+      const n = j.against_name.length;
+      const shown = j.against_name.slice(0, 6).join(', ') + (n > 6 ? `, … (+${n - 6} more)` : '');
+      warn.push(`${n} file(s) named like the other direction are stamped for the side they`
+           + ` loaded on: ${shown}`);
+      moved = true;
+    }
+    // Another cable is ADDED as a span of its own, never into this one.
+    // The hub's reports run on span 1, so say so.
+    for (const n of (j.new_spans || [])) {
+      if (n > 1) warn.push(`span ${n} added beside the loaded span; the hub's reports run on span 1`);
     }
     if (moved) warn.push('to change a file\'s direction, right-click it > Direction');
     if (j.ignored && j.ignored.length) {
@@ -2470,7 +2594,19 @@ async function loadInfo() {
     const wasGate = activeGateDb();
     const wasMode = gAnalysisMode;
     gInfo = await r.json();
-    gCopies = Object.assign({}, gInfo.copies_a || {}, gInfo.copies_b || {});
+    gCopies = Object.assign({}, gInfo.copies_a || {}, gInfo.copies_b || {},
+                            ...(gInfo.sources || []).map(x => x.copies || {}));
+    // Every source's own fields, named as span 1's are ('fibers_a2', ...),
+    // so everything that reads gInfo['fibers_' + src] works for any source.
+    gInfo.srcs = (gInfo.sources || []).map(x => x.src);     // allSrcs()
+    for (const s of (gInfo.sources || [])) {
+      if (s.src === 'a' || s.src === 'b') continue;
+      gInfo['dir_' + s.src] = s.dir;
+      gInfo['fibers_' + s.src] = s.fibers || [];
+      gInfo['files_' + s.src] = s.files || [];
+      gInfo['dir_' + s.src + '_name'] = s.name;
+      gInfo['dir_' + s.src + '_dropped'] = !!s.dropped;
+    }
     // The hub's Analysis Mode switch moves CONFIG under a Viewer that already
     // has traces on screen.  The table is laid out per mode (the Splice
     // Report's own in OTDR Mode, FastReporter's in FR Mode), so a new mode
@@ -2804,12 +2940,23 @@ async function pollAnalysisMode() {
     // The folders can move under the page too: the hub's A/B boxes, or
     // another window.  A side whose folder changed forgets what this page
     // pinned to the old one (removed rows, loaded traces), as a drop does.
+    // Every source, not just span 1's: a drop in another window adds a
+    // span or a copy (sources_sig).
     const moved = j && 'dir_a' in j
       ? ['a', 'b'].filter(d => (j['dir_' + d] || '') !== ((gInfo && gInfo['dir_' + d]) || ''))
       : [];
-    if (moved.length) {
+    const srcMoved = !!(j && gInfo && j.sources_sig != null && gInfo.sources_sig != null
+                        && j.sources_sig !== gInfo.sources_sig);
+    if (moved.length || srcMoved) {
       moved.forEach(forgetSide);
+      const before = srcMoved ? srcDirs() : null;
       await loadInfo();
+      if (before) {
+        const after = srcDirs();
+        for (const d of new Set([...Object.keys(before), ...Object.keys(after)])) {
+          if (!moved.includes(d) && (before[d] || '') !== (after[d] || '')) forgetSide(d);
+        }
+      }
       renderChips();
       if (gAutoFit) fit();
       draw();
@@ -2976,7 +3123,18 @@ async function addFibers() {
 // A folder whose list is empty (a server that sends none) is tried for every
 // fibre, as before; so is everything when /api/list has not answered yet.
 function planFiberLoad(fibers, addDir, info) {
-  const asked = addDir === 'a' ? ['a'] : addDir === 'b' ? ['b'] : ['a', 'b'];
+  let asked = addDir === 'a' ? ['a'] : addDir === 'b' ? ['b'] : ['a', 'b'];
+  // More than span 1's two folders loaded: typed fibers load from the spans
+  // on the chart (the lowest loaded when it is empty), every copy of each
+  // side included, so typing 5 never pulls span 2's fiber 5 in beside span
+  // 1's.
+  const srcs = ((info && info.sources) || []).map(x => x.src);
+  if (srcs.some(d => d !== 'a' && d !== 'b')) {
+    const sides = asked;
+    const onChart = new Set(gTraces.map(t => t.span || 1));
+    const spans = onChart.size ? onChart : new Set([Math.min(...srcs.map(spanOf))]);
+    asked = srcs.filter(d => sides.includes(sideOf(d)) && spans.has(spanOf(d)));
+  }
   if (!info) return { dirs: asked, pairs: fibers.flatMap(f => asked.map(d => ({ f, d }))),
                       absent: [], gaps: [], noFolder: false };
   const dirs = asked.filter(d => info['dir_' + d]);
@@ -2988,7 +3146,7 @@ function planFiberLoad(fibers, addDir, info) {
     if (!has.length) { absent.push(f); continue; }
     for (const d of dirs) {
       if (has.includes(d)) pairs.push({ f, d });
-      else gaps.push(`F${fiberLabel(f)} ${d.toUpperCase()}: not in the folder`);
+      else gaps.push(`F${fiberLabel(f)} ${d.length > 1 ? srcLabel(d) : d.toUpperCase()}: not in the folder`);
     }
   }
   return { dirs, pairs, absent, gaps, noFolder: false };
@@ -2996,7 +3154,7 @@ function planFiberLoad(fibers, addDir, info) {
 
 // "F999 is not in the A/B folder"; "F998, F999 are not in the A folder".
 function absentNote(plan) {
-  const where = plan.dirs.map(d => d.toUpperCase()).join('/');
+  const where = plan.dirs.map(d => d.length > 1 ? srcLabel(d) : d.toUpperCase()).join('/');
   if (plan.noFolder) return `no ${where} folder is set`;
   const a = plan.absent;
   return a.slice(0, 3).map(f => 'F' + fiberLabel(f)).join(', ') +
@@ -3118,10 +3276,10 @@ async function loadOverview(tasks, ld = null) {
         // The file's own direction stamp, as a detail load reads it (loadOne):
         // without it a file saved the other way was drawn as its folder past
         // 48 files and as itself below.
-        if (data.stored_dir && data.stored_dir !== dir) gStoredDir[key] = data.stored_dir;
+        if (data.stored_dir && data.stored_dir !== dir[0]) gStoredDir[key] = data.stored_dir;
         else delete gStoredDir[key];
         const tr = {
-          key, fiber: data.fiber, src: dir, dir: effDir(dir, data.fiber), visible: true,
+          key, fiber: data.fiber, src: dir, span: dir.length > 1 ? spanOf(dir) : 1, dir: effDir(dir, data.fiber), visible: true,
           data, overview: true,
         };
         tr.color = traceColor(tr);
@@ -3261,7 +3419,7 @@ function traceStamp(t) {
 // follows the report run's settings, see renderSuiteBidiGrid).
 function serverTableKey(kind, pairs, extra = '') {
   return [kind, gAnalysisMode, (gInfo && gInfo.dir_a) || '', (gInfo && gInfo.dir_b) || '', extra,
-          pairs.map(p => `${p.fiber}:${traceStamp(p.ta)}:${traceStamp(p.tb)}`).join(',')].join('|');
+          pairs.map(p => `${p.tkey || p.fiber}:${traceStamp(p.ta)}:${traceStamp(p.tb)}`).join(',')].join('|');
 }
 function keptServerTable(kind, key) {
   const k = gServerTables.get(kind);
@@ -3388,11 +3546,11 @@ async function loadOne(key, fiber, dir) {
       gLoadFailures.push(`F${fiberLabel(fiber)} ${dir.toUpperCase()}: ${data.error}`);
       return;
     }
-    if (data.stored_dir && data.stored_dir !== dir) gStoredDir[key] = data.stored_dir;
+    if (data.stored_dir && data.stored_dir !== dir[0]) gStoredDir[key] = data.stored_dir;
     else delete gStoredDir[key];
     if (gRemovedFiles.has(key)) return;    // taken out of the list meanwhile
     if (gTraces.some(t => t.key === key)) return;   // loaded meanwhile: never twice
-    const t = { key, fiber, src: dir, dir: effDir(dir, fiber), visible: true, data };
+    const t = { key, fiber, src: dir, span: dir.length > 1 ? spanOf(dir) : 1, dir: effDir(dir, fiber), visible: true, data };
     t.color = traceColor(t);
     gTraces.push(t);
   } catch (e) {
@@ -3504,7 +3662,8 @@ async function selectAfterRemove(next, msg) {
   if (!next || gSelectedFiles.size) return;
   gFileAnchor = gFileFocus = next;
   if (gFilesView === 'fibers') {         // the next fibre, both of its files
-    gFiberAnchor = gFiberFocus = String(splitFileKey(next)[1]);
+    const [src, f] = splitFileKey(next);
+    gFiberAnchor = gFiberFocus = spanOf(src) > 1 ? `${spanOf(src)}:${f}` : String(f);
     selectFibers([gFiberFocus]);
     return;
   }
@@ -3593,8 +3752,13 @@ async function fetchViewerState() {
 // A state made on the folders loaded now (a state from before a drop or a
 // new folder belongs to the old span).
 function stateFits(s) {
-  return !!(s && gInfo && (s.dir_a || '') === (gInfo.dir_a || '')
-            && (s.dir_b || '') === (gInfo.dir_b || ''));
+  if (!(s && gInfo && (s.dir_a || '') === (gInfo.dir_a || '')
+        && (s.dir_b || '') === (gInfo.dir_b || ''))) return false;
+  // Every source's folder too (span 2, copies), when the state says them.
+  if (!s.folders) return true;
+  const now = srcDirs();
+  const keys = new Set([...Object.keys(s.folders), ...Object.keys(now)]);
+  return [...keys].every(k => (s.folders[k] || '') === (now[k] || ''));
 }
 // Take a state: its removed files, its Dir and, unless `keysToo` is false,
 // its traces (loading the missing ones and dropping the rest).
@@ -3682,19 +3846,16 @@ function renderFilesPanel() {
   const list = document.getElementById('files-list');
   if (!list) return;
   const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-  // Say what the NEXT drop will do.  A drop adds to what is loaded (its
-  // files go to the side named like them, see trace_server._choose_side),
-  // so the hint says nothing loaded goes away.
+  // Say what the NEXT drop will do.  A drop only adds: each file goes on the
+  // side its own Direction names, beside what is loaded, and another span
+  // is added as a span of its own (trace_server._plan_drop).
   const sayNextDrop = () => {
     const hint = document.getElementById('files-drop-hint');
     if (!hint) return;
-    const gone = emptiedSides();
-    const hasA = !!(gInfo && gInfo.dir_a) && !gone.includes('a');
-    const hasB = !!(gInfo && gInfo.dir_b) && !gone.includes('b');
-    hint.textContent =
-      (hasA && hasB) ? 'drop more files here, they are added to what is loaded'
-      : hasA ? 'drop the other direction here, A stays loaded'
-      : hasB ? 'drop the other direction here, B stays loaded'
+    const gone = emptiedList(emptiedSides());
+    const any = allSrcs().some(d => gInfo && gInfo['dir_' + d] && !gone.includes(d));
+    hint.textContent = any
+      ? 'drop more files here: each goes on the side its Direction names, and nothing loaded is replaced'
       : 'drop .sor / .json / .trc / .olts files, a folder, or a .zip here';
   };
   syncFilesTabs();
@@ -3706,9 +3867,11 @@ function renderFilesPanel() {
   const cols = shownFileCols();
   const wantFacts = filesNeedFacts();
   const rows = [];
-  for (const dir of ['a', 'b']) {
+  for (const dir of allSrcs()) {
     const fibers = (gInfo && gInfo['fibers_' + dir]) || [];
     const files = (gInfo && gInfo['files_' + dir]) || [];
+    // A copy of a side (a re-shot, or a file stamped for this side under the
+    // other side's name) says so beside its name.
     fibers.forEach((f, i) => {
       if (gRemovedFiles.has(`${dir}-${f}`)) return;
       const t = loaded.get(`${dir}-${f}`);
@@ -3726,15 +3889,15 @@ function renderFilesPanel() {
         // the row says which copy it is even with the Fiber column hidden.
         name: `<span class="file-name"><bdi>${esc(files[i] || 'F' + fiberLabel(f))}`
           + `${gCopies[String(f)] && files[i] ? ` <span class="file-copy">(copy ${gCopies[String(f)][1]})</span>` : ''}</bdi></span>`,
-        dir: `<span class="file-dir"${eff !== dir ? ' title="direction changed from the folder\'s"' : ''}>`
-          + `${arrow}${eff !== dir ? '*' : ''}</span>`,
+        dir: `<span class="file-dir"${eff !== sideOf(dir) ? ' title="direction changed from the folder\'s"' : ''}>`
+          + `${arrow}${eff !== sideOf(dir) ? '*' : ''}</span>`,
         fiber: `<span class="file-num">${fiberLabel(f)}</span>`,
         wl: `<span class="file-num">${tr && tr.wl ? tr.wl : ''}</span>`,
         date: `<span class="file-date"${acq ? ` title="shot ${new Date(acq * 1000).toLocaleString()}"` : ''}>`
           + `${tr && tr.day ? tr.day : ''}</span>`,
       };
       rows.push({
-        order: rows.length, name: files[i] || '', eff, fiber: f, tr, acq, pf,
+        order: rows.length, name: files[i] || '', eff, fiber: f, tr, acq, pf, span: spanOf(dir),
         html: `<div class="file-row${t ? ' loaded' : ''}${t && !t.visible ? ' faded' : ''}`
           + `${gSelectedFiles.has(`${dir}-${f}`) ? ' selected' : ''}`
           + `${gFileFocus === `${dir}-${f}` ? ' focus' : ''}" `
@@ -3746,8 +3909,21 @@ function renderFilesPanel() {
     });
   }
   if (gFileSort) rows.sort(fileRowCompare(gFileSort));
+  // More than one span loaded: each span's files under its own heading,
+  // sorted within it (Robert 2026-10-02: a span dropped beside another is
+  // added, not swapped in).
+  const spans = [...new Set(rows.map(r => r.span))].sort((x, y) => x - y);
+  let html = rows.map(r => r.html).join('');
+  if (spans.length > 1) {
+    html = spans.map(n => {
+      const si = spanInfo(n) || {};
+      const label = [si.name_a, si.name_b].filter(Boolean).join(' / ');
+      return `<div class="file-span-head">Span ${n}${label ? ': ' + esc(label) : ''}</div>`
+        + rows.filter(r => r.span === n).map(r => r.html).join('');
+    }).join('');
+  }
   renderFilesHeader(cols);
-  list.innerHTML = rows.length ? rows.map(r => r.html).join('')
+  list.innerHTML = rows.length ? html
     : '<span id="chip-empty">no folders loaded</span>';
   // FastReporter's status bar: "Selected files: n/N".
   document.getElementById('files-count').textContent =
@@ -3952,18 +4128,25 @@ document.getElementById('files-tabs').addEventListener('click', (ev) => {
 
 // Every fibre in the two folders as { fiber, a: [names], b: [names] }, in
 // fibre order, removed files left out.
+// One row per fiber of a span ('17', and '2:17' for span 2's fiber 17),
+// every copy of each side in its column.
 function fiberTable() {
   const by = new Map();
-  for (const dir of ['a', 'b']) {
+  for (const dir of ((gInfo && gInfo.srcs && gInfo.srcs.length) ? gInfo.srcs : ['a', 'b'])) {
     const fibers = (gInfo && gInfo['fibers_' + dir]) || [];
     const files = (gInfo && gInfo['files_' + dir]) || [];
+    const span = dir.length > 1 ? spanOf(dir) : 1, side = dir[0];
     fibers.forEach((f, i) => {
       if (gRemovedFiles.has(`${dir}-${f}`)) return;
-      if (!by.has(f)) by.set(f, { fiber: f, a: [], b: [] });
-      by.get(f)[dir].push(files[i] || `F${fiberLabel(f)}`);
+      const fk = span > 1 ? `${span}:${f}` : String(f);
+      if (!by.has(fk)) by.set(fk, { fiber: f, span, fkey: fk, a: [], b: [], keys: { a: [], b: [] } });
+      const r = by.get(fk);
+      r[side].push(files[i] || `F${fiberLabel(f)}`);
+      if (!r.keys[side].includes(`${dir}-${f}`)) r.keys[side].push(`${dir}-${f}`);
     });
   }
-  return [...by.values()].sort((x, y) => realFiber(x.fiber) - realFiber(y.fiber) || x.fiber - y.fiber);
+  return [...by.values()].sort((x, y) => x.span - y.span || realFiber(x.fiber) - realFiber(y.fiber)
+                                         || x.fiber - y.fiber);
 }
 // Whether a fibre's files make a pair, and if not, why.  The Viewer pairs on
 // the fibre number and the direction each file is drawn as.
@@ -3972,12 +4155,13 @@ function fiberPairNote(r, dirOf) {
   if (r.b.length > 1) return { ok: false, text: `${r.b.length} B files` };
   if (!r.a.length) return { ok: false, text: 'B only' };
   if (!r.b.length) return { ok: false, text: 'A only' };
-  const da = dirOf('a', r.fiber), db = dirOf('b', r.fiber);
+  const srcOf = k => k.slice(0, k.indexOf('-'));          // 'a2-17' -> 'a2'
+  const da = dirOf(srcOf(r.keys.a[0]), r.fiber), db = dirOf(srcOf(r.keys.b[0]), r.fiber);
   if (da === db) return { ok: false, text: da === 'a' ? 'both A→B' : 'both B→A' };
   return { ok: true, text: '✓' };
 }
 function fiberFileKeys(r) {
-  return [...(r.a.length ? [`a-${r.fiber}`] : []), ...(r.b.length ? [`b-${r.fiber}`] : [])];
+  return [...r.keys.a, ...r.keys.b];
 }
 // 'selected' when every file of the fibre is, 'partial' when some are.
 function fiberState(r) {
@@ -3994,14 +4178,14 @@ function renderFibersView(list, esc) {
                + '<span title="whether the two files make the pair the table averages">Pair</span>';
   const WHY = { 'A only': 'no B→A file for this fiber', 'B only': 'no A→B file for this fiber' };
   list.innerHTML = rows.length ? rows.map(r => {
-    const t = loaded.get(`a-${r.fiber}`) || loaded.get(`b-${r.fiber}`);
+    const t = fiberFileKeys(r).map(k => loaded.get(k)).find(Boolean);
     const pair = fiberPairNote(r, effDir);
     const why = WHY[pair.text] || (pair.ok ? 'A→B and B→A: the table averages them'
                                            : 'these files do not make a pair');
-    return `<div class="fiber-row ${fiberState(r)}${gFiberFocus === String(r.fiber) ? ' focus' : ''}"`
-      + ` data-fkey="${r.fiber}">`
+    return `<div class="fiber-row ${fiberState(r)}${gFiberFocus === r.fkey ? ' focus' : ''}"`
+      + ` data-fkey="${r.fkey}">`
       + `<span class="file-vis"${t ? ` style="color:${t.color};text-shadow:0 0 1px #333"` : ''}>${t ? '●' : ''}</span>`
-      + `<span class="file-num">${fiberLabel(r.fiber)}</span>`
+      + `<span class="file-num">${r.span > 1 ? `S${r.span} ` : ''}${fiberLabel(r.fiber)}</span>`
       + `<span title="${esc(r.a.join(', '))}">${esc(r.a.join(', ') || '---')}</span>`
       + `<span title="${esc(r.b.join(', '))}">${esc(r.b.join(', ') || '---')}</span>`
       + `<span class="fib-pair${pair.ok ? '' : ' bad'}" title="${why}">${pair.text}</span></div>`;
@@ -4013,7 +4197,7 @@ function renderFibersView(list, esc) {
 
 // Select these fibres' files, in place of the selection.
 function selectFibers(fkeys) {
-  const byKey = new Map(fiberTable().map(r => [String(r.fiber), r]));
+  const byKey = new Map(fiberTable().map(r => [r.fkey, r]));
   const want = new Set();
   for (const k of fkeys) {
     const r = byKey.get(String(k));
@@ -4277,8 +4461,8 @@ filesList.addEventListener('click', (ev) => {
   const row = ev.target.closest('.fiber-row');
   if (!row) return;
   const table = fiberTable();
-  const keys = table.map(r => String(r.fiber));
-  const sel = new Set(table.filter(r => fiberState(r) === 'selected').map(r => String(r.fiber)));
+  const keys = table.map(r => r.fkey);
+  const sel = new Set(table.filter(r => fiberState(r) === 'selected').map(r => r.fkey));
   const s = fileClickSelection(keys, sel, gFiberAnchor, row.dataset.fkey,
                                ev.shiftKey, ev.ctrlKey || ev.metaKey);
   if (!s) return;
@@ -4291,7 +4475,7 @@ filesList.addEventListener('keydown', (ev) => {
   if (gFilesView !== 'fibers') return;
   if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key)) return;
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
-  const keys = fiberTable().map(r => String(r.fiber));
+  const keys = fiberTable().map(r => r.fkey);
   const s = fileKeySelection(keys, gFiberAnchor, gFiberFocus, ev.key, ev.shiftKey);
   if (!s) return;
   ev.preventDefault();
@@ -4307,14 +4491,15 @@ filesList.addEventListener('contextmenu', (ev) => {
   const row = ev.target.closest('.fiber-row');
   if (!row) return;
   ev.preventDefault();
-  const r = fiberTable().find(x => String(x.fiber) === row.dataset.fkey);
+  const r = fiberTable().find(x => x.fkey === row.dataset.fkey);
   if (!r) return;
   if (fiberState(r) !== 'selected') {
-    gFiberAnchor = gFiberFocus = String(r.fiber);
-    selectFibers([String(r.fiber)]);
+    gFiberAnchor = gFiberFocus = r.fkey;
+    selectFibers([r.fkey]);
   }
-  const dir = r.a.length ? 'a' : 'b';
-  showFileDirMenu(ev.clientX, ev.clientY, dir, r.fiber, (dir === 'a' ? r.a : r.b)[0] || '');
+  const first = r.keys.a.length ? 'a' : 'b';
+  const dir = splitFileKey(r.keys[first][0])[0];
+  showFileDirMenu(ev.clientX, ev.clientY, dir, r.fiber, r[first][0] || '');
 });
 
 // The (side, fiber) a files-panel key stands for: 'a-12' -> ['a', 12].
@@ -4411,10 +4596,10 @@ async function loadFileFacts(keys, onProgress) {
     const f = gFileFacts.get(k);
     return !f || f.name !== fileNameOf(k);
   });
-  const byDir = { a: [], b: [] };
-  need.forEach(k => { const [d, f] = splitFileKey(k); byDir[d].push(f); });
+  const byDir = {};                     // every source: 'a', 'b', 'a2'
+  need.forEach(k => { const [d, f] = splitFileKey(k); (byDir[d] = byDir[d] || []).push(f); });
   let done = 0, ok = true;
-  for (const d of ['a', 'b']) {
+  for (const d of Object.keys(byDir)) {
     for (let i = 0; i < byDir[d].length; i += 144) {
       const part = byDir[d].slice(i, i + 144);
       try {
@@ -4686,7 +4871,7 @@ async function saveFilesDirection(keys) {
 function setFilesDirection(keys, dir) {
   for (const key of keys) {
     const [src, fiber] = splitFileKey(key);
-    if (dir === (gStoredDir[key] || src)) delete gDirOverride[key];
+    if (dir === (gStoredDir[key] || src[0])) delete gDirOverride[key];
     else gDirOverride[key] = dir;
     const t = gTraces.find(x => x.key === key);
     if (t) { t.dir = effDir(src, fiber); t.color = traceColor(t); }
@@ -4738,7 +4923,7 @@ async function applyFileSelection(want) {
   drop.forEach(k => COLORS_USED.delete(k));
   const have = new Set(gTraces.map(x => x.key));
   let tasks = [...want].filter(k => !have.has(k)).map(k => {
-    const [d, f] = [k.slice(0, 1), +k.slice(2)];
+    const [d, f] = splitFileKey(k);      // 'a2-17' as well as 'a-17'
     return { key: k, f, d };
   });
   // Same two regimes as the Fibers box: a selection past MAX_DETAIL_TRACES
@@ -5134,7 +5319,7 @@ function updateMarkerReadout() {
           }
         }
         const arrow = t.dir === 'a' ? 'A→B' : 'B→A';
-        html += `<tr><td><span style="color:${t.color};text-shadow:0 0 1px #333">■</span> F${fiberLabel(t.fiber)} ${arrow}</td>` +
+        html += `<tr><td><span style="color:${t.color};text-shadow:0 0 1px #333">■</span> F${fiberLabel(t.fiber)} ${arrow}${(t.src && t.src.length > 1 ? srcTag(t.src) : '')}</td>` +
                 `<td>${va == null ? '---' : va.toFixed(3)}</td>` +
                 `<td>${vb == null ? '---' : vb.toFixed(3)}</td>` +
                 `<td>${dloss}</td><td>${slope}</td></tr>`;
@@ -5368,8 +5553,7 @@ function upperBound(arr, v) {
 // header as the table prints it; `num` the number in it, or null when the
 // header carries none (an end, a Connector, Bends, the FEC Panel Connector).
 // Worked out here, once per table build, not per frame.  The first column to
-// claim an event keeps it.  `keep` (the one-direction table under an A+B one)
-// adds that table's traces without dropping the A+B table's marks.
+// claim an event keeps it.
 function tableKmKey(km) { return Math.round(Number(km) * 1e4); }
 function tableMarkReset(traces) {
   gTableKm = new Map();
@@ -5379,13 +5563,21 @@ function tableColumnNumber(title) {
   const m = /^(?:Event|Splice) (\d+)$/.exec(String(title == null ? '' : title).trim());
   return m ? m[1] : null;
 }
-function tableMark(t, km, title) {
+// `tipOnly`: the column's number is the A->B reading's to print (see
+// bidiMarkTip); this trace's tick keeps it for the hover tip only.
+function tableMark(t, km, title, tipOnly = false) {
   if (!t || km == null || !Number.isFinite(Number(km))) return;
   let s = gTableKm.get(t);
   if (!s) gTableKm.set(t, s = new Map());
   const k = tableKmKey(km);
-  if (!s.has(k)) s.set(k, { title: title == null ? '' : String(title), num: tableColumnNumber(title) });
+  if (!s.has(k)) s.set(k, { title: title == null ? '' : String(title), num: tableColumnNumber(title), tipOnly });
 }
+// In a two-direction table a column's number prints on the A->B trace only,
+// as FastReporter prints it (Robert 2026-10-02: "only show numbers from the
+// A direction on the A direction splice when bidi").  A B->A reading keeps
+// its tick, with the number on its hover tip, even in a column no A->B
+// reading shares.
+function bidiMarkTip(dir) { return dir === 'b'; }
 function inTable(t, e) {
   const s = gTableKm && gTableKm.get(t);
   return !s || s.has(tableKmKey(e.dist_km));
@@ -5561,6 +5753,11 @@ function drawEventMarkers(t, r) {
     // trace or per fibre): the first trace to place it keeps it, A->B before
     // B->A; every other trace's tick at that column keeps the number for the
     // hover tip.  A trace no table has taken counts, and prints, its own.
+    if (col && col.tipOnly) {
+      gLabelHits.push({ x0: px - 4, x1: px + 4, y0: py - 10, y1: py + 10, t, e,
+                        hiddenText: label, hiddenColor: color });
+      continue;
+    }
     const txt = label;
     const once = col !== undefined;
     if (once && gNumbersDrawn.has(txt)) {
@@ -5606,9 +5803,9 @@ function drawEventMarkers(t, r) {
 //
 // One direction is not a fallback (Robert, 2026-09-30: "it has to work for
 // one direction OR bidi, equally").  An A-only or B-only load gets the
-// single-direction table, and a fibre loaded one way among paired ones gets
-// its own single-direction table under the A+B one; either way the drawer
-// marks that table's columns with its verdicts, a tick and a tag per event.
+// single-direction table, and the drawer marks that table's columns with its
+// verdicts, a tick and a tag per event.  A fibre loaded one way among paired
+// ones is a row of the A+B table (no Average); the drawer leaves it out.
 //
 // Many fibres.  A tag per fibre per column is unreadable past a handful (a
 // ribbon is 12 tags stacked on every splice) and a label per leg is worse,
@@ -5937,18 +6134,42 @@ function drawPairing(sets, r, failedOnly = false) {
   return covered;
 }
 
-// A fibre loaded one way among paired ones has no A+B row in either mode
-// (FastReporter builds none for it either).  The event panel is ONE table
-// (Robert 2026-10-02: "we don't get two event panels"), so such a fibre is
-// left out of it, named on one line over the table; its trace still draws,
-// with its file's own event numbers (inTable: no table holds it).
-function noteOneDirFibers(singles, host) {
-  const fibers = [...new Set(gTraces.filter(t => t.visible && singles.includes(t.fiber)).map(t => t.fiber))];
-  if (!fibers.length) return;
-  const cap = document.createElement('div');
-  cap.className = 'onedir-cap';
-  cap.textContent = `One direction only, not in the table: F${fibers.map(fiberLabel).join(', F')}`;
-  host.insertBefore(cap, host.firstChild);
+// The A+B pairs of one span's traces: per listed fibre id, its A with its B
+// (a copy row, "12 (copy 2)", has an id of its own and pairs with the
+// other side's same copy).  A file set to the other direction than its
+// folder's meets the folder's own file there: the folder's own pairs first,
+// and every trace left over is a single, listed in the same table in fibre
+// order with no Average row (paintFrBidiGrid) -- every trace shows its
+// events and losses, in one panel, as FastReporter shows them (Robert
+// 2026-10-02).  `tkey` names the pair's table: the fibre for span 1's own A
+// and B, as ever, else 'fibre:srcA:srcB'.
+function pairTraces(traces) {
+  const by = new Map();
+  for (const t of traces) {
+    const g = by.get(t.fiber) || { a: [], b: [] };
+    g[t.dir].push(t);
+    by.set(t.fiber, g);
+  }
+  const pairs = [], singles = [];
+  for (const [fiber, g] of by) {
+    g.a.sort((x, y) => (x.src[0] !== 'a') - (y.src[0] !== 'a'));
+    g.b.sort((x, y) => (x.src[0] !== 'b') - (y.src[0] !== 'b'));
+    const n = Math.min(g.a.length, g.b.length);
+    for (let k = 0; k < n; k++) {
+      const ta = g.a[k], tb = g.b[k];
+      const tkey = (ta.src === 'a' && tb.src === 'b') ? String(fiber) : `${fiber}:${ta.src}:${tb.src}`;
+      pairs.push({ fiber, ta, tb, tkey });
+    }
+    singles.push(...g.a.slice(n), ...g.b.slice(n));
+  }
+  return { pairs, singles };
+}
+// The /api/fr_table query for `pairs`: by fibre when every pair is span 1's
+// own A and B, else each pair's two sources.
+function frTableQuery(pairs) {
+  return pairs.every(p => p.tkey === String(p.fiber))
+    ? `fibers=${pairs.map(p => p.fiber).join(',')}`
+    : `pairs=${pairs.map(p => `${p.fiber}:${p.ta.src}:${p.tb.src}`).join(',')}`;
 }
 
 // Take the panel to one cell: row `fi`'s line for `which` ('a', 'b' or
@@ -6154,7 +6375,8 @@ function hoverTrace() {
 // The box beside the cursor: a color swatch and "F0002 A→B", flipped to the
 // cursor's other side near an edge.
 function drawHoverBox(t) {
-  const text = `F${fiberLabel(t.fiber)} ${t.dir === 'a' ? 'A→B' : 'B→A'}`;
+  const text = `F${fiberLabel(t.fiber)} ${t.dir === 'a' ? 'A→B' : 'B→A'}`
+    + (t.src && t.src.length > 1 ? srcTag(t.src) : '');   // ' S2': another span's
   const PAD = 6, SW = 10, GAP = 6, OFF = 14, BH = 24;
   ctx.font = "12px 'Segoe UI', sans-serif";
   const bw = PAD * 2 + SW + GAP + ctx.measureText(text).width;
@@ -6569,6 +6791,13 @@ function frameWarnText(nB) {
       + 'cannot be aligned. Check B is the full-length shot, not the short shot.'
     : '';
 }
+// What the per-fibre A+B table is called: FastReporter's in FR mode; in
+// OTDR Suite mode the same layout carries the Suite engine's own numbers for
+// the fibre's two files (no report columns: see renderSuiteBidiGrid).
+function tableName() {
+  return gAnalysisMode === 'fr' ? 'FastReporter table' : `${PRODUCT_NAME} table (per fiber)`;
+}
+const MULTI_SPAN_NOTE = 'These traces are from more than one span. Show one span to see its events.';
 function renderEventTable() {
   // Busy again below only when the mode's table waits on the server; the
   // other tables are built by the time this returns, and the status line
@@ -6597,6 +6826,16 @@ function renderEventTable() {
   if (visible.length === 0) {
     hint.textContent = gLoadingKeys.size ? 'loading traces…' : 'add a trace to see events';
     if (gTableFails.size || gTableHasBidi) { gTableFails = new Map(); gTableHasBidi = false; filesPfChanged(); }
+    return;
+  }
+  // Traces of more than one span: one plain line and no table at all, not
+  // a merged one, not one span's (Robert 2026-10-02: "we should have an
+  // error that says we are trying to display multiple spans and show
+  // nothing. we don't want to attempt").  The table comes back as soon as
+  // one span's traces are showing.
+  if (new Set(visible.map(t => t.span || 1)).size > 1) {
+    hint.textContent = '';
+    host.innerHTML = `<div class="tbl-multispan">${MULTI_SPAN_NOTE}</div>`;
     return;
   }
 
@@ -6716,8 +6955,11 @@ function paintFecGrid(traces, res, host, hint) {
   if (gates && !fecOverridden()) gFecBase = gates;
   syncGateUI();
   const all = traces.map(t => {
-    const side = t.src === 'b' ? 'B' : 'A';
-    return { t, side, g: (grades[side] || {})[String(t.fiber)] || null };
+    const side = t.src[0] === 'b' ? 'B' : 'A';      // 'b2', 'br2' -> B
+    // The server grades span 1's own two folders; a copy or another span's
+    // file shows ungraded rather than take span 1's grade of its fiber.
+    const own = t.src === 'a' || t.src === 'b';
+    return { t, side, g: own ? ((grades[side] || {})[String(t.fiber)] || null) : null };
   });
   const fails = all.filter(r => r.g && (r.g.fail_loss || r.g.fail_refl)).length;
   // The chart numbers only what the table prints, as on the Viewer's other
@@ -7056,7 +7298,7 @@ function renderFlatEventList(visible, host, hint) {
 function buildEventRows(traces) {
   const out = [];
   for (const t of traces) {
-    const arrow = t.dir === 'a' ? 'A→B' : 'B→A';
+    const arrow = (t.dir === 'a' ? 'A→B' : 'B→A') + (t.src && t.src.length > 1 ? srcTag(t.src) : '');
     for (const e of (t.data.events || [])) {
       const v = flagEvent(e, t);
       out.push({
@@ -7456,7 +7698,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   const TOL = columnTolKm(traces);
   const overGate = clearsGate;
   const warnGate = warnFor(false, false);
-  const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';
+  const arrow = t => (t.dir === 'a' ? 'A→B' : 'B→A') + (t.src && t.src.length > 1 ? srcTag(t.src) : '');
 
   // Collect every event tagged with its trace index, at its displayed km
   // (dispKm flips a B trace into A's frame in stack mode; two same-direction
@@ -8138,17 +8380,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
 // nothing is paired the single-direction grid stands in.
 let gFrTableSeq = 0;
 function renderFrBidiGrid(traces, host, hint) {
-  const byFiber = new Map();
-  traces.forEach((t, ti) => {
-    const g = byFiber.get(t.fiber) || {};
-    g[t.dir] = ti;
-    byFiber.set(t.fiber, g);
-  });
-  const pairs = [], singles = [];
-  for (const [fiber, g] of byFiber) {
-    if (g.a != null && g.b != null) pairs.push({ fiber, ta: traces[g.a], tb: traces[g.b] });
-    else singles.push(fiber);
-  }
+  const { pairs, singles } = pairTraces(traces);
   if (!pairs.length) return false;
   const seq = ++gFrTableSeq;
   // The same traces' table is laid out again, not asked for again.
@@ -8159,8 +8391,8 @@ function renderFrBidiGrid(traces, host, hint) {
     return true;
   }
   gTableBusy = true;                       // "Building the table…" until it paints
-  hint.textContent = `FastReporter table: reading ${pairs.length} fiber pair${pairs.length === 1 ? '' : 's'}…`;
-  askServerTable('fr', key, `/api/fr_table?fibers=${pairs.map(p => p.fiber).join(',')}`,
+  hint.textContent = `${tableName()}: reading ${pairs.length} fiber pair${pairs.length === 1 ? '' : 's'}…`;
+  askServerTable('fr', key, `/api/fr_table?${frTableQuery(pairs)}`,
                  res => !res.error)
     .then(res => {
       if (seq !== gFrTableSeq) return;
@@ -8170,7 +8402,7 @@ function renderFrBidiGrid(traces, host, hint) {
       if (seq !== gFrTableSeq) return;
       tableSettled();
       gTableKm = null; draw();             // no table: every event, as before
-      hint.textContent = `FastReporter table unavailable (${(e && e.message) || 'fetch failed'})`;
+      hint.textContent = `${tableName()} unavailable (${(e && e.message) || 'fetch failed'})`;
     });
   return true;
 }
@@ -8179,14 +8411,17 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   host.innerHTML = '';
   gGridGoTo = null;
   const tables = res.tables || {};
-  const have = pairs.filter(p => Array.isArray(tables[String(p.fiber)]) && tables[String(p.fiber)].length);
+  const have = pairs.filter(p => Array.isArray(tables[p.tkey]) && tables[p.tkey].length);
   const missing = pairs.filter(p => !have.includes(p)).map(p => p.fiber);
   if (have.length) noteTableBidi();      // FILES carries no P/F (see noteTableVerdict)
   if (!have.length) {
     gTableKm = null; draw();             // no table: every event, as before
-    hint.textContent = 'FastReporter table: ' + (res.error
+    hint.textContent = `${tableName()}: ` + (res.error
       || "no table for these fibers (both directions must be .sor files with EXFO's trace block)");
     return;
+  }
+  if (gAnalysisMode !== 'fr' && gSuiteFallbackWhy) {
+    queueMicrotask(() => { hint.textContent += ` · no report columns: ${gSuiteFallbackWhy}`; });
   }
   // Display km is A's raw frame -- FR's MeanPosition -- measured from A's
   // declared start when the tech has set one (FR prints 0.0000 there).  The
@@ -8196,6 +8431,35 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const zeroKm = (win && win.lo != null) ? win.lo : 0;
   const inSpan = km => !win || ((win.lo == null || km >= win.lo - SPAN_SNAP_KM)
                              && (win.hi == null || km <= win.hi + SPAN_SNAP_KM));
+  // A file with no partner in the other direction is listed in this same
+  // table, as FastReporter lists it (Robert 2026-10-02, from FR's Event
+  // Table: ONE panel, and such a file's own row sits in fibre order with no
+  // Average row).  Its events join the columns at their DISPLAYED km (a B
+  // trace drawn mirrored reads in A's frame, as on the chart), each section
+  // from the stored slope as the single-direction grid reads it, and its row
+  // is judged at the report's single-direction gates (soloGate).
+  const soloOf = t => {
+    const w = t.dir;
+    const evs = (t.data.events || []).filter(e => inDeclaredSpan(t, e))
+      .map(e => ({ e, km: dispKm(t, e.dist_km) })).sort((x, y) => x.km - y.km);
+    const rows = evs.map(({ e, km }, k) => {
+      const type = e.is_reflective ? 3 : (e.splice_loss != null && e.splice_loss < 0) ? 1 : 2;
+      const leg = { pos_m: e.dist_km * 1000, type, refl: e.is_reflective ? e.reflection : null,
+                    loss: (e.time_of_travel === 0 || e.is_end) ? null : e.splice_loss };
+      const n = evs[k + 1];
+      let section = null;
+      if (n) {
+        const len = Math.abs(n.e.dist_km - e.dist_km);
+        const att = isFlipped(t) ? e.slope : n.e.slope;
+        const ok = len > 0 && att != null && !isNaN(att) && att !== 0;
+        section = { length_m: len * 1000, [w]: { loss: ok ? len * att : null, att_db_km: ok ? att : null } };
+      }
+      return { mean_pos_m: km * 1000, type, loss: null, solo: w, [w]: leg, section };
+    });
+    return { fiber: t.fiber, ta: w === 'a' ? t : null, tb: w === 'b' ? t : null, solo: w, rows };
+  };
+  have.push(...singles.filter(t => t.visible && t.data).map(soloOf));
+  const allT = have.flatMap(p => [p.ta, p.tb]).filter(Boolean);
   // Columns: FR's rows of every shown fibre, clustered by mean position the
   // way the single-direction grid clusters events (one row per fibre per
   // column; a reflective row never shares one with a splice).  With one
@@ -8203,27 +8467,35 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // FR's order.
   const items = [];
   have.forEach((p, fi) => {
-    p.rows = tables[String(p.fiber)].filter(r => inSpan(r.mean_pos_m / 1000));
+    if (!p.solo) p.rows = tables[p.tkey].filter(r => inSpan(r.mean_pos_m / 1000));
     p.rows.forEach((r, k) => items.push({ km: r.mean_pos_m / 1000, ti: fi,
                                           e: { is_reflective: r.type === 3, row: r, k } }));
   });
   items.sort((a, b) => a.km - b.km);
-  const cols = clusterColumns(have, items, columnTolKm(have.flatMap(p => [p.ta, p.tb])));
+  const cols = clusterColumns(have, items, columnTolKm(allT));
   // A synthesised leg has no event of its own in the file, so it marks nothing.
-  tableMarkReset(have.flatMap(p => [p.ta, p.tb]));
-  // Each leg is numbered as its column is headed: "Event n" (h1 below).
+  tableMarkReset(allT);
+  // Each leg is numbered as its column is headed: "Event n" (h1 below),
+  // printed on the A->B trace (bidiMarkTip).
   cols.forEach((c, i) => c.ev.forEach((x, fi) => {
     if (!x) return;
     for (const [w, t] of [['a', have[fi].ta], ['b', have[fi].tb]]) {
       const leg = x.row[w];
-      if (leg && !leg.synthetic && leg.pos_m != null) tableMark(t, Number(leg.pos_m) / 1000, `Event ${i + 1}`);
+      if (leg && !leg.synthetic && leg.pos_m != null) {
+        tableMark(t, Number(leg.pos_m) / 1000, `Event ${i + 1}`, bidiMarkTip(w));
+      }
     }
   }));
   draw();                                  // painted after a fetch: the chart follows
   // The section a fibre's row carries runs to that fibre's NEXT row; it is
   // printed under column i only when the next row sits in column i + 1.
+  // A file listed with no partner prints its section under the column of
+  // the event it starts at, wherever its next event sits, as FR prints it
+  // (S08: fibre 3's B->A row carries 1.869 dB under Event 1's Section with
+  // Event 2 blank).
   const secOf = (fi, i) => {
     const c = cols[i].ev[fi], n = cols[i + 1] && cols[i + 1].ev[fi];
+    if (c && c.row.solo) return i < cols.length - 1 ? c.row.section : null;
     if (!c || !n || n.k !== c.k + 1) return null;
     return c.row.section;
   };
@@ -8334,12 +8606,16 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // Average) and a connector's loss; a splice's loss on its Average alone
   // (see legGateFor).  A launch
   // level or a synthesised leg is not a reading and is never judged.
+  // A file listed with no partner has no Average to carry its splices, so
+  // its own loss is judged at the report's single-direction gate.
+  const soloGate = x => gateFor(isRefl(x), true);
+  const soloWarn = x => warnFor(isRefl(x), true);
   const cellFails = (x, which) => {
     if (which === 'avg') return clearsAt(x.row.loss, gateFor(isRefl(x), false));
     if (legReflFails(x, which)) return true;
     const leg = x.row[which];
     if (!legOk(leg) || gainerHidden(leg.loss)) return false;
-    return clearsAt(leg.loss, legGateFor(isRefl(x)));
+    return clearsAt(leg.loss, x.row.solo ? soloGate(x) : legGateFor(isRefl(x)));
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c.ev[fi], which));
   const fibreFails = fi => ['a', 'b', 'avg'].some(w => legFails(fi, w));
@@ -8349,7 +8625,8 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     if (cellFails(x, which)) return false;
     if (which === 'avg') return clearsAt(x.row.loss, warnFor(isRefl(x), false));
     const leg = x.row[which];
-    return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, legWarnFor(isRefl(x)));
+    return legOk(leg) && !gainerHidden(leg.loss)
+      && clearsAt(leg.loss, x.row.solo ? soloWarn(x) : legWarnFor(isRefl(x)));
   };
   // What the cell filters keep: failures, warnings, or both.  A splice's
   // loss is judged on the Average row alone (the boss, 2026-09-29: "we only
@@ -8360,7 +8637,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // own row at its fail gate (the boss, 2026-09-29: "we can't average
   // connector losses A and B, we have to see them separately"; Robert:
   // every connector, the two ends and mid-span alike).
-  const cellKept = (x, which) => which === 'avg'
+  const cellKept = (x, which) => (which === 'avg' || x.row.solo)
     ? (gFailCellsOnly && cellFails(x, which)) || (gWarnCellsOnly && cellWarns(x, which))
     : gFailCellsOnly && (isRefl(x) ? cellFails(x, which) : legReflFails(x, which));
   const legKept = (fi, which) => cols.some(c => c.ev[fi] && cellKept(c.ev[fi], which));
@@ -8388,7 +8665,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
                fail: cellFails(x, w), warn: cellWarns(x, w) };
     };
     markCols = () => cols.map((c, i) => ({ i, title: `Event ${i + 1}`, km: c.km, cells: keepCol[i]
-        ? c.ev.map((x, fi) => x && { fi, avg: x.row.loss, km: c.km,
+        ? c.ev.map((x, fi) => x && !x.row.solo && { fi, avg: x.row.loss, km: c.km,
                                      avgFail: cellFails(x, 'avg'), avgWarn: cellWarns(x, 'avg'),
                                      legs: { a: drawerLeg(x, 'a'), b: drawerLeg(x, 'b') } })
                .filter(Boolean)
@@ -8424,9 +8701,15 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
 
   const shown = have.map((_p, i) => i).filter(i => (!gFlaggedOnly || rowFails[i])
     && (!collapse || ['a', 'b', 'avg'].some(w => legKept(i, w))));
-  const descs = shown.flatMap(fi => ['a', 'b', 'avg']
-    .filter(w => (!collapse || w === 'avg' || legKept(fi, w))
-              && (collapse || !gAvgOnly || w === 'avg')).map(w => [fi, w]));
+  // Fibre order, as FR lists them: a file with no partner sits with its
+  // fibre (a copy, id 100000 x copy + fibre, after the fibre's own rows).
+  const fOrd = f => { const n = Number(f); return Number.isFinite(n) ? [n % 100000, Math.floor(n / 100000)] : [Infinity, 0]; };
+  shown.sort((i, j) => { const x = fOrd(have[i].fiber), y = fOrd(have[j].fiber);
+                         return (x[0] - y[0]) || (x[1] - y[1]) || (i - j); });
+  const descs = shown.flatMap(fi => have[fi].solo
+    ? ((!collapse || legKept(fi, have[fi].solo)) ? [[fi, have[fi].solo]] : [])
+    : ['a', 'b', 'avg'].filter(w => (!collapse || w === 'avg' || legKept(fi, w))
+                                 && (collapse || !gAvgOnly || w === 'avg')).map(w => [fi, w]));
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
@@ -8438,7 +8721,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       // bidirectional measurement (Robert 2026-10-02, from FR): the
       // direction rows' P/F is blank, their failing cells still red.
       // Judged as the row paints, so end verdicts landing (refreshVerdicts) move it.
-      which === 'avg'
+      (which === 'avg' || p.solo)
         ? `<td class="${pfClass(fibreFails(fi))}" title="the fiber at the report's gates (${gateLabel()})`
           + `, this is OUR verdict, not FastReporter's">${pfMark(fibreFails(fi))}</td>`
         : '<td></td>',
@@ -8460,14 +8743,14 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
         // under the cell filters a direction's loss is not judged (its
         // Average is), so it blanks like any cell the filter drops; a
         // connector's is, at its fail gate only (see cellKept)
-        const judged = !cellFilterOn();
+        const judged = !cellFilterOn() || !!x.row.solo;
         const gated = judged || isRefl(x);
         const at = ` data-col="${i}" data-km="${rawKm(leg.pos_m)}"`;
         cells.push(typeCell(c, leg.synthetic ? '' : kind(leg))
                  + (gainerHidden(leg.loss) ? `<td${at}></td>`
                     : lossCell(leg.loss, !legOk(leg), at,
-                               gated ? legGateFor(isRefl(x)) : null,
-                               judged ? legWarnFor(isRefl(x)) : null))
+                               gated ? (x.row.solo ? soloGate(x) : legGateFor(isRefl(x))) : null,
+                               judged ? (x.row.solo ? soloWarn(x) : legWarnFor(isRefl(x))) : null))
                  + reflCell(x, which));
       }
       if (showSec && i < cols.length - 1) {
@@ -8490,7 +8773,6 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   // table unavailable" note; only gaps, errors and the ticked filters (Robert).
   hint.textContent = [
     missing.length ? `no FR table for F${missing.map(fiberLabel).join(', F')}` : '',
-    singles.length ? `one direction only: F${singles.map(fiberLabel).join(', F')}` : '',
     res.error || '',
     gFlaggedOnly ? 'flagged rows only' : '',
     gFailCellsOnly ? (descs.length ? 'failing cells only' : 'failing cells only: nothing fails') : '',
@@ -8611,7 +8893,6 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     gDrawerMarks.push(marks);
   }
   wireAggJump({ scroller, table, tb, descs, paintRows }, have);   // Minimum / Maximum -> its row
-  noteOneDirFibers(singles, host);
   draw();
   requestAnimationFrame(() => {
     const hrows = table.tHead ? [...table.tHead.rows] : [];
@@ -8897,20 +9178,25 @@ function showSpanMenu(x, y, dir, km, fiber, src) {
       if (b.dataset.unit) { setDistUnit(b.dataset.unit); return; }
       if (b.dataset.view) { toggleView(b.dataset.view); return; }
       if (b.dataset.edge === 'edit') showEditDialog(src || dir, fiber);
-      else setSpanEdge(dir, b.dataset.edge, km);
+      else setSpanEdge(dir, b.dataset.edge, km, src);
     };
   });
   setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
 }
-async function setSpanEdge(dir, edge, km) {
+async function setSpanEdge(dir, edge, km, src) {
+  // A span's own declaration: 'a2' is span 2's A (trace_server.span_decl_set).
+  const span = spanOf(src);
   try {
     const r = await fetch('/api/span', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dir, edge, km }),
+      body: JSON.stringify({ dir: span > 1 ? dir + span : dir, edge, km }),
     });
     const j = await r.json();
     if (!r.ok || j.error) { setReadout(`could not save the span: ${j.error || r.status}`); return; }
-    gSpanDecl = j.span_decl || { a: null, b: null };
+    if (span > 1) {
+      const si = spanInfo(span);
+      if (si) si.span_decl = j.span_decl || { a: null, b: null };
+    } else gSpanDecl = j.span_decl || { a: null, b: null };
   } catch (e) {
     setReadout(`could not save the span: ${(e && e.message) || e}`);
     return;
@@ -8952,17 +9238,21 @@ function suiteTableReset() {
   const secLab = document.getElementById('set-sections-off').closest('label');
   if (secLab) secLab.style.display = '';
 }
+// Why the Splice Report's columns are not on the table, while the per-fibre
+// table stands in for them (renderSuiteBidiGrid); '' when they are.
+let gSuiteFallbackWhy = '';
 function renderSuiteBidiGrid(traces, host, hint) {
-  const byFiber = new Map();
-  traces.forEach((t, ti) => {
-    const g = byFiber.get(t.fiber) || {};
-    g[t.dir] = ti;
-    byFiber.set(t.fiber, g);
-  });
-  const pairs = [], singles = [];
-  for (const [fiber, g] of byFiber) {
-    if (g.a != null && g.b != null) pairs.push({ fiber, ta: traces[g.a], tb: traces[g.b] });
-    else singles.push(fiber);
+  gSuiteFallbackWhy = '';
+  const { pairs, singles } = pairTraces(traces);
+  // The report's table covers span 1's own A and B folders.  A copy, another
+  // span, or a file drawn the other way than its folder gets the per-fibre
+  // table built from its own two files, in this mode (Robert 2026-10-02: "we
+  // should always be able to see a fiber one at a time and see its events
+  // and losses"; the report only adds the cable's columns).
+  if (!traces.every(t => t.src === 'a' || t.src === 'b')
+      || !pairs.every(p => p.tkey === String(p.fiber))) {
+    gSuiteFallbackWhy = 'the Splice Report covers span 1\'s own A and B files';
+    return renderFrBidiGrid(traces, host, hint);
   }
   // Every fibre from one direction only (Robert 2026-09-30: "it has to work
   // for one direction OR bidi, equally"): that direction's own report, the
@@ -8973,11 +9263,22 @@ function renderSuiteBidiGrid(traces, host, hint) {
     if (dirs.size !== 1) return false;
     oneDir = [...dirs][0];
     if (oneDir !== 'a' && oneDir !== 'b') return false;
-    for (const [fiber, g] of byFiber) {
-      pairs.push({ fiber, ta: oneDir === 'a' ? traces[g.a] : null,
-                          tb: oneDir === 'b' ? traces[g.b] : null });
+    const seen = new Set();
+    for (const t of singles) {
+      if (seen.has(t.fiber)) continue;
+      seen.add(t.fiber);
+      pairs.push({ fiber: t.fiber, tkey: String(t.fiber),
+                   ta: oneDir === 'a' ? t : null, tb: oneDir === 'b' ? t : null });
     }
     singles.length = 0;
+  }
+  // A file with no partner in the other direction: the report's table has
+  // no row for it, and the panel is one table that lists it (Robert
+  // 2026-10-02, as FastReporter does), so the per-fibre table takes the
+  // whole panel and lists it in fibre order (see paintFrBidiGrid).
+  if (singles.some(t => t.visible)) {
+    gSuiteFallbackWhy = 'a fiber loaded in one direction only is listed in the per-fiber table';
+    return renderFrBidiGrid(traces, host, hint);
   }
   const seq = ++gSuiteTableSeq;
   // The same traces' table, from the same report run, is laid out again,
@@ -8999,18 +9300,21 @@ function renderSuiteBidiGrid(traces, host, hint) {
   hint.textContent = oneDir
     ? `${PRODUCT_NAME} table: reading ${pairs.length} fiber${pairs.length === 1 ? '' : 's'} from one direction…`
     : `${PRODUCT_NAME} table: reading ${pairs.length} fiber pair${pairs.length === 1 ? '' : 's'}…`;
-  // No report table: say so and why.  FastReporter's table never stands in
-  // for it (Robert 2026-09-30: "Error, no FR stand-in"), so a tech can never
-  // read FR's pairing as OTDR Suite's; FastReporter mode shows that table.
-  // The drawer keeps the files' own event numbers (no marks were set).
-  const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const noTable = (why) => {
-    host.innerHTML = `<div class="suite-err" role="alert"><b>${PRODUCT_NAME} table could not be built.</b> `
-      + `${esc(why)}. The traces and their own events still show above; `
-      + `switch to FastReporter mode for FastReporter's table.</div>`;
-    hint.textContent = `${PRODUCT_NAME} table unavailable`;
-    tableSettled();
+  // No report table (still running, or it failed): the fibres' own tables
+  // stand in, so the events and losses always show, and the hint says what
+  // is missing.  FastReporter's table never does (Robert 2026-09-30: "Error,
+  // no FR stand-in"): the per-fibre table here is the Suite engine's own.
+  const standIn = (why) => {
+    gSuiteFallbackWhy = why;
+    if (oneDir) {
+      renderFastReporterGrid(traces, host, hint);
+      hint.textContent += ` · ${PRODUCT_NAME} report columns: ${why}`;
+      tableSettled();
+    } else if (!renderFrBidiGrid(traces, host, hint)) {
+      tableSettled();
+    }
   };
+  let standing = false;
   const ask = () => askServerTable('suite', key,
     `/api/suite_table?${oneDir ? `dir=${oneDir}&` : ''}fibers=${pairs.map(p => p.fiber).join(',')}`,
     res => !res.pending && !res.error)
@@ -9019,20 +9323,22 @@ function renderSuiteBidiGrid(traces, host, hint) {
       gSuitePoll = null;
       res = res || {};
       if (res.pending) {
-        hint.textContent = `${PRODUCT_NAME} table: running the Splice Report on this span for its columns…`;
+        if (!standing) { standing = true; standIn('the Splice Report is still running for them'); }
         gSuitePoll = setTimeout(ask, 3000);
         return;
       }
       const tables = res.tables || {};
       if (res.error || !pairs.some(p => Array.isArray(tables[String(p.fiber)]))) {
-        noTable(res.error || 'The report has no table for these fibers');
+        standIn(res.error || 'the report has no table for these fibers');
         return;
       }
+      gFrTableSeq++;                    // a stand-in still on its way is not wanted now
+      gSuiteFallbackWhy = '';
       try { paintSuiteBidiGrid(pairs, singles, res, host, hint); } finally { tableSettled(); }
     })
     .catch(e => {
       if (seq !== gSuiteTableSeq) return;
-      noTable(`The Viewer could not reach the report (${(e && e.message) || 'request failed'})`);
+      standIn(`the Viewer could not reach the report (${(e && e.message) || 'request failed'})`);
     });
   ask();
   return true;
@@ -9075,11 +9381,12 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // each direction's own reading there and nothing else.
   tableMarkReset(have.flatMap(p => [p.ta, p.tb]));
   // Each direction's reading takes its column's header (the report's own
-  // title: "Event n", "Splice n", the two ends), A's and B's alike.
+  // title: "Event n", "Splice n", the two ends), A's and B's alike; the
+  // number prints on the A->B trace (bidiMarkTip).
   cols.forEach(c => c.ev.forEach((x, fi) => {
     if (!x) return;
     if (x.a && x.a.km != null) tableMark(have[fi].ta, x.a.km, c.title);
-    if (x.b && x.b.km != null) tableMark(have[fi].tb, x.b.km, c.title);
+    if (x.b && x.b.km != null) tableMark(have[fi].tb, x.b.km, c.title, !!have[fi].ta && bidiMarkTip('b'));
   }));
   draw();                                  // painted after a fetch: the chart follows
   const fmt  = v => (v == null || isNaN(v)) ? '---' : v.toFixed(3);
@@ -9462,7 +9769,6 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     gDrawerMarks.push(marks);
   }
   wireAggJump({ scroller, table, tb, descs, paintRows }, have);   // Minimum / Maximum -> its row
-  noteOneDirFibers(singles, host);
   draw();
   requestAnimationFrame(() => {
     const hrows = table.tHead ? [...table.tHead.rows] : [];
@@ -9586,7 +9892,8 @@ const EDIT_FIELDS = [
 // END here") can go into the copies too, the way FR saves one: each fiber
 // snaps to its own event at that km.  Offered only when one is declared.
 function spanRow(dir) {
-  const s = gSpanDecl && gSpanDecl[dir];
+  const decl = spanDeclOf(spanOf(dir));             // `dir` is a source: 'a', 'a2'
+  const s = decl && decl[sideOf(dir)];
   if (!s || (s.start_km == null && s.end_km == null)) return '';
   const parts = [];
   if (s.start_km != null) parts.push(`Start ${s.start_km.toFixed(4)} km`);
@@ -9643,7 +9950,7 @@ let gEditDlgSeq = 0;
 async function showEditDialog(dir, fiber) {
   const seq = ++gEditDlgSeq;
   closeEditDialog();
-  const arrow = dir === 'a' ? 'A→B' : 'B→A';
+  const arrow = sideOf(dir) === 'a' ? 'A→B' : 'B→A';
   let s;
   try {
     const r = await fetch(`/api/trace_settings?dir=${dir}&fiber=${fiber}`);
@@ -9738,8 +10045,9 @@ async function submitEdit(dir, fiber, original) {
   const bs = bsTxt === '' ? null : Math.round(+bsTxt * 10) / 10;
   const bsChanged = bs != null && (original.bs == null || Math.abs(bs - original.bs) > 0.04);
   const spanBox = d.querySelector('#edit-span');
-  const span = (spanBox && spanBox.checked && gSpanDecl[dir])
-    ? { start_km: gSpanDecl[dir].start_km ?? null, end_km: gSpanDecl[dir].end_km ?? null } : {};
+  const declared = spanDeclOf(spanOf(dir))[sideOf(dir)];
+  const span = (spanBox && spanBox.checked && declared)
+    ? { start_km: declared.start_km ?? null, end_km: declared.end_km ?? null } : {};
   const spanOn = span.start_km != null || span.end_km != null;
   if (!iorChanged && !bsChanged && !Object.keys(fields).length && !spanOn) { err.textContent = 'nothing changed'; return; }
   if (ior != null && !(ior >= 1.40 && ior <= 1.55)) { err.textContent = 'IOR must be between 1.40 and 1.55'; return; }
@@ -10015,7 +10323,7 @@ function showRenameDialog(dir, fiber, name) {
   if (!name) { setReadout('that row has no file name to rename'); return; }
   const esc = v => String(v == null ? '' : v)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
-  const marked = [...panelFiles('a'), ...panelFiles('b')]
+  const marked = allSrcs().flatMap(panelFiles)
     .filter(f => gSelectedFiles.has(`${f.dir}-${f.fiber}`));
   const nA = panelFiles('a').length, nB = panelFiles('b').length;
   // Scopes, widest last.  The default is the marked set when this row is one
@@ -10026,6 +10334,10 @@ function showRenameDialog(dir, fiber, name) {
   if (nA) scopes.push(['a', `All ${nA} Files in ${gInfo.dir_a_name}`]);
   if (nB) scopes.push(['b', `All ${nB} Files in ${gInfo.dir_b_name}`]);
   if (nA && nB) scopes.push(['both', `All ${nA + nB} Files in Both Folders`]);
+  // A copy's or another span's own folder.
+  if (dir !== 'a' && dir !== 'b' && panelFiles(dir).length) {
+    scopes.push([dir, `All ${panelFiles(dir).length} Files in ${gInfo['dir_' + dir + '_name'] || srcLabel(dir)}`]);
+  }
   const start = (marked.length > 1 && gSelectedFiles.has(`${dir}-${fiber}`)) ? 'sel' : 'one';
 
   const bg = document.createElement('div'); bg.id = 'rn-dlg-bg';
@@ -10201,17 +10513,20 @@ function renamePreview() {
   // stray report or cache is invisible to the preview, and the server's own
   // collision check catches it and says so in the result.)
   const onDisk = {};
-  for (const dir of ['a', 'b']) {
+  for (const dir of allSrcs()) {
     onDisk[dir] = new Set(((gInfo && gInfo['files_' + dir]) || [])
       .map(n => String(n).toLowerCase()));
   }
-  const moving = { a: new Set(), b: new Set() };
+  // Per source, made as a row of it comes up ('a', 'b', 'a2').
+  const perSrc = (m, make) => d => (m[d] = m[d] || make());
+  const moving = {}, claimed = {};
+  const movingOf = perSrc(moving, () => new Set()), claimedOf = perSrc(claimed, () => new Map());
+  const onDiskOf = perSrc(onDisk, () => new Set());
   for (const r of gRenameRows) {
     r.matched = renameMatches(r.name, rule);
     r.newName = r.matched ? renameNewName(r.name, rule) : r.name;
-    if (r.cb.checked && r.newName !== r.name) moving[r.dir].add(r.name.toLowerCase());
+    if (r.cb.checked && r.newName !== r.name) movingOf(r.dir).add(r.name.toLowerCase());
   }
-  const claimed = { a: new Map(), b: new Map() };
   let nGo = 0, nBad = 0, nSame = 0, nRenum = 0, nShown = 0;
   for (const r of gRenameRows) {
     r.el.classList.remove('rn-same', 'rn-bad', 'rn-warn', 'rn-nomatch');
@@ -10230,16 +10545,16 @@ function renamePreview() {
     }
     const key = r.newName.toLowerCase();
     r.problem = nameProblem(r.newName);
-    if (!r.problem && claimed[r.dir].has(key)) {
+    if (!r.problem && claimedOf(r.dir).has(key)) {
       r.problem = 'two files would be named ' + r.newName;
-    } else if (!r.problem && onDisk[r.dir].has(key) && !moving[r.dir].has(key)) {
+    } else if (!r.problem && onDiskOf(r.dir).has(key) && !movingOf(r.dir).has(key)) {
       r.problem = r.newName + ' is already in that folder';
     }
     if (r.problem) {
       r.el.classList.add('rn-bad');
       nBad++;
     } else {
-      claimed[r.dir].set(key, r);
+      claimedOf(r.dir).set(key, r);
       const was = fiberNumOf(r.name), now = fiberNumOf(r.newName);
       if (was !== now) {
         // The number the whole suite keys fibers on is moving.  Not refused
@@ -10385,7 +10700,7 @@ async function afterRename(dirs, renumbered) {
   await loadInfo();
   // Anything still loaded whose fiber has left the listing goes too.
   const live = new Set();
-  for (const dir of ['a', 'b']) {
+  for (const dir of allSrcs()) {
     for (const f of (gInfo && gInfo['fibers_' + dir]) || []) live.add(`${dir}-${f}`);
   }
   for (const t of gTraces.filter(t => !live.has(t.key))) COLORS_USED.delete(t.key);
@@ -10843,8 +11158,13 @@ function folderLabel(side) {
   const parts = String(gInfo[`dir_${side}`] || '').split(/[\/\\]+/).filter(Boolean);
   return parts.length > 1 ? parts[parts.length - 2] : name;
 }
+// The job a report names: the folders of the span on screen (span 1's A and
+// B, or another span's own).
 function reportJob() {
-  return [...new Set([folderLabel('a'), folderLabel('b')].filter(Boolean))].join(' / ');
+  const vis = gTraces.filter(t => t.visible);
+  const span = (vis.length && vis[0].span) || 1;
+  const a = span > 1 ? 'a' + span : 'a', b = span > 1 ? 'b' + span : 'b';
+  return [...new Set([folderLabel(a), folderLabel(b)].filter(Boolean))].join(' / ');
 }
 function reportDefaultName(vis) {
   const fibers = [...new Set(vis.map(t => realFiber(t.fiber)))].sort((a, b) => a - b);
@@ -10863,12 +11183,15 @@ async function reportPayload(opt, token, progress) {
   try {
     const sorted = [...vis].sort((a, b) => realFiber(a.fiber) - realFiber(b.fiber) || a.fiber - b.fiber
                                          || a.dir.localeCompare(b.dir));
-    const arrow = t => t.dir === 'a' ? 'A→B' : 'B→A';
+    const arrow = t => (t.dir === 'a' ? 'A→B' : 'B→A') + (t.src && t.src.length > 1 ? srcTag(t.src) : '');
     // The FEC table: the mode and the gates it was graded at, not the
     // analysis mode's or the Viewer boxes' usual meaning.
     const meta = [['Mode', fecTable() ? 'FEC' : gAnalysisMode === 'fr' ? 'FastReporter' : PRODUCT_NAME]];
-    if (vis.some(t => t.src === 'a') && folderLabel('a')) meta.push(['A folder', folderLabel('a')]);
-    if (vis.some(t => t.src === 'b') && folderLabel('b')) meta.push(['B folder', folderLabel('b')]);
+    // Each source on the report: 'A folder', 'B folder', and another span's
+    // under its own name ('S2 A folder').
+    for (const src of allSrcs()) {
+      if (vis.some(t => t.src === src) && folderLabel(src)) meta.push([`${srcLabel(src)} folder`, folderLabel(src)]);
+    }
     const nf = new Set(vis.map(t => realFiber(t.fiber))).size;
     meta.push(['Fibers', `${fiberRanges(vis.map(t => realFiber(t.fiber)))} (${nf} fiber${nf === 1 ? '' : 's'})`]);
     const fg = fecTable() ? fecGatesShown() : null;
@@ -10886,8 +11209,9 @@ async function reportPayload(opt, token, progress) {
                    gAvgOnly && 'averages only'].filter(Boolean);
     if (views.length) meta.push(['Table shows', views.join(', ')]);
     if (!gShowGainers) meta.push(['Gainers', 'hidden: single-direction readings with a negative loss are left blank and not judged']);
+    const decl = spanDeclOf((vis.length && vis[0].span) || 1);   // the span on screen
     for (const dir of ['a', 'b']) {
-      const s = gSpanDecl && gSpanDecl[dir];
+      const s = decl && decl[dir];
       if (s && (s.start_km != null || s.end_km != null)) {
         meta.push([`Span ${dir === 'a' ? 'A→B' : 'B→A'}`,
           [s.start_km != null ? `start ${kmFt(s.start_km)}` : '', s.end_km != null ? `end ${kmFt(s.end_km)}` : '']
@@ -11007,6 +11331,12 @@ async function showReportDialog() {
     setReadout('', { warn: gLoadingKeys.size
       ? 'the traces are still loading: Summary Report opens once they are on the chart'
       : 'load a trace first (or drop a PMT .olts file): the Summary Report is the event table on screen' });
+    return;
+  }
+  // The report is the event table on screen, and traces of more than one
+  // span have none (MULTI_SPAN_NOTE): no report of them either.
+  if (new Set(vis.map(t => t.span || 1)).size > 1) {
+    setReadout('', { fail: MULTI_SPAN_NOTE });
     return;
   }
   let dest = '';

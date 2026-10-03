@@ -199,7 +199,8 @@ def test_a_tie_between_two_frames_is_refused_rather_than_broken():
 def test_the_measured_frame_is_actually_wired_into_the_mirror():
     assert 'function reelOriginKm(t)' in SRC, 'reel rule must stay reachable'
     m = re.search(r'function mirrorOriginKm\(t\)\s*\{[^}]*\}', SRC)
-    assert m and 'reelOriginKm(t) + gMirrorDelta' in m.group(0)
+    # span 1's measured correction; a span of its own measures its own
+    assert m and 'reelOriginKm(t) + (t.span > 1 ? (gMirrorDeltas.get(t.span) || 0) : gMirrorDelta)' in m.group(0)
 
 
 def test_the_frame_is_recomputed_when_the_trace_set_changes():

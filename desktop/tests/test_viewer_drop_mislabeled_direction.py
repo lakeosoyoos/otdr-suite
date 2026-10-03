@@ -77,7 +77,8 @@ def test_one_a_file_named_as_b_keeps_the_a_folder_whole():
     a = _drop(_rename(_real('a'), {12}, 'MILELM'))
     assert a['added'] == 'A' and a['a_count'] == 24
     assert a['dir_b'] is None and a['b_count'] == 0
-    assert a['kept_whole'] == ['MILELM'] and a['a_prefix'] == 'ELMMIL'
+    assert a['a_prefix'] == 'ELMMIL'
+    assert a['against_name'] == ['MILELM0012_1550.sor']   # named on the readout
     # and the real B folder after it fills B, with all of A still loaded
     b = _drop(_real('b'))
     assert b['added'] == 'B'
@@ -125,7 +126,6 @@ def test_a_third_spelling_joins_the_side_its_fibres_are_missing_from():
     a = _rename(_real('a'), {22, 23, 24}, 'ELMLIM')     # a typo, not a variant
     out = _drop(a, _real('b'))
     assert out['ignored'] == []
-    assert out['folded'] == [{'key': 'ELMLIM', 'into': 'ELMMIL'}]
     assert out['a_count'] == 24 and out['b_count'] == 24
     assert set(_dirs_of(out['dir_a']).values()) == {'a'}
 
@@ -146,16 +146,15 @@ def test_another_span_in_the_same_drop_is_loaded_too():
 
 def test_an_a_file_under_bs_name_is_loaded_on_the_other_side():
     """A12 carries B's name, so it and the real B12 arrive under one name.
-    Whichever arrives second used to be lost.  Now it goes on the side its
-    twin is not on, and the tech flips the two in the Viewer."""
+    Each loads where its own stamp says: A12 on A, B12 on B."""
     a = _rename(_real('a'), {12}, 'MILELM')
     out = _drop(a, _real('b'))
-    assert out['repeated'] == [] and out['repeats_placed'] == ['MILELM0012_1550.sor']
+    assert out['repeated'] == []
     assert out['a_count'] == 24 and out['b_count'] == 24
     got = {**{('A', k): v for k, v in _dirs_of(out['dir_a']).items()},
            **{('B', k): v for k, v in _dirs_of(out['dir_b']).items()}}
-    # both fibre-12 files loaded, one on each side
-    assert sorted([got[('A', 12)], got[('B', 12)]]) == ['a', 'b']
+    assert got[('A', 12)] == 'a' and got[('B', 12)] == 'b'
+    assert out['against_name'] == ['MILELM0012_1550.sor']
 
 
 def test_a_retest_of_the_same_direction_is_not_moved_across():
@@ -232,7 +231,7 @@ def test_a_batched_drop_places_the_mislabeled_file_too():
     TS.drop_files(tok, _pack(a))
     TS.drop_files(tok, _pack(_real('b')))
     out = TS.drop_end(tok)
-    assert out['repeats_placed'] == ['MILELM0012_1550.sor'] and out['repeated'] == []
+    assert out['repeated'] == [] and out['against_name'] == ['MILELM0012_1550.sor']
     assert out['a_count'] == 24 and out['b_count'] == 24
 
 
@@ -240,7 +239,7 @@ def test_a_batched_a_folder_with_one_b_name_stays_whole():
     tok = TS.drop_begin()
     TS.drop_files(tok, _pack(_rename(_real('a'), {12}, 'MILELM')))
     out = TS.drop_end(tok)
-    assert out['added'] == 'A' and out['a_count'] == 24 and out['kept_whole'] == ['MILELM']
+    assert out['added'] == 'A' and out['a_count'] == 24 and out['dir_b'] is None
 
 
 def test_a_retried_batch_is_not_a_repeat():
@@ -266,4 +265,4 @@ def test_a_retry_of_the_other_directions_same_name_file_is_kept():
     TS.drop_files(tok, _pack(un(_real('b', 3))), retry=True)
     out = TS.drop_end(tok)
     assert out['added'] == 'AB' and out['a_count'] == 3 and out['b_count'] == 3
-    assert len(out['repeats_placed']) == 3 and out['repeated'] == []
+    assert out['repeated'] == []

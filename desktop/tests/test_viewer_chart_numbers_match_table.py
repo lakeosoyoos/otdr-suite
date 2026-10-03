@@ -149,7 +149,7 @@ def _run(tmp_path, body):
         _const("SPAN_SNAP_KM"), _const("EVENT_NUM_H"),
         _fn("lowerBound"), _fn("declaredEdgeKm"), _fn("ownSpanWindow"), _fn("inDeclaredSpan"),
         _fn("spanEventNumbers"), _fn("chartLabels"), _fn("eventNumberSpots"),
-        _fn("tableKmKey"), _fn("tableMarkReset"), _fn("tableMark"), _fn("inTable"),
+        _fn("tableKmKey"), _fn("tableMarkReset"), _fn("tableMark"), _fn("bidiMarkTip"), _fn("inTable"),
         # the new helpers (absent before the fix: the test then fails on them)
         _fn("tableColumnNumber", False), _fn("tableColumnOf", False),
         _fn("chartColumnTitle", False), _fn("chartColumnNumber", False),
@@ -185,13 +185,15 @@ var cols = suiteCols();
 
 @needs_jsc
 def test_suite_table_a_and_b_print_the_columns_number(tmp_path):
-    """The finding itself: Event 10's splice reads 10 on A and on B."""
+    """The finding itself: Event 10's splice reads 10 on A, and B's tick
+    there carries 10 on its hover tip (bidiMarkTip: in a two-direction table
+    the number prints on the A->B reading, as FastReporter prints it)."""
     res = _run(tmp_path, SUITE + _block("paintSuiteBidiGrid", "tableMarkReset(have.flatMap(")
                + "print(JSON.stringify({a: labels(ta), b: labels(tb)}));")
     a, b = res["a"], res["b"]
-    assert a["53.774"]["n"] == "10" and b["10.226"]["n"] == "10"
-    assert a["20"]["n"] == "7" and b["44"]["n"] == "7"
-    assert a["10"]["n"] == "4" and b["54"]["n"] == "4"
+    assert a["53.774"]["n"] == "10" and b["10.226"] == {"n": None, "tip": "10"}
+    assert a["20"]["n"] == "7" and b["44"] == {"n": None, "tip": "7"}
+    assert a["10"]["n"] == "4" and b["54"] == {"n": None, "tip": "4"}
 
 
 @needs_jsc
@@ -215,14 +217,14 @@ def test_splice_n_columns_print_their_number(tmp_path):
     body = SUITE + "cols = cols.map(function (c) { return {title: c.title.replace('Event', 'Splice'), ev: c.ev}; });\n"
     res = _run(tmp_path, body + _block("paintSuiteBidiGrid", "tableMarkReset(have.flatMap(")
                + "print(JSON.stringify({a: labels(ta), b: labels(tb)}));")
-    assert res["a"]["53.774"]["n"] == "10" and res["b"]["10.226"]["n"] == "10"
+    assert res["a"]["53.774"]["n"] == "10" and res["b"]["10.226"] == {"n": None, "tip": "10"}
 
 
 @needs_jsc
 def test_fastreporter_table_numbers_both_legs_by_its_row(tmp_path):
     """FastReporter's table: Event i + 1, each leg at its own pos_m."""
     body = r"""
-var have = [{fiber: 18, ta: ta, tb: tb}];
+var have = [{fiber: 18, ta: ta, tb: tb}], allT = [ta, tb];
 var rows = [[0, 64], [10, 54], [20, 44], [33, 31], [53.774, 10.226], [64, 0]];
 var cols = rows.map(function (r, i) {
   return {ev: [i === 3 ? null : {row: {a: {pos_m: r[0] * 1000}, b: {pos_m: r[1] * 1000}}, k: i}]};
@@ -230,11 +232,13 @@ var cols = rows.map(function (r, i) {
 // B's 53.774 leg is one FastReporter filled in itself: it marks nothing
 cols[4].ev[0].row.b.synthetic = true;
 """
-    res = _run(tmp_path, body + _block("paintFrBidiGrid", "tableMarkReset(have.flatMap(")
+    res = _run(tmp_path, body + _block("paintFrBidiGrid", "tableMarkReset(allT);")
                + "print(JSON.stringify({a: labels(ta), b: labels(tb)}));")
     a, b = res["a"], res["b"]
     assert [a[k]["n"] for k in ("0", "10", "20", "53.774", "64")] == ["1", "2", "3", "5", "6"]
-    assert [b[k]["n"] for k in ("64", "54", "44", "0")] == ["1", "2", "3", "6"]
+    # B's legs keep the number for the tip: the A->B reading prints it
+    assert [b[k]["n"] for k in ("64", "54", "44", "0")] == [None] * 4
+    assert [b[k]["tip"] for k in ("64", "54", "44", "0")] == ["1", "2", "3", "6"]
     assert b["10.226"] == "not drawn"
 
 
@@ -353,7 +357,7 @@ print(JSON.stringify({{page: page, a: onPage.a, b: onPage.b, screen: onScreen}})
     assert res["page"] == ["A-End ILA", "Event 1", "Event 2", "Event 3", "Splice 11"]
     a, b = res["a"], res["b"]
     assert [a[k]["n"] for k in ("10", "20", "53.774", "58")] == ["1", "2", "3", "11"]
-    assert [b[k]["n"] for k in ("54", "44", "10.226", "6")] == ["1", "2", "3", "11"]
+    assert [b[k]["tip"] for k in ("54", "44", "10.226", "6")] == ["1", "2", "3", "11"]
     assert a["0"]["n"] is None
     assert res["screen"]["53.774"]["n"] == "10"
 
