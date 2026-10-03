@@ -121,7 +121,7 @@ def test_every_table_picks_a_row_on_click():
         assert "const pk = which === 'avg' ? samePick([p.ta.key, p.tb.key]) : gPickKey === t.key;" in body, name
         assert 'data-avg="1" data-fiber="${p.fiber}"' in body, name
         # the right-click span menu is still there, and still names a direction
-        assert "tb.addEventListener('contextmenu', (ev) => {" in body, name
+        assert "tb.addEventListener('contextmenu', (ev) => wireCellMenu(ev, tb));" in body, name
 
 
 def test_a_pick_is_dropped_with_its_trace_when_a_load_settles():

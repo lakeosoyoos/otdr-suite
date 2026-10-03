@@ -6463,7 +6463,7 @@ function paintFecGrid(traces, res, host, hint) {
              `Panel Connector<br>(${U.label}) <button class="fr-evmenu" title="span and settings">⋯</button>`,
              'Connector<br>Loss (dB)', 'Combined With', 'FEC Loss<br>(dB)',
              'Refl.<br>(dB)', 'Distance'];
-  const head = H.map((h, i) => `<th class="${i === 0 ? 'fr-rowlab ' : ''}${i === 4 ? 'fr-evhdr' : ''}">${h}</th>`).join('');
+  const head = H.map((h, i) => `<th class="${i === 0 ? 'fr-rowlab ' : ''}${i === 4 ? 'fr-evhdr' : ''}" data-col="0">${h}</th>`).join('');
   const f3 = v => (v == null || isNaN(v)) ? '---' : Number(v).toFixed(3);
   const f1 = v => (v == null || isNaN(v)) ? '---' : Number(v).toFixed(1);
   const fecHi = x => (x && !flagsOff()) ? 'fr-hi' : '';
@@ -6595,31 +6595,36 @@ function paintFecGrid(traces, res, host, hint) {
     const td = ev.target.closest('td[data-col]');
     if (menuAt(ev.clientX, ev.clientY, r.t, td && td.dataset.col)) ev.preventDefault();
   });
+  // The ⋯: the header is every row's, so each direction uses its first
+  // row, at that trace's own connector.
+  const connPicks = () => {
+    const picks = [];
+    for (const dir of ['a', 'b']) {
+      const r = rows.find(q => q.t.dir === dir && q.g && q.g.found && evAt.get(q.t.key) && evAt.get(q.t.key).conn != null);
+      if (r) picks.push({ dir, km: evAt.get(r.t.key).conn, fiber: r.t.fiber, src: r.t.src || dir });
+    }
+    return picks;
+  };
   const hdr = table.querySelector('th.fr-evhdr');
   if (hdr) {
     hdr.style.cursor = 'pointer';
-    hdr.title = 'zoom to the panel connectors';
+    hdr.title = 'zoom to the panel connectors, span and settings';
     hdr.addEventListener('click', (ev) => {
       const shownG = rows.filter(r => r.g && r.g.found && evAt.get(r.t.key) && evAt.get(r.t.key).conn != null);
-      const btn = ev.target.closest('.fr-evmenu');
-      if (!btn) {                        // the header itself zooms, as on the other tables
-        const kms = shownG.map(r => r.g.conn_km).sort((a, b) => a - b);
-        if (kms.length) zoomToKm(kms[Math.floor(kms.length / 2)], 0.3);
-        return;
-      }
-      // The ⋯: the header is every row's, so each direction uses its first
-      // row, at that trace's own connector.
+      // The heading zooms to the connectors and opens the menu, as on the
+      // other tables.
       ev.stopPropagation();
-      const picks = [];
-      for (const dir of ['a', 'b']) {
-        const r = shownG.find(q => q.t.dir === dir);
-        if (r) picks.push({ dir, km: evAt.get(r.t.key).conn, fiber: r.t.fiber, src: r.t.src || dir });
-      }
-      const b = btn.getBoundingClientRect();
-      if (picks.length === 1) showSpanMenu(b.left, b.bottom + 2, picks[0].dir, picks[0].km, picks[0].fiber, picks[0].src);
-      else if (picks.length === 2) showDirChooser(b.left, b.bottom + 2, picks);
+      const b = (ev.target.closest('.fr-evmenu') || hdr).getBoundingClientRect();
+      const kms = shownG.map(r => r.g.conn_km).sort((a, b) => a - b);
+      if (kms.length) zoomToKm(kms[Math.floor(kms.length / 2)], 0.3);
+      const picks = connPicks();
+      if (picks.length) showColumnMenu(b.left, b.bottom + 2, picks);
     });
   }
+  // Every column here is the panel connector's, so a right-click on any
+  // header opens what the ⋯ does, as a right-click on a row picks the
+  // connector unless it lands on Combined With.
+  wireHeaderMenu(table, connPicks);
   // A Minimum or Maximum click: pick its trace on the chart, centre its row
   // and flash the cell.  A second click lets go, as on the other grids.
   if (table.tFoot) table.tFoot.addEventListener('click', (ev) => {
@@ -7295,12 +7300,12 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     if (!keepCol[i]) return;
     const present = c.ev.filter(x => x);
     const isEnd = present.length > 0 && present.every(x => x.is_end);
-    h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.km}" `
-        + `title="zoom to ${c.km.toFixed(3)} km">${isEnd ? 'End' : 'Event ' + (i + 1)}`
+    h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.km}" data-col="${i}" `
+        + `title="zoom to ${c.km.toFixed(3)} km, span and settings">${isEnd ? 'End' : 'Event ' + (i + 1)}`
         + `<button class="fr-evmenu" data-col="${i}" title="span and settings">⋯</button></th>`;
-    h2 += `<th colspan="2" class="fr-evsub">${colKind(c)}<br>`
+    h2 += `<th colspan="2" class="fr-evsub" data-col="${i}">${colKind(c)}<br>`
         + `<span class="fr-km">${kmFt(c.km - zeroKm)}</span></th>`;
-    h3 += '<th class="fr-sub">Loss<br>(dB)</th><th class="fr-sub">Refl.<br>(dB)</th>';
+    h3 += `<th class="fr-sub" data-col="${i}">Loss<br>(dB)</th><th class="fr-sub" data-col="${i}">Refl.<br>(dB)</th>`;
     if (showSec && i < cols.length - 1) {
       const s = section(0, i);
       h1 += '<th colspan="3" class="fr-sechdr">Section</th>';
@@ -7590,30 +7595,31 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     }
   });
 
+  // The ⋯ opens the same menu a right-click on a cell does.  A header is
+  // shared by every row, so each direction uses its first shown fiber that
+  // has an event in this column, at that event's OWN raw km.
+  const colPicks = i => {
+    const col = cols[i], picks = [];
+    for (const dir of ['a', 'b']) {
+      const ti = shown.find(k => traces[k].dir === dir && col.ev[k]);
+      if (ti != null) picks.push({ dir, km: col.ev[ti].dist_km, fiber: traces[ti].fiber, src: traces[ti].src || dir });
+    }
+    return picks;
+  };
   table.querySelectorAll('th.fr-evhdr').forEach(th => {
     th.style.cursor = 'pointer';
+    // A click on the heading ("Event 1") zooms to the event and opens its
+    // span menu, as the ⋯ does (Robert 2026-10-02: the boss clicks the
+    // event's name, not the dots, to get Span START, END, Reset).
     th.addEventListener('click', (ev) => {
-      const btn = ev.target.closest('.fr-evmenu');
-      if (!btn) { zoomToKm(+th.dataset.km, 2); return; }
-      // The ⋯ opens the same menu a right-click on a cell does.  A header is
-      // shared by every row, so each direction uses its first shown fiber
-      // that has an event in this column, at that event's OWN raw km.
       ev.stopPropagation();
-      const col = cols[+btn.dataset.col];
-      const picks = [];
-      for (const dir of ['a', 'b']) {
-        const ti = shown.find(k => traces[k].dir === dir && col.ev[k]);
-        if (ti != null) picks.push({ dir, km: col.ev[ti].dist_km, fiber: traces[ti].fiber, src: traces[ti].src || dir });
-      }
-      const r = btn.getBoundingClientRect();
-      if (picks.length === 1) {
-        const p = picks[0];
-        showSpanMenu(r.left, r.bottom + 2, p.dir, p.km, p.fiber, p.src);
-      } else if (picks.length === 2) {
-        showDirChooser(r.left, r.bottom + 2, picks);
-      }
+      const r = (ev.target.closest('.fr-evmenu') || th).getBoundingClientRect();
+      zoomToKm(+th.dataset.km, 2);
+      const picks = colPicks(+th.dataset.col);
+      if (picks.length) showColumnMenu(r.left, r.bottom + 2, picks);
     });
   });
+  wireHeaderMenu(table, colPicks);
 
   // A click on an event number on the trace lands here: scroll the row into
   // the window (the body is virtual, so paint it first), then the cell into
@@ -7726,14 +7732,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   // you set one.  The row names the direction, the cell names the event, so
   // there is nothing to disambiguate — and the km recorded is the event's own,
   // which is what the store and (later) the engine both speak.
-  tb.addEventListener('contextmenu', (ev) => {
-    const td = ev.target.closest('td[data-km]');
-    const tr = td && td.closest('tr[data-dir]');
-    if (!td || !tr) return;
-    ev.preventDefault();
-    showSpanMenu(ev.clientX, ev.clientY, tr.dataset.dir, +td.dataset.km,
-                 tr.dataset.fiber, tr.dataset.src);
-  });
+  tb.addEventListener('contextmenu', (ev) => wireCellMenu(ev, tb));
 }
 
 // ─── FastReporter mode: FR's bidirectional table, verbatim ─────────────
@@ -8008,11 +8007,12 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     if (!keepCol[i]) return;
     const n = c.ev.filter(x => x).length;
     const span = c.mixed ? 3 : 2;
-    h1 += `<th colspan="${span}" class="fr-evhdr" data-km="${c.km}" title="zoom to ${c.km.toFixed(3)} km">`
-        + `Event ${i + 1} (${n}/${have.length})</th>`;
-    h2 += `<th colspan="${span}" class="fr-evsub">${colKind(c)}<br><span class="fr-km">${kmFt(c.km - zeroKm)}</span></th>`;
-    h3 += (c.mixed ? '<th class="fr-sub">Type</th>' : '')
-        + '<th class="fr-sub">Loss<br>(dB)</th><th class="fr-sub">Refl.<br>(dB)</th>';
+    h1 += `<th colspan="${span}" class="fr-evhdr" data-km="${c.km}" data-col="${i}" title="zoom to ${c.km.toFixed(3)} km, span and settings">`
+        + `Event ${i + 1} (${n}/${have.length})`
+        + `<button class="fr-evmenu" data-col="${i}" title="span and settings">⋯</button></th>`;
+    h2 += `<th colspan="${span}" class="fr-evsub" data-col="${i}">${colKind(c)}<br><span class="fr-km">${kmFt(c.km - zeroKm)}</span></th>`;
+    h3 += (c.mixed ? `<th class="fr-sub" data-col="${i}">Type</th>` : '')
+        + `<th class="fr-sub" data-col="${i}">Loss<br>(dB)</th><th class="fr-sub" data-col="${i}">Refl.<br>(dB)</th>`;
     if (showSec && i < cols.length - 1) {
       const lens = have.map((_p, fi) => secOf(fi, i)).filter(s => s && s.length_m != null)
                        .map(s => s.length_m / 1000);
@@ -8221,10 +8221,34 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       off += r.offsetHeight;
     }
   });
+  // A header is every row's, so each direction uses its first shown fibre
+  // with a measured reading in the column (FR's synthesised leg only when no
+  // fibre measured one), at that leg's own raw km, as a right-click on it.
+  const colPicks = i => {
+    const picks = [];
+    for (const w of ['a', 'b']) {
+      const legOf = fi => { const x = cols[i].ev[fi]; return x && x.row[w]; };
+      const fi = shown.find(k => legOf(k) && !legOf(k).synthetic) ?? shown.find(k => legOf(k));
+      if (fi == null) continue;
+      const t = w === 'a' ? have[fi].ta : have[fi].tb;
+      picks.push({ dir: t.dir, km: rawKm(legOf(fi).pos_m), fiber: have[fi].fiber, src: t.src || t.dir });
+    }
+    return picks;
+  };
   table.querySelectorAll('th.fr-evhdr').forEach(th => {
     th.style.cursor = 'pointer';
-    th.addEventListener('click', () => zoomToKm(+th.dataset.km, 2));
+    // A click on the heading ("Event 1") zooms to the event and opens its
+    // span menu, as the ⋯ does (Robert 2026-10-02: the boss clicks the
+    // event's name, not the dots, to get Span START, END, Reset).
+    th.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const r = (ev.target.closest('.fr-evmenu') || th).getBoundingClientRect();
+      zoomToKm(+th.dataset.km, 2);
+      const picks = colPicks(+th.dataset.col);
+      if (picks.length) showColumnMenu(r.left, r.bottom + 2, picks);
+    });
   });
+  wireHeaderMenu(table, colPicks);
   // A click on an event number on the trace: scroll that fibre's row for the
   // trace's direction into view and mark the cell (three rows per fibre).
   gGridGoTo = (t, e) => {
@@ -8279,16 +8303,9 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     pickRow(tr.dataset.avg ? [p.ta.key, p.tb.key] : [`${tr.dataset.src}-${tr.dataset.fiber}`]);
     paintRows();
   });
-  // Right-click a direction's cell for the span menu, as in the other grid;
-  // the Average row names no direction, so it has no menu.
-  tb.addEventListener('contextmenu', (ev) => {
-    const td = ev.target.closest('td[data-km]');
-    const tr = td && td.closest('tr[data-dir]');
-    if (!td || !tr) return;
-    ev.preventDefault();
-    showSpanMenu(ev.clientX, ev.clientY, tr.dataset.dir, +td.dataset.km,
-                 tr.dataset.fiber, tr.dataset.src);
-  });
+  // Right-click any cell for the span menu, as in the other grids
+  // (wireCellMenu: the Average row asks which direction).
+  tb.addEventListener('contextmenu', (ev) => wireCellMenu(ev, tb));
   // End verdicts landing later move only the end marks, the P/F column and
   // the drawer's marks (see endVerdictsLanded): the rows on screen are
   // painted again, the rest stays.  A filter or the one-direction fibres'
@@ -8309,11 +8326,12 @@ function closeSpanMenu() {
   if (m) m.remove();
 }
 // Both directions sit under one header column, so the ⋯ asks which one first.
+// With no picks (a header over no event) it is the View items alone.
 function showDirChooser(x, y, picks) {
   closeSpanMenu();
   const m = document.createElement('div');
   m.id = 'span-menu';
-  m.innerHTML = `<div class="span-menu-hd">Which Direction?</div>`
+  m.innerHTML = (picks.length ? `<div class="span-menu-hd">Which Direction?</div>` : '')
     + picks.map((p, k) =>
         `<button data-k="${k}">${p.dir === 'a' ? 'A→B' : 'B→A'} Span and Settings…</button>`).join('')
     + viewItems();
@@ -8330,6 +8348,72 @@ function showDirChooser(x, y, picks) {
     };
   });
   setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
+}
+// A column header's menu: the span menu for the one direction its column
+// has, the chooser for two, the View items for a header over no event.
+function showColumnMenu(x, y, picks) {
+  if (picks.length === 1) {
+    const p = picks[0];
+    showSpanMenu(x, y, p.dir, p.km, p.fiber, p.src);
+  } else showDirChooser(x, y, picks);
+}
+// Every cell of an event table opens the span menu on a right-click (Robert
+// 2026-10-02: only a direction's loss cell with its own event did, about one
+// cell in five; the rest gave the browser's menu).  A cell names its event
+// column (data-col) or sits after the one it belongs to (Refl., Type, a
+// Section).  Its own direction's event there is the pick; a gray cell, a
+// blank or an Average row take each direction's event in that column for
+// the fibre, so two directions ask which one first.  A cell before any
+// event column (Identifiers, P/F, wavelength, direction) takes the row's
+// first event.
+function cellMenuPicks(tb, td) {
+  const tr = td.closest('tr');
+  if (!tr || tr.dataset.fiber == null) return [];
+  let c = td;
+  while (c && c.dataset.col == null) c = c.previousElementSibling;
+  const col = c ? c.dataset.col : null;
+  const fid = tr.dataset.row ? tr.dataset.row.split('-')[0] : null;
+  const rows = fid != null
+    ? [...tb.querySelectorAll(`tr[data-dir][data-row^="${fid}-"]`)]
+    : (tr.dataset.dir ? [tr] : []);
+  rows.sort((a, b) => (b === tr) - (a === tr));    // this row first
+  const pickOf = row => {
+    const cell = col != null ? row.querySelector(`td[data-col="${col}"][data-km]`)
+                             : row.querySelector('td[data-km]');
+    return cell ? { dir: row.dataset.dir, km: +cell.dataset.km,
+                    fiber: row.dataset.fiber, src: row.dataset.src } : null;
+  };
+  const own = tr.dataset.dir ? pickOf(tr) : null;
+  if (own) return [own];
+  const picks = [];
+  for (const row of rows) {
+    const p = pickOf(row);
+    if (p && !picks.some(q => q.dir === p.dir)) picks.push(p);
+  }
+  return picks;
+}
+// No event for the cell at all (a column neither direction of the fibre
+// reached, a statistics row): the View items alone, never the browser's menu.
+function wireCellMenu(ev, tb) {
+  const td = ev.target.closest('td');
+  if (!td) return;
+  ev.preventDefault();
+  showColumnMenu(ev.clientX, ev.clientY, cellMenuPicks(tb, td));
+}
+// Every header cell opens the menu on a right-click, not only the ⋯: on a
+// wide table the ⋯ of the event you are reading is often scrolled out of
+// sight, and the A+B tables' sub-rows (kind, distance, Loss / Refl.) are
+// headers of the same column.  An event column's cells carry data-col;
+// picksFor(i) names what that column's ⋯ would open.  Any other header
+// (Identifiers, a Section, the Statistics) opens the View items.
+function wireHeaderMenu(table, picksFor) {
+  if (!table.tHead) return;
+  table.tHead.addEventListener('contextmenu', (ev) => {
+    const th = ev.target.closest('th');
+    if (!th) return;
+    ev.preventDefault();
+    showColumnMenu(ev.clientX, ev.clientY, th.dataset.col != null ? picksFor(+th.dataset.col) : []);
+  });
 }
 // The view switches, under their own heading because they change what is
 // PRINTED, not what a span or a trace setting is.  "Show only flagged rows"
@@ -8738,16 +8822,17 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   cols.forEach((c, i) => {
     if (!keepCol[i]) return;
     const n = c.ev.filter(x => x).length;
-    h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.viewKm}" title="zoom to ${c.km.toFixed(3)} km">`
-        + `${esc(c.title)} (${n}/${have.length})</th>`;
+    h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.viewKm}" data-col="${i}" title="zoom to ${c.km.toFixed(3)} km, span and settings">`
+        + `${esc(c.title)} (${n}/${have.length})`
+        + `<button class="fr-evmenu" data-col="${i}" title="span and settings">⋯</button></th>`;
     // An event column's FastReporter word before the distance, as in FR
     // mode ("Non-reflective" / "21.8759km, 71,771'"); a Mixed column names
     // each fibre's type on hover.  The report stores the word on the column.
     const kindTxt = c.eventKind
       ? `<span class="fr-evkind"${c.eventTip ? ` title="${esc(c.eventTip)}"` : ''}>${esc(c.eventKind)}</span><br>`
       : '';
-    h2 += `<th colspan="2" class="fr-evsub">${kindTxt}<span class="fr-km">${kmFt(c.km)}</span></th>`;
-    h3 += '<th class="fr-sub">Loss<br>(dB)</th><th class="fr-sub">Refl.<br>(dB)</th>';
+    h2 += `<th colspan="2" class="fr-evsub" data-col="${i}">${kindTxt}<span class="fr-km">${kmFt(c.km)}</span></th>`;
+    h3 += `<th class="fr-sub" data-col="${i}">Loss<br>(dB)</th><th class="fr-sub" data-col="${i}">Refl.<br>(dB)</th>`;
     if (secCol[i]) {
       const lens = have.map((_p, fi) => secOf(fi, i)).filter(s => s && s.length_m != null)
                        .map(s => s.length_m / 1000);
@@ -8947,10 +9032,34 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
       off += r.offsetHeight;
     }
   });
+  // A header is every row's, so each direction uses its first shown fibre
+  // with a reading in the column, at that reading's own raw km, as a
+  // right-click on its cell does.
+  const colPicks = i => {
+    const picks = [];
+    for (const w of LEGS.filter(l => l !== 'avg')) {
+      const legOf = fi => { const x = cols[i].ev[fi]; return x && x[w] && x[w].km != null ? x[w] : null; };
+      const fi = shown.find(k => legOf(k));
+      if (fi == null) continue;
+      const t = w === 'a' ? have[fi].ta : have[fi].tb;
+      picks.push({ dir: t.dir, km: rawKm(legOf(fi).km), fiber: have[fi].fiber, src: t.src || t.dir });
+    }
+    return picks;
+  };
   table.querySelectorAll('th.fr-evhdr').forEach(th => {
     th.style.cursor = 'pointer';
-    th.addEventListener('click', () => zoomToKm(+th.dataset.km, 2));
+    // A click on the heading ("Event 1") zooms to the event and opens its
+    // span menu, as the ⋯ does (Robert 2026-10-02: the boss clicks the
+    // event's name, not the dots, to get Span START, END, Reset).
+    th.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const r = (ev.target.closest('.fr-evmenu') || th).getBoundingClientRect();
+      zoomToKm(+th.dataset.km, 2);
+      const picks = colPicks(+th.dataset.col);
+      if (picks.length) showColumnMenu(r.left, r.bottom + 2, picks);
+    });
   });
+  wireHeaderMenu(table, colPicks);
   // A click on an event number on the trace: scroll that fibre's row for the
   // trace's direction into view and mark the cell that reading is printed in.
   gGridGoTo = (t, e) => {
@@ -9003,16 +9112,9 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     pickRow(tr.dataset.avg ? [p.ta.key, p.tb.key] : [`${tr.dataset.src}-${tr.dataset.fiber}`]);
     paintRows();
   });
-  // Right-click a direction's cell for the span menu, as in the other grids;
-  // the Average row names no direction, so it has no menu.
-  tb.addEventListener('contextmenu', (ev) => {
-    const td = ev.target.closest('td[data-km]');
-    const tr = td && td.closest('tr[data-dir]');
-    if (!td || !tr) return;
-    ev.preventDefault();
-    showSpanMenu(ev.clientX, ev.clientY, tr.dataset.dir, +td.dataset.km,
-                 tr.dataset.fiber, tr.dataset.src);
-  });
+  // Right-click any cell for the span menu, as in the other grids
+  // (wireCellMenu: the Average row asks which direction).
+  tb.addEventListener('contextmenu', (ev) => wireCellMenu(ev, tb));
   // The end verdicts landing (see endVerdictsLanded) can move a connector's
   // one-direction gate (gateFor stands it down on a panel tie): the rows on
   // screen and the drawer's marks are judged again, the rest stays.
