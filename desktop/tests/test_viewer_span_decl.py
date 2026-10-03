@@ -185,7 +185,7 @@ def test_the_declaration_is_stored_in_the_directions_own_frame():
     assert "tb.addEventListener('contextmenu', (ev) => wireCellMenu(ev, tb));" in fr[:fr.index('\n}\n')]
     fn = SRC[SRC.index('function cellMenuPicks('):][:1600]
     assert 'km: +cell.dataset.km' in fn
-    grid = SRC[SRC.index('cells.push(lossCell(evLoss(e)'):][:400]
+    grid = SRC[SRC.index('cells.push(typeTd + lossCell(evLoss(e)'):][:400]
     assert 'data-km="${e.dist_km}"' in grid, 'must tag the RAW km, not dispKm'
 
 

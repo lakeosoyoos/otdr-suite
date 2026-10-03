@@ -183,9 +183,13 @@ def test_warn_for_follows_the_gate_it_sits_under():
 def test_both_tables_colour_the_band_yellow_and_never_as_a_failure():
     assert re.search(r'td\.fr-warn\s*\{\s*background:\s*#ffeb00', VIEWER)
     # single-fibre table: fail first, then warning
-    assert ("else if (overGate(v)) cls = ' class=\"fr-hi\"';   // the REPORT's verdict\n"
-            "      else if (clearsAt(v, warnGate)) cls = ' class=\"fr-warn\"';"
+    assert ("else if (evFails(v, e, ti)) cls = ' class=\"fr-hi\"';   // the REPORT's verdict\n"
+            "      else if (evWarns(v)) cls = ' class=\"fr-warn\"';"
             ) in VIEWER
+    # evFails is the report's gate, evWarns its Warning (FEC shots: the FEC
+    # rule, and no warning band, as the FEC table has none)
+    assert ": overGate(v);" in VIEWER
+    assert "const evWarns = v => !gFecMode && !overGate(v) && clearsAt(v, warnGate);" in VIEWER
     # the report's gate and its Warning
     assert "const overGate = clearsGate;" in VIEWER
     assert "const warnGate = warnFor(false, false);" in VIEWER
@@ -233,7 +237,7 @@ def test_warning_cells_only_keeps_yellow_and_collapses_like_failing():
     # the FEC table too (2026-10-01; it has no warning band, see
     # test_viewer_fec_mode.py)
     assert VIEWER.count("const collapse = cellFilterOn();") == 4
-    assert "|| (gWarnCellsOnly && warnsGate(v));" in VIEWER
+    assert "|| (gWarnCellsOnly && evWarns(v));" in VIEWER
     # in the two A+B tables only the Average row's loss is kept (2026-09-29)
     assert "? (gFailCellsOnly && cellFails(x, which)) || (gWarnCellsOnly && cellWarns(x, which))" in VIEWER
     assert "? (gFailCellsOnly && lossFails(c, x, which)) || (gWarnCellsOnly && lossWarns(c, x, which))" in VIEWER
