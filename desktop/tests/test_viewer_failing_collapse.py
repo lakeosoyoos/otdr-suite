@@ -53,8 +53,10 @@ def test_only_the_average_keeps_a_loss():
     assert "gated ? legGateFor(isRefl(x)) : null," in FN
     assert "judged ? legWarnFor(isRefl(x)) : null)" in FN
     # the rows' own verdicts are untouched
-    assert "const fail = legFails(fi, which);" in FN
-    assert "const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));" in FN
+    # one P/F per fibre, on its Average row (FR's bidirectional layout, Robert 2026-10-02)
+    assert "? `<td class=\"${pfClass(fibreFails(fi))}\"" in FN
+    assert "const fibreFails = fi => ['a', 'b', 'avg'].some(w => legFails(fi, w));" in FN
+    assert "const rowFails = have.map((_p, fi) => fibreFails(fi));" in FN
 
 
 def test_a_connector_keeps_each_failing_direction():

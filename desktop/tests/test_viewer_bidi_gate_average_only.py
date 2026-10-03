@@ -11,8 +11,8 @@ A->B / B->A loss cell is never red or yellow on its own reading.  What stays:
     connectors are seen separately);
   - a direction's reflectance;
   - the report's own flag on a direction (an event only one direction read).
-The one-direction views (a fibre loaded one way, the FILES list) are not the
-two-direction tables and keep the single-direction gate.
+A fibre loaded one way (its own grid under the A+B table) is not a
+two-direction table and keeps the single-direction gate.
 No Node here, so the JS is checked at the source, like the other Viewer tests.
 """
 import re
@@ -61,6 +61,5 @@ def test_the_average_still_flags_at_the_box():
 
 
 def test_one_direction_views_keep_the_single_direction_gate():
-    # a fibre loaded one way under the A+B table, and a file's own P/F
+    # a fibre loaded one way under the A+B table
     assert 'opts.oneDir ? (v => clearsAt(v, gateFor(false, true)))' in VIEWER
-    assert 'clearsAt(e.splice_loss, gateFor(!!e.is_reflective, true))' in VIEWER

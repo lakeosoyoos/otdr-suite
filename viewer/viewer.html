@@ -7852,7 +7852,8 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     return clearsAt(leg.loss, legGateFor(isRefl(x)));
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c.ev[fi], which));
-  const rowFails = have.map((_p, fi) => ['a', 'b', 'avg'].some(w => legFails(fi, w)));
+  const fibreFails = fi => ['a', 'b', 'avg'].some(w => legFails(fi, w));
+  const rowFails = have.map((_p, fi) => fibreFails(fi));
   // A yellow loss: at or over its Warning, under its Fail (see warnFor).
   const cellWarns = (x, which) => {
     if (cellFails(x, which)) return false;
@@ -7945,9 +7946,10 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       // One verdict per fibre, on its Average row, as FR shows a
       // bidirectional measurement (Robert 2026-10-02, from FR): the
       // direction rows' P/F is blank, their failing cells still red.
+      // Judged as the row paints, so end verdicts landing (refreshVerdicts) move it.
       which === 'avg'
-        ? `<td class="${pfClass(rowFails[fi])}" title="the fiber at the report's gates (${gateLabel()})`
-          + `, this is OUR verdict, not FastReporter's">${pfMark(rowFails[fi])}</td>`
+        ? `<td class="${pfClass(fibreFails(fi))}" title="the fiber at the report's gates (${gateLabel()})`
+          + `, this is OUR verdict, not FastReporter's">${pfMark(fibreFails(fi))}</td>`
         : '<td></td>',
       `<td>${t.data.wavelength_nm || '---'}</td>`,
       `<td>${label}</td>`,
@@ -8678,8 +8680,9 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     const label = which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average';
     // An A+B table carries one verdict per fibre, on its Average row (FR's
     // bidirectional layout, Robert 2026-10-02); a one-direction table's rows
-    // carry their own.
-    const fail = rowFails[fi];
+    // carry their own.  Judged as the row paints, so end verdicts landing
+    // (refreshVerdicts) move it.
+    const fail = LEGS.some(w => legFails(fi, w));
     const cells = [
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
       + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${p.fiber}</td>`,
