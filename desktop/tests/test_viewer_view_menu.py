@@ -128,6 +128,17 @@ def test_the_view_switches_sit_behind_a_gear():
     assert 'z-index: 20;' in head
 
 
+
+def test_the_button_says_settings_not_a_gear():
+    """Robert 2026-10-02: the gear was too small to see; the button reads
+    Settings and opens the same menu."""
+    btn = SRC.split('<button id="evt-view-btn"', 1)[1].split("</button>", 1)[0]
+    assert ">Settings<span id=\"evt-view-on\"></span>" in btn
+    assert "&#9881;" not in btn
+    assert 'aria-haspopup="true"' in btn
+    assert ("document.getElementById('evt-view-btn').addEventListener('click'" in SRC)
+    assert "setViewMenu(document.getElementById('evt-view-menu').hidden);" in SRC
+
 def test_averages_only_keeps_each_fibres_average_row():
     """Both two-direction tables (FastReporter and OTDR Suite): with no cell
     filter on, each fibre keeps its Average row alone.  With one on, the
