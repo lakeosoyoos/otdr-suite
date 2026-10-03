@@ -8637,17 +8637,19 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     }
   }));
   draw();                                  // painted after a fetch: the chart follows
-  // The section a fibre's row carries runs to that fibre's NEXT row; it is
-  // printed under column i only when the next row sits in column i + 1.
-  // A file listed with no partner prints its section under the column of
-  // the event it starts at, wherever its next event sits, as FR prints it
+  // The section a fibre's row carries runs to that fibre's NEXT row, and FR
+  // prints it under the column of the row it starts at, wherever the next
+  // row sits: on a 4-fibre span FR prints fibre 4's 1.889 dB under Event 2's
+  // Section with its Event 3 blank (Robert 2026-10-03, "fix the bidi
+  // sections too").  This used to need the next row in column i + 1 and
+  // left that section blank.  A file listed with no partner does the same
   // (S08: fibre 3's B->A row carries 1.869 dB under Event 1's Section with
-  // Event 2 blank).
+  // Event 2 blank).  The last row in the declared span has none.
   const secOf = (fi, i) => {
-    const c = cols[i].ev[fi], n = cols[i + 1] && cols[i + 1].ev[fi];
-    if (c && c.row.solo) return i < cols.length - 1 ? c.row.section : null;
-    if (!c || !n || n.k !== c.k + 1) return null;
-    return c.row.section;
+    const c = cols[i].ev[fi];
+    if (!c || i >= cols.length - 1) return null;
+    if (c.row.solo) return c.row.section;
+    return have[fi].rows[c.k + 1] ? c.row.section : null;
   };
   const fmt  = v => (v == null || isNaN(v)) ? '---' : v.toFixed(3);
   const fmtR = v => (v == null || isNaN(v)) ? '---' : v.toFixed(1);
