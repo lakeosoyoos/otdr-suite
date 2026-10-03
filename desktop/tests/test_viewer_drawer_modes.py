@@ -170,7 +170,9 @@ def test_one_way_fibres_among_pairs_are_left_out_on_one_line():
     assert "renderFastReporterGrid" not in note
     assert "function appendOneDirGrid(" not in SRC
     fn = _fn("renderFastReporterGrid")
-    assert "const overGate = clearsGate;" in fn and "opts" not in fn.split("\n", 1)[0]
+    # no one-direction gate any more; `opts` stays for the FEC Combined
+    # column (opts.fec), which renderEventTable's FEC branch still passes
+    assert "const overGate = clearsGate;" in fn and "opts.oneDir" not in fn
 
 
 # ─── the real functions, in JavaScriptCore ───────────────────────────────

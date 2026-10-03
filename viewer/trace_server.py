@@ -1447,6 +1447,10 @@ def _load_trace_cached(directory, filename, mtime):
         # reads it, FastReporter's Select Same Date: the acquisition, not the
         # file's date on disk.
         'acq_time': _acq_time(r),
+        # The distance range the tech set, in km (FR's Test Parameters
+        # Range), for the Summary Report.  None on a JSON export or a file
+        # with no EXFO block: no range is made up from the samples.
+        'range_km': _range_km(r),
     }
 
 
@@ -1457,6 +1461,15 @@ def _acq_time(r):
     except (TypeError, ValueError):
         v = 0
     return v if v > 0 else None
+
+
+def _range_km(r):
+    """The acquisition range a reader found, in km, or None."""
+    try:
+        v = float(r.get('exfo_range_m') or 0) if isinstance(r, dict) else 0.0
+    except (TypeError, ValueError):
+        v = 0.0
+    return v / 1000.0 if v > 0 else None
 
 
 # Veltkamp split constant: 2**27 + 1.  Splitting a float64 by it gives two
