@@ -32,6 +32,7 @@ import subprocess
 import pytest
 
 from conftest import VIEWER_DIR
+from conftest import with_copy_helpers  # noqa: E402
 from test_viewer_overview_failures import (  # noqa: F401 (real_trace is a fixture)
     JSC, _SHIMS, _scenario, _viewer_script, needs_jsc, real_trace)
 
@@ -51,7 +52,7 @@ def _js_func(src, name):
 
 def _jsc(prog, tmp_path, name='prog.js'):
     path = tmp_path / name
-    path.write_text(prog, encoding='utf-8')
+    path.write_text(with_copy_helpers(prog), encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=180)
     out = r.stdout + r.stderr
     assert 'THREW' not in out and r.returncode == 0, out[-3000:]
@@ -204,7 +205,7 @@ def test_no_add_a_trace_hint_while_loading():
 def test_the_box_counts_what_is_on_its_way():
     fn = _js_func(SRC, 'syncFiberBox')
     assert 'for (const ld of gLoadsInFlight) {' in fn
-    assert 'box.value = fiberRangeText(fibers);' in fn
+    assert 'box.value = fiberRangeText(fibers.map(realFiber));' in fn   # a copy is its fibre
     # a new load epoch (Clear All, a new FILES selection) drops the old asks
     assert 'gLoadsInFlight.clear();' in _js_func(SRC, 'newLoadEpoch')
 

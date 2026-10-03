@@ -27,6 +27,7 @@ import subprocess
 import pytest
 
 from conftest import APP_PATH, VIEWER_DIR
+from conftest import with_copy_helpers  # noqa: E402
 
 SRC = (VIEWER_DIR / 'viewer.html').read_text(encoding='utf-8')
 APP = APP_PATH.read_text(encoding='utf-8')
@@ -49,7 +50,7 @@ def _js_func(name):
 
 def _run(tmp_path, js):
     path = tmp_path / 'fit.js'
-    path.write_text(js, encoding='utf-8')
+    path.write_text(with_copy_helpers(js), encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
     out = r.stdout + r.stderr
     assert r.returncode == 0 and 'OUT ' in out, out[-2000:]
@@ -219,4 +220,4 @@ def test_every_grid_repaints_its_rows_when_its_box_changes_size():
 # ── File names cut from the front ───────────────────────────────────────────
 def test_long_file_names_are_cut_from_the_front():
     assert '.file-row .file-name { direction: rtl; text-align: left; }' in SRC
-    assert 'name: `<span class="file-name"><bdi>${esc(files[i] || \'F\' + f)}</bdi></span>`,' in SRC
+    assert 'name: `<span class="file-name"><bdi>${esc(files[i] || \'F\' + fiberLabel(f))}`' in SRC

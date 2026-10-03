@@ -23,6 +23,7 @@ import urllib.request
 import pytest
 
 from conftest import FIXTURE_A_DIR, FIXTURE_B_DIR, VIEWER_DIR, import_trace_server
+from conftest import COPY_HELPERS_JS  # noqa: E402
 
 T = import_trace_server()
 
@@ -110,7 +111,7 @@ loadOne('a1', 1, 'a').then(function () {
   print(JSON.stringify({ calls: __calls, traces: gTraces.length, fails: gLoadFailures }));
 }, function (e) { print('THREW ' + e); });
 ''' % (json.dumps(replies), _load_one_src())
-    r = subprocess.run([JSC, '-e', prog], capture_output=True, text=True, timeout=60)
+    r = subprocess.run([JSC, '-e', COPY_HELPERS_JS + prog], capture_output=True, text=True, timeout=60)
     out = (r.stdout + r.stderr).strip()
     assert 'THREW' not in out and r.returncode == 0, out
     return json.loads(out.splitlines()[-1])
