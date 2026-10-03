@@ -84,8 +84,9 @@ def test_the_other_data_cells_go_through_cellText():
     grid = SRC.split("function renderFastReporterGrid(", 1)[1].split("\n// ─── FastReporter mode", 1)[0]
     for cell in (
         "<td>${cellText(fmtR(e ? e.reflection : null))}</td>",          # reflectance
-        '<td class="fr-sec">${cellText(s ? fmtK(s.len) : \'---\')}</td>',  # section
-        '<td class="fr-stat">${cellText(f(mn))}</td>',                  # statistics
+        # no section here: blank, as FastReporter prints it
+        '<td class="fr-sec">${cellText(s ? fmtK(s.len) : \'\')}</td>',  # section
+        '<td class="fr-stat">${cellText(none(mn) ? \'\' : f(mn))}</td>',  # statistics
     ):
         assert cell in grid, cell
 
@@ -98,7 +99,9 @@ def test_the_fr_bidirectional_grid_blanks_the_same_way():
     # blank AND uncoloured: a shaded empty cell reads as a missing value
     assert "if (cellFilterOn() && !keep) return `<td${attrs}></td>`;" in lc
     assert "if (cellFilterOn() && !(gFailCellsOnly && bad)) return '<td></td>';" in bidi   # reflectance cell
-    assert "<td class=\"fr-sec\">${cellText(v ? fmt(v.loss) : '---')}</td>" in bidi
+    # no section from this row: blank; one this direction did not measure: ---
+    assert "<td class=\"fr-sec\">${cellText(v ? fmt(v.loss) : no)}</td>" in bidi
+    assert "const no = s ? '---' : '';" in bidi
 
 
 def test_the_panel_hint_names_whichever_view_is_on():
