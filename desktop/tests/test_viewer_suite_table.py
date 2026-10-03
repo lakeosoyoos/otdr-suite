@@ -455,7 +455,7 @@ def test_the_suite_table_is_the_report_s_columns_and_three_rows_per_fibre():
     # the report's columns, in its order, under its own names and distances
     assert "const cols = (res.columns || []).map(c => ({" in body
     assert "if (cols[cell.col]) cols[cell.col].ev[fi] = cell;" in body
-    assert "`${esc(c.title)} (${n}/${have.length})</th>`" in body
+    assert "`${esc(c.title)} (${n}/${have.length})`" in body
     assert '<span class="fr-km">${kmFt(c.km)}</span>' in body
     # zoom lands on the file's frame: the report's km plus A's launch length
     # (a one-direction table's km goes on through its trace to the chart)
