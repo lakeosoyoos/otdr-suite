@@ -121,6 +121,9 @@ function grab() {
 }
 renderFastReporterGrid([F1, F3, F8], document.createElement('div'), document.createElement('div'));
 out.plain = grab();
+// handed over in the order they finished loading, not fibre order
+renderFastReporterGrid([F8, F3, F1], document.createElement('div'), document.createElement('div'));
+out.shuffled = grab();
 gFecMode = true;
 var g = function (km, failLoss) {
   return {found: true, conn_km: km, conn_loss: 0.1, conn_refl: -51, combined: [], loss: 0.1,
@@ -383,3 +386,17 @@ def test_blank_where_there_is_nothing_dashes_where_a_reading_is_missing(grid):
     # a Minimum over a column nobody has a figure in is blank: the launch's Loss
     mins = [r for r in _cells('<table>' + grid['plain']['head'] + '</table>') if r and r[0][0] == 'Minimum']
     assert mins and mins[0][4][0] == '' and mins[0][5][0] == '-57.1', mins
+
+
+@needs_jsc
+def test_rows_are_in_fibre_order_whatever_order_the_traces_arrive_in(grid):
+    """Robert 2026-10-03: the single-direction table listed its rows in the
+    order the traces finished loading (after a restore F1-F4, F7, F8, F9,
+    F5 ...).  FR lists its files in order, and a column heading prints its
+    FIRST row's event (6c), so the order picked the heading's km too."""
+    import re as _re
+    order = [_re.search(r'data-fiber="(\d+)"', h).group(1) for h in grid['shuffled']['rows']]
+    assert order == ['1', '3', '8'], order
+    assert grid['shuffled']['rows'] == grid['plain']['rows']
+    heads = [c[0] for c in _cells(grid['shuffled']['head'])[1]]
+    assert heads[6].startswith('3.1388km'), heads[6]     # F1's, not F8's 3.1356

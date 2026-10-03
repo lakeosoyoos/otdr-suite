@@ -7814,6 +7814,19 @@ function oneDirTableZeroKm(traces) {
 // FEC branch; absent everywhere else.
 function renderFastReporterGrid(traces, host, hint, opts = {}) {
   const TOL = columnTolKm(traces);
+  // Rows in fibre order, as FastReporter lists its files and as the A+B
+  // tables list theirs (a copy right after its fibre), then A->B before
+  // B->A, then by source; ties keep the order given.  They used to follow
+  // the order the traces finished loading, which after a restore read F1-F4,
+  // F7, F8, F9, F5 ... and since a column heading prints its FIRST row's
+  // event (Robert, "6c follow FR") that order picked the heading's km too
+  // (Robert 2026-10-03, "go ahead" on fixing the row order).
+  const fOrd = f => { const n = Number(f); return Number.isFinite(n) ? [n % 100000, Math.floor(n / 100000)] : [Infinity, 0]; };
+  traces = traces.map((t, k) => [t, k]).sort(([p, i], [q, j]) => {
+    const x = fOrd(p.fiber), y = fOrd(q.fiber);
+    return (x[0] - y[0]) || (x[1] - y[1]) || String(p.dir).localeCompare(String(q.dir))
+      || String(p.src || '').localeCompare(String(q.src || '')) || (i - j);
+  }).map(([t]) => t);
   const overGate = clearsGate;
   const warnGate = warnFor(false, false);
   const arrow = t => (t.dir === 'a' ? 'A→B' : 'B→A') + (t.src && t.src.length > 1 ? srcTag(t.src) : '');
