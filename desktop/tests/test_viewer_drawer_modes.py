@@ -153,10 +153,12 @@ def test_one_direction_is_marked_in_either_mode():
     i = fn.index("const marks = { mode: gAnalysisMode, single: true")
     block = fn[i:i + 1400]
     # the cells' own verdicts: the gate the table judges at, its warning
-    assert "fail = overGate(v), warn = !fail && clearsAt(v, warnGate)" in block
+    # (evFails / evWarns: the report's gate, or the FEC rule on FEC shots)
+    assert "fail = evFails(v, e, ti), warn = !fail && evWarns(v)" in block
     assert "cells: keepCol[i]" in block
-    for cell in ("overGate(v)) cls = ' class=\"fr-hi\"'", "clearsAt(v, warnGate)) cls = ' class=\"fr-warn\""):
+    for cell in ("evFails(v, e, ti)) cls = ' class=\"fr-hi\"'", "evWarns(v)) cls = ' class=\"fr-warn\""):
         assert cell in fn, cell
+    assert ": overGate(v);" in fn and "!gFecMode && !overGate(v) && clearsAt(v, warnGate)" in fn
 
 
 def test_one_way_files_among_pairs_are_rows_of_the_one_table():

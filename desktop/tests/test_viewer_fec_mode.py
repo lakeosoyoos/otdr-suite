@@ -96,7 +96,7 @@ def test_fec_mode_has_its_own_table_ahead_of_the_pairing_grids():
     assert body.index('renderFecGrid') < body.index('renderSuiteBidiGrid')
     # FR's one-direction table for now (Robert 2026-10-02), never a pairing
     fec = body[body.index('if (gFecMode) {'):body.index('renderSuiteBidiGrid')]
-    assert 'renderFastReporterGrid(visible, host, hint, { fec: fecCombinedFor(visible) });' in fec
+    assert 'renderFastReporterGrid(visible, host, hint, { fec: fecGradesFor(visible), fecColumn: gFecCombined });' in fec
     assert 'return;' in fec
     assert 'const FEC_COMBINED_TABLE = false;' in HTML
     assert 'function fecTable() { return gFecMode && FEC_COMBINED_TABLE; }' in HTML
@@ -180,7 +180,7 @@ def test_the_gear_drop_down_offers_show_combined_column_in_fec_mode_only():
     body = HTML[HTML.index('function renderEventTable() {'):]
     body = body[:body.index('\n}\n')]
     assert "if (combLab) combLab.style.display = gFecMode ? '' : 'none';" in body
-    assert 'renderFastReporterGrid(visible, host, hint, { fec: fecCombinedFor(visible) });' in body
+    assert 'renderFastReporterGrid(visible, host, hint, { fec: fecGradesFor(visible), fecColumn: gFecCombined });' in body
     # on by default, remembered like the gear's other items
     assert "gFecCombined = localStorage.getItem('otdr_viewer_fec_combined') !== '0';" in HTML
     assert "localStorage.setItem('otdr_viewer_fec_combined', gFecCombined ? '1' : '0');" in HTML
@@ -188,7 +188,7 @@ def test_the_gear_drop_down_offers_show_combined_column_in_fec_mode_only():
 
 def test_the_fr_table_ends_with_the_combined_columns():
     uni = HTML.split('function renderFastReporterGrid(', 1)[1].split('\nfunction renderFrBidiGrid(', 1)[0]
-    assert 'const NFEC = fec ? 2 : 0;' in uni
+    assert 'const NFEC = (fec && opts.fecColumn !== false) ? 2 : 0;' in uni
     assert 'class="fr-stathdr" title="${fecRule}">Combined</th>' in uni
     assert '<th class="fr-sub fr-stat">With</th><th class="fr-sub fr-stat">Loss<br>(dB)</th>' in uni
     # every row, the name strip and the spacer count the two cells
@@ -197,31 +197,36 @@ def test_the_fr_table_ends_with_the_combined_columns():
     # red at the FEC rule's verdict, never the Viewer's loss box
     assert "const hi = v != null && g.fail_loss && !flagsOff() ? ' fr-hi' : '';" in uni
     # the side is the folder the trace came from, as Splice Report FEC grades it
-    assert "fec.grades[t.src === 'b' ? 'B' : 'A']" in uni
+    assert "const side = t.src === 'b' ? 'B' : (t.src === 'a' || !t.src) ? 'A' : null;" in uni
+    assert "(fec.grades[side] || {})[String(t.fiber)]" in uni
     # Minimum / Maximum / Average over the rows on screen
     assert 'const fl = shown.map(ti => fecLoss(fecG(ti)))' in uni
 
 
 def test_the_combined_grades_are_asked_once_and_copies_are_not_graded():
-    """Real fecCombinedFor under JavaScriptCore with fetch stubbed."""
+    """Real fecGradesFor under JavaScriptCore with fetch stubbed.  The grades
+    are read with the Combined column off too: P/F follows the FEC rule
+    (Robert 2026-10-02, "p/f needs to use the correct rule always")."""
     if not os.path.exists(JSC):
         pytest.skip('JavaScriptCore shell not available')
     import json, tempfile
-    i = HTML.index('function fecCombinedFor(')
+    i = HTML.index('function fecGradesFor(')
     fn = HTML[i:HTML.index('\n}\n', i) + 3]
     js = ("var gFecMode = true, gFecCombined = true, RENDERS = 0, URLS = [], DONE = null;\n"
           "var gInfo = {dir_a_name: 'A', dir_b_name: 'B', fec_gates: null};\n"
           "var gFecComb = { sig: null, res: null, seq: 0 };\n"
+          "var gFecOverride = { loss: null, refl: null }, gFecGates = null, gFecBase = null;\n"
+          "function fecOverridden() { return gFecOverride.loss != null || gFecOverride.refl != null; }\n"
           "var gCopies = {'100006': [6, 2]};\n"
           "function realFiber(id) { const c = gCopies[String(id)]; return c ? c[0] : Number(id); }\n"
           "function renderEventTable() { RENDERS++; }\n"
           "function fetch(u) { URLS.push(u); return Promise.resolve({ json: () => Promise.resolve({grades: {A: {'6': {found: true}}}}) }); }\n"
           + fn +
           "var T = [{fiber: 6, src: 'a'}, {fiber: 6, src: 'b'}, {fiber: 100006, src: 'a'}, {fiber: 2, src: 'a'}];\n"
-          "var out = {first: fecCombinedFor(T), again: fecCombinedFor(T)};\n"
+          "var out = {first: fecGradesFor(T), again: fecGradesFor(T)};\n"
           "Promise.resolve().then(() => 0).then(() => 0).then(() => 0).then(() => {\n"
-          "  out.landed = fecCombinedFor(T); out.urls = URLS; out.renders = RENDERS;\n"
-          "  gFecCombined = false; out.off = fecCombinedFor(T);\n"
+          "  out.landed = fecGradesFor(T); out.urls = URLS; out.renders = RENDERS;\n"
+          "  gFecCombined = false; out.off = fecGradesFor(T);\n"
           "  print(JSON.stringify(out));\n"
           "});\n")
     with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as fh:
@@ -236,7 +241,7 @@ def test_the_combined_grades_are_asked_once_and_copies_are_not_graded():
     assert out['urls'] == ['/api/fec_table?fibers=2,6']     # once; the copy is not sent
     assert out['renders'] == 1                               # laid out again when they land
     assert out['landed'] == {'grades': {'A': {'6': {'found': True}}}}
-    assert out['off'] is None
+    assert out['off'] == out['landed']                   # the column off: still graded
 
 
 def test_the_short_shot_warning_no_longer_names_a_viewer_fec_tool():
@@ -535,18 +540,18 @@ def test_fec_gates_show_in_the_viewer_boxes_and_override_per_window():
         os.unlink(fh.name)
     assert p.returncode == 0 and 'Exception' not in p.stdout, p.stdout + p.stderr
     A, B = json.loads(p.stdout.strip().splitlines()[-1])
-    assert A == ['0.500', '-50.0', 'Reflectance >', 'Loss >', '']
+    assert A == ['0.500', '-50.0', 'FEC Reflectance >', 'FEC Loss >', '']
     assert B[0] == 0.3 and B[1] == 1 and 'overridden in this window' in B[2]
     assert B[3] == '0.300' and B[4] == '(FEC gates overridden)'
     assert B[5] is None                              # the profile's value lets go
-    # the Viewer's boxes hand over to FEC's under the FEC table, asked at
-    # each change (FEC comes and goes with the folders loaded)
-    assert 'if (fecTable()) { syncFecGateUI(); return; }' in HTML
+    # the Viewer's boxes hand over to FEC's whenever FEC shots are loaded,
+    # asked at each change (FEC comes and goes with the folders loaded)
+    assert 'if (gFecMode) { syncFecGateUI(); return; }' in HTML
     wire = HTML[HTML.index('function wireEventSettings'):]
     wire = wire[:wire.index('\n}\n')]
     assert "if (final && Number.isFinite(v)) setFecGateOverride('loss', v);" in wire
     assert "if (final && Number.isFinite(v)) setFecGateOverride('refl', v);" in wire
-    assert wire.count('if (fecTable()) {') == 2
+    assert wire.count('if (gFecMode) {') == 2
     assert '<span id="loss-op">Bidirectional Loss &ge;</span> <input id="set-loss"' in HTML
     assert '&loss_gate=${gFecOverride.loss}' in HTML and '&refl_gate=${gFecOverride.refl}' in HTML
 
@@ -574,13 +579,13 @@ def test_a_box_override_reaches_the_engine_and_not_the_profile(tmp_path):
 def test_the_summary_report_states_fec_mode_and_its_gates():
     rp = HTML[HTML.index('async function reportPayload('):]
     rp = rp[:rp.index('\n}\n')]
-    assert "['Mode', fecTable() ? 'FEC' :" in rp
+    assert "['Mode', gFecMode ? 'FEC' :" in rp
     assert "meta.push(['FEC loss gate'," in rp and "meta.push(['FEC reflectance gate'," in rp
     # each gate names its own source: one box typed over leaves the other's
     assert "gFecOverride[w] != null ? 'overridden in this window' : 'customer profile'" in rp
     assert "(${src('loss')})" in rp and "(${src('refl')})" in rp
     # the Viewer boxes' Loss gate / Reflectance band only outside FEC mode
-    assert rp.index("if (fecTable()) {") < rp.index("meta.push(['Loss gate', gateLabel()]);")
+    assert rp.index("if (gFecMode) {") < rp.index("meta.push(['Loss gate', gateLabel()]);")
 
 
 def test_viewer_script_still_parses():
