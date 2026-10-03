@@ -956,7 +956,7 @@ def main():
             for _name in ('REBURN_THRESHOLD', 'UNI_BEND_THRESHOLD',
                           'SINGLE_DIR_THRESHOLD', 'BIDIR_CONNECTOR_LOSS',
                           'LAUNCH_BAD_REFL_DB', 'MIDSPAN_REFL_WARN_DB',
-                          'MIDSPAN_REFL_CEIL_DB', 'LAUNCH_FIBER_MAX',
+                          'LAUNCH_FIBER_MAX',
                           'MIDSPAN_DEAD_SPAN_FRAC', 'LAUNCH_CONN_UNI_MIN_DB'):
                 _v = getattr(E, _name, None)
                 try:

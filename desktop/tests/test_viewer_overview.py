@@ -220,7 +220,7 @@ def test_viewer_flag_defaults_track_the_engine():
     assert f'uni_bend: {const("UNI_BEND_THRESHOLD"):.3f}' in html
     # the Reflectance box starts on the report's mid-span floor
     assert f'refl_floor: {const("MIDSPAN_REFL_WARN_DB"):.1f}' in html
-    assert f'refl_ceil: {const("MIDSPAN_REFL_CEIL_DB"):.1f}' in html
+    assert 'refl_ceil' not in html                    # one number, no ceiling
     assert f'id="set-refl" type="number" step="1" max="0" value="{const("MIDSPAN_REFL_WARN_DB"):.0f}"' in html
 
 

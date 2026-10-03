@@ -127,7 +127,7 @@ var out = {};
 // the gates the file verdict reads, at the Viewer's own defaults
 var gInfo = { launch_a_km: 1.0, launch_b_km: 0.0 };
 var gThresholds = { reburn: 0.160, single_dir: 0.200, connector: 0.500,
-                    connector_uni: 0.649, refl_floor: -45.0, refl_ceil: 0.0,
+                    connector_uni: 0.649, refl_floor: -45.0,
                     dead_km: 3.0, dead_frac: 0.25 };
 var OFF = false;
 var gReflOverride = null;
@@ -155,11 +155,9 @@ out.solo_conn   = fileFails([E(20, 0.30, -60, 'c'), endAt], 'a', false);    // c
 out.solo_refl   = fileFails([E(20, 0.10, -40, 'c'), endAt], 'a', false);    // no reflectance rule there
 out.solo_ends   = fileFails([E(1.0, 9.0, -20, 'launch'), E(41.0, 9.0, -20, 'end')], 'a', false);
 // a Refl Band typed in the Viewer is the rule instead of the report's
-gThresholds.refl_ceil = -42;               // the report's optional ceiling
-out.refl_report_ceil = fileFails([E(20, 0.10, -40, 'c'), endAt], 'a', true);   // stronger than it
-gReflOverride = -60;                       // typed: the number alone, no ceiling
+out.refl_strong      = fileFails([E(20, 0.10, -20, 'c'), endAt], 'a', true);   // no ceiling
+gReflOverride = -60;                       // typed: the number alone
 out.refl_typed_ceil  = fileFails([E(20, 0.10, -40, 'c'), endAt], 'a', true);
-gThresholds.refl_ceil = 0.0;
 gReflOverride = -50;
 out.refl_typed_floor = fileFails([E(20, 0.10, -47, 'c'), endAt], 'a', true);   // under the report's -45
 out.refl_typed_under = fileFails([E(20, 0.10, -55, 'c'), endAt], 'a', true);   // under the typed -50
@@ -199,7 +197,7 @@ print('OUT ' + JSON.stringify(out));
 @pytest.fixture(scope='module')
 def rules(tmp_path_factory):
     funcs = '\n'.join(_js_func(n) for n in
-                      ('clearsAt', 'clearsGate', 'gateFor', 'reflFails', 'reflFloor', 'reflCeil', 'reflInBand', 'fileFails', 'fileSameKeys', 'fileDay'))
+                      ('clearsAt', 'clearsGate', 'gateFor', 'reflFails', 'reflFloor', 'reflInBand', 'fileFails', 'fileSameKeys', 'fileDay'))
     path = tmp_path_factory.mktemp('select_same') / 'rules.js'
     path.write_text(funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
@@ -216,8 +214,8 @@ def test_a_paired_files_verdict_is_its_direction_row_at_the_single_direction_gat
     assert rules['conn_ok'] is False
     assert rules['refl'] is True                    # a mid-span reflection over the floor
     assert rules['refl_dead'] is False              # the same one inside the dead zone
-    # the report's optional ceiling holds while the box follows the report
-    assert rules['refl_report_ceil'] is False
+    # no ceiling: a strong mid-span reflection is flagged too
+    assert rules['refl_strong'] is True
     # the Reflectance box, typed: anything at or above it is flagged, no ceiling
     # (Robert 2026-10-02: box -80, a -75 reflection is flagged)
     assert rules['refl_typed_ceil'] is True

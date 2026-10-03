@@ -227,7 +227,7 @@ _ENGINE_SRC = os.path.join(os.path.dirname(HERE), 'splicereport',
                            'splicereportmatchexfo.py')
 _THRESHOLD_DEFAULTS = {'reburn': 0.160, 'uni_bend': 0.250, 'single_dir': 0.200,
                        'connector': 0.500, 'refl': -50.0,
-                       'refl_floor': -80.0, 'refl_ceil': 0.0,
+                       'refl_floor': -80.0,
                        'dead_km': 3.0, 'dead_frac': 0.25,
                        'connector_uni': 0.649,
                        # Viewer-only Warning levels (0 = no warning band):
@@ -242,10 +242,9 @@ _THRESHOLD_NAMES = {'reburn': 'REBURN_THRESHOLD',
                     'connector': 'BIDIR_CONNECTOR_LOSS',
                     'refl': 'LAUNCH_BAD_REFL_DB',
                     # the report's mid-span reflectance rule: flag at or above
-                    # the floor, below an optional ceiling (0 = none), outside
-                    # min(dead_km, dead_frac x fibre) of either end
+                    # the number, outside min(dead_km, dead_frac x fiber) of
+                    # either end
                     'refl_floor': 'MIDSPAN_REFL_WARN_DB',
-                    'refl_ceil': 'MIDSPAN_REFL_CEIL_DB',
                     'dead_km': 'LAUNCH_FIBER_MAX',
                     'dead_frac': 'MIDSPAN_DEAD_SPAN_FRAC',
                     # a connector in ONE direction (0 = off; off on a panel span)
@@ -256,7 +255,7 @@ _THRESHOLD_NAMES = {'reburn': 'REBURN_THRESHOLD',
                     'connector_warn': 'BIDIR_CONNECTOR_WARN_DB',
                     'connector_uni_warn': 'LAUNCH_CONN_UNI_WARN_DB'}
 # Reflectance settings are signed dB (0 or below); every other gate is positive.
-_NEGATIVE_GATES = {'refl', 'refl_floor', 'refl_ceil'}
+_NEGATIVE_GATES = {'refl', 'refl_floor'}
 # ...and these may be 0, which switches them off.
 _ZERO_OFF_GATES = {'connector_uni', 'reburn_warn', 'single_dir_warn',
                    'connector_warn', 'connector_uni_warn'}

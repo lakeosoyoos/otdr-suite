@@ -1158,22 +1158,8 @@ CLOSURE_VALID_MEDIAN_LOSS_MAX = 0.100   # dB — median loss inside the tight
 LAUNCH_HIGH_LOSS_DB          = None   # launch-event LOSS rule disabled per tech
                                       #   direction — the gate is on reflectance,
                                       #   not loss.
-LAUNCH_REFL_CEIL_DB          = 0.0    # dB — band HIGH end for the launch and
-                                      #   tailbox reflectance rules.  0.0 = no
-                                      #   ceiling, which is the shipped
-                                      #   behaviour: flag everything at or
-                                      #   above the floor.  Set it NEGATIVE to
-                                      #   bound the band from the top, so a
-                                      #   reflection stronger than the ceiling
-                                      #   stops being a connector-quality
-                                      #   finding and is left to the rules that
-                                      #   own it (an open or shattered
-                                      #   connector reads -20 to -14 and is a
-                                      #   break, not a dirty mate).
-                                      #   Same shape and same sign convention
-                                      #   as MIDSPAN_REFL_CEIL_DB and
-                                      #   UNI_REFL_CEIL_DB, so all three
-                                      #   reflectance rules read alike.
+# The launch / tailbox reflectance rule is one number, no ceiling (Robert
+# 2026-10-02): LAUNCH_REFL_CEIL_DB, always 0.0 = no ceiling, is gone.
 LAUNCH_BAD_REFL_DB           = -50.0  # launch / tailbox reflectance FAIL value,
                                       #   in FastReporter's own terms: the
                                       #   number a customer template carries.
@@ -8737,7 +8723,7 @@ def _launch_conn_confirmed(r, evt):
 
 def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                           high_loss_db=None, bad_refl_db=None,
-                          spans_have_tailbox=True, refl_ceil_db=None,
+                          spans_have_tailbox=True,
                           readings=None, **_ignored):
     """Return {fiber_num: launch_issue_dict} for every fiber that has a
     launch-end problem in either direction.
@@ -8752,10 +8738,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     Optional overrides (used by the Streamlit sidebar):
       high_loss_db        — launch-connector loss >= this flags HIGH_LAUNCH_LOSS
       bad_refl_db         — FR-style FAIL value; refl_fails() flags a REFL tag
-                            (the band's LOW end)
-      refl_ceil_db        — band HIGH end; 0.0 = no ceiling.  Negative bounds
-                            the band from the top: a reflection STRONGER than
-                            this is not a connector-quality finding
+                            (one number: at or above it fails)
       spans_have_tailbox  — when False, the entire tailbox-reflectance block
                             is skipped.  Use for tie-panel / jumper-only
                             spans where the cable terminates without a
@@ -8781,8 +8764,6 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         readings = VIEWER_READINGS
     hi_loss = LAUNCH_HIGH_LOSS_DB if high_loss_db is None else float(high_loss_db)
     bad_refl = LAUNCH_BAD_REFL_DB if bad_refl_db is None else float(bad_refl_db)
-    refl_ceil = (LAUNCH_REFL_CEIL_DB if refl_ceil_db is None
-                 else float(refl_ceil_db))
     # Population medians
     def _gather_launch_refls(fibers):
         refls = []
@@ -9134,8 +9115,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                     _pm = (a_port_median if dir_is_A
                            else b_port_median).get(r.get('otdr_serial'))
                     _port_ok = _pm is None or (refl - _pm) >= PORT_OUTLIER_DB
-                if (refl < 0 and refl_fails(refl, bad_refl) and _port_ok
-                        and not (refl_ceil < 0 and refl > refl_ceil)):
+                if refl < 0 and refl_fails(refl, bad_refl) and _port_ok:
                     tags.append(f'REFL{refl:+.1f}dB')
                     rules.append('launch')
 
@@ -9193,13 +9173,10 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                     and this_tb_refl < 0
                     and refl_fails(this_tb_refl, bad_refl)
                     and (_panel_span or _tb_outlier_ok)):
-                if refl_ceil < 0 and this_tb_refl > refl_ceil:
-                    pass      # stronger than the band's top: not this rule's
-                else:
-                    # FAR end: this reading is at the other end of the
-                    # cable from the one this direction was shot from.
-                    far_tags.append(f'REFL{this_tb_refl:+.1f}dB')
-                    far_rules.append('tailbox')
+                # FAR end: this reading is at the other end of the
+                # cable from the one this direction was shot from.
+                far_tags.append(f'REFL{this_tb_refl:+.1f}dB')
+                far_rules.append('tailbox')
 
             # ── FQA: per-trace acquisition-duration check ──
             # Compare this fiber's "Duration" (seconds — the SR-4731
@@ -11898,8 +11875,9 @@ def _trace_frame_shift_km(fiber_data, y, res):
 # Mid-span reflectance thresholds — the OTDR settings panel's "Mid-span reflectance"
 # row (overridable per customer profile via --overrides; read as module globals so
 # setattr() in run_splicereport takes effect).  A mid-span reflective event is
-# flagged only when its reflectance is at least MIDSPAN_REFL_WARN_DB (the floor);
-# >= MIDSPAN_REFL_FAIL_DB → FAIL, between floor and fail → WARN.  Signed dB,
+# flagged when its reflectance is at least MIDSPAN_REFL_WARN_DB (one number, no
+# WARN / FAIL split and no ceiling, Robert 2026-10-02).  The name is kept so
+# the hub, the runner and the Viewer read the same global.  Signed dB,
 # less-negative = stronger reflection.
 def _reflective_spike_confirms(fiber_data, event_km, refl_db):
     """Does this fiber's OWN raw trace contain the reflective spike its
@@ -12052,7 +12030,6 @@ def _reflective_spike_confirms(fiber_data, event_km, refl_db):
 # the unidirectional UNI_FRONT_DEAD_SPAN_FRAC.
 MIDSPAN_DEAD_SPAN_FRAC = 0.25
 
-MIDSPAN_REFL_FAIL_DB = -50.0
 MIDSPAN_REFL_WARN_DB = -80.0
 # Reflective-spike SHARPNESS gate (PLACHE F609 fix, 2026-07-24).  A real
 # Fresnel reflection has a SHARP edge; a firmware-mislabeled backscatter
@@ -12064,12 +12041,9 @@ MIDSPAN_REFL_WARN_DB = -80.0
 # 5x with margin: customer L's real -77 dB glints 11-19x, connector/far-end
 # reflections 27-61x.  Below this ratio => not a reflection, refute.
 REFL_SHARP_MIN_RATIO = 5.0
-# Optional BAND ceiling (Robert, 2026-07-23): when set below 0, mid-span
-# reflective events STRONGER than this are NOT flagged by this pass — the
-# tech is isolating the faint-anomaly class (e.g. band -80..-40 catches
-# fusion glints while leaving connector-grade reflections to the connector
-# rules).  0.0 = no ceiling (shipped behavior, byte-identical).
-MIDSPAN_REFL_CEIL_DB = 0.0
+# Mid-span reflectance is one number (Robert 2026-10-02): at or above the
+# floor is flagged, with no ceiling.  The optional band ceiling
+# (MIDSPAN_REFL_CEIL_DB, 2026-07-23) was never ticked by default and is gone.
 
 def _is_likely_echo(cand_km, cand_refl, refl_events, tol_km=ECHO_PARENT_TOL_KM,
                     launch_km=0.0):
@@ -12211,19 +12185,14 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                 if _is_likely_echo(e['dist_km'], refl, refl_events,
                                    launch_km=r.get('_trace_offset_km') or 0.0):
                     continue
-                # Mid-span reflectance threshold (OTDR-panel editable): flag only
-                # reflections at/above the warn floor; classify FAIL vs WARN.
+                # Mid-span reflectance threshold (OTDR-panel editable): flag
+                # reflections at or above it.
                 if refl < MIDSPAN_REFL_WARN_DB:
-                    continue
-                # Optional band ceiling: reflections STRONGER than the
-                # ceiling belong to the connector rules, not this pass.
-                if MIDSPAN_REFL_CEIL_DB < 0 and refl > MIDSPAN_REFL_CEIL_DB:
                     continue
                 # Re-measure gate: the stored claim must exist in this
                 # fiber's own trace (PLACHE F609 phantom class).
                 if not _reflective_spike_confirms(r, e['dist_km'], refl):
                     continue
-                _sev = "FAIL" if refl_fails(refl, MIDSPAN_REFL_FAIL_DB) else "WARN"
                 # Translate to A-frame for closure matching / dedup
                 a_km = frame_to_a_km(e['dist_km'], eof_km)
                 # The trace must clearly continue past — simple check
@@ -12253,7 +12222,7 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                 loss = e.get('splice_loss') or 0.0
                 _kind = "1F" if (e.get('is_reflective') or str(e.get('type','')).startswith('1F')) else "merged"
                 label = (f"{fnum} REFL @ {a_km:.2f}km "
-                         f"({refl:.0f}dB {_sev} {_kind}, {dir_label}-side"
+                         f"({refl:.0f}dB {_kind}, {dir_label}-side"
                          f" @ {e['dist_km']:.2f}km own-frame)")
                 new_results[(fnum, nearest_si)] = {
                     'fiber': fnum, 'splice_idx': nearest_si,
@@ -14590,7 +14559,6 @@ UNI_REFL_FLOOR_DB        = -80.0  # dB — 0 = detection off.  ON by default as 
                                   # field" was the standing complaint.  Ripple
                                   # over 10 folders on disk: every span except
                                   # job R short set is unchanged.
-UNI_REFL_CEIL_DB         = 0.0    # dB — 0 = no ceiling
 # Front dead zone vs span.  UNI_LAUNCH_FIBER_MAX is a 3.0 km blanket sized
 # for the 60-120 km spans this tool grew up on.  On the 4 km of glass past
 # job R short set's launch reel that blanket covers 75% of the cable, so the front
@@ -15544,8 +15512,6 @@ def uni_find_reflective_events(fibers, span_km, launch_box_present=False,
             elif not e.get('is_reflective'):
                 continue
             if refl < UNI_REFL_FLOOR_DB:
-                continue
-            if UNI_REFL_CEIL_DB < 0 and refl > UNI_REFL_CEIL_DB:
                 continue
             if not _reflective_spike_confirms(r, km, refl):
                 continue

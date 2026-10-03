@@ -1007,7 +1007,7 @@ let gFrameWarn = '';               // the B folder is a short shot (see frameWar
 // column follows the engine's threshold rather than the browse filter below.
 let gThresholds = { reburn: 0.160, uni_bend: 0.250, single_dir: 0.200,
                     connector: 0.500, refl: -50.0, refl_floor: -80.0,
-                    refl_ceil: 0.0, dead_km: 3.0, dead_frac: 0.25,
+                    dead_km: 3.0, dead_frac: 0.25,
                     connector_uni: 0.649,
                     // Warning levels (0 = none): the Splice Report's OTDR
                     // Settings Warning column, from the report's manifest
@@ -5935,7 +5935,7 @@ function goToTrace(t) {
 
 // ─── Event table ──────────────────────────────────────────────────────
 // Viewer flag thresholds.  These MIRROR the unidirectional engine's defaults
-// (UNI_BEND_THRESHOLD, UNI_REFL_FLOOR_DB, UNI_REFL_CEIL_DB) so the panel
+// (UNI_BEND_THRESHOLD, UNI_REFL_FLOOR_DB) so the panel
 // highlights what a uni report would flag.
 //
 // SCOPE, stated plainly: these are the per-event rules, which is everything
@@ -6087,27 +6087,19 @@ function reflFails(refl, posKm, eofKm) {
 function reflFloor() {
   return gReflOverride != null ? gReflOverride : Number(gThresholds.refl_floor);
 }
-// The report's optional ceiling (OTDR Settings "Mid-Span Refl Ceiling",
-// 0 = none) holds only while the box follows the report.  A typed number is
-// the whole rule (Robert 2026-10-02: one box, "anything greater than that
-// number gets flagged").
-function reflCeil() {
-  return gReflOverride != null ? 0 : Number(gThresholds.refl_ceil);
-}
-// At or above the number (and, following the report, no stronger than its
-// ceiling).  0 is the report's "off": nothing is flagged.
+// At or above the number, no ceiling (Robert 2026-10-02: one box, "anything
+// greater than that number gets flagged").  0 is the report's "off":
+// nothing is flagged.
 function reflInBand(refl) {
-  const lo = reflFloor(), hi = reflCeil();
+  const lo = reflFloor();
   if (refl == null || isNaN(refl) || refl >= 0 || !(lo < 0)) return false;
-  if (refl < lo) return false;
-  if (hi < 0 && refl > hi) return false;
-  return true;
+  return refl >= lo;
 }
 function reflBandLabel() {
-  const lo = reflFloor(), hi = reflCeil();
+  const lo = reflFloor();
   const src = gReflOverride != null ? 'typed in the Viewer' : 'the report\'s';
   if (!(lo < 0)) return `reflectance rule off (${src})`;
-  return `flags at or above ${lo} dB${hi < 0 ? `, up to ${hi} dB` : ''} (${src})`;
+  return `flags at or above ${lo} dB (${src})`;
 }
 function clearsGate(loss) {
   if (loss == null || isNaN(loss)) return false;

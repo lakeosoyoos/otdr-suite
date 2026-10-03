@@ -97,4 +97,4 @@ def test_the_reflectance_box_is_one_number():
     assert 'set-refl-lo' not in vw and 'set-refl-hi' not in vw
     sync = _fn(vw, 'syncGateUI')
     assert "if (gReflOverride == null) box.value = String(reflFloor());" in sync
-    assert 'return gReflOverride != null ? 0 : Number(gThresholds.refl_ceil);' in _fn(vw, 'reflCeil')
+    assert 'return refl >= lo;' in _fn(vw, 'reflInBand')
