@@ -19,11 +19,14 @@ so the old text cannot come back after it.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 
 import pytest
 
 from conftest import (run_streamlit, finish_engine_run, go_tab, trace_box,
-                      clear_traces, FIXTURE_SPLICE_A_DIR, FIXTURE_SPLICE_B_DIR)
+                      clear_traces, REPO_ROOT, FIXTURE_SPLICE_A_DIR,
+                      FIXTURE_SPLICE_B_DIR)
 
 A, B = str(FIXTURE_SPLICE_A_DIR), str(FIXTURE_SPLICE_B_DIR)
 TWO, ONE = 'Two folders (A + B)', 'One folder / zip (both directions)'
@@ -185,8 +188,12 @@ def mixed(tmp_path, monkeypatch):
     page offers the Direction pick: six of the fixture's shots as they are,
     and the same six with one of the two sites in their GenParams swapped
     for another name of the same length (every offset stays valid, as in
-    test_uni_coverage.py).  Same fiber numbers, so the engine keeps the two
-    apart instead of folding one into the other as a typo."""
+    test_uni_coverage.py).  Every file's Direction stamp is cleared, as on
+    another make's shots: a stamped file groups on its stamp, not its site
+    codes (Robert 2026-10-02), and a folder stamped A and B is split by the
+    page itself (Run On), so only unstamped files reach the Direction pick.
+    Same fiber numbers, so the engine keeps the two apart instead of folding
+    one into the other as a typo."""
     import folder_intake as fi
     monkeypatch.setenv('OTDR_CACHE_DIR', str(tmp_path / 'cache'))
     folder = tmp_path / 'both'
@@ -201,6 +208,17 @@ def mixed(tmp_path, monkeypatch):
         (folder / f'other_{name}').write_bytes(
             raw.replace(site.encode(), other.encode()))
         assert other in fi.sor_header(str(folder / f'other_{name}'))['loc_pair']
+    # Stamp 0 = none, written as Files right-click > Direction writes a
+    # stamp (trace_server.set_direction), run apart: the Viewer has its own
+    # sor_reader.
+    code = ("import sys; sys.path.insert(0, sys.argv[1]); import trace_server as T\n"
+            "T._LOCDIR['none'] = 0\n"
+            "for p in sys.argv[2:]:\n"
+            "    raw = open(p, 'rb').read()\n"
+            "    open(p, 'wb').write(T.set_direction(raw, 'none'))\n")
+    subprocess.run([sys.executable, '-c', code, str(REPO_ROOT / 'viewer'),
+                    *(str(folder / n) for n in sorted(os.listdir(folder)))],
+                   check=True, capture_output=True)
     out = tmp_path / 'saved reports'
     out.mkdir()
     return str(folder), str(out)

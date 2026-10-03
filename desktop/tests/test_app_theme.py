@@ -35,8 +35,14 @@ def test_the_theme_switch_sits_in_the_top_bar_on_every_screen():
     is in the top bar, which every screen draws: the Home screen, New
     Project, a project and Quick Analysis."""
     bar = SRC.split('\ndef _render_top_nav(', 1)[1].split('\ndef ', 1)[0]
-    assert '_render_theme_control(st)' in bar
-    assert SRC.count('_render_theme_control(') == 2      # its def and the bar
+    assert "_THEME_SLOT = st.container(key='theme_slot'" in bar
+    # drawn into that place last: after the Home screen (which stops the
+    # run), and after the route and the project autosave everywhere else
+    assert SRC.count('_render_theme_control(') == 3      # its def and the two
+    home = SRC.split('\n    _render_home(_home_msg)\n', 1)[1].split('st.stop()', 1)[0]
+    assert '_render_theme_control(_THEME_SLOT or st)' in home
+    end = SRC.split('\n_after_page(page)\n', 1)[1]
+    assert end.index('if _PROJECT_MODE:') < end.index('_render_theme_control(_THEME_SLOT or st)')
     assert 'sidebar_footer' not in SRC
     assert '_render_theme_control(st.sidebar)' not in SRC
     assert SRC.count('\n    _render_top_nav(') == 4

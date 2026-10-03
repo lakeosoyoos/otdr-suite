@@ -41,6 +41,7 @@ RULE_NAMES = (
     'fr_leg_blanks',        # ... and its loss cell prints blank
     'suite_leg_unjudged',   # OTDR Suite table: the same
     'suite_leg_blanks',
+    'splice_leg_ungated',   # Robert 2026-10-02: a splice direction is never judged on loss
 )
 MAIN_RULES = dict.fromkeys(RULE_NAMES, False)      # viewer.html before the change
 
@@ -59,12 +60,13 @@ def rules_from_source(src=None):
             r"if \(gainerHidden\(evLossRaw\(e\)\)\) \{[^\n]*\n\s*cells\.push\(`<td data-col=\"\$\{i\}\" data-km=\"\$\{e\.dist_km\}\"></td>`",
             grid) is not None,
         'fr_leg_unjudged': "if (!legOk(leg) || gainerHidden(leg.loss)) return false;" in fr
-            and "return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, warnFor(isRefl(x), true));" in fr,
+            and "return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, legWarnFor(isRefl(x)));" in fr,
         'fr_leg_blanks': "+ (gainerHidden(leg.loss) ? `<td${at}></td>`" in fr,
         'suite_leg_unjudged': "if (!leg || gainerHidden(leg.loss)) return false;" in suite
-            and "return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, warnFor(!!x.reflective, true));" in suite
+            and "return legOk(leg) && !gainerHidden(leg.loss) && clearsAt(leg.loss, legWarnFor(!!x.reflective));" in suite
             and "x[which].flag && !gainerHidden(x[which].loss)" in suite,
         'suite_leg_blanks': "if (leg && gainerHidden(v)) return `<td${attrs}></td>`;" in suite,
+        'splice_leg_ungated': "function legGateFor(reflective) { return reflective ? gateFor(true, true) : null; }" in src,
     }
 
 
@@ -130,7 +132,8 @@ def bidi_table(fibre, show, rules, table='fr'):
                 leg = col[w]
                 v = leg['loss']
                 hid = _hidden(rules, show, v)
-                bad = (not (unjudged and hid)) and (bool(leg.get('flag')) or clears(v, GATE_1DIR))
+                gated = not rules['splice_leg_ungated']   # these columns are splices
+                bad = (not (unjudged and hid)) and (bool(leg.get('flag')) or (gated and clears(v, GATE_1DIR)))
                 if blanks and hid:
                     cells.append(('', ''))
                     fail = fail or bad
@@ -188,7 +191,7 @@ def test_min_max_average_leave_out_a_hidden_gainer():
     grid = _body(SRC, "function renderFastReporterGrid(")
     assert "const ls = c.ev.map(evLoss).filter(v => v != null && !isNaN(v));" in grid
     # overGate is clearsGate, or the one-direction gate for a mixed load's one-way fibres
-    assert "const rowFails = traces.map((_t, ti) => cols.some(c => overGate(evLoss(c.ev[ti]))));" in grid
+    assert "const rowFails = traces.map((_t, ti) => cols.some(c => overGate(evLoss(c.ev[ti])) || reflBad(c.ev[ti], ti)));" in grid
     assert "const L = evLoss(e);" in grid                 # the per-row statistics block
 
 
@@ -207,7 +210,7 @@ def test_fr_table_hides_the_direction_gainer_and_keeps_the_average():
     t = bidi_table(FIBRE, show=False, rules=rules, table='fr')
     assert t['a']['cells'][0] == ('', '') and t['a']['fail'] is False
     assert t['b']['cells'][1] == ('', '')
-    assert t['b']['cells'][0] == ('0.300', 'fr-hi')       # a loser still judged
+    assert t['b']['cells'][0] == ('0.300', '')            # a splice direction: Average only
     assert t['avg']['cells'] == [('0.026', ''), ('-0.050', '')]   # never hidden
     main = bidi_table(FIBRE, show=False, rules=MAIN_RULES, table='fr')
     assert main['a']['cells'][0] == ('-0.249', 'fr-hi') and main['a']['fail'] is True   # teeth

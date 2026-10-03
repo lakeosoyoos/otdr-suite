@@ -1158,22 +1158,8 @@ CLOSURE_VALID_MEDIAN_LOSS_MAX = 0.100   # dB — median loss inside the tight
 LAUNCH_HIGH_LOSS_DB          = None   # launch-event LOSS rule disabled per tech
                                       #   direction — the gate is on reflectance,
                                       #   not loss.
-LAUNCH_REFL_CEIL_DB          = 0.0    # dB — band HIGH end for the launch and
-                                      #   tailbox reflectance rules.  0.0 = no
-                                      #   ceiling, which is the shipped
-                                      #   behaviour: flag everything at or
-                                      #   above the floor.  Set it NEGATIVE to
-                                      #   bound the band from the top, so a
-                                      #   reflection stronger than the ceiling
-                                      #   stops being a connector-quality
-                                      #   finding and is left to the rules that
-                                      #   own it (an open or shattered
-                                      #   connector reads -20 to -14 and is a
-                                      #   break, not a dirty mate).
-                                      #   Same shape and same sign convention
-                                      #   as MIDSPAN_REFL_CEIL_DB and
-                                      #   UNI_REFL_CEIL_DB, so all three
-                                      #   reflectance rules read alike.
+# The launch / tailbox reflectance rule is one number, no ceiling (Robert
+# 2026-10-02): LAUNCH_REFL_CEIL_DB, always 0.0 = no ceiling, is gone.
 LAUNCH_BAD_REFL_DB           = -50.0  # launch / tailbox reflectance FAIL value,
                                       #   in FastReporter's own terms: the
                                       #   number a customer template carries.
@@ -8737,7 +8723,7 @@ def _launch_conn_confirmed(r, evt):
 
 def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                           high_loss_db=None, bad_refl_db=None,
-                          spans_have_tailbox=True, refl_ceil_db=None,
+                          spans_have_tailbox=True,
                           readings=None, **_ignored):
     """Return {fiber_num: launch_issue_dict} for every fiber that has a
     launch-end problem in either direction.
@@ -8752,10 +8738,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
     Optional overrides (used by the Streamlit sidebar):
       high_loss_db        — launch-connector loss >= this flags HIGH_LAUNCH_LOSS
       bad_refl_db         — FR-style FAIL value; refl_fails() flags a REFL tag
-                            (the band's LOW end)
-      refl_ceil_db        — band HIGH end; 0.0 = no ceiling.  Negative bounds
-                            the band from the top: a reflection STRONGER than
-                            this is not a connector-quality finding
+                            (one number: at or above it fails)
       spans_have_tailbox  — when False, the entire tailbox-reflectance block
                             is skipped.  Use for tie-panel / jumper-only
                             spans where the cable terminates without a
@@ -8781,8 +8764,6 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
         readings = VIEWER_READINGS
     hi_loss = LAUNCH_HIGH_LOSS_DB if high_loss_db is None else float(high_loss_db)
     bad_refl = LAUNCH_BAD_REFL_DB if bad_refl_db is None else float(bad_refl_db)
-    refl_ceil = (LAUNCH_REFL_CEIL_DB if refl_ceil_db is None
-                 else float(refl_ceil_db))
     # Population medians
     def _gather_launch_refls(fibers):
         refls = []
@@ -9134,8 +9115,7 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                     _pm = (a_port_median if dir_is_A
                            else b_port_median).get(r.get('otdr_serial'))
                     _port_ok = _pm is None or (refl - _pm) >= PORT_OUTLIER_DB
-                if (refl < 0 and refl_fails(refl, bad_refl) and _port_ok
-                        and not (refl_ceil < 0 and refl > refl_ceil)):
+                if refl < 0 and refl_fails(refl, bad_refl) and _port_ok:
                     tags.append(f'REFL{refl:+.1f}dB')
                     rules.append('launch')
 
@@ -9193,13 +9173,10 @@ def detect_launch_issues(fibers_a, fibers_b, first_splice_km=None,
                     and this_tb_refl < 0
                     and refl_fails(this_tb_refl, bad_refl)
                     and (_panel_span or _tb_outlier_ok)):
-                if refl_ceil < 0 and this_tb_refl > refl_ceil:
-                    pass      # stronger than the band's top: not this rule's
-                else:
-                    # FAR end: this reading is at the other end of the
-                    # cable from the one this direction was shot from.
-                    far_tags.append(f'REFL{this_tb_refl:+.1f}dB')
-                    far_rules.append('tailbox')
+                # FAR end: this reading is at the other end of the
+                # cable from the one this direction was shot from.
+                far_tags.append(f'REFL{this_tb_refl:+.1f}dB')
+                far_rules.append('tailbox')
 
             # ── FQA: per-trace acquisition-duration check ──
             # Compare this fiber's "Duration" (seconds — the SR-4731
@@ -11898,8 +11875,9 @@ def _trace_frame_shift_km(fiber_data, y, res):
 # Mid-span reflectance thresholds — the OTDR settings panel's "Mid-span reflectance"
 # row (overridable per customer profile via --overrides; read as module globals so
 # setattr() in run_splicereport takes effect).  A mid-span reflective event is
-# flagged only when its reflectance is at least MIDSPAN_REFL_WARN_DB (the floor);
-# >= MIDSPAN_REFL_FAIL_DB → FAIL, between floor and fail → WARN.  Signed dB,
+# flagged when its reflectance is at least MIDSPAN_REFL_WARN_DB (one number, no
+# WARN / FAIL split and no ceiling, Robert 2026-10-02).  The name is kept so
+# the hub, the runner and the Viewer read the same global.  Signed dB,
 # less-negative = stronger reflection.
 def _reflective_spike_confirms(fiber_data, event_km, refl_db):
     """Does this fiber's OWN raw trace contain the reflective spike its
@@ -12052,7 +12030,6 @@ def _reflective_spike_confirms(fiber_data, event_km, refl_db):
 # the unidirectional UNI_FRONT_DEAD_SPAN_FRAC.
 MIDSPAN_DEAD_SPAN_FRAC = 0.25
 
-MIDSPAN_REFL_FAIL_DB = -50.0
 MIDSPAN_REFL_WARN_DB = -80.0
 # Reflective-spike SHARPNESS gate (PLACHE F609 fix, 2026-07-24).  A real
 # Fresnel reflection has a SHARP edge; a firmware-mislabeled backscatter
@@ -12064,12 +12041,9 @@ MIDSPAN_REFL_WARN_DB = -80.0
 # 5x with margin: customer L's real -77 dB glints 11-19x, connector/far-end
 # reflections 27-61x.  Below this ratio => not a reflection, refute.
 REFL_SHARP_MIN_RATIO = 5.0
-# Optional BAND ceiling (Robert, 2026-07-23): when set below 0, mid-span
-# reflective events STRONGER than this are NOT flagged by this pass — the
-# tech is isolating the faint-anomaly class (e.g. band -80..-40 catches
-# fusion glints while leaving connector-grade reflections to the connector
-# rules).  0.0 = no ceiling (shipped behavior, byte-identical).
-MIDSPAN_REFL_CEIL_DB = 0.0
+# Mid-span reflectance is one number (Robert 2026-10-02): at or above the
+# floor is flagged, with no ceiling.  The optional band ceiling
+# (MIDSPAN_REFL_CEIL_DB, 2026-07-23) was never ticked by default and is gone.
 
 def _is_likely_echo(cand_km, cand_refl, refl_events, tol_km=ECHO_PARENT_TOL_KM,
                     launch_km=0.0):
@@ -12211,19 +12185,14 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                 if _is_likely_echo(e['dist_km'], refl, refl_events,
                                    launch_km=r.get('_trace_offset_km') or 0.0):
                     continue
-                # Mid-span reflectance threshold (OTDR-panel editable): flag only
-                # reflections at/above the warn floor; classify FAIL vs WARN.
+                # Mid-span reflectance threshold (OTDR-panel editable): flag
+                # reflections at or above it.
                 if refl < MIDSPAN_REFL_WARN_DB:
-                    continue
-                # Optional band ceiling: reflections STRONGER than the
-                # ceiling belong to the connector rules, not this pass.
-                if MIDSPAN_REFL_CEIL_DB < 0 and refl > MIDSPAN_REFL_CEIL_DB:
                     continue
                 # Re-measure gate: the stored claim must exist in this
                 # fiber's own trace (PLACHE F609 phantom class).
                 if not _reflective_spike_confirms(r, e['dist_km'], refl):
                     continue
-                _sev = "FAIL" if refl_fails(refl, MIDSPAN_REFL_FAIL_DB) else "WARN"
                 # Translate to A-frame for closure matching / dedup
                 a_km = frame_to_a_km(e['dist_km'], eof_km)
                 # The trace must clearly continue past — simple check
@@ -12253,7 +12222,7 @@ def scan_merged_reflective_events(fibers_a, fibers_b, splices,
                 loss = e.get('splice_loss') or 0.0
                 _kind = "1F" if (e.get('is_reflective') or str(e.get('type','')).startswith('1F')) else "merged"
                 label = (f"{fnum} REFL @ {a_km:.2f}km "
-                         f"({refl:.0f}dB {_sev} {_kind}, {dir_label}-side"
+                         f"({refl:.0f}dB {_kind}, {dir_label}-side"
                          f" @ {e['dist_km']:.2f}km own-frame)")
                 new_results[(fnum, nearest_si)] = {
                     'fiber': fnum, 'splice_idx': nearest_si,
@@ -13257,7 +13226,8 @@ def sr_legend_rows(painted, end_texts=()):
 def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_b, span_km,
                launch_cells_a=None, launch_cells_b=None,
                fibers_a=None, fibers_b=None, all_results=None,
-               fiber_avgs=None, span_stats=None, ribbons=None):
+               fiber_avgs=None, span_stats=None, ribbons=None,
+               reburn_results=None):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Splice Report"
@@ -13867,14 +13837,16 @@ def write_xlsx(cells, splices, n_fibers, ribbon_size, output_path, site_a, site_
     # after the audit insertion below (insert_at=0 for audit, =1 for
     # reburn → ordering becomes [Acquisition, Reburn, Splice Report,
     # Legend]).  Counts ribbon × splice cells that contain at least
-    # one A+B reburn fiber.
+    # one A+B reburn fiber.  `reburn_results` is everything found, before
+    # Show/Hide: with Splice Loss hidden the reburns are still counted,
+    # as the Display sheet says they were found (2026-10-02).
     if all_results is not None:
         try:
             from reburn_summary import compute_reburn_summary, \
                 render_xlsx_sheet as _render_reburn
-            _reburn = compute_reburn_summary(all_results, splices,
-                                              n_fibers, ribbon_size,
-                                              ribbons=ribbons)
+            _reburn = compute_reburn_summary(
+                all_results if reburn_results is None else reburn_results,
+                splices, n_fibers, ribbon_size, ribbons=ribbons)
             _render_reburn(wb, _reburn,
                            insert_at=0,                # before any audit
                            font_name=FONT_NAME, font_size=FSIZE,
@@ -14590,7 +14562,6 @@ UNI_REFL_FLOOR_DB        = -80.0  # dB — 0 = detection off.  ON by default as 
                                   # field" was the standing complaint.  Ripple
                                   # over 10 folders on disk: every span except
                                   # job R short set is unchanged.
-UNI_REFL_CEIL_DB         = 0.0    # dB — 0 = no ceiling
 # Front dead zone vs span.  UNI_LAUNCH_FIBER_MAX is a 3.0 km blanket sized
 # for the 60-120 km spans this tool grew up on.  On the 4 km of glass past
 # job R short set's launch reel that blanket covers 75% of the cable, so the front
@@ -14625,9 +14596,21 @@ UNI_LANDMARK_DEMOTE_KM   = 0.10   # km — tighter demote radius: LAMBEY's HH5
                                   # true closure at labeling distance
 
 
+# The Files panel's Dir column words for the two stamp values.
+UNI_STAMP_SIGNATURES = {1: 'A→B', 2: 'B→A'}
+
+
 def uni_direction_signature(r):
-    """Direction identity of one record from its GenParams: 'LAM->BEY' style
-    when locations are present, else the cable id, else '?' (still groups)."""
+    """Direction identity of one record.  The file's own Direction stamp
+    (LocationsDirection: 1 = A->B, 2 = B->A) when it has one: what
+    FastReporter's Direction column shows and the Viewer's Files panel
+    right-click > Direction writes, so a tech's fix there counts here
+    (Robert 2026-10-02: "uni should go to stamp").  A file without one
+    (another make, a .json) falls back to GenParams: 'LAM->BEY' style when
+    locations are present, else the cable id, else '?' (still groups)."""
+    stamp = UNI_STAMP_SIGNATURES.get(r.get('exfo_locations_direction'))
+    if stamp:
+        return stamp
     a = (r.get('gen_loc_a') or '').strip()
     b = (r.get('gen_loc_b') or '').strip()
     if a or b:
@@ -14754,7 +14737,18 @@ def uni_coverage_lines(cov):
         return []
     out = []
     chosen = cov.get('chosen')
+    stamps = set(UNI_STAMP_SIGNATURES.values())
     for ds in cov.get('dropped_signatures') or ():
+        if ds['signature'] in stamps:
+            out.append(
+                f"{ds['n_files']} file(s) are stamped '{ds['signature']}', not "
+                f"the analyzed '{chosen}' (fibers {ds['fiber_ranges']}).  A "
+                f"report covers ONE direction, so these were set aside.  If "
+                f"they belong with the rest, set their Direction to "
+                f"'{chosen}' (Viewer: Files, right-click > Direction) and "
+                f"re-run; if they are a genuine second direction, run them as "
+                f"their own report.")
+            continue
         out.append(
             f"{ds['n_files']} file(s) were shot as direction "
             f"'{ds['signature']}', not the analyzed '{chosen}' (fibers "
@@ -14777,8 +14771,18 @@ def uni_coverage_lines(cov):
     return out
 
 
-def uni_load_dir(d, direction=None):
+def uni_load_dir(d, direction=None, one_box=False):
     """Load ONE direction's fibers from a folder of .sor/.json/.trc files.
+
+    `one_box`: the folder is one side of the Viewer (a sidebar A/B box, or
+    the A or B folder a drop on its Files panel split off), and that side,
+    not the files' labels, names its direction (the Viewer draws every file
+    in it as that leg).  Every other signature whose fiber numbers are
+    disjoint from the loaded ones is then folded in too, whatever its stamp
+    or site codes.  A real span's B folder (2026-10-02): four re-shots were
+    stamped A; B alone left them out while A+B showed them.
+    A signature that re-uses fiber numbers is a real second direction and
+    stays out.
 
     Files are grouped by GenParams direction signature FIRST, then the
     requested (or most populous) direction is keyed by fiber number — a
@@ -14888,6 +14892,21 @@ def uni_load_dir(d, direction=None):
               f"{_uni_fiber_ranges(grp)}).  Without this they would have been "
               "dropped from the report without a word; check the GenParams "
               "site code on those shots.")
+    if one_box:
+        done = {m['signature'] for m in merged}
+        for sig in sorted(groups, key=lambda s: (-counts[s], s)):
+            if sig == chosen or sig in done:
+                continue
+            grp = groups[sig]
+            if set(grp) & set(fibers):
+                continue
+            fibers.update(grp)
+            merged.append({'signature': sig, 'n_fibers': len(grp),
+                           'fibers': sorted(grp)})
+            print(f"  ** {len(grp)} file(s) on this side say '{sig}' where the "
+                  f"rest say '{chosen}'. Read as this side's direction (fibers "
+                  f"{_uni_fiber_ranges(grp)}); check the labels on those "
+                  "shots.")
     coverage = _uni_coverage(d, ext, candidates, n_other_format, drops,
                              chosen, groups, merged)
     return fibers, chosen, counts, merged, coverage
@@ -15544,8 +15563,6 @@ def uni_find_reflective_events(fibers, span_km, launch_box_present=False,
             elif not e.get('is_reflective'):
                 continue
             if refl < UNI_REFL_FLOOR_DB:
-                continue
-            if UNI_REFL_CEIL_DB < 0 and refl > UNI_REFL_CEIL_DB:
                 continue
             if not _reflective_spike_confirms(r, km, refl):
                 continue
@@ -16710,9 +16727,14 @@ def uni_legend_rows(ws, type_row):
 
 def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
                    site_a='', site_b='', fibers=None, coverage=None, side='A',
-                   ribbons=None):
+                   ribbons=None, reburn_grid=None):
     """ZK-approved five-sheet workbook: Acquisition Parameters, Reburn
     Percentage, Unidir Events (ribbon grid), Legend, Flagged Events.
+
+    `reburn_grid` is (grid, columns) before the Show/Hide switches: the
+    Reburn Percentage counts every reburn found, so with Splice Loss hidden
+    it still agrees with the Display sheet (2026-10-02).  Omitted, it counts
+    `grid` / `columns`.
 
     Grid header matches the approved sheet: A→B feet, A→B km, a BLANK
     'Handholes:' annotation row (techs fill in HH/section knowledge — the
@@ -16997,7 +17019,7 @@ def uni_write_xlsx(grid, columns, n_fibers, ribbon_size, span_km, output_path,
             print(f"  WARN: acquisition audit skipped: {exc}")
     try:
         summary = uni_build_reburn_summary(
-            grid, columns, n_ribbons,
+            *(reburn_grid or (grid, columns)), n_ribbons,
             ribbon_label_fn=lambda ri: uni_ribbon_label(ri, ribbon_size, n_fibers),
             ribbons=(ribbons or ribbon_rows))
         uni_write_reburn_sheet(wb, summary, insert_at=1)
@@ -17230,7 +17252,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     the stored GenParams name.  They print in the direction of the shot."""
     rs = ribbon_size or RIBBON_SIZE
     fibers, chosen, counts, merged_sigs, coverage = uni_load_dir(
-        input_dir, direction=direction)
+        input_dir, direction=direction, one_box=viewer_leg in ('a', 'b'))
     if not fibers:
         raise RuntimeError("no SOR/JSON files found (or none in the selected direction)")
     print(f"  Loaded {len(fibers)} fibers (direction: {chosen!r}; "
@@ -17410,6 +17432,7 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
               + ', '.join(f"{d:.2f} km" for d in demoted))
     n_fibers = max(fibers.keys())
     grid = uni_build_ribbon_grid(fibers, columns, rs)
+    found = (grid, columns)             # before Show/Hide: the reburn count
     grid, columns = uni_apply_show_filter(grid, columns)
 
     side, site_a, site_b = uni_shot_direction_named(fibers, site_a, site_b)
@@ -17419,7 +17442,8 @@ def uni_generate(input_dir, output_path, ribbon_size=None, direction=None,
     ribbons = sorted({(f - 1) // rs for f in fibers})
     wrote = uni_write_xlsx(grid, columns, n_fibers, rs, span, output_path,
                            site_a=site_a, site_b=site_b, fibers=fibers,
-                           coverage=coverage, side=side, ribbons=ribbons)
+                           coverage=coverage, side=side, ribbons=ribbons,
+                           reburn_grid=found)
 
     # In-app clickable grid payload (mirrors the bidir manifest's
     # columns/cells): the hub renders a ribbon × column grid where every

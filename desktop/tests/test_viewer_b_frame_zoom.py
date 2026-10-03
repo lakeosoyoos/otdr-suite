@@ -61,7 +61,7 @@ def _const(name):
 # ─── the source ──────────────────────────────────────────────────────────
 
 def test_report_link_goes_through_link_disp_km():
-    # ±2.5 km, except Viewer FEC's ±0.3 km on a 5 km facility-entrance shot
+    # ±2.5 km, except FEC shots' ±0.3 km on a 5 km facility-entrance shot
     assert ("zoomToKm(linkDispKm(km, t.src, t.dir || 'both', fiber), gFecMode ? 0.3 : 2.5)"
             in _fn("applyTarget"))
 

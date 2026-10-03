@@ -180,7 +180,7 @@ def test_run_traces_is_the_suite_as_it_was(home_on, settings_dir):
     # project.
     assert "qa_stage" not in at.session_state
     assert _tabs(at) == ["Traces", "Splice Report", "Unidirectional",
-                         "Splice Report FEC", "Secret Sauce", "Viewer", "Viewer FEC"]
+                         "Splice Report FEC", "Secret Sauce", "Viewer"]
     assert not any(b.key == "qa_load" for b in at.button)
     go_tab(at, "Traces")
     assert not at.exception, list(at.exception)

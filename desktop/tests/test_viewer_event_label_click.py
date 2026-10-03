@@ -38,7 +38,8 @@ def test_the_grid_fills_the_panel_instead_of_capping_its_own_height():
 def test_every_drawn_event_number_records_a_hit_box():
     fn = SRC.split("function drawEventMarkers(", 1)[1].split("\nfunction ", 1)[0]
     assert "gLabelHits.push({" in fn
-    assert "ctx.measureText(String(n)).width" in fn
+    # the number printed is the table column's (test_viewer_chart_numbers_match_table)
+    assert "ctx.measureText(txt).width" in fn
     # cleared once per frame, before anything is drawn
     draw = SRC.split("function draw() {", 1)[1].split("\nfunction ", 1)[0]
     assert draw.index("gLabelHits = [];") < draw.index("drawGrid(r);")
@@ -84,7 +85,9 @@ def test_right_clicking_a_number_opens_the_span_menu_for_that_event():
     fn = SRC.split("canvas.addEventListener('contextmenu'", 1)[1].split("});", 1)[0]
     assert "labelHit(ev.offsetX, ev.offsetY)" in fn
     assert "ev.preventDefault();" in fn
-    assert "showSpanMenu(ev.clientX, ev.clientY, lh.t.dir, lh.e.dist_km, lh.t.fiber, lh.t.src || lh.t.dir)" in fn
+    # a file's event number: its trace's direction at the event's own raw km
+    assert "[{ dir: lh.t.dir, km: lh.e.dist_km, fiber: lh.t.fiber, src: lh.t.src || lh.t.dir }]" in fn
+    assert "if (picks.length === 1) showSpanMenu(ev.clientX, ev.clientY, p.dir, p.km, p.fiber, p.src);" in fn
 
 
 def test_right_clicking_a_file_removes_it_from_the_list_and_the_viewer():

@@ -14,7 +14,9 @@ prints, so the reader computes them.  These tests pin:
      is the table alone with a filter row (so it sorts), and a PDF.
   5. The page sends a dropped .olts to /api/olts_load and never into the
      A / B drop, still loads the traces dropped with it, and lists the
-     fibers in the Measurements tab, where a heading click sorts them.
+     fibers in the Measurements tab, where a heading click sorts them, a
+     right-click on a fiber removes it (and the report leaves it out), and
+     Remove All, Close or Clear All empty the tab.
 """
 import importlib.util
 import json
@@ -211,6 +213,26 @@ def test_the_workbook_sorts(TS, loaded, tmp_path):
         assert v in vals, v
 
 
+def test_a_report_leaves_out_the_fibers_removed(TS, loaded, tmp_path):
+    """Robert, 2026-10-02: a fiber removed from the Measurements tab is out
+    of the report it saves, by its place in the file (the rows' `n`)."""
+    from openpyxl import load_workbook
+    assert [r['n'] for r in loaded['rows']] == list(range(5))
+    gone = loaded['rows'][1]['id']
+    out = TS.write_olts_report({'token': loaded['token'], 'format': 'xlsx',
+                                'dest': str(tmp_path), 'name': 'less', 'leave_out': [1]})
+    ws = load_workbook(out['path'])['Results']
+    ids = [r[0] for r in ws.iter_rows(min_row=2, values_only=True)]
+    assert len(ids) == 4 and gone not in ids
+    assert ws.auto_filter.ref == 'A1:L5'
+    with pytest.raises(ValueError, match='every fiber was removed'):
+        TS.write_olts_report({'token': loaded['token'], 'format': 'pdf', 'dest': str(tmp_path),
+                              'leave_out': [0, 1, 2, 3, 4]})
+    with pytest.raises(ValueError, match='leave_out must be a list'):
+        TS.write_olts_report({'token': loaded['token'], 'format': 'pdf', 'dest': str(tmp_path),
+                              'leave_out': 3})
+
+
 def test_the_pdf_is_written(TS, loaded, tmp_path):
     out = TS.write_olts_report({'token': loaded['token'], 'format': 'pdf',
                                 'dest': str(tmp_path), 'name': ''})
@@ -287,13 +309,31 @@ def test_a_right_click_on_a_heading_offers_both_sorts():
     assert "showOltsSortMenu(ev.clientX, ev.clientY, th.dataset.col, th.dataset.kind," in hook.split('\n});', 1)[0]
 
 
+def test_a_right_click_on_a_fiber_opens_the_fiber_menu():
+    """Robert, 2026-10-02: "we dont have right click in power meters and we
+    can't empty them".  A row (or the empty list) opens Remove This Fiber,
+    Put Back, Save Report… and Remove All; Clear All empties the tab too."""
+    hook = SRC.split("filesList.addEventListener('contextmenu', (ev) => {\n  if (gFilesView !== 'meas'", 1)[1]
+    hook = hook.split('\n});', 1)[0]
+    assert 'showOltsRowMenu(ev.clientX, ev.clientY,' in hook
+    menu = _js_func('showOltsRowMenu')
+    for words in ('Remove This Fiber (', 'Selected Fibers</button>', 'Select All ',
+                  'Put Back ', 'Generate Report…', 'Remove All '):
+        assert words in menu, words
+    assert 'removeOltsRows(picked.length > 1 ? picked : [n])' in menu
+    clear = SRC.split("document.getElementById('btn-clear').onclick = ", 1)[1].split('\n};', 1)[0]
+    assert 'clearAll();' in clear and 'closeOlts();' in clear
+    assert 'leave_out: [...gOltsGone]' in _js_func('showOltsDialog')
+
+
 _STUBS = r"""
 const DROP_EXTS = ['.sor', '.json', '.trc', '.zip', '.olts'];
 const DROP_BATCH_FILES = 32, DROP_BATCH_BYTES = 4 * 1024 * 1024;
 var gDropFolder = new WeakMap(), gDropInFlight = false, gAutoFit = true;
 var gRemovedFiles = new Set(), gTraces = [], gInfo = null, gLoadFailures = [];
 var urls = [], dialogs = [], readout = null, signs = [], picked = null, rendered = 0;
-var gOlts = null, gOltsSort = null, gOltsSel = null, gFilesView = 'files';
+var gOlts = null, gOltsSort = null, gOltsSel = new Set(), gOltsAnchor = null, gFilesView = 'files';
+var gOltsGone = new Set(), gLoadingKeys = new Set();
 var window = globalThis;
 function renderFilesPanel() { rendered++; }
 var el = { textContent: '' };
@@ -314,7 +354,7 @@ function fetch(url, opt) {
   urls.push([url, opt && opt.body && opt.body.names ? opt.body.names : (opt && opt.body && opt.body.name) || '']);
   var body = { ok: true };
   if (url.indexOf('/api/drop_begin') === 0) body.token = 't1';
-  if (url.indexOf('/api/drop_end') === 0) body = { ok: true, dir_a: '/t/A', added: 'A', a_count: 1 };
+  if (url.indexOf('/api/drop_end') === 0) body = { ok: true, dir_a: '/t/A', added: 'A', a_count: 1, new_keys: ['a-1'] };
   if (url.indexOf('/api/olts_load') === 0) body = { ok: true, token: 'o1', file: 'J.olts', fibers: 864 };
   return Promise.resolve({ ok: true, json: function () { return Promise.resolve(body); } });
 }
@@ -341,6 +381,43 @@ _CASES = r"""
     high: ids({ col: 'loss_ab@1550', desc: true }), low: ids({ col: 'loss_ab@1550', desc: false }),
     az: ids({ col: 'id', desc: false }), pf: ids({ col: 'pf', desc: true }),
     none: ids(null), heads: cols.map(function (c) { return c.t; }) };
+  // Right-click Remove, Put Back, and the last one emptying the tab.
+  gOlts = { file: 'J.olts', status: 'Fail', rows: info.rows.map(function (r, n) {
+    return Object.assign({ n: n }, r); }) };
+  gFilesView = 'meas';
+  // Selecting some: a click, Ctrl+click, Shift+click (in the order shown,
+  // sorted A to Z here: F1 F2 F3 F10 = n 2 0 3 1), a click on the only one.
+  gOltsSort = { col: 'id', desc: false };
+  var keys = oltsRowKeys();
+  var pick = function (sel, anchor, key, shift, ctrl) {
+    return Array.from(oltsClickSelection(keys, new Set(sel), anchor, key, shift, ctrl)).sort(); };
+  out.pick = { keys: keys, one: pick([], null, '0', false, false),
+               ctrl: pick(['0'], '0', '1', false, true), ctrlOff: pick(['0', '1'], '1', '1', false, true),
+               ctrlLast: pick(['0'], '0', '0', false, true), shift: pick(['2'], '2', '3', true, false),
+               again: pick(['3'], '3', '3', false, false) };
+  selectAllOlts();
+  out.all = Array.from(gOltsSel).sort();
+  gOltsSel = new Set(['1', '3']); gOltsAnchor = '1';
+  removeOltsRows([1]);
+  out.removed = { left: oltsRowsLeft(gOlts).map(function (r) { return r.id; }),
+                  status: oltsStatusLeft(gOlts, oltsRowsLeft(gOlts)), sel: Array.from(gOltsSel),
+                  anchor: gOltsAnchor, view: gFilesView, readout: readout };
+  selectAllOlts();
+  out.allLeft = Array.from(gOltsSel).sort();
+  gOltsSort = null;
+  putBackOltsRows();
+  out.putBack = { left: oltsRowsLeft(gOlts).length, status: oltsStatusLeft(gOlts, oltsRowsLeft(gOlts)) };
+  removeOltsRows([0, 1, 2, 3]);
+  out.emptied = { olts: gOlts, view: gFilesView, gone: gOltsGone.size, readout: readout };
+  // Generate Report picks the report by what is loaded.
+  var kind = function (olts, traces, loading, view) {
+    gOlts = olts; gTraces = traces; gLoadingKeys = new Set(loading); gFilesView = view;
+    return generateReportKind(); };
+  var T = [{ visible: true }], O = { file: 'J.olts', rows: [] };
+  out.kind = { none: kind(null, [], [], 'files'), traces: kind(null, T, [], 'files'),
+               pmts: kind(O, [], [], 'meas'), pmtsOnFiles: kind(O, [], [], 'files'),
+               bothMeas: kind(O, T, [], 'meas'), bothFiles: kind(O, T, [], 'files'),
+               loadingFiles: kind(O, [], ['a-1'], 'files'), hidden: kind(O, [{ visible: false }], [], 'fibers') };
   print('OUT ' + JSON.stringify(out));
 })().catch(function (e) { print('ERR ' + e + '\n' + e.stack); });
 """
@@ -351,7 +428,10 @@ def page(tmp_path_factory):
     funcs = '\n'.join(_js_func(n) for n in ('_parentName', '_dropOk', '_dropBatches',
                                             'handleFilesDrop', 'isOltsFile', 'handleOltsDrop',
                                             'showOltsMeasurements', 'oltsCols', 'oltsValue',
-                                            'oltsSortRows'))
+                                            'oltsSortRows', 'oltsRowsLeft', 'oltsStatusLeft',
+                                            'closeOlts', 'removeOltsRows', 'putBackOltsRows',
+                                            'oltsRowKeys', 'fileRange', 'fileClickSelection',
+                                            'oltsClickSelection', 'selectAllOlts', 'generateReportKind'))
     path = tmp_path_factory.mktemp('olts_drop') / 'drop.js'
     path.write_text(_STUBS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
@@ -370,7 +450,7 @@ def test_an_olts_alone_never_touches_the_a_b_drop(page):
 @needs_jsc
 def test_a_dropped_olts_opens_the_measurements_tab(page):
     """The boss, 2026-10-02: the values on screen, in the panel on the right.
-    The report dialog waits for Save Report…."""
+    The report dialog waits for Generate Report…."""
     assert page['only']['view'] == 'meas' and page['only']['listed'] == 'J.olts'
     assert page['only']['rendered'] >= 1
     assert page['only']['dialogs'] == 0
@@ -405,3 +485,64 @@ def test_a_threshold_it_cannot_read_leaves_the_verdict_blank(TS, parsed):
         {'set': '$ct', 'kind': 1, 'fiber_types': 16, 'wl_nm': 0, 'fail': 20.0, 'enabled': True}])
     assert TS._olts_status(parsed) == 'Pass'
     assert TS._olts_status(other) == ''
+
+
+@needs_jsc
+def test_a_fiber_removed_leaves_the_tab_and_the_last_empties_it(page):
+    r = page['removed']
+    assert r['left'] == ['F2', 'F1', 'F3']                  # F10, the failure, is off
+    assert r['status'] == 'Pass'                            # and its Fail went with it
+    assert r['sel'] == ['3'] and r['anchor'] is None and r['view'] == 'meas'
+    assert r['readout'] == '1 fiber removed from Measurements · 3 left'
+    assert page['putBack'] == {'left': 4, 'status': 'Fail'}
+    e = page['emptied']
+    assert e['olts'] is None and e['view'] == 'files' and e['gone'] == 0
+    assert e['readout'] == 'Measurements emptied'
+
+
+@needs_jsc
+def test_some_or_all_fibers_can_be_selected(page):
+    """Robert, 2026-10-02: "we can select all or some and remove them?"  The
+    Files tab's click rules, down the rows as shown; Ctrl+A picks them all."""
+    p = page['pick']
+    assert p['keys'] == ['2', '0', '3', '1']                # F1 F2 F3 F10 as sorted
+    assert p['one'] == ['0']
+    assert p['ctrl'] == ['0', '1'] and p['ctrlOff'] == ['0']
+    assert p['ctrlLast'] == []                              # Ctrl+click lets the last one go
+    assert p['shift'] == ['0', '2', '3']                    # F1 to F3 on screen
+    assert p['again'] == []                                 # a click on the only one picked
+    assert page['all'] == ['0', '1', '2', '3']
+    assert page['allLeft'] == ['0', '2', '3']               # a removed fiber is not re-picked
+
+
+def test_delete_removes_the_fibers_selected_and_ctrl_a_picks_them():
+    keys = SRC.split("filesList.addEventListener('keydown', (ev) => {\n  if (gFilesView !== 'meas'", 1)[1]
+    keys = keys.split('\n});', 1)[0]
+    assert "ev.key === 'Delete' || ev.key === 'Backspace'" in keys
+    assert 'removeOltsRows([...gOltsSel].map(Number));' in keys
+    assert "if (gFilesView === 'meas' && gOlts) selectAllOlts();" in SRC
+
+
+@needs_jsc
+def test_generate_report_knows_which_report(page):
+    """Robert, 2026-10-02: "change summary report to Generate Report.  that
+    button needs to know which report to create based on what is loaded
+    (traces or PMTs)".  Both loaded: the one the right panel shows."""
+    k = page['kind']
+    assert k['none'] == 'summary'              # the Summary Report says what to load
+    assert k['traces'] == 'summary'
+    assert k['pmts'] == 'olts' and k['pmtsOnFiles'] == 'olts'
+    assert k['bothMeas'] == 'olts' and k['bothFiles'] == 'summary'
+    assert k['loadingFiles'] == 'summary'      # traces on their way count as traces
+    assert k['hidden'] == 'olts'               # hidden traces make no Summary Report
+
+
+def test_the_measurements_bar_has_no_report_button():
+    """Robert, 2026-10-02: the report button above the Measurements panel
+    goes; Generate Report on the toolbar makes the OLTS Report."""
+    bar = _js_func('renderMeasView')
+    assert 'data-olts="save"' not in bar and 'Save Report' not in bar
+    assert 'data-olts="close"' in bar
+    assert '>Generate Report…</button>' in SRC
+    dlg = _js_func('showOltsDialog')
+    assert dlg.index('++gReportDlgSeq') < dlg.index('await') < dlg.index('if (seq !== gReportDlgSeq)')

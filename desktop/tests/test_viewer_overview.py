@@ -75,8 +75,9 @@ def test_no_decimation_when_maxpts_absent():
 def test_bulk_route_and_ceiling_exist():
     src = open(os.path.join(ROOT, 'viewer', 'trace_server.py'), encoding='utf-8').read()
     assert "'/api/traces'" in src
-    # a cable is 1152 fibers; a larger query must not be able to pin the server
-    assert '[:1152]' in src
+    # a cable is 1152 fibers (with their copies, COPY_BASE); a larger query
+    # must not be able to pin the server
+    assert '[:TRACES_MAX]' in src and 'TRACES_MAX = 4 * 1152' in src
     assert 'max(200, min(max_pts, 20000))' in src
 
 
@@ -217,10 +218,11 @@ def test_viewer_flag_defaults_track_the_engine():
         return float(m.group(1))
 
     html = open(VIEWER_HTML, encoding='utf-8').read()
-    line = next(l for l in html.splitlines() if 'const gViewerSettings' in l)
-    assert f'lossDb: {const("UNI_BEND_THRESHOLD"):.3f}' in line, line
-    assert f'reflLo: {const("UNI_REFL_FLOOR_DB"):.1f}' in line, line
-    assert f'reflHi: {const("UNI_REFL_CEIL_DB"):.1f}' in line, line
+    assert f'uni_bend: {const("UNI_BEND_THRESHOLD"):.3f}' in html
+    # the Reflectance box starts on the report's mid-span floor
+    assert f'refl_floor: {const("MIDSPAN_REFL_WARN_DB"):.1f}' in html
+    assert 'refl_ceil' not in html                    # one number, no ceiling
+    assert f'id="set-refl" type="number" step="1" max="0" value="{const("MIDSPAN_REFL_WARN_DB"):.0f}"' in html
 
 
 def test_flagging_scope_is_documented_not_reimplemented():
@@ -320,7 +322,8 @@ def test_popout_viewer_links_back_to_its_report():
     the Uni or Splice Report page.  The toolbar now carries a Back button."""
     html = open(VIEWER_HTML, encoding='utf-8').read()
     assert 'id="btn-back"' in html and 'function renderBackButton(' in html
-    fn = html[html.index("getElementById('btn-back').addEventListener('click'"):][:1400]
+    # The Back button's work is in goBackToReport() (main #591).
+    fn = html[html.index("function goBackToReport()"):][:1600]
     # OTDR Suite App: Back first asks the App to raise its own hub window
     # (/api/raise_hub) and only without one takes the named route, which
     # lives in openHubByName (the regular OTDR Suite's tabs).

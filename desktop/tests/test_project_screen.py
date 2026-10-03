@@ -291,7 +291,7 @@ def test_a_report_run_in_a_project_keeps_its_own_file(hub, tmp_path, monkeypatch
 def test_projects_send_every_report_tool_to_reports(settings_dir, span_dir, tmp_path):
     at = run_streamlit().run()
     work = _new_project(at, span_dir, tmp_path)
-    for key in ("sr_report_dest", "uni_report_dest", "ss_report_dest"):
+    for key in ("sr_report_dest", "uni_report_dest", "ss_report_dest", "fec_report_dest"):
         assert at.session_state[key] == str(work / "Reports")
 
 
@@ -493,6 +493,36 @@ def test_in_a_project_reports_are_saved_to_the_job_with_no_choice(settings_dir, 
     assert at.session_state["ss_report_dest"] == str(work / "Reports")
 
 
+
+def test_in_a_project_the_fec_report_goes_to_the_jobs_reports(settings_dir, span_dir, tmp_path,
+                                                              monkeypatch):
+    """Robert, 2026-10-02: the Splice Report FEC saved its report to Downloads
+    in a project.  Like every other tool it goes to the job's Reports folder,
+    with the run time in its name, and the Reports tab names its kind."""
+    import app as hub
+    from conftest import finish_engine_run
+    monkeypatch.setenv("OTDR_CACHE_DIR", str(tmp_path / "cache"))
+    at = run_streamlit(default_timeout=180).run()
+    work = _new_project(at, span_dir, tmp_path)
+    at = run_streamlit(default_timeout=180).run()
+    next(b for b in at.button if b.label == "📂 Open Recent Project").click().run()
+    at.text_input(key="home_folder").set_value(str(work)).run()
+    next(b for b in at.button if b.label == "Open This Folder").click().run()
+    next(b for b in at.button if (b.key or "").startswith("run_splice_report_fec_")).click().run()
+    assert not at.exception, list(at.exception)
+    assert at.session_state["nav_radio"] == "Splice Report FEC"
+    keys = {t.key for t in at.text_input} | {b.key for b in at.button}
+    assert not {"fec_report_dest", "fec_report_dest_browse"} & keys
+    assert any("Report saved to Job File" in m.value for m in at.markdown)
+    next(b for b in at.button if b.label == "Run FEC Report").click().run()
+    finish_engine_run(at, "fec")
+    assert not at.exception, list(at.exception)
+    out = at.session_state["fec_result"]["xlsx"]
+    assert os.path.dirname(out) == str(work / "Reports"), out
+    assert os.path.basename(out).startswith("FEC_OOS 2") and out.endswith(".xlsx"), out
+    assert os.path.isfile(out)
+    assert hub._report_kind(os.path.basename(out)) == "FEC Report"
+
 def test_a_report_exports_as_a_copy_and_a_run_folder_as_a_zip(hub, tmp_path):
     rep = _touch(tmp_path / "Job" / "Reports" / "A_to_B_SpliceReport.xlsx", b"xlsx")
     out = hub.export_report(str(rep), str(tmp_path / "Downloads"))
@@ -511,7 +541,7 @@ def test_a_report_exports_as_a_copy_and_a_run_folder_as_a_zip(hub, tmp_path):
 # B boxes, Clear Traces); the top bar's tabs pick the tool (they were the
 # left panel's Trace Folders and tool list until 2026-10-01).
 QA_TABS = ["Traces", "Splice Report", "Unidirectional", "Splice Report FEC",
-           "Secret Sauce", "Viewer", "Viewer FEC"]
+           "Secret Sauce", "Viewer"]
 
 
 def _side_box(at, key):
@@ -822,10 +852,12 @@ def test_owner_recents_fill_the_boxes_and_saving_puts_an_owner_on_top(settings_d
 
 
 def test_a_shoots_run_in_starts_the_fec_tools(hub, tmp_path, monkeypatch):
-    """Robert, 2026-10-02: in a project the FEC tools start from a shoot's
-    Run In… on the Traces tab (and from the tool list in Quick Analysis)."""
+    """Robert, 2026-10-02: in a project Splice Report FEC starts from a
+    shoot's Run In… on the Traces tab (and from the tool list in Quick
+    Analysis).  FEC shots open in the Viewer itself (main #589): there is
+    no Viewer FEC to start."""
     assert hub.RUN_IN_TOOLS.index("Splice Report FEC") == hub.RUN_IN_TOOLS.index("Splice Report") + 1
-    assert "Viewer FEC" in hub.RUN_IN_TOOLS
+    assert "Viewer FEC" not in hub.RUN_IN_TOOLS and "Viewer FEC" not in hub.TOOLS_PROJECT
     sh = {"id": "2026-05-06", "a": str(tmp_path / "A"), "b": str(tmp_path / "B"),
           "dir": str(tmp_path)}
     ss = {"sr_result": 1, "viewer_target": 2}
@@ -835,8 +867,8 @@ def test_a_shoots_run_in_starts_the_fec_tools(hub, tmp_path, monkeypatch):
     assert (ss["fec_dir_a"], ss["fec_dir_b"]) == (sh["a"], sh["b"])
     assert "sr_result" not in ss and "viewer_target" not in ss
     ss.clear()
-    hub._run_shoot_in("Viewer FEC", sh)
-    assert ss["nav_radio"] == "Viewer FEC"
+    hub._run_shoot_in("Viewer", sh)
+    assert ss["nav_radio"] == "Viewer"
     assert (ss["view_dir_a_input"], ss["view_dir_b_input"]) == (sh["a"], sh["b"])
 
 

@@ -376,6 +376,10 @@ def render(default_out_dir: str | None = None,
 
         out_path = os.path.join(out_dir, out_name)
         try:
+            # The save row takes a folder that is not there yet, any number
+            # of levels deep, as the report pages do: make it before the
+            # package is written into it.
+            os.makedirs(out_dir, exist_ok=True)
             manifest = build(
                 prod_path, out_path,
                 template=template,

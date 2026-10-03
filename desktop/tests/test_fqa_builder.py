@@ -1129,7 +1129,7 @@ def test_the_hub_offers_the_fqa_builder(tmp_path, monkeypatch):
     monkeypatch.setenv('OTDR_SUITE_EDITION', 'OTDR App')
     at = run_streamlit(default_timeout=180).run()           # Quick Analysis
     assert _tabs(at) == ['Traces', 'Splice Report', 'Unidirectional',
-                         'Splice Report FEC', 'Secret Sauce', 'Viewer', 'Viewer FEC']
+                         'Splice Report FEC', 'Secret Sauce', 'Viewer']
 
 
 def test_the_hub_page_renders_the_same_ui_as_the_standalone_app(tmp_path, monkeypatch):
