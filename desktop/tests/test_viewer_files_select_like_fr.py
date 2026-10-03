@@ -48,6 +48,7 @@ import subprocess
 import pytest
 
 from conftest import VIEWER_DIR
+from conftest import COPY_HELPERS_JS  # noqa: E402
 
 SRC = (VIEWER_DIR / "viewer.html").read_text(encoding="utf-8")
 JSC = ('/System/Library/Frameworks/JavaScriptCore.framework/'
@@ -130,7 +131,7 @@ def rules(tmp_path_factory):
     funcs = '\n'.join(_js_func(n) for n in
                       ('fileRange', 'fileClickSelection', 'fileKeySelection', 'fileAfterRemove'))
     path = tmp_path_factory.mktemp('files_select') / 'rules.js'
-    path.write_text(funcs + '\n' + _CASES % {'keys': json.dumps(KEYS)}, encoding='utf-8')
+    path.write_text(COPY_HELPERS_JS + funcs + '\n' + _CASES % {'keys': json.dumps(KEYS)}, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
     out = r.stdout + r.stderr
     assert r.returncode == 0 and 'OUT ' in out, out[-2000:]
@@ -281,7 +282,7 @@ def test_a_remove_selects_the_file_that_slides_into_its_place():
 
 def test_the_row_says_its_name_and_the_header_counts_the_selection():
     panel = _body('renderFilesPanel')
-    assert "title=\"${esc(files[i] || 'F' + f)}\"" in panel
+    assert "title=\"${esc(files[i] || 'F' + fiberLabel(f))}\"" in panel
     assert 'click to remove' not in panel and 'click to load' not in panel
     assert '`${gSelectedFiles.size} of ${rows.length} selected`' in panel
 

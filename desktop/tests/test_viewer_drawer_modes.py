@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 
 from conftest import VIEWER_DIR
+from conftest import with_copy_helpers  # noqa: E402
 
 SRC = (VIEWER_DIR / "viewer.html").read_text(encoding="utf-8")
 JSC = Path("/System/Library/Frameworks/JavaScriptCore.framework/Versions/"
@@ -128,7 +129,8 @@ def test_clicks_on_drawer_marks():
     assert "else if (gGridGoTo) gGridGoTo(c.hit.t, c.hit.e);" in up
     menu = SRC[SRC.index("canvas.addEventListener('contextmenu'"):]
     menu = menu[:menu.index("\n});")]
-    assert "if (!lh || !lh.t) return;" in menu
+    # every drawer mark and tag names its own picks (test_viewer_drawer_right_click_menu)
+    assert "let picks = lh ? lh.menu || (lh.t && lh.e" in menu
     # the lines and numbers are always drawn, so their menu always works
     assert "gShowEvents" not in menu
 
@@ -232,7 +234,7 @@ var R = {x: 56, y: 12, w: 1100, h: 600};
         body,
     ])
     p = tmp_path / "drawer.js"
-    p.write_text(code, encoding="utf-8")
+    p.write_text(with_copy_helpers(code), encoding="utf-8")
     out = subprocess.run([str(JSC), str(p)], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr + out.stdout
     return json.loads(out.stdout.strip().splitlines()[-1])

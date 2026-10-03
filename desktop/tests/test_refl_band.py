@@ -1,12 +1,11 @@
-"""Mid-span reflectance: polarity-robust spike confirm + band ceiling.
+"""Mid-span reflectance: polarity-robust spike confirm; no ceiling.
 
 the Border job (2026-07-23): real -77.6/-77.9 dB glints (LAMBEY F109 @5.19,
 F133 @4.82) measure as -0.13 dB DIPS in accumulated-loss-ascending traces
 — 20x noise, at exactly the claimed km — and the positive-only spike
 confirm blindly refuted them, so the mid-span reflective detection was
-blind on that whole trace-orientation class.  Plus Robert's band ask:
-an optional ceiling so the pass can flag ONLY [warn floor, ceiling]
-(e.g. -80..-40 isolates faint fusion glints).
+blind on that whole trace-orientation class.  The optional ceiling of
+2026-07-23 is gone (Robert 2026-10-02): reflectance is one number.
 """
 import os
 import sys
@@ -58,24 +57,29 @@ def test_spike_confirm_still_refutes_flat_glass():
     assert E._reflective_spike_confirms(_rec('flat'), 5.0, -50.0) is False
 
 
-def test_band_ceiling_default_off_and_gate_wired():
-    assert E.MIDSPAN_REFL_CEIL_DB == 0.0          # shipped behavior
+def test_mid_span_reflectance_has_no_ceiling():
+    """Robert 2026-10-02: "mid span reflectance can be just one number. we
+    don't need the ceiling."  At or above the floor flags, however strong."""
+    assert not hasattr(E, 'MIDSPAN_REFL_CEIL_DB')
+    assert not hasattr(E, 'UNI_REFL_CEIL_DB')
     src = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
                encoding='utf-8').read()
-    assert src.count('if MIDSPAN_REFL_CEIL_DB < 0 and refl > MIDSPAN_REFL_CEIL_DB:') == 1
+    assert 'MIDSPAN_REFL_CEIL_DB <' not in src and 'UNI_REFL_CEIL_DB <' not in src
     assert '_passes(dev) or _passes(-dev)' in src        # orientation-symmetric
     assert 'dev = dev - float(np.median(dev))' in src     # offset-artifact centering
     assert 'min_run = max(2, int(0.3 * pulse_m / res))' in src  # width discriminator
 
 
-def test_panel_row_and_maps():
-    src = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
-    assert '"midspan_refl_ceiling"' in src or "'midspan_refl_ceiling'" in src
-    assert '"midspan_refl_ceiling": "MIDSPAN_REFL_CEIL_DB"' in src
-    assert '"midspan_refl_ceiling": 0.0' in src        # unticked = no ceiling
-    # NOT pre-applied: shipped default keeps no ceiling
-    apply_block = src.split('OTDR_DEFAULT_APPLY = ', 1)[1].split('}', 1)[0]
-    assert 'midspan_refl_ceiling' not in apply_block
+def test_the_mid_span_ceiling_row_is_gone():
+    import app as hub
+    assert 'midspan_refl_ceiling' not in {r[0] for r in hub.OTDR_ROWS}
+    assert 'midspan_refl_ceiling' not in hub._OTDR_KEY_TO_ENGINE_GLOBAL
+    assert 'midspan_refl_ceiling' not in hub._OTDR_KEY_DISABLE_VALUE
+    assert 'midspan_refl_ceiling' not in hub._OTDR_KEY_TO_UNI_GLOBAL
+    # a saved setting that still names it (ticked, even) reaches no engine
+    s = hub._otdr_settings_from_profile(next(iter(hub.CUSTOMER_PROFILES)))
+    s['midspan_refl_ceiling'] = {'apply': True, 'fail': -40.0, 'warning': -40.0}
+    assert 'UNI_REFL_CEIL_DB' not in hub._uni_overrides_from_settings(s)
 
 
 def test_pulse_width_units_normalized():
@@ -107,7 +111,6 @@ def test_uni_band_on_by_default_no_ceiling():
     report on a span whose F19 carries a real -74 dB glint and got an empty
     workbook.  Ripple over 10 folders on disk: only job R short set changes."""
     assert E.UNI_REFL_FLOOR_DB == E.MIDSPAN_REFL_WARN_DB == -80.0
-    assert E.UNI_REFL_CEIL_DB == 0.0          # no ceiling unless the tech sets one
 
 
 def test_uni_band_switchable_off():
@@ -123,12 +126,11 @@ def test_uni_band_switchable_off():
 
 def test_uni_band_flags_confirmed_glint(monkeypatch):
     monkeypatch.setattr(E, 'UNI_REFL_FLOOR_DB', -80.0)
-    monkeypatch.setattr(E, 'UNI_REFL_CEIL_DB', -40.0)
     monkeypatch.setattr(E, '_reflective_spike_confirms', lambda r, km, refl: True)
     fibers = {7: {'events': [
         {'dist_km': 5.0, 'reflection': -77.6, 'is_reflective': True,
          'is_end': False, 'splice_loss': 0.0},
-        {'dist_km': 6.0, 'reflection': -30.0, 'is_reflective': True,   # above ceiling
+        {'dist_km': 6.0, 'reflection': -30.0, 'is_reflective': True,   # strong: no ceiling
          'is_end': False, 'splice_loss': 0.0},
         {'dist_km': 7.0, 'reflection': -85.0, 'is_reflective': True,   # below floor
          'is_end': False, 'splice_loss': 0.0},
@@ -136,8 +138,8 @@ def test_uni_band_flags_confirmed_glint(monkeypatch):
          'is_end': True, 'splice_loss': 0.0},
     ], '_trace_offset_km': 0.0}}
     out = E.uni_find_reflective_events(fibers, 10.5)
-    assert [(e['fiber'], e['position_km']) for e in out] == [(7, 5.0)]
-    cols = E.uni_cluster_reflective(out)
+    assert [(e['fiber'], e['position_km']) for e in out] == [(7, 5.0), (7, 6.0)]
+    cols = E.uni_cluster_reflective(out[:1])
     assert len(cols) == 1 and cols[0]['kind'] == 'reflective'
     assert cols[0]['refl_members'] == {7: -77.6}
 
@@ -187,35 +189,25 @@ def test_sharp_ratio_constant_present():
 
 # ── Panel: the mid-span reflectance row reads as a BAND ──────────────────
 
-def test_midspan_row_is_declared_a_band():
-    """Robert: 'splice report needs a high and low band like uni has.'  The
-    row already WAS one — engine-side it drives two globals, MIDSPAN_REFL_
-    FAIL_DB at the strong end and MIDSPAN_REFL_WARN_DB at the weak end — the
-    panel just rendered it as an ordinary fail/warning pair."""
+def test_no_row_is_a_band():
+    """Robert 2026-10-02: "we don't need the band high/low".  The mid-span
+    row was a WARN floor .. FAIL band; it is one number now, like the launch
+    reflectance row, and the panel draws no band labels."""
     src = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
     import ast
     tree = ast.parse(src)
     bands = next(ast.literal_eval(n.value) for n in ast.walk(tree)
                  if isinstance(n, ast.Assign)
                  and any(getattr(t, 'id', '') == '_OTDR_BAND_ROWS' for t in n.targets))
-    assert 'midspan_reflectance' in bands
-    low, high = bands['midspan_reflectance']
-    assert 'low' in low.lower() and 'high' in high.lower()
-
-
-def test_band_is_rendering_only_no_data_model_change():
-    """The whole point of the minimal design: the row keeps the {apply,
-    fail, warning} shape, so CUSTOMER_PROFILES, the key->global maps and
-    _overrides_from_settings are all untouched.  If someone later moves the
-    band onto its own slots, these must be revisited together."""
+    assert bands == {}
+def test_midspan_row_maps_one_number():
     src = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
-    assert '"midspan_reflectance":  "MIDSPAN_REFL_FAIL_DB"' in src   # strong end
-    assert '"midspan_reflectance":  "MIDSPAN_REFL_WARN_DB"' in src   # weak end
-    assert '_OTDR_WARN_DEFAULT = {"midspan_reflectance": -80.0}' in src
+    assert '"midspan_reflectance":  "MIDSPAN_REFL_WARN_DB",' in src
+    assert 'MIDSPAN_REFL_FAIL_DB' not in src
+    assert '_OTDR_WARN_DEFAULT = {}' in src
+    assert '("midspan_reflectance",       "Mid-Span Reflectance",       -80.0,' in src
     # still a member of the profiles that reference it
     assert src.count('"midspan_reflectance", "bend_fold_distance"') >= 2
-
-
 def test_component_renders_band_labels():
     html = open(os.path.join(ROOT, 'components', 'otdr_settings', 'index.html'),
                 encoding='utf-8').read()
@@ -225,34 +217,26 @@ def test_component_renders_band_labels():
     assert "row.kind === \"range\"" in html
 
 
-def test_every_band_row_is_a_real_low_high_pair():
-    """A stray band flag on a plain threshold row would mislabel a real
-    fail/warning pair as a range.
-
-    Stated as an invariant rather than a fixed list, so adding a band does not
-    require editing an unrelated literal — the merge-order trap that took main
-    red on 2026-08-13.  What must hold: every banded row is a REFLECTANCE rule
-    (the only quantity with an acceptable window rather than a single edge),
-    it is wired to an engine global, and it has a companion ceiling row that
-    is also wired."""
+def test_no_reflectance_ceiling_rows():
+    """Both reflectance rules are one number: no ceiling row of either kind
+    (Robert 2026-10-02)."""
     rows = _app_literal('OTDR_ROWS')
-    eng = _app_literal('_OTDR_KEY_TO_ENGINE_GLOBAL')
-    src = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()
-    import ast
-    tree = ast.parse(src)
-    bands = next(ast.literal_eval(n.value) for n in ast.walk(tree)
-                 if isinstance(n, ast.Assign)
-                 and any(getattr(t, 'id', '') == '_OTDR_BAND_ROWS' for t in n.targets))
-    keys = {k for k, *_ in rows}
-    assert bands, 'at least one row should render as a band'
-    for key in bands:
-        assert key in keys, f'{key} bands a row that does not exist'
-        assert 'refl' in key, f'{key} is not a reflectance rule'
-        assert key in eng, f'{key} bands a row the engine never reads'
-        ceil = next((c for c in ('%s_ceiling' % key, key.replace(
-            'reflectance', 'refl_ceiling')) if c in keys), None)
-        assert ceil, f'{key} has no ceiling row to form the band'
-        assert ceil in eng, f'{ceil} is not wired to an engine global'
+    assert not any('ceil' in k for k, *_ in rows), 'a ceiling row is back'
+def test_the_launch_reflectance_ceiling_is_gone():
+    """Robert 2026-10-02: "we can get rid of reflectance ceiling as well".
+    The launch / tailbox reflectance rule is one number: at or above fails."""
+    import app as hub
+    assert 'reflectance_ceiling' not in {r[0] for r in hub.OTDR_ROWS}
+    assert 'reflectance_ceiling' not in hub._OTDR_KEY_TO_ENGINE_GLOBAL
+    assert 'reflectance_ceiling' not in hub._OTDR_KEY_DISABLE_VALUE
+    assert 'reflectance_ceiling' not in hub.OTDR_DEFAULT_APPLY
+    assert not any('reflectance_ceiling' in (p.get('apply') or ())
+                   for p in hub.CUSTOMER_PROFILES.values())
+    assert 'reflectance' not in hub._OTDR_BAND_ROWS
+    assert not hasattr(E, 'LAUNCH_REFL_CEIL_DB')
+    src = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
+               encoding='utf-8').read()
+    assert 'refl_ceil' not in src
 
 
 # ── Panel: anything the engine does not read is greyed ───────────────────
@@ -279,11 +263,11 @@ def test_greying_is_driven_by_the_real_maps_not_a_hand_flag():
 
 def test_only_one_row_has_a_live_warning_cell():
     """The Warning column exists for visual fidelity with EXFO's panel, but
-    the engine reads it on exactly one row — and "FAIL"/"WARN" appears once
-    in the whole engine, at the mid-span reflectance severity split."""
+    the engine reads it on no row since mid-span reflectance became one number
+    (Robert 2026-10-02), and the engine prints no WARN / FAIL split."""
     warn = _app_literal('_OTDR_KEY_TO_WARN_GLOBAL')
     rows = _app_literal('OTDR_ROWS')
-    assert set(warn) == {'midspan_reflectance'}
+    assert warn == {}
     # DERIVED, never hard-coded.  A literal here is a merge-order trap: two
     # PRs can each add one panel row, each stay green alone against the main
     # they were branched from, and turn main red the moment both land.  That
@@ -292,15 +276,14 @@ def test_only_one_row_has_a_live_warning_cell():
     # MERGEABLE/CLEAN does not catch it: it checks textual conflicts, not
     # whether an assertion still holds after the merge.
     #
-    # What actually matters is the INVARIANT, not the count: exactly one row
-    # has a live Warning, so every other row's Warning cell is dead and must
-    # render greyed.
-    assert len(warn) == 1
-    assert len(rows) - len(warn) == len(rows) - 1
-    assert len(rows) >= 14, 'panel rows should not silently disappear'
+    # What actually matters is the INVARIANT, not the count: no row has a
+    # live engine Warning, so every Warning cell the Viewer does not colour
+    # with is dead and must render greyed.
+    # 13 since Robert 2026-10-02 took out both reflectance ceiling rows
+    assert len(rows) >= 13, 'panel rows should not silently disappear'
     eng_src = open(os.path.join(ROOT, 'splicereport', 'splicereportmatchexfo.py'),
                    encoding='utf-8').read()
-    assert eng_src.count('"FAIL" if refl_fails(refl, MIDSPAN_REFL_FAIL_DB) else "WARN"') == 1
+    assert 'MIDSPAN_REFL_FAIL_DB' not in eng_src and '_sev = ' not in eng_src
 
 
 def test_unwired_rows_are_exactly_the_unsupported_ones():

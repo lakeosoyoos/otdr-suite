@@ -82,7 +82,8 @@ def test_every_row_is_judged_at_the_report_s_own_gates():
     # dead zone at both ends (the fibre end's -29 dB is never judged)
     assert "const dead = Math.min(T.dead_km, T.dead_frac * eofKm);" in src
     assert "if (posKm < dead || posKm > eofKm - dead || eofKm - posKm < 1.0) return false;" in src
-    assert "if (refl < T.refl_floor) return false;" in src
+    assert "return reflInBand(refl);" in src
+    assert "return refl >= lo;" in src and "refl > hi" not in src    # one number, no ceiling
     body = _fn('paintFrBidiGrid')
     assert "if (which === 'avg') return clearsAt(x.row.loss, gateFor(isRefl(x), false));" in body
     assert "if (legReflFails(x, which)) return true;" in body
@@ -98,7 +99,7 @@ def test_the_server_hands_the_viewer_every_report_gate():
     assert "'connector': 'BIDIR_CONNECTOR_LOSS'" in srv and "'refl': 'LAUNCH_BAD_REFL_DB'" in srv
     run = (Path(__file__).resolve().parents[2] / 'splicereport' / 'run_splicereport.py').read_text(encoding='utf-8')
     for name in ('BIDIR_CONNECTOR_LOSS', 'LAUNCH_BAD_REFL_DB', 'MIDSPAN_REFL_WARN_DB',
-                 'MIDSPAN_REFL_CEIL_DB', 'LAUNCH_FIBER_MAX', 'MIDSPAN_DEAD_SPAN_FRAC'):
+                 'LAUNCH_FIBER_MAX', 'MIDSPAN_DEAD_SPAN_FRAC'):
         assert f"'{name}'" in run.split('def _effective_gates', 1)[1][:900], name
 
 
@@ -118,7 +119,7 @@ def test_a_mixed_column_gets_fr_s_type_column():
     body = _fn('paintFrBidiGrid')
     assert "cols.forEach(c => { c.mixed = colKinds(c).length > 1; });" in body
     assert "const colKind = c => c.mixed ? '' : colKinds(c).join('');" in body
-    assert "(c.mixed ? '<th class=\"fr-sub\">Type</th>' : '')" in body
+    assert "(c.mixed ? `<th class=\"fr-sub\" data-col=\"${i}\">Type</th>` : '')" in body
     assert "typeCell(c, leg.synthetic ? '' : kind(leg))" in body
     assert "typeCell(c, kind(x.row))" in body
     # the spacer row and the Min/Max/Average strip count the extra cell

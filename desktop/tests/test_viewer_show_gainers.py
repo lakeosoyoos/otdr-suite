@@ -188,7 +188,7 @@ def test_min_max_average_leave_out_a_hidden_gainer():
     grid = _body(SRC, "function renderFastReporterGrid(")
     assert "const ls = c.ev.map(evLoss).filter(v => v != null && !isNaN(v));" in grid
     # overGate is clearsGate, or the one-direction gate for a mixed load's one-way fibres
-    assert "const rowFails = traces.map((_t, ti) => cols.some(c => overGate(evLoss(c.ev[ti]))));" in grid
+    assert "const rowFails = traces.map((_t, ti) => cols.some(c => overGate(evLoss(c.ev[ti])) || reflBad(c.ev[ti], ti)));" in grid
     assert "const L = evLoss(e);" in grid                 # the per-row statistics block
 
 

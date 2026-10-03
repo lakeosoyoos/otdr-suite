@@ -56,7 +56,7 @@ def test_the_default_is_frs_own_number():
     """The engine default is the value an FR template carries, so the Default
     profile and every template profile are judged by the same rule."""
     assert E.LAUNCH_BAD_REFL_DB == -50.0
-    assert E.MIDSPAN_REFL_FAIL_DB == -50.0
+    assert E.MIDSPAN_REFL_WARN_DB == -80.0      # mid-span: one number
 
 
 def test_other_gates_round_the_same_way():
