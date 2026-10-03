@@ -638,6 +638,10 @@
   #event-tbody-wrap > .tbl-updating { flex: none; padding: 2px 12px; font-size: 11px;
                                       color: var(--text-sec); font-style: italic; }
   #event-tbody-wrap.tbl-stale > :not(.tbl-updating) { opacity: .5; }
+  /* FEC shots from both ends: no table, this line instead (see renderEventTable) */
+  #event-tbody-wrap > .fec-ends-note { flex: none; padding: 10px 12px; font-size: 12px;
+                                       color: var(--text-sec); }
+  #event-tbody-wrap > .fec-ends-note button { margin-left: 6px; }
   /* the line naming the fibres loaded one way, over the A+B table */
   /* Columns fit their contents (fitColumns); the table no longer stretches
      to the panel's width and spreads the spare room across every column. */
@@ -1286,13 +1290,18 @@ let gFecComb = { sig: null, res: null, seq: 0 };
 // The engine's FEC grades for these traces (/api/fec_table), or
 // {pending: true} while they are being read; the table is laid out again
 // when they land.  A copy (a second file of a fiber, see realFiber) is not
-// the folder's file, so it is not graded.
-function fecCombinedFor(traces) {
-  if (!gFecCombined) return null;
+// the folder's file, so it is not graded.  Read whether or not the Combined
+// column is shown: P/F and the red cells are the FEC rule's in FEC mode
+// (Robert 2026-10-02, "p/f needs to use the correct rule always"), at the
+// gates in the boxes (a typed one overrides for this window, see
+// setFecGateOverride).
+function fecGradesFor(traces) {
   const fibers = [...new Set(traces.filter(t => realFiber(t.fiber) === t.fiber).map(t => t.fiber))]
     .sort((a, b) => a - b);
+  const ov = (gFecOverride.loss != null ? `&loss_gate=${gFecOverride.loss}` : '')
+           + (gFecOverride.refl != null ? `&refl_gate=${gFecOverride.refl}` : '');
   const sig = [fibers.join(','), gInfo && gInfo.dir_a_name, gInfo && gInfo.dir_b_name,
-               JSON.stringify((gInfo && gInfo.fec_gates) || null)].join('|');
+               JSON.stringify((gInfo && gInfo.fec_gates) || null), ov].join('|');
   if (gFecComb.sig === sig && gFecComb.res) return gFecComb.res;
   if (gFecComb.sig === sig) return { pending: true };   // already asked
   const seq = ++gFecComb.seq;
@@ -1302,9 +1311,12 @@ function fecCombinedFor(traces) {
   const land = res => {
     if (seq !== gFecComb.seq) return;
     gFecComb.res = res;
-    if (gFecMode && gFecCombined) renderEventTable();
+    // the boxes show the gates these grades were made at (syncFecGateUI)
+    gFecGates = res.gates || null;
+    if (gFecGates && !fecOverridden()) gFecBase = gFecGates;
+    if (gFecMode) renderEventTable();
   };
-  fetch(`/api/fec_table?fibers=${fibers.join(',')}`)
+  fetch(`/api/fec_table?fibers=${fibers.join(',')}${ov}`)
     .then(r => r.json())
     .then(res => land(res || {}))
     .catch(e => land({ grades: {}, error: `combined column unavailable (${(e && e.message) || 'fetch failed'})` }));
@@ -2666,7 +2678,7 @@ async function loadInfo() {
 // Put the seeded gate in the box and name its source beside it.  Called
 // after /api/list and again whenever the source report changes.
 function syncGateUI() {
-  if (fecTable()) { syncFecGateUI(); return; }
+  if (gFecMode) { syncFecGateUI(); return; }
   // The FEC table's gates leave the boxes when a span comes in after it:
   // the labels, the Reflectance box's number, step and title are all put
   // back below.
@@ -5568,6 +5580,7 @@ function upperBound(arr, v) {
 function tableKmKey(km) { return Math.round(Number(km) * 1e4); }
 function tableMarkReset(traces) {
   gTableKm = new Map();
+  gBidiNumberKeys = null;
   for (const t of traces) if (t) gTableKm.set(t, new Map());
 }
 function tableColumnNumber(title) {
@@ -5576,12 +5589,12 @@ function tableColumnNumber(title) {
 }
 // `tipOnly`: the column's number is the A->B reading's to print (see
 // bidiMarkTip); this trace's tick keeps it for the hover tip only.
-function tableMark(t, km, title, tipOnly = false) {
+function tableMark(t, km, title, tipOnly = false, bidi = false) {
   if (!t || km == null || !Number.isFinite(Number(km))) return;
   let s = gTableKm.get(t);
   if (!s) gTableKm.set(t, s = new Map());
   const k = tableKmKey(km);
-  if (!s.has(k)) s.set(k, { title: title == null ? '' : String(title), num: tableColumnNumber(title), tipOnly });
+  if (!s.has(k)) s.set(k, { title: title == null ? '' : String(title), num: tableColumnNumber(title), tipOnly, bidi });
 }
 // In a two-direction table a column's number prints on the A->B trace only,
 // as FastReporter prints it (Robert 2026-10-02: "only show numbers from the
@@ -5589,6 +5602,21 @@ function tableMark(t, km, title, tipOnly = false) {
 // its tick, with the number on its hover tip, even in a column no A->B
 // reading shares.
 function bidiMarkTip(dir) { return dir === 'b'; }
+// And of the A->B traces, ONE fibre's: FastReporter numbers the current
+// measurement's own events (drop audit S05 and S08: its chart's numbers are
+// exactly fibre 1's A->B events, 10 of S05's 23 columns), every other tick
+// keeping its number on the hover tip.  The current fibre is the picked one,
+// else the first the table lists that is shown; a pick of either direction
+// of a fibre numbers its A->B.  `gBidiNumberKeys` is the table's rows in
+// order, each [A->B key, B->A key or null]; null when no two-direction table
+// is up (every trace then numbers its own, as before).
+let gBidiNumberKeys = null;
+function bidiNumberKey() {
+  if (!gBidiNumberKeys || !gBidiNumberKeys.length) return null;
+  const shown = gBidiNumberKeys.filter(([k]) => { const t = gTraces.find(x => x.key === k); return t && t.visible; });
+  const row = shown.find(ks => ks.some(k => k && isPicked(k))) || shown[0];
+  return row ? row[0] : null;
+}
 function inTable(t, e) {
   const s = gTableKm && gTableKm.get(t);
   return !s || s.has(tableKmKey(e.dist_km));
@@ -5764,7 +5792,8 @@ function drawEventMarkers(t, r) {
     // trace or per fibre): the first trace to place it keeps it, A->B before
     // B->A; every other trace's tick at that column keeps the number for the
     // hover tip.  A trace no table has taken counts, and prints, its own.
-    if (col && col.tipOnly) {
+    const numKey = col && col.bidi ? bidiNumberKey() : null;
+    if (col && (col.tipOnly || (numKey && t.key !== numKey))) {
       gLabelHits.push({ x0: px - 4, x1: px + 4, y0: py - 10, y1: py + 10, t, e,
                         hiddenText: label, hiddenColor: color });
       continue;
@@ -6145,30 +6174,39 @@ function drawPairing(sets, r, failedOnly = false) {
   return covered;
 }
 
-// The A+B pairs of one span's traces: per listed fibre id, its A with its B
-// (a copy row, "12 (copy 2)", has an id of its own and pairs with the
-// other side's same copy).  A file set to the other direction than its
-// folder's meets the folder's own file there: the folder's own pairs first,
-// and every trace left over is a single, listed in the same table in fibre
-// order with no Average row (paintFrBidiGrid) -- every trace shows its
-// events and losses, in one panel, as FastReporter shows them (Robert
-// 2026-10-02).  `tkey` names the pair's table: the fibre for span 1's own A
-// and B, as ever, else 'fibre:srcA:srcB'.
+// The A+B pairs of one span's traces: per FIBRE, its A->B files with its
+// B->A files, the folder's own first and then in copy order (a copy row,
+// "12 (copy 2)", has an id of its own).  Pairing by the fibre, not the id,
+// is what lets a file the tech sets to its right direction meet its partner,
+// as FastReporter re-pairs the moment Direction is changed (drop audit S05;
+// Robert 2026-10-03): fibre 3's B file loaded on A as "3 (copy 2)" and set
+// back to B->A pairs with the A folder's own fibre 3.  Every trace left over
+// is a single, listed in the same table in fibre order with no Average row
+// (paintFrBidiGrid).  `tkey` names the pair's table: the fibre for span 1's
+// own A and B of one id, as ever, else 'idA:srcA:srcB' plus ':idB' when the
+// two ids differ.
 function pairTraces(traces) {
   const by = new Map();
   for (const t of traces) {
-    const g = by.get(t.fiber) || { a: [], b: [] };
+    const f = realFiber(t.fiber);
+    const g = by.get(f) || { a: [], b: [] };
     g[t.dir].push(t);
-    by.set(t.fiber, g);
+    by.set(f, g);
   }
+  const own = (w, t) => t.src[0] !== w;
+  const ord = (w) => (x, y) => (own(w, x) - own(w, y)) || (Number(x.fiber) - Number(y.fiber));
   const pairs = [], singles = [];
-  for (const [fiber, g] of by) {
-    g.a.sort((x, y) => (x.src[0] !== 'a') - (y.src[0] !== 'a'));
-    g.b.sort((x, y) => (x.src[0] !== 'b') - (y.src[0] !== 'b'));
+  for (const g of by.values()) {
+    g.a.sort(ord('a'));
+    g.b.sort(ord('b'));
     const n = Math.min(g.a.length, g.b.length);
     for (let k = 0; k < n; k++) {
       const ta = g.a[k], tb = g.b[k];
-      const tkey = (ta.src === 'a' && tb.src === 'b') ? String(fiber) : `${fiber}:${ta.src}:${tb.src}`;
+      // the row is the fibre's own when either file is (F3, not F3 (copy 2))
+      const fiber = ta.fiber === tb.fiber ? ta.fiber
+        : (Number(ta.fiber) <= Number(tb.fiber) ? ta.fiber : tb.fiber);
+      const tkey = (ta.src === 'a' && tb.src === 'b' && ta.fiber === tb.fiber) ? String(fiber)
+        : `${ta.fiber}:${ta.src}:${tb.src}` + (ta.fiber === tb.fiber ? '' : `:${tb.fiber}`);
       pairs.push({ fiber, ta, tb, tkey });
     }
     singles.push(...g.a.slice(n), ...g.b.slice(n));
@@ -6176,11 +6214,11 @@ function pairTraces(traces) {
   return { pairs, singles };
 }
 // The /api/fr_table query for `pairs`: by fibre when every pair is span 1's
-// own A and B, else each pair's two sources.
+// own A and B, else each pair's two sources (and B's id when it differs).
 function frTableQuery(pairs) {
   return pairs.every(p => p.tkey === String(p.fiber))
     ? `fibers=${pairs.map(p => p.fiber).join(',')}`
-    : `pairs=${pairs.map(p => `${p.fiber}:${p.ta.src}:${p.tb.src}`).join(',')}`;
+    : `pairs=${pairs.map(p => p.tkey === String(p.fiber) ? `${p.fiber}:a:b` : p.tkey).join(',')}`;
 }
 
 // Take the panel to one cell: row `fi`'s line for `which` ('a', 'b' or
@@ -6716,7 +6754,7 @@ function wireEventSettings() {
   const lossEl = document.getElementById('set-loss');
   if (lossEl) liveBox(lossEl, (final) => {
     const v = parseFloat(lossEl.value);
-    if (fecTable()) {
+    if (gFecMode) {
       if (final && Number.isFinite(v)) setFecGateOverride('loss', v);
       return;
     }
@@ -6744,7 +6782,7 @@ function wireEventSettings() {
   });
   const reflEl = document.getElementById('set-refl');
   if (reflEl) liveBox(reflEl, (final) => {
-    if (fecTable()) {
+    if (gFecMode) {
       const v = parseFloat(reflEl.value);
       if (final && Number.isFinite(v)) setFecGateOverride('refl', v);
       return;
@@ -6864,8 +6902,36 @@ function renderEventTable() {
   const combLab = document.getElementById('fec-comb-lab');
   if (combLab) combLab.style.display = gFecMode ? '' : 'none';
   if (gFecMode) {
+    // The two ends' shots are not the same events (two jobs, two ends of the
+    // cable), and FastReporter will not show A->B and B->A FEC shots in one
+    // table either ("could not be viewed", FR 3, 2026-10-02): one end at a
+    // time, as FR does (Robert: "follow FR").
+    if (new Set(visible.map(t => t.dir)).size > 1) {
+      hint.textContent = '';
+      const note = document.createElement('div');
+      note.className = 'fec-ends-note';
+      note.textContent = 'A→B and B→A FEC shots are not shown in one table: they are shot from '
+        + 'the two ends of the cable, so their events are not the same events. FastReporter '
+        + 'does not show them together either. Show one end: ';
+      // One click shows one end's traces and hides the other's (the eye in
+      // FILES brings any of them back).
+      for (const [d, lab] of [['a', 'A→B'], ['b', 'B→A']]) {
+        const btn = document.createElement('button');
+        btn.textContent = `Show ${lab}`;
+        btn.onclick = () => {
+          for (const t of gTraces) t.visible = t.dir === d;
+          renderChips(); draw(); renderEventTable();
+        };
+        note.appendChild(btn);
+      }
+      host.appendChild(note);
+      tableMarkReset([]);            // no table: the chart keeps every number
+      if (gTableFails.size || gTableHasBidi) { gTableFails = new Map(); gTableHasBidi = false; filesPfChanged(); }
+      draw();
+      return;
+    }
     if (!(fecTable() && renderFecGrid(visible, host, hint)))
-      renderFastReporterGrid(visible, host, hint, { fec: fecCombinedFor(visible) });
+      renderFastReporterGrid(visible, host, hint, { fec: fecGradesFor(visible), fecColumn: gFecCombined });
     return;
   }
   const server = gAnalysisMode === 'suite'
@@ -6921,8 +6987,8 @@ function syncFecGateUI() {
   const rOp = document.getElementById('refl-op');
   if (loss) loss.value = g ? Number(g.FEC_LOSS_GATE).toFixed(3) : '';
   if (lo) lo.value = g ? Number(g.FEC_REFL_GATE).toFixed(1) : '';
-  if (op && g) op.textContent = g.FEC_LOSS_STRICT ? 'Loss >' : 'Loss ≥';
-  if (rOp) rOp.textContent = 'Reflectance >';
+  if (op && g) op.textContent = g.FEC_LOSS_STRICT ? 'FEC Loss >' : 'FEC Loss ≥';
+  if (rOp) rOp.textContent = 'FEC Reflectance >';
   if (lo) {
     lo.step = '0.1';
     lo.title = 'FEC fails any reflectance above this number';
@@ -7703,13 +7769,38 @@ function oneDirTableZeroKm(traces) {
 // FastReporter-style grid for 1–2 traces (a fiber's A/B, OR two fibers of a
 // duplicate pair): events matched by DISPLAYED km into columns; each trace is
 // its own row; Average / Minimum / Maximum (loss) across the traces below.
-// `opts.fec`: the FEC combined grades (fecCombinedFor), from renderEventTable's
+// `opts.fec`: the FEC grades (fecGradesFor), from renderEventTable's
 // FEC branch; absent everywhere else.
 function renderFastReporterGrid(traces, host, hint, opts = {}) {
   const TOL = columnTolKm(traces);
   const overGate = clearsGate;
   const warnGate = warnFor(false, false);
   const arrow = t => (t.dir === 'a' ? 'A→B' : 'B→A') + (t.src && t.src.length > 1 ? srcTag(t.src) : '');
+  // FEC shots: each trace's grade by the engine's FEC rule (fecGradesFor),
+  // the panel connector plus the events within the combine reach behind it.
+  // P/F and every red cell follow that rule and nothing else (Robert
+  // 2026-10-02: "p/f needs to use the correct rule always"); the Viewer's
+  // splice gate (0.160 / 0.250) never grades an FEC shot.
+  const fec = opts.fec || null;
+  const fecG = ti => {
+    const t = traces[ti];
+    // the FEC folders are span 1's A and B; another span's file is not graded
+    const side = t.src === 'b' ? 'B' : (t.src === 'a' || !t.src) ? 'A' : null;
+    const g = fec && fec.grades && side ? (fec.grades[side] || {})[String(t.fiber)] : null;
+    return (g && g.found) ? g : null;
+  };
+  // The engine reads the file itself, so its connector is matched to the
+  // trace's own event by km (as the FEC table's chart marks are).
+  const isFecConn = (e, ti) => {
+    const g = fecG(ti);
+    return !!(e && g && g.conn_km != null && Math.abs(e.dist_km - g.conn_km) <= 0.005);
+  };
+  // An event cell's verdict: the FEC rule at the graded connector in FEC
+  // mode, the report's gate everywhere else.
+  const evFails = (v, e, ti) => gFecMode
+    ? (!flagsOff() && v != null && isFecConn(e, ti) && !!fecG(ti).fail_loss)
+    : overGate(v);
+  const evWarns = v => !gFecMode && !overGate(v) && clearsAt(v, warnGate);
 
   // Collect every event tagged with its trace index, at its displayed km
   // (dispKm flips a B trace into A's frame in stack mode; two same-direction
@@ -7773,12 +7864,13 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   const fmt  = v => (v == null || isNaN(v)) ? '---' : v.toFixed(3);
   const fmtK = v => (v == null || isNaN(v)) ? '---' : v.toFixed(4);
   const fmtR = v => (v == null || isNaN(v) || v === 0) ? '---' : v.toFixed(1);
-  const lossCell = (v, isBreak, attrs = '') => {
+  // `e`/`ti` name the trace's event, for the FEC rule; a summary cell has none.
+  const lossCell = (v, isBreak, attrs = '', e = null, ti = -1) => {
     let cls = '';
     if (v != null && !isNaN(v)) {
       if (isBreak && !flagsOff()) cls = ' class="fr-brk"';
-      else if (overGate(v)) cls = ' class="fr-hi"';   // the REPORT's verdict
-      else if (clearsAt(v, warnGate)) cls = ' class="fr-warn"';
+      else if (evFails(v, e, ti)) cls = ' class="fr-hi"';   // the REPORT's verdict
+      else if (evWarns(v)) cls = ' class="fr-warn"';
     }
     // Flagged means the report's own verdict: over the gate, or a break.
     const keep = (gFailCellsOnly && (cls === ' class="fr-hi"' || cls === ' class="fr-brk"'))
@@ -7800,8 +7892,17 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   // reflective / end / continuous / launch rows above are decided before this
   // and are unchanged -- checked against FR's Status 0x40 on 6,455 events,
   // where `time_of_travel === 0` agreed every time.
+  //
+  // The same goes for the fiber's end: FR names it by its Type too, so a
+  // reflective end (Type 3) prints "Reflective", with Loss and Refl., as on
+  // a 64 km span's end in FR 3 (2026-10-02).  "End of Fiber" is
+  // only the fallback for a file with no proprietary block.
   function evKind(e) {
     if (!e) return '';
+    if (e.fr_type === 5) return 'Continuous Fiber';
+    if (e.fr_type === 3) return e.time_of_travel === 0 ? 'Launch Level' : 'Reflective';
+    if (e.fr_type === 1) return 'Positive';
+    if (e.fr_type === 2) return 'Non-reflective';
     if (e.is_end) return 'End of Fiber';
     if (String(e.type || '').startsWith('1O')) return 'Continuous Fiber';
     if (e.time_of_travel === 0) return 'Launch Level';
@@ -7823,28 +7924,39 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   // statistic below goes through evLoss, so it drops out of all of them.
   const evLoss = e => { const L = evLossRaw(e); return gainerHidden(L) ? null : L; };
 
-  // Section between column i and i+1, as THIS trace measures it.  Both
-  // bounding events must exist in this trace or there is no section.
+  // The Section after column i, as THIS trace measures it — FastReporter's
+  // layout (FR 3 on 24 FEC shots, 2026-10-02): every trace's section runs from
+  // its own event in this column to its OWN next event, wherever that sits,
+  // and prints in the Section right after this column.  F1 there has events
+  // at 1.0050 and 3.1388 km only, so FR prints its 2.13 km section (0.381 dB)
+  // after the 1.0050 column and leaves the sections between blank; the old
+  // rule (both neighbour columns or nothing) dropped it, and with it 11 of 12
+  // fibers' section after the panel and their Section statistics.  Null when
+  // the trace has no event here or no later one.
   //
-  // An event's stored `slope` describes the section that ENDS at it, in the
-  // trace's OWN frame — verified on job R F71: the 0 → 1.0376 km launch reel
-  // measures 0.189 dB/km and event #2 (at 1.0376) stores 0.192, while event #1
-  // (the port, at 0) stores 0.000.
-  //
-  // Columns are ordered by DISPLAYED km.  For an unflipped trace display km
-  // rises with own-frame km, so the section's far end is `b` and its slope is
-  // b.slope.  For a FLIPPED B trace the mirror reverses that: `b` is the
-  // SMALLER own-frame distance, so the section ends at `a` and the attenuation
-  // is a.slope.  Reading b.slope there took the slope of the section on the far
-  // side of the marker — up to 20.9 dB of Section Loss error on this span, and
-  // a blank cell on every B row's last section (B's port event stores 0.000).
-  // The Math.abs on the length below is the same reversal, already half-noticed.
+  // The figures are FR's own Section record (sec_loss / sec_len_km, from
+  // EXFO's block) when the two events are consecutive in the trace's file,
+  // which they are whenever both are in the table.  Without the block it is
+  // rebuilt: length between the events, attenuation the stored slope of the
+  // event that ENDS the section in the trace's own frame.  Columns run by
+  // DISPLAYED km, so for a FLIPPED B trace that is the event on the left,
+  // and reading the other one took the slope of the section beyond the
+  // marker: up to 20.9 dB of Section Loss error on job R.  FR prints 0.000
+  // for a stored 0 (two B-end FEC shots), so a 0 is a reading here too.
+  const ownCols = traces.map((_t, ti) => cols.map((c, i) => (c.ev[ti] ? i : -1)).filter(i => i >= 0));
   function section(ti, i) {
-    const a = cols[i] && cols[i].ev[ti], b = cols[i + 1] && cols[i + 1].ev[ti];
-    if (!a || !b) return null;
+    const a = cols[i] && cols[i].ev[ti];
+    if (!a) return null;
+    const own = ownCols[ti], k = own.indexOf(i);
+    if (k < 0 || k + 1 >= own.length) return null;
+    const b = cols[own[k + 1]].ev[ti];
+    const lo = a.dist_km <= b.dist_km ? a : b, hi = lo === a ? b : a;
+    if (hi.number === lo.number + 1 && lo.sec_loss != null && lo.sec_len_km > 0) {
+      return { len: lo.sec_len_km, loss: lo.sec_loss, att: lo.sec_loss / lo.sec_len_km };
+    }
     const len = Math.abs(b.dist_km - a.dist_km);
-    const att = isFlipped(traces[ti]) ? a.slope : b.slope;
-    if (!(len > 0) || att == null || isNaN(att) || att === 0) return { len, att: null, loss: null };
+    const att = hi.slope;
+    if (!(len > 0) || att == null || isNaN(att)) return { len, att: null, loss: null };
     return { len, att, loss: len * att };
   }
 
@@ -7854,7 +7966,6 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   // Statistics columns leave (the filter empties them anyway).  Event
   // numbers keep their full-table numbering so a column is findable.
   // "Show warning cells only" collapses the same way around the yellow cells.
-  const warnsGate = v => !overGate(v) && clearsAt(v, warnGate);
   // Reflectance is judged here only once the tech types a Reflectance number (FR's
   // own one-direction table has no reflectance verdict): a reflective
   // event in that band, in the report's mid-span window, framed as the report
@@ -7865,11 +7976,18 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     const end = (t.data.events || []).find(e => e.is_end);
     return { own, eof: end ? end.dist_km - own - far : null };
   });
-  const reflBad = (e, ti) => gReflOverride != null && !!e && !!e.is_reflective && !e.is_end
-    && e.time_of_travel !== 0
-    && reflFails(e.reflection, e.dist_km - reflFrame[ti].own, reflFrame[ti].eof);
-  const keeps = v => (gFailCellsOnly && overGate(v)) || (gWarnCellsOnly && warnsGate(v));
-  const keepsAt = (e, ti) => keeps(evLoss(e)) || (gFailCellsOnly && reflBad(e, ti));
+  // FEC shots: the FEC rule's reflectance verdict, at the graded connector.
+  const reflBad = (e, ti) => gFecMode
+    ? (!flagsOff() && isFecConn(e, ti) && !!fecG(ti).fail_refl)
+    : gReflOverride != null && !!e && !!e.is_reflective && !e.is_end
+      && e.time_of_travel !== 0
+      && reflFails(e.reflection, e.dist_km - reflFrame[ti].own, reflFrame[ti].eof);
+  // A column's Average (aggRow): judged by the report's gate, never in FEC.
+  const keeps = v => (gFailCellsOnly && !gFecMode && overGate(v)) || (gWarnCellsOnly && evWarns(v));
+  const keepsAt = (e, ti) => {
+    const v = evLoss(e);
+    return (gFailCellsOnly && (evFails(v, e, ti) || reflBad(e, ti))) || (gWarnCellsOnly && evWarns(v));
+  };
   const collapse = cellFilterOn();
   const keepCol = cols.map(c => !collapse
     || traces.some((_t, ti) => keepsAt(c.ev[ti], ti)));
@@ -7884,7 +8002,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
       return { i, title, km: c.km, cells: keepCol[i]
         ? c.ev.map((e, ti) => {
           if (!e) return null;
-          const v = evLoss(e), fail = overGate(v), warn = !fail && clearsAt(v, warnGate);
+          const v = evLoss(e), fail = evFails(v, e, ti), warn = !fail && evWarns(v);
           const leg = { km: e.dist_km, loss: v, hollow: false, fail, warn };
           return { fi: ti, avg: v, km: c.km, avgFail: fail, avgWarn: warn,
                    legs: { a: traces[ti].dir === 'a' ? leg : null, b: traces[ti].dir === 'b' ? leg : null } };
@@ -7892,23 +8010,63 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
         : [] };
     }) };
 
+  // Which sub-columns an event column has, as FastReporter lays them out
+  // (FR 3, 2026-10-02): Loss always; Refl. only where the column can hold a
+  // reflectance (Launch Level, Reflective); a column holding more than one
+  // kind names none in its heading and gives each row its own Type, then
+  // Loss and Refl.  A Non-reflective, Positive or Continuous Fiber column is
+  // Loss alone.
+  const REFL_KINDS = new Set(['Launch Level', 'Reflective', 'End of Fiber']);
+  const colLay = cols.map(c => {
+    const kinds = [...new Set(c.ev.filter(x => x).map(evKind))];
+    const mixed = kinds.length > 1;
+    return { mixed, refl: mixed || kinds.some(k => REFL_KINDS.has(k)) };
+  });
+  const colW = i => (colLay[i].mixed ? 1 : 0) + 1 + (colLay[i].refl ? 1 : 0);
+  // The distance a column's heading prints, as FastReporter prints it
+  // (Robert 2026-10-02, "6c follow FR"): the event of the FIRST row that has
+  // one in the column, not the columns' average (FR heads the 3.14 km splice
+  // column 3.1388, F1's, where the six fibers average 3.1410), at FR's own
+  // unrounded position (fr_pos_km), so a Section heading between two columns
+  // prints FR's length (1.8543 km, where 4-dp positions give 1.8542).
+  // dist_km is that position rounded and put in the trace's frame, so the
+  // rounding is added back rather than the frame worked out again.  The
+  // columns are still matched on their average (clusterColumns); only the
+  // printed figure follows the first row.
+  const exactKm = e => (e.fr_pos_km != null && isFinite(e.fr_pos_km))
+    ? e.dist_km + (e.fr_pos_km - Math.round(e.fr_pos_km * 1e4) / 1e4) : e.dist_km;
+  const headKm = cols.map(c => {
+    const ti = c.ev.findIndex(x => x);
+    return ti < 0 ? c.km : dispKm(traces[ti], exactKm(c.ev[ti]));
+  });
+
   // ── Header: three rows (group / kind+distance / units) ──
   const LEAD = [['Identifiers', 'fr-rowlab'], ['P/F', ''], ['λ (nm)', ''], ['Dir.', '']];
   let h1 = LEAD.map(([l, c]) => `<th rowspan="3" class="fr-rowlab ${c}">${l}</th>`).join('');
   let h2 = '', h3 = '';
+  // How many of the table's rows have an event in the column, and a section
+  // after it, of how many rows: "Event 5 (6/12)", "Section (6/12)", as
+  // FastReporter heads its columns (Robert 2026-10-02).
+  const occ = n => `(${n}/${traces.length})`;
   cols.forEach((c, i) => {
     if (!keepCol[i]) return;
-    h1 += `<th colspan="2" class="fr-evhdr" data-km="${c.km}" data-col="${i}" `
-        + `title="zoom to ${c.km.toFixed(3)} km, span and settings">${colTitle(c, i)}`
+    h1 += `<th colspan="${colW(i)}" class="fr-evhdr" data-km="${c.km}" data-col="${i}" `
+        + `title="zoom to ${c.km.toFixed(3)} km, span and settings">${colTitle(c, i)} `
+        + occ(c.ev.filter(x => x).length)
         + `<button class="fr-evmenu" data-col="${i}" title="span and settings">⋯</button></th>`;
-    h2 += `<th colspan="2" class="fr-evsub" data-col="${i}">${colKind(c)}<br>`
-        + `<span class="fr-km">${kmFt(c.km - zeroKm)}</span></th>`;
-    h3 += `<th class="fr-sub" data-col="${i}">Loss<br>(dB)</th><th class="fr-sub" data-col="${i}">Refl.<br>(dB)</th>`;
+    h2 += `<th colspan="${colW(i)}" class="fr-evsub" data-col="${i}">${colLay[i].mixed ? '' : colKind(c)}<br>`
+        + `<span class="fr-km">${kmFt(headKm[i] - zeroKm)}</span></th>`;
+    h3 += (colLay[i].mixed ? `<th class="fr-sub" data-col="${i}">Type</th>` : '')
+        + `<th class="fr-sub" data-col="${i}">Loss<br>(dB)</th>`
+        + (colLay[i].refl ? `<th class="fr-sub" data-col="${i}">Refl.<br>(dB)</th>` : '');
     if (showSec && i < cols.length - 1) {
-      const s = section(0, i);
-      h1 += '<th colspan="3" class="fr-sechdr">Section</th>';
+      // The heading's length is heading to heading, as FR's is (its 0.0491
+      // km after the panel is 1.0541 - 1.0050, though one fiber of twelve has
+      // an event at 1.0541); each row's own length is in its Length cell.
+      h1 += `<th colspan="3" class="fr-sechdr">Section `
+          + `${occ(traces.filter((_t, ti) => section(ti, i)).length)}</th>`;
       h2 += `<th colspan="3" class="fr-sechdr fr-evsub">`
-          + `<span class="fr-km">${s ? fmtDist(s.len) : ''}</span></th>`;
+          + `<span class="fr-km">${fmtDist(Math.abs(headKm[i + 1] - headKm[i]))}</span></th>`;
       h3 += `<th class="fr-sub fr-sec">Length<br>(${distU().label})</th>`
           + '<th class="fr-sub fr-sec">Loss<br>(dB)</th>'
           + '<th class="fr-sub fr-sec">Att.<br>(dB/km)</th>';
@@ -7934,15 +8092,9 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   // carry group, kind and units, so a fourth would bury the data.
   // FEC shots with the gear's Show Combined Column on: each trace's panel
   // connector plus the events the FEC rule adds to it, from the engine's
-  // grade (fecCombinedFor), as Splice Report FEC prints them.  Last on the
+  // grade (fecGradesFor), as Splice Report FEC prints them.  Last on the
   // row, so every cell before it keeps its place.
-  const fec = opts.fec || null;
-  const NFEC = fec ? 2 : 0;
-  const fecG = ti => {
-    const t = traces[ti];
-    const g = fec && fec.grades ? (fec.grades[t.src === 'b' ? 'B' : 'A'] || {})[String(t.fiber)] : null;
-    return (g && g.found) ? g : null;
-  };
+  const NFEC = (fec && opts.fecColumn !== false) ? 2 : 0;
   // the Combined Loss as printed: blank under a cell filter that drops it
   // ("failing cells only" keeps an FEC loss fail) and as a hidden gainer
   const fecLoss = g => (!g || gainerHidden(g.loss)
@@ -7954,15 +8106,27 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   }
   const statNameRow = '<tr class="fr-statnames">'
     + `<td colspan="${LEAD.length}"></td>`
-    + cols.map((_c, i) => keepCol[i] ? `<td colspan="${i < cols.length - 1 ? 2 + NSEC : 2}"></td>` : '').join('')
+    + cols.map((_c, i) => keepCol[i] ? `<td colspan="${colW(i) + (i < cols.length - 1 ? NSEC : 0)}"></td>` : '').join('')
     + [...STAT_EV, ...STAT_SEC].map(n => `<td colspan="3" class="fr-stat">${n}</td>`).join('')
     + (NFEC ? `<td colspan="${NFEC}"></td>` : '')
     + '</tr>';
 
-  const stats = arr => {
+  // FastReporter averages the figures it PRINTS, and rounds that mean half
+  // away from zero (FR 3, twelve FEC shots, 2026-10-02): F3's sections
+  // print 0.170 and 0.783 and FR's average is 0.477, where the unrounded
+  // mean is 0.47637; its connector reflectances -57.1 and -51.2 average to
+  // -54.2, the unrounded -54.10.  Counted in whole printed units (mdB, or
+  // 0.1 dB for reflectance), so the half is exact.  `dp` is the printed
+  // precision: 3 for loss and attenuation, 1 for reflectance.
+  const frMean = (v, dp = 3) => {
+    const k = 10 ** dp;
+    const m = v.reduce((s, x) => s + Math.round(Number(x.toFixed(dp)) * k), 0) / v.length;
+    return Math.sign(m) * Math.round(Math.abs(m)) / k;
+  };
+  const stats = (arr, dp = 3) => {
     const v = arr.filter(x => x != null && !isNaN(x));
     return v.length
-      ? [Math.min(...v), Math.max(...v), v.reduce((s, x) => s + x, 0) / v.length]
+      ? [Math.min(...v), Math.max(...v), frMean(v, dp)]
       : [null, null, null];
   };
 
@@ -7970,7 +8134,14 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   // the P/F column, and for "flagged rows", which at a whole cable is the
   // difference between reading the grid and scrolling it.  Arithmetic only, no
   // DOM, so it costs nothing next to the render it saves.
-  const rowFails = traces.map((_t, ti) => cols.some(c => overGate(evLoss(c.ev[ti])) || reflBad(c.ev[ti], ti)));
+  // FEC shots: the trace's FEC grade, or no verdict yet while it is read.
+  const rowFails = traces.map((_t, ti) => {
+    if (gFecMode) {
+      const g = fecG(ti);
+      return g ? !!(g.fail_loss || g.fail_refl) && !flagsOff() : null;
+    }
+    return cols.some(c => overGate(evLoss(c.ev[ti])) || reflBad(c.ev[ti], ti));
+  });
   traces.forEach((t, ti) => noteTableVerdict(t, rowFails[ti]));
   const rowKept = traces.map((_t, ti) => cols.some(c => keepsAt(c.ev[ti], ti)));
   const shown = traces.map((_t, i) => i)
@@ -8004,9 +8175,11 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     const cells = [
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
       + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${fiberLabel(t.fiber)}</td>`,
-      `<td class="${pfClass(fail)}" title="following `
-      + `${gateLabel()}, this is OUR verdict, not FastReporter's`
-      + `">${pfMark(fail)}</td>`,
+      fail == null                                      // FEC grade still being read
+        ? '<td title="reading the FEC grades">…</td>'
+        : `<td class="${pfClass(fail)}" title="following `
+          + `${gFecMode ? fecGateLabel() : gateLabel()}, this is OUR verdict, not FastReporter's`
+          + `">${pfMark(fail)}</td>`,
       `<td>${t.data.wavelength_nm || '---'}</td>`,
       `<td>${arrow(t)}</td>`,
     ];
@@ -8014,17 +8187,19 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
       if (!keepCol[i]) return;
       const e = c.ev[ti];
       const rBad = reflBad(e, ti);
-      const reflTd = rBad
+      const reflTd = !colLay[i].refl ? '' : rBad
         ? `<td class="fr-hi">${gFailCellsOnly ? fmtR(e.reflection) : cellText(fmtR(e.reflection))}</td>`
         : `<td>${cellText(fmtR(e ? e.reflection : null))}</td>`;
+      // A column of mixed kinds: this row's own kind first, as FR prints it.
+      const typeTd = colLay[i].mixed ? `<td class="fr-type">${cellText(evKind(e))}</td>` : '';
       // `data-km` is the event's OWN raw km, not the displayed one: a declared
       // span is stored in the direction's own frame, which is the only frame
       // that survives the mirror being re-derived.
       if (gainerHidden(evLossRaw(e))) {       // a hidden gainer: blank, unjudged
-        cells.push(`<td data-col="${i}" data-km="${e.dist_km}"></td>` + reflTd);
+        cells.push(typeTd + `<td data-col="${i}" data-km="${e.dist_km}"></td>` + reflTd);
       } else
-      cells.push(lossCell(evLoss(e), e && e.is_end,
-                          e ? ` data-col="${i}" data-km="${e.dist_km}"` : '')
+      cells.push(typeTd + lossCell(evLoss(e), e && e.is_end,
+                          e ? ` data-col="${i}" data-km="${e.dist_km}"` : '', e, ti)
                + reflTd);
       if (showSec && i < cols.length - 1) {
         const s = section(ti, i);
@@ -8036,7 +8211,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     const statArrs = [splice, connLoss, connRefl];
     if (showSec) statArrs.push(secLoss, secAtt);
     if (!collapse) statArrs.forEach(arr => {
-      const [mn, mx, av] = stats(arr);
+      const [mn, mx, av] = stats(arr, arr === connRefl ? 1 : 3);
       const f = (arr === connRefl) ? fmtR : fmt;
       cells.push(`<td class="fr-stat">${cellText(f(mn))}</td>`
                + `<td class="fr-stat">${cellText(f(mx))}</td>`
@@ -8087,7 +8262,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
       const v = ls.length ? fn(ls) : null;
       // Under "failing cells only" Minimum and Maximum print in the columns
       // whose Average fails, so the failing Average has its spread beside it.
-      const colAvg = ls.length > 0 ? ls.reduce((s, x) => s + x, 0) / ls.length : null;
+      const colAvg = ls.length > 0 ? frMean(ls) : null;      // the Average row's figure
       const colKept = colAvg != null && keeps(colAvg);
       const aggText = txt => colKept ? txt : cellText(txt);
       // Which trace holds it.  Compared on the PRINTED figure, so the cell
@@ -8106,7 +8281,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
       // (fmtR prints a 0 as "---", so a 0 is no reading here either).  Plain:
       // the reflectance verdict is per trace, never on a summary.
       const rs = c.ev.map(e => e ? e.reflection : null).filter(r => r != null && !isNaN(r) && r !== 0);
-      const r = rs.length ? fn(rs) : null;
+      const r = rs.length ? fn(rs, 1) : null;
       const rOwner = (!gated && r != null && !cellFilterOn())
         ? c.ev.findIndex(e => e && e.reflection != null && fmtR(e.reflection) === fmtR(r))
         : -1;
@@ -8114,8 +8289,9 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
         ? ` class="fr-own" data-ti="${rOwner}" data-own-col="${i}" data-own-refl="1"`
           + ` title="F${fiberLabel(traces[rOwner].fiber)} ${arrow(traces[rOwner])}: click to find it"`
         : '';
-      cells.push((gated ? lossCell(v, false) : `<td${own}>${aggText(fmt(v))}</td>`)
-               + `<td${rOwn}>${cellText(fmtR(r))}</td>`);
+      cells.push((colLay[i].mixed ? '<td></td>' : '')
+               + (gated && !gFecMode ? lossCell(v, false) : `<td${own}>${aggText(fmt(v))}</td>`)
+               + (colLay[i].refl ? `<td${rOwn}>${cellText(fmtR(r))}</td>` : ''));
       if (showSec && i < cols.length - 1) {
         const ss = traces.map((_t, ti) => section(ti, i)).filter(Boolean);
         const pick = k => ss.map(s => s[k]).filter(v => v != null && !isNaN(v));
@@ -8137,7 +8313,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   const aggRows = [
     aggRow('Minimum', a => Math.min(...a), false),
     aggRow('Maximum', a => Math.max(...a), false),
-    aggRow('Average', a => a.reduce((s, v) => s + v, 0) / a.length, true),
+    aggRow('Average', (a, dp) => frMean(a, dp), true),   // as FR averages (frMean)
   ];
 
   // ── Assembly ──
@@ -8150,11 +8326,11 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   scroller.className = 'fr-scroll';
   const table = document.createElement('table');
   table.className = 'fr-table';
-  // Widest row, for the spacer cells: every column contributes loss + refl,
-  // and every column BUT THE LAST also contributes the three section cells —
-  // the same 5-and-then-2 the statistics name strip above counts.
-  const nKept = keepCol.filter(Boolean).length;
-  const NCELL = LEAD.length + nKept * 2 + (showSec ? NSEC * (cols.length - 1) : 0) + NSTAT + NFEC;
+  // Widest row, for the spacer cells: every column contributes its own
+  // sub-columns (colW), and every column BUT THE LAST also contributes the
+  // three section cells, as the statistics name strip above counts.
+  const NCELL = LEAD.length + cols.reduce((n, _c, i) => n + (keepCol[i] ? colW(i) : 0), 0)
+    + (showSec ? NSEC * (cols.length - 1) : 0) + NSTAT + NFEC;
   table.innerHTML =
       `<thead><tr>${h1}</tr><tr>${h2}</tr><tr>${h3}</tr></thead>`
     + `<tbody></tbody>`
@@ -8460,10 +8636,23 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       const n = evs[k + 1];
       let section = null;
       if (n) {
+        // FastReporter's own Section record (sec_loss, sec_len_km: see the
+        // trace server), the one that STARTS at the nearer event in the
+        // file's own frame -- a mirrored trace runs the other way, so that
+        // is the next row's event.  FR prints it: fibre 3's B file in the
+        // drop audit's S08 reads 1.029 there, where length x the stored
+        // slope (rounded to 0.001 dB/km) gave 1.031.  Without EXFO's block
+        // the slope stands in, as before.
+        const own = isFlipped(t) ? n.e : e;
         const len = Math.abs(n.e.dist_km - e.dist_km);
-        const att = isFlipped(t) ? e.slope : n.e.slope;
-        const ok = len > 0 && att != null && !isNaN(att) && att !== 0;
-        section = { length_m: len * 1000, [w]: { loss: ok ? len * att : null, att_db_km: ok ? att : null } };
+        if (own.sec_loss != null && own.sec_len_km > 0) {
+          section = { length_m: own.sec_len_km * 1000,
+                      [w]: { loss: own.sec_loss, att_db_km: own.sec_loss / own.sec_len_km } };
+        } else {
+          const att = isFlipped(t) ? e.slope : n.e.slope;
+          const ok = len > 0 && att != null && !isNaN(att) && att !== 0;
+          section = { length_m: len * 1000, [w]: { loss: ok ? len * att : null, att_db_km: ok ? att : null } };
+        }
       }
       return { mean_pos_m: km * 1000, type, loss: null, solo: w, [w]: leg, section };
     });
@@ -8493,22 +8682,24 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     for (const [w, t] of [['a', have[fi].ta], ['b', have[fi].tb]]) {
       const leg = x.row[w];
       if (leg && !leg.synthetic && leg.pos_m != null) {
-        tableMark(t, Number(leg.pos_m) / 1000, `Event ${i + 1}`, bidiMarkTip(w));
+        tableMark(t, Number(leg.pos_m) / 1000, `Event ${i + 1}`, bidiMarkTip(w), true);
       }
     }
   }));
   draw();                                  // painted after a fetch: the chart follows
-  // The section a fibre's row carries runs to that fibre's NEXT row; it is
-  // printed under column i only when the next row sits in column i + 1.
-  // A file listed with no partner prints its section under the column of
-  // the event it starts at, wherever its next event sits, as FR prints it
+  // The section a fibre's row carries runs to that fibre's NEXT row, and FR
+  // prints it under the column of the row it starts at, wherever the next
+  // row sits: on a 4-fibre span FR prints fibre 4's 1.889 dB under Event 2's
+  // Section with its Event 3 blank (Robert 2026-10-03, "fix the bidi
+  // sections too").  This used to need the next row in column i + 1 and
+  // left that section blank.  A file listed with no partner does the same
   // (S08: fibre 3's B->A row carries 1.869 dB under Event 1's Section with
-  // Event 2 blank).
+  // Event 2 blank).  The last row in the declared span has none.
   const secOf = (fi, i) => {
-    const c = cols[i].ev[fi], n = cols[i + 1] && cols[i + 1].ev[fi];
-    if (c && c.row.solo) return i < cols.length - 1 ? c.row.section : null;
-    if (!c || !n || n.k !== c.k + 1) return null;
-    return c.row.section;
+    const c = cols[i].ev[fi];
+    if (!c || i >= cols.length - 1) return null;
+    if (c.row.solo) return c.row.section;
+    return have[fi].rows[c.k + 1] ? c.row.section : null;
   };
   const fmt  = v => (v == null || isNaN(v)) ? '---' : v.toFixed(3);
   const fmtR = v => (v == null || isNaN(v)) ? '---' : v.toFixed(1);
@@ -8703,7 +8894,9 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       const lens = have.map((_p, fi) => secOf(fi, i)).filter(s => s && s.length_m != null)
                        .map(s => s.length_m / 1000);
       const len = lens.length ? lens.reduce((a, b) => a + b, 0) / lens.length : null;
-      h1 += '<th colspan="2" class="fr-sechdr">Section</th>';
+      // FR counts the fibers with a section here too: "Section (4/4)"
+      const nSec = have.filter((_p, fi) => secOf(fi, i)).length;
+      h1 += `<th colspan="2" class="fr-sechdr">Section (${nSec}/${have.length})</th>`;
       h2 += `<th colspan="2" class="fr-sechdr fr-evsub"><span class="fr-km">${len != null ? fmtDist(len) : ''}</span></th>`;
       h3 += '<th class="fr-sub fr-sec">Loss<br>(dB)</th><th class="fr-sub fr-sec">Att.<br>(dB/km)</th>';
     }
@@ -8721,6 +8914,8 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     ? ((!collapse || legKept(fi, have[fi].solo)) ? [[fi, have[fi].solo]] : [])
     : ['a', 'b', 'avg'].filter(w => (!collapse || w === 'avg' || legKept(fi, w))
                                  && (collapse || !gAvgOnly || w === 'avg')).map(w => [fi, w]));
+  // The chart numbers one fibre's A->B trace, in this order (bidiNumberKey).
+  gBidiNumberKeys = shown.filter(fi => have[fi].ta).map(fi => [have[fi].ta.key, have[fi].tb ? have[fi].tb.key : null]);
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
@@ -9396,8 +9591,9 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // number prints on the A->B trace (bidiMarkTip).
   cols.forEach(c => c.ev.forEach((x, fi) => {
     if (!x) return;
-    if (x.a && x.a.km != null) tableMark(have[fi].ta, x.a.km, c.title);
-    if (x.b && x.b.km != null) tableMark(have[fi].tb, x.b.km, c.title, !!have[fi].ta && bidiMarkTip('b'));
+    const bidi = !!have[fi].ta && !!have[fi].tb;
+    if (x.a && x.a.km != null) tableMark(have[fi].ta, x.a.km, c.title, false, bidi);
+    if (x.b && x.b.km != null) tableMark(have[fi].tb, x.b.km, c.title, !!have[fi].ta && bidiMarkTip('b'), bidi);
   }));
   draw();                                  // painted after a fetch: the chart follows
   const fmt  = v => (v == null || isNaN(v)) ? '---' : v.toFixed(3);
@@ -9514,15 +9710,17 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const marks = { mode: 'suite', single: !!oneDir, have, goCell: () => {}, cols: markCols() };
 
   // ── Sections (Robert 2026-10-02: "in Suite mode, we want Sections back") ──
-  // The glass between a fibre's reading in column i and its reading in
-  // column i + 1, as the report measured it off each trace
+  // The glass between a fibre's reading in column i and its NEXT reading,
+  // in whichever later column that sits, printed after column i as
+  // FastReporter prints it (Robert 2026-10-03, "make sections work properly
+  // in suite mode too"), as the report measured it off each trace
   // (E.viewer_table_sections): one per direction, the Average row their
   // mean.  Nothing here computes a figure.  A pair of columns no fibre has
   // a section between (a panel tie's own Section columns sit there) gets
   // none; with Sections Off, or a cell filter on, there are none at all.
   const secOf = (fi, i) => {
     const x = cols[i].ev[fi];
-    return x && x.section && cols[i + 1] && cols[i + 1].ev[fi] ? x.section : null;
+    return x && x.section && i < cols.length - 1 ? x.section : null;
   };
   const anySec = cols.some((_c, i) => have.some((_p, fi) => secOf(fi, i)));
   const secLab = document.getElementById('set-sections-off').closest('label');
@@ -9590,7 +9788,9 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
       const lens = have.map((_p, fi) => secOf(fi, i)).filter(s => s && s.length_m != null)
                        .map(s => s.length_m / 1000);
       const len = lens.length ? lens.reduce((a, b) => a + b, 0) / lens.length : null;
-      h1 += '<th colspan="2" class="fr-sechdr">Section</th>';
+      // FR counts the fibers with a section here too: "Section (4/4)"
+      const nSec = have.filter((_p, fi) => secOf(fi, i)).length;
+      h1 += `<th colspan="2" class="fr-sechdr">Section (${nSec}/${have.length})</th>`;
       h2 += `<th colspan="2" class="fr-sechdr fr-evsub"><span class="fr-km">${len != null ? fmtDist(len) : ''}</span></th>`;
       h3 += '<th class="fr-sub fr-sec">Loss<br>(dB)</th><th class="fr-sub fr-sec">Att.<br>(dB/km)</th>';
     }
@@ -9601,6 +9801,8 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const descs = shown.flatMap(fi => LEGS
     .filter(w => oneDir || ((!collapse || w === 'avg' || legKept(fi, w))
               && (collapse || !gAvgOnly || w === 'avg'))).map(w => [fi, w]));
+  // The chart numbers one fibre's A->B trace, in this order (bidiNumberKey).
+  if (!oneDir) gBidiNumberKeys = shown.filter(fi => have[fi].ta).map(fi => [have[fi].ta.key, have[fi].tb ? have[fi].tb.key : null]);
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
@@ -11197,7 +11399,7 @@ async function reportPayload(opt, token, progress) {
     const arrow = t => (t.dir === 'a' ? 'A→B' : 'B→A') + (t.src && t.src.length > 1 ? srcTag(t.src) : '');
     // The FEC table: the mode and the gates it was graded at, not the
     // analysis mode's or the Viewer boxes' usual meaning.
-    const meta = [['Mode', fecTable() ? 'FEC' : gAnalysisMode === 'fr' ? 'FastReporter' : PRODUCT_NAME]];
+    const meta = [['Mode', gFecMode ? 'FEC' : gAnalysisMode === 'fr' ? 'FastReporter' : PRODUCT_NAME]];
     // Each source on the report: 'A folder', 'B folder', and another span's
     // under its own name ('S2 A folder').
     for (const src of allSrcs()) {
@@ -11205,8 +11407,8 @@ async function reportPayload(opt, token, progress) {
     }
     const nf = new Set(vis.map(t => realFiber(t.fiber))).size;
     meta.push(['Fibers', `${fiberRanges(vis.map(t => realFiber(t.fiber)))} (${nf} fiber${nf === 1 ? '' : 's'})`]);
-    const fg = fecTable() ? fecGatesShown() : null;
-    if (fecTable()) {
+    const fg = gFecMode ? fecGatesShown() : null;
+    if (gFecMode) {
       const src = w => gFecOverride[w] != null ? 'overridden in this window' : 'customer profile';
       meta.push(['FEC loss gate', fg ? `fails ${fg.FEC_LOSS_STRICT ? '>' : '≥'} ${Number(fg.FEC_LOSS_GATE).toFixed(3)} dB, `
         + `connector + events within ${Number(fg.FEC_COMBINE_M).toFixed(0)} m (${src('loss')})` : 'not loaded']);

@@ -140,7 +140,7 @@ attempt('fec_fallback', function () {
 });
 attempt('fec_fallback_no_grades', function () {
   renderFastReporterGrid(A, host(), document.createElement('div'),
-                         {fec: fecCombinedFor(A)});
+                         {fec: fecGradesFor(A)});
 });
 print(JSON.stringify(out));
 """

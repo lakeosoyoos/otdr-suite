@@ -1428,13 +1428,49 @@ def _load_trace_cached(directory, filename, mtime):
             return None
         return None if v != v else round(v, 3)       # NaN -> null too
 
-    for e in (r.get('events') or []):
+    # FastReporter's own Section after each event: EXFO's block stores every
+    # section (event k to event k+1) with its Loss and Length at full
+    # precision, and FR prints those, so the grid prints them too rather than
+    # rebuild a section as length x attenuation from rounded figures (1 mdB
+    # off on an FEC shot: 1.8526 x 0.192 = 0.356, FR's record 0.35498).
+    # Same alignment guard as the reader's upgrade: one record per KeyEvent,
+    # each within 10 m, or no record is used for this file.
+    fr_sec = [None] * len(r.get('events') or [])
+    fr_pos = [None] * len(fr_sec)
+    _all = list(r.get('exfo_events') or [])
+    _ex = [i for i, x in enumerate(_all) if not x.get('_is_section')]
+    if _ex and len(_ex) == len(fr_sec):
+        for k, (e, i) in enumerate(zip(r.get('events') or [], _ex)):
+            p = _all[i].get('Position')
+            if not isinstance(p, float) or abs(float(e.get('dist_km') or 0.0) * 1000.0 - p) >= 10.0:
+                fr_sec = [None] * len(fr_sec)
+                fr_pos = [None] * len(fr_sec)
+                break
+            fr_pos[k] = p / 1000.0
+            s = _all[i + 1] if i + 1 < len(_all) else None
+            if s is not None and s.get('_is_section'):
+                sl, sn = s.get('Loss'), s.get('Length')
+                if isinstance(sl, float) and sl == sl and isinstance(sn, float) and sn > 0.0:
+                    fr_sec[k] = (sl, sn / 1000.0)
+
+    for k, e in enumerate(r.get('events') or []):
         events.append({
             'number': int(e.get('number') or 0),
             'dist_km': round(float(e.get('dist_km') or 0.0), 4),
             'splice_loss': _loss(e),
-            'reflection': round(float(e.get('reflection') or 0.0), 2),
-            'slope': round(float(e.get('slope') or 0.0), 3),
+            # Unrounded: the grid rounds once, to the 0.1 dB FR prints.  A
+            # 2-dp copy rounded twice: -56.948 -> -56.95 -> -57.0 where FR
+            # prints -56.9 (6 of 24 FEC shots checked).
+            'reflection': float(e.get('reflection') or 0.0),
+            'slope': float(e.get('slope') or 0.0),
+            # The Section that starts at this event, as FR stores it (dB, km);
+            # null without EXFO's block, and the grid falls back to the slope.
+            'sec_loss': fr_sec[k][0] if fr_sec[k] else None,
+            'sec_len_km': fr_sec[k][1] if fr_sec[k] else None,
+            # FR's own position, unrounded: its column headings and their
+            # section lengths are figured from it (4993.036 - 3138.771 m
+            # prints 1.8543 km; the 4-dp dist_km gives 1.8542).
+            'fr_pos_km': fr_pos[k],
             'type': str(e.get('type') or ''),
             'is_reflective': bool(e.get('is_reflective')),
             'is_end': bool(e.get('is_end')),
@@ -2094,14 +2130,19 @@ class Handler(BaseHTTPRequestHandler):
                 fibers = [int(x) for x in (q.get('fibers') or [''])[0].split(',')
                           if x.strip()]
                 # 'pairs=241:a:b,100241:a:b,17:a2:b2': each table's own two
-                # sources (a copy row by its id, another span by its ids)
+                # sources (a copy row by its id, another span by its ids);
+                # '3:b:b:100003' when B's file has an id of its own (a file
+                # the tech set to the other direction meets its partner)
                 if q.get('pairs'):
                     pairs = []
                     for item in q['pairs'][0].split(','):
-                        f_, sa, sb = item.split(':')
+                        parts = item.split(':')
+                        if len(parts) not in (3, 4):
+                            raise ValueError(item)
+                        f_, sa, sb = parts[:3]
                         if not (parse_src(sa) and parse_src(sb)):
                             raise ValueError(item)
-                        pairs.append((int(f_), sa, sb))
+                        pairs.append((int(f_), sa, sb) + ((int(parts[3]),) if len(parts) == 4 else ()))
             except ValueError:
                 self._send_json({'error': 'invalid fibers'}, status=400)
                 return
@@ -4343,22 +4384,27 @@ def fr_tables(fibers, pairs=None):
 
     `pairs` names the two sources of each table instead ([(fibre, 'a',
     'b')], or another span: (17, 'a2', 'b2')), and its tables are keyed
-    '17:a2:b2'.  A fibre is a listed id, so a copy row is one too (100241).  This is the per-fibre table built
+    '17:a2:b2'.  A fourth id is B's file when it differs from A's
+    ((3, 'b', 'b', 100003), keyed '3:b:b:100003').  A fibre is a listed id, so a copy row is one too (100241).  This is the per-fibre table built
     from the fibre's own two files, in the app's analysis mode, so every
     trace shows its events and losses whatever report has or has not run
     (Robert 2026-10-02)."""
     out, missing, jobs = {}, [], []
     if pairs is not None:
-        want = [(f'{f}:{sa}:{sb}', f, src_dir(sa), src_dir(sb)) for f, sa, sb in pairs]
+        # span 1's own A and B of one id is keyed by the fibre alone, as a
+        # `fibers` query keys it, so one query can mix it with copy pairs
+        want = [((str(p[0]) if p[1:3] == ('a', 'b') and (len(p) < 4 or p[3] == p[0])
+                  else f'{p[0]}:{p[1]}:{p[2]}' + (f':{p[3]}' if len(p) > 3 else '')),
+                 p[0], src_dir(p[1]), src_dir(p[2]), p[3] if len(p) > 3 else p[0]) for p in pairs]
     else:
-        want = [(f, f, CONFIG['dir_a'], CONFIG['dir_b']) for f in fibers]
+        want = [(f, f, CONFIG['dir_a'], CONFIG['dir_b'], f) for f in fibers]
     # FastReporter mode's table.  OTDR Suite mode prints the report's own
     # (suite_tables) and asks for this one only to stand in when the report
     # has no table for the span.
     mode = CONFIG.get('analysis_mode') if CONFIG.get('analysis_mode') in ('suite', 'fr') else 'suite'
-    for tid, f, da, db in want:
+    for tid, f, da, db, fb in want:
         pa = _fiber_path(da, f) if da else None
-        pb = _fiber_path(db, f) if db else None
+        pb = _fiber_path(db, fb) if db else None
         if (not pa or not pb or not pa.lower().endswith(('.sor', '.trc'))
                 or not pb.lower().endswith(('.sor', '.trc'))):
             missing.append(tid)

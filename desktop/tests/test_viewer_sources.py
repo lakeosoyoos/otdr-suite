@@ -140,6 +140,35 @@ def test_the_per_fiber_table_of_a_named_pair(tmp_path, monkeypatch):
     assert os.path.dirname(seen[0][1]) == a2 and os.path.dirname(seen[0][2]) == b2
 
 
+def test_a_pair_of_two_ids_reads_each_file_and_span_1s_pair_keeps_its_key(monkeypatch):
+    """A file the tech set to its right direction pairs with its partner
+    under another id ('3:b:b:100003': both files on the B side, the second
+    listed as "3 (copy 2)").  Span 1's own A and B of one id, asked in the
+    same query as 'f:a:b', is keyed by the fibre alone, as the page reads it."""
+    TS.set_dirs('/A', '/B')
+    monkeypatch.setattr(TS, '_fiber_path', lambda d, f: f'{d}/{f}.sor')
+    monkeypatch.setattr(TS.os.path, 'getmtime', lambda p: 1.0)
+    TS._FR_TABLE_CACHE.clear()
+    seen = []
+
+    def fake_run(cmd, **kw):
+        import json as _j
+        jobs = _j.load(open(cmd[cmd.index('--fr-table-file') + 1], encoding='utf-8'))
+        seen.extend(jobs)
+
+        class P:
+            stdout = _j.dumps({'ok': True, 'tables': {str(j[0]): [{'row': 1}] for j in jobs}})
+            stderr = ''
+        return P()
+    monkeypatch.setattr(TS.subprocess, 'run', fake_run)
+    res = TS.fr_tables([], pairs=[(1, 'a', 'b'), (3, 'b', 'b', 100003)])
+    assert sorted(res['tables']) == ['1', '3:b:b:100003'] and res['error'] is None
+    by = {j[0]: j[1:] for j in seen}
+    assert by['1'] == ['/A/1.sor', '/B/1.sor']
+    assert by['3:b:b:100003'] == ['/B/3.sor', '/B/100003.sor']
+    TS._FR_TABLE_CACHE.clear()
+
+
 def _drop_at(sites, names, ior=1.47):
     tok = TS.drop_begin()
     for n in names:

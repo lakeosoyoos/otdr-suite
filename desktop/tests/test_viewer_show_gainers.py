@@ -57,7 +57,7 @@ def rules_from_source(src=None):
             r"const evLoss = e => \{ const L = evLossRaw\(e\); return gainerHidden\(L\) \? null : L; \};",
             grid) is not None,
         'single_blanks': re.search(
-            r"if \(gainerHidden\(evLossRaw\(e\)\)\) \{[^\n]*\n\s*cells\.push\(`<td data-col=\"\$\{i\}\" data-km=\"\$\{e\.dist_km\}\"></td>`",
+            r"if \(gainerHidden\(evLossRaw\(e\)\)\) \{[^\n]*\n\s*cells\.push\((?:typeTd \+ )?`<td data-col=\"\$\{i\}\" data-km=\"\$\{e\.dist_km\}\"></td>`",
             grid) is not None,
         'fr_leg_unjudged': "if (!legOk(leg) || gainerHidden(leg.loss)) return false;" in fr
             and ("return legOk(leg) && !gainerHidden(leg.loss)\n"
@@ -192,7 +192,8 @@ def test_min_max_average_leave_out_a_hidden_gainer():
     grid = _body(SRC, "function renderFastReporterGrid(")
     assert "const ls = c.ev.map(evLoss).filter(v => v != null && !isNaN(v));" in grid
     # overGate is clearsGate, or the one-direction gate for a mixed load's one-way fibres
-    assert "const rowFails = traces.map((_t, ti) => cols.some(c => overGate(evLoss(c.ev[ti])) || reflBad(c.ev[ti], ti)));" in grid
+    # (FEC shots take the FEC grade instead; every other load this rule)
+    assert "return cols.some(c => overGate(evLoss(c.ev[ti])) || reflBad(c.ev[ti], ti));" in grid
     assert "const L = evLoss(e);" in grid                 # the per-row statistics block
 
 

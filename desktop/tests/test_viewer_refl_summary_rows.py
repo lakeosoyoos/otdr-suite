@@ -31,7 +31,8 @@ def test_one_direction_summary_rows_carry_reflectance():
     agg = _agg("renderFastReporterGrid")
     assert ("const rs = c.ev.map(e => e ? e.reflection : null)"
             ".filter(r => r != null && !isNaN(r) && r !== 0);") in agg
-    assert "const r = rs.length ? fn(rs) : null;" in agg
+    # the row's own statistic, at the 0.1 dB FR prints reflectance to
+    assert "const r = rs.length ? fn(rs, 1) : null;" in agg
     assert "`<td${rOwn}>${cellText(fmtR(r))}</td>`" in agg
     assert "`<td>${cellText('-')}</td>`" not in agg
 
@@ -58,4 +59,5 @@ def test_the_same_statistic_as_the_loss_cell():
     # Minimum / Maximum / Average of reflectance uses the row's own `fn`, so the
     # Refl. cell can never say a different statistic than the Loss beside it.
     for name in ("renderFastReporterGrid", "renderFrBidiGrid", "renderSuiteBidiGrid"):
-        assert "const r = rs.length ? fn(rs) : null;" in _agg(name), name
+        assert ("const r = rs.length ? fn(rs) : null;" in _agg(name)
+                or "const r = rs.length ? fn(rs, 1) : null;" in _agg(name)), name
