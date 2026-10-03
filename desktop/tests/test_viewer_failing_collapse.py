@@ -101,8 +101,10 @@ UNI = SRC.split("function renderFastReporterGrid(", 1)[1].split("\nfunction rend
 
 def test_uni_columns_nobody_fails_leave():
     assert "traces.some((_t, ti) => keepsAt(c.ev[ti], ti))" in UNI
-    assert "const keepsAt = (e, ti) => keeps(evLoss(e)) || (gFailCellsOnly && reflBad(e, ti));" in UNI
-    assert "const keeps = v => (gFailCellsOnly && overGate(v))" in UNI
+    # evFails / evWarns are the report's gate and its warning band (FEC shots: the FEC rule)
+    assert "return (gFailCellsOnly && (evFails(v, e, ti) || reflBad(e, ti))) || (gWarnCellsOnly && evWarns(v));" in UNI
+    assert ": overGate(v);" in UNI
+    assert "const keeps = v => (gFailCellsOnly && !gFecMode && overGate(v))" in UNI
     # overGate is the report's gate (clearsGate)
     assert "const overGate = clearsGate;" in UNI
     assert UNI.count("if (!keepCol[i]) return;") == 3     # header, rows, footer

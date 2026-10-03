@@ -293,7 +293,9 @@ def test_event_table_section_columns_can_be_hidden():
     assert fr.count('showSec && i < cols.length - 1') == 3   # header, rows, Min/Max/Average strip
     assert 'const showSec = gShowSections && !collapse;' in fr   # collapsed view drops them
     assert "const STAT_SEC = showSec ? ['Section Loss (dB)', 'Section Att. (dB/km)'] : []" in html
-    assert 'const NCELL = LEAD.length + nKept * 2 + (showSec ? NSEC * (cols.length - 1) : 0) + NSTAT' in html
+    # each column's own sub-columns (colW: Loss, Refl. where FR has one, Type when mixed)
+    assert 'const NCELL = LEAD.length + cols.reduce((n, _c, i) => n + (keepCol[i] ? colW(i) : 0), 0)\n'\
+           '    + (showSec ? NSEC * (cols.length - 1) : 0) + NSTAT' in html
 
 
 def test_viewer_opens_with_no_fiber_loaded():
