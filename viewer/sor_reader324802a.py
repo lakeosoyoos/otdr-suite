@@ -803,6 +803,10 @@ def _parse_proprietary_stream(stream):
         # carries 6 (1.468325).  Anchored read -- see _prop_scalar.
         'ior':               _prop_scalar(stream, 'Ior', 3, 8),
         'res_m_exact':       res_m_exact,
+        # The distance range the tech set, in metres: the Range FR prints
+        # under Test Parameters (read_test_panel reads the same field).
+        # Anchored: a bare find would land inside DisplayRange first.
+        'range_m':           _prop_scalar(stream, 'Range', 3, 8),
     }
 
 
@@ -915,6 +919,7 @@ def parse_sor_full(filepath, trim=True):
         result['exfo_injection_level']= prop['injection_level']
         result['exfo_saturation_level']= prop['saturation_level']
         result['exfo_res_m']          = prop['res_m_exact']
+        result['exfo_range_m']        = prop['range_m']
         # EXFO's float64 Ior carries 6 dp (1.468325) where the Bellcore
         # group index quantises to 5 (1.46832).  Prefer it; the FxdParams
         # read above stays as the fallback already set.
@@ -931,6 +936,7 @@ def parse_sor_full(filepath, trim=True):
         result['exfo_injection_level'] = None
         result['exfo_saturation_level']= None
         result['exfo_res_m']           = None
+        result['exfo_range_m']         = None
         # 'ior' keeps the FxdParams value set above -- never None here.
 
     # ── Full-precision event values from EXFO's own block ──────────────────
@@ -1629,6 +1635,20 @@ def _trc_events(records, ior):
     return events, offset_km
 
 
+def _trc_date_time(stream):
+    """When the trace was shot, as parse_sor_full's `date_time`: seconds
+    since 1970, 0 when the tree does not say.  A .sor's FxdParams time and
+    its EXFO block's Date string give the same clock reading (timegm of the
+    string == the FxdParams seconds), so the string is read the same way."""
+    import calendar
+    import datetime
+    try:
+        d = datetime.datetime.strptime(_trc_text(stream, 'Date')[:19], '%Y-%m-%dT%H:%M:%S')
+    except ValueError:
+        return 0
+    return calendar.timegm(d.timetuple())
+
+
 def _trc_record(stream, filepath):
     prop = _parse_proprietary_stream(stream)
     raw = None
@@ -1651,6 +1671,7 @@ def _trc_record(stream, filepath):
         'num_points': len(trace), 'trace': trace, 'full_points': len(trace),
         'start_index': 0, 'end_index': len(trace) - 1,
         'wavelength': round(exact, 1) if exact else (round(wl * 1e9, 1) if wl else None),
+        'date_time': _trc_date_time(stream),
         '_trc_nominal_nm': round(wl * 1e9) if wl else None,
         'events': events,
         'fxd_pulse_ns': (pulse * 1e9) if pulse else None,
@@ -1671,6 +1692,7 @@ def _trc_record(stream, filepath):
         'exfo_injection_level': prop['injection_level'],
         'exfo_saturation_level': prop['saturation_level'],
         'exfo_res_m': prop['res_m_exact'],
+        'exfo_range_m': prop['range_m'],
     }
 
 
