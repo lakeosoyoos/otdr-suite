@@ -149,6 +149,7 @@ def _run(tmp_path, body):
         _const("SPAN_SNAP_KM"), _const("EVENT_NUM_H"),
         _fn("lowerBound"), _fn("declaredEdgeKm"), _fn("ownSpanWindow"), _fn("inDeclaredSpan"),
         _fn("spanEventNumbers"), _fn("chartLabels"), _fn("eventNumberSpots"),
+        # bidiMarkTip's extract runs on through gBidiNumberKeys and bidiNumberKey
         _fn("tableKmKey"), _fn("tableMarkReset"), _fn("tableMark"), _fn("bidiMarkTip"), _fn("inTable"),
         # the new helpers (absent before the fix: the test then fails on them)
         _fn("tableColumnNumber", False), _fn("tableColumnOf", False),

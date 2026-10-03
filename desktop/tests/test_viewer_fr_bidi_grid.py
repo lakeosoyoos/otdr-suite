@@ -47,7 +47,8 @@ def test_the_fr_grid_is_fr_s_bidirectional_table():
     assert "askServerTable('fr', key, `/api/fr_table?${frTableQuery(pairs)}`," in _fn('renderFrBidiGrid')
     q = _fn('frTableQuery')
     assert "`fibers=${pairs.map(p => p.fiber).join(',')}`" in q
-    assert "`pairs=${pairs.map(p => `${p.fiber}:${p.ta.src}:${p.tb.src}`).join(',')}`" in q
+    # every pair spelt out; span 1's own A and B of one id as 'f:a:b'
+    assert "`pairs=${pairs.map(p => p.tkey === String(p.fiber) ? `${p.fiber}:a:b` : p.tkey).join(',')}`" in q
     # three rows per fibre, in FR's order
     assert "['a', 'b', 'avg']" in body and "w === 'avg'" in body
     assert "which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average'" in body

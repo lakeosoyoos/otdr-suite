@@ -2087,14 +2087,19 @@ class Handler(BaseHTTPRequestHandler):
                 fibers = [int(x) for x in (q.get('fibers') or [''])[0].split(',')
                           if x.strip()]
                 # 'pairs=241:a:b,100241:a:b,17:a2:b2': each table's own two
-                # sources (a copy row by its id, another span by its ids)
+                # sources (a copy row by its id, another span by its ids);
+                # '3:b:b:100003' when B's file has an id of its own (a file
+                # the tech set to the other direction meets its partner)
                 if q.get('pairs'):
                     pairs = []
                     for item in q['pairs'][0].split(','):
-                        f_, sa, sb = item.split(':')
+                        parts = item.split(':')
+                        if len(parts) not in (3, 4):
+                            raise ValueError(item)
+                        f_, sa, sb = parts[:3]
                         if not (parse_src(sa) and parse_src(sb)):
                             raise ValueError(item)
-                        pairs.append((int(f_), sa, sb))
+                        pairs.append((int(f_), sa, sb) + ((int(parts[3]),) if len(parts) == 4 else ()))
             except ValueError:
                 self._send_json({'error': 'invalid fibers'}, status=400)
                 return
@@ -4330,22 +4335,27 @@ def fr_tables(fibers, pairs=None):
 
     `pairs` names the two sources of each table instead ([(fibre, 'a',
     'b')], or another span: (17, 'a2', 'b2')), and its tables are keyed
-    '17:a2:b2'.  A fibre is a listed id, so a copy row is one too (100241).  This is the per-fibre table built
+    '17:a2:b2'.  A fourth id is B's file when it differs from A's
+    ((3, 'b', 'b', 100003), keyed '3:b:b:100003').  A fibre is a listed id, so a copy row is one too (100241).  This is the per-fibre table built
     from the fibre's own two files, in the app's analysis mode, so every
     trace shows its events and losses whatever report has or has not run
     (Robert 2026-10-02)."""
     out, missing, jobs = {}, [], []
     if pairs is not None:
-        want = [(f'{f}:{sa}:{sb}', f, src_dir(sa), src_dir(sb)) for f, sa, sb in pairs]
+        # span 1's own A and B of one id is keyed by the fibre alone, as a
+        # `fibers` query keys it, so one query can mix it with copy pairs
+        want = [((str(p[0]) if p[1:3] == ('a', 'b') and (len(p) < 4 or p[3] == p[0])
+                  else f'{p[0]}:{p[1]}:{p[2]}' + (f':{p[3]}' if len(p) > 3 else '')),
+                 p[0], src_dir(p[1]), src_dir(p[2]), p[3] if len(p) > 3 else p[0]) for p in pairs]
     else:
-        want = [(f, f, CONFIG['dir_a'], CONFIG['dir_b']) for f in fibers]
+        want = [(f, f, CONFIG['dir_a'], CONFIG['dir_b'], f) for f in fibers]
     # FastReporter mode's table.  OTDR Suite mode prints the report's own
     # (suite_tables) and asks for this one only to stand in when the report
     # has no table for the span.
     mode = CONFIG.get('analysis_mode') if CONFIG.get('analysis_mode') in ('suite', 'fr') else 'suite'
-    for tid, f, da, db in want:
+    for tid, f, da, db, fb in want:
         pa = _fiber_path(da, f) if da else None
-        pb = _fiber_path(db, f) if db else None
+        pb = _fiber_path(db, fb) if db else None
         if (not pa or not pb or not pa.lower().endswith(('.sor', '.trc'))
                 or not pb.lower().endswith(('.sor', '.trc'))):
             missing.append(tid)
