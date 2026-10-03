@@ -346,6 +346,16 @@ def _render_theme_control(where):
     name = 'light' if _right else 'dark'
     if name != st.session_state.get('ui_theme'):
         st.session_state['ui_theme'] = name
+        # Into the config now, at the end of a run that drew every widget,
+        # so the run below starts in the new theme and the repaint rerun at
+        # the top of the page finds nothing to change.  That rerun comes
+        # before the sidebar is drawn, and Streamlit 1.50 then forgets every
+        # box it did not draw: the Tool list fell back to the Viewer and
+        # "Thresholds Carried Over" opened (2026-10-02).
+        try:
+            apply_streamlit_theme(name)
+        except Exception:
+            pass
         st.rerun()
 
 
@@ -1733,9 +1743,23 @@ try:
     _theme_changed = apply_streamlit_theme(st.session_state['ui_theme'])
 except Exception:
     _theme_changed = False
+# This rerun comes before anything is drawn, and Streamlit 1.50 counts a
+# run stopped for a rerun as finished: every widget it did not draw loses
+# its state (1.64 keeps it).  The Theme switch puts the theme in the config
+# itself, so a flip does not come here; a config changed under this session
+# (another tab flipped it) still does.  The boxes drawn on every page are
+# kept in a slot no widget owns and put back on the next run, only when
+# Streamlit forgot them: a page jump written later in that run (a report
+# link, "← Back") still wins.  Page boxes keep their own (`{key}_saved`,
+# see _seed_box).
+_THEME_KEEP = ('nav_radio', 'view_dir_a_input', 'view_dir_b_input')
 if _theme_changed and st.session_state.get('_theme_rerun_for') != st.session_state['ui_theme']:
     st.session_state['_theme_rerun_for'] = st.session_state['ui_theme']
+    st.session_state['_theme_kept'] = {
+        k: st.session_state[k] for k in _THEME_KEEP if k in st.session_state}
     st.rerun()
+for _k, _v in (st.session_state.pop('_theme_kept', None) or {}).items():
+    st.session_state.setdefault(_k, _v)
 try:
     st.markdown(theme_css_vars(), unsafe_allow_html=True)
 except Exception:
