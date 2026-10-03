@@ -111,8 +111,8 @@ def test_both_tables_name_their_rows_and_wire_the_drawer():
         assert "marks.goCell = (fi, which, col) => gridGoCell(" in fn, name
         # a click anywhere on a row, its fibre name included, picks it
         assert "pickRow(tr.dataset.avg ? [p.ta.key, p.tb.key]" in fn, name
-        # a fibre loaded one way among paired ones is named, not tabled
-        assert "noteOneDirFibers(singles, host);" in fn, name
+        # a file loaded one way among paired ones is a row of this table
+        assert "noteOneDirFibers" not in fn, name
     one = _fn("renderFastReporterGrid")
     assert 'data-row="${ti}-${t.dir}"' in one
     assert "marks.goCell = (ti, which, col) => gridGoCell(" in one
@@ -159,20 +159,48 @@ def test_one_direction_is_marked_in_either_mode():
         assert cell in fn, cell
 
 
-def test_one_way_fibres_among_pairs_are_left_out_on_one_line():
-    """Robert 2026-10-02: "we don't get two event panels".  A fibre loaded
-    one way among paired ones gets no table of its own under the A+B one; it
-    is named on one line over that table, and its trace keeps its own event
-    numbers (no table holds it)."""
-    note = _fn("noteOneDirFibers")
-    assert "cap.textContent = `One direction only, not in the table: F${fibers.map(fiberLabel).join(', F')}`;" in note
-    assert "host.insertBefore(cap, host.firstChild);" in note
-    assert "renderFastReporterGrid" not in note
+def test_one_way_files_among_pairs_are_rows_of_the_one_table():
+    """Robert 2026-10-02: "we don't get two event panels", and do it like FR.
+    FastReporter's Event Table (S08: fibre 3 with two B->A files and no A)
+    lists a file with no partner in the SAME table, in fibre order, with its
+    own P/F and no Average row.  The Viewer does the same in both modes: no
+    second table, no one-line note."""
     assert "function appendOneDirGrid(" not in SRC
+    assert "function noteOneDirFibers(" not in SRC
+    fr = _fn("paintFrBidiGrid")
+    assert "have.push(...singles.filter(t => t.visible && t.data).map(soloOf));" in fr
+    # its events join the columns at their displayed km, as on the chart
+    assert ".map(e => ({ e, km: dispKm(t, e.dist_km) }))" in fr
+    assert "return { mean_pos_m: km * 1000, type, loss: null, solo: w, [w]: leg, section };" in fr
+    # one row, its own direction's; P/F on it; fibre order
+    assert "? ((!collapse || legKept(fi, have[fi].solo)) ? [[fi, have[fi].solo]] : [])" in fr
+    assert "(which === 'avg' || p.solo)" in fr
+    assert "shown.sort(" in fr
+    # the drawer marks the A+B pairing only
+    assert "c.ev.map((x, fi) => x && !x.row.solo && {" in fr
+    # OTDR Suite mode: the report has no row for it, so the per-fibre table
+    # takes the panel and lists it
+    suite = _fn("renderSuiteBidiGrid")
+    assert "if (singles.some(t => t.visible)) {" in suite
+    assert "return renderFrBidiGrid(traces, host, hint);" in suite
     fn = _fn("renderFastReporterGrid")
     # no one-direction gate any more; `opts` stays for the FEC Combined
     # column (opts.fec), which renderEventTable's FEC branch still passes
     assert "const overGate = clearsGate;" in fn and "opts.oneDir" not in fn
+
+
+def test_bidi_chart_numbers_print_on_the_a_trace():
+    """Robert 2026-10-02: "only show numbers from the A direction on the A
+    direction splice when bidi": a two-direction table's column number goes
+    on the A->B reading only; a B->A tick keeps it for the hover tip."""
+    assert "function bidiMarkTip(dir) { return dir === 'b'; }" in SRC
+    fr = _fn("paintFrBidiGrid")
+    assert "tableMark(t, Number(leg.pos_m) / 1000, `Event ${i + 1}`, bidiMarkTip(w));" in fr
+    suite = _fn("paintSuiteBidiGrid")
+    # the Unidirectional report's B-only table has no A->B trace: B keeps it
+    assert "tableMark(have[fi].tb, x.b.km, c.title, !!have[fi].ta && bidiMarkTip('b'));" in suite
+    draw = _fn("drawEventMarkers")
+    assert "if (col && col.tipOnly) {" in draw
 
 
 # ─── the real functions, in JavaScriptCore ───────────────────────────────

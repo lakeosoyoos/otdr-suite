@@ -28,7 +28,8 @@ def _fn(name):
 
 def test_a_two_direction_table_shows_p_f_on_the_average_row_only():
     fr = _fn('paintFrBidiGrid')
-    assert ("      which === 'avg'\n"
+    # (a file listed with no partner has no Average: P/F on its own row)
+    assert ("      (which === 'avg' || p.solo)\n"
             "        ? `<td class=\"${pfClass(fibreFails(fi))}\"") in fr
     assert "        : '<td></td>'," in fr
     suite = _fn('paintSuiteBidiGrid')

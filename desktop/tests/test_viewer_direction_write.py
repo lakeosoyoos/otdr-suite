@@ -172,7 +172,7 @@ def test_setting_the_direction_a_file_already_declares_still_shows_it():
     side whose own stamp says B snapped back to B the moment it was set to A,
     and the row and the chart disagreed from then on."""
     fn = _html().split('function setFilesDirection(keys, dir) {', 1)[1].split('\n}', 1)[0]
-    assert "if (dir === (gStoredDir[key] || src)) delete gDirOverride[key];" in fn
+    assert "if (dir === (gStoredDir[key] || src[0])) delete gDirOverride[key];" in fn
     assert "else gDirOverride[key] = dir;" in fn
     # the loaded trace is redrawn as what effDir now says, not as the raw pick,
     # and takes that direction's colour

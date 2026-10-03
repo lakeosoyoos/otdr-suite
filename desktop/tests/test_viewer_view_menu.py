@@ -144,8 +144,9 @@ def test_averages_only_keeps_each_fibres_average_row():
     filter on, each fibre keeps its Average row alone.  With one on, the
     filter's rule decides the direction rows, so a connector's failing
     direction still shows (#370) and averages-only changes nothing."""
-    rule = ("    .filter(w => (!collapse || w === 'avg' || legKept(fi, w))\n"
-            "              && (collapse || !gAvgOnly || w === 'avg')).map(w => [fi, w]));")
+    # (a file listed with no partner has no Average: its one row stays)
+    rule = ("    : ['a', 'b', 'avg'].filter(w => (!collapse || w === 'avg' || legKept(fi, w))\n"
+            "                                 && (collapse || !gAvgOnly || w === 'avg')).map(w => [fi, w]));")
     assert SRC.count(rule) == 1
     # the Suite table's twin; a one-direction table has no Average row, so
     # averages-only leaves its one row per fibre alone

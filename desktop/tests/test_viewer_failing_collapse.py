@@ -44,14 +44,15 @@ def test_only_the_average_keeps_a_loss():
     """Boss 2026-09-29: under the cell filters a splice's loss is judged on
     the Average row alone; a direction row stays only for its failing
     reflectance, or for its failing loss at a connector (next test)."""
-    assert ("const cellKept = (x, which) => which === 'avg'\n"
+    # a file listed with no partner has no Average: its own loss is judged
+    assert ("const cellKept = (x, which) => (which === 'avg' || x.row.solo)\n"
             "    ? (gFailCellsOnly && cellFails(x, which)) || (gWarnCellsOnly && cellWarns(x, which))\n"
             "    : gFailCellsOnly && (isRefl(x) ? cellFails(x, which) : legReflFails(x, which));") in FN
     # a splice direction's loss prints blank under the filters: no gate, no warning
-    assert "const judged = !cellFilterOn();" in FN
+    assert "const judged = !cellFilterOn() || !!x.row.solo;" in FN
     assert "const gated = judged || isRefl(x);" in FN
-    assert "gated ? legGateFor(isRefl(x)) : null," in FN
-    assert "judged ? legWarnFor(isRefl(x)) : null)" in FN
+    assert "gated ? (x.row.solo ? soloGate(x) : legGateFor(isRefl(x))) : null," in FN
+    assert "judged ? (x.row.solo ? soloWarn(x) : legWarnFor(isRefl(x))) : null)" in FN
     # the rows' own verdicts are untouched
     # one P/F per fibre, on its Average row (FR's bidirectional layout, Robert 2026-10-02)
     assert "? `<td class=\"${pfClass(fibreFails(fi))}\"" in FN
@@ -79,7 +80,7 @@ def test_a_connector_keeps_each_failing_direction():
             "    if (legReflFails(x, which)) return true;\n"
             "    const leg = x.row[which];\n"
             "    if (!legOk(leg) || gainerHidden(leg.loss)) return false;\n"   # Show gainers
-            "    return clearsAt(leg.loss, legGateFor(isRefl(x)));\n"
+            "    return clearsAt(leg.loss, x.row.solo ? soloGate(x) : legGateFor(isRefl(x)));\n"
             "  };") in FN
     assert "const legOk = leg => !!leg && !leg.synthetic && !(Number(leg.status || 0) & 0x08);" in FN
 

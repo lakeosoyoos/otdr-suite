@@ -389,16 +389,21 @@ def set_settings(mapping, failed=False):
 # one (/api/mode serves `state_ver`).  The folders it was made on go with it,
 # so a state is only taken while the same folders are loaded.
 VIEWER_STATE = {'ver': 0, 'by': '', 'dir_a': '', 'dir_b': '',
-                'keys': [], 'removed': [], 'add_dir': 'both'}
+                'keys': [], 'removed': [], 'add_dir': 'both',
+                # every source's folder when the state was made ({src: dir}),
+                # so a key of another span is only taken on its own folder
+                'folders': {}}
 _VIEWER_STATE_LOCK = threading.Lock()
-_STATE_KEY_RE = re.compile(r'^[ab]-\d{1,6}$')
+# 'a-354', a copy row's ('a-100354'), another span's ('a2-354'; sources())
+_STATE_KEY_RE = re.compile(r'^[ab](?:[2-9]|[1-9]\d{1,2})?-\d{1,6}$')
 VIEWER_STATE_MAX_KEYS = 20000
 
 
 def viewer_state():
     with _VIEWER_STATE_LOCK:
         return {**VIEWER_STATE, 'keys': list(VIEWER_STATE['keys']),
-                'removed': list(VIEWER_STATE['removed'])}
+                'removed': list(VIEWER_STATE['removed']),
+                'folders': dict(VIEWER_STATE.get('folders') or {})}
 
 
 def _state_keys(v):
@@ -421,6 +426,7 @@ def set_viewer_state(data):
             'keys': _state_keys(data.get('keys')),
             'removed': _state_keys(data.get('removed')),
             'add_dir': add_dir,
+            'folders': dict(sources()),
         })
         return VIEWER_STATE['ver']
 
@@ -434,6 +440,7 @@ def reset_viewer_state():
             'ver': VIEWER_STATE['ver'] + 1, 'by': '',
             'dir_a': CONFIG.get('dir_a') or '', 'dir_b': CONFIG.get('dir_b') or '',
             'keys': [], 'removed': [], 'add_dir': 'both',
+            'folders': dict(sources()),
         })
         return VIEWER_STATE['ver']
 
@@ -464,32 +471,47 @@ def _norm_dir(p):
     return os.path.normcase(os.path.normpath(p)) if p else ''
 
 
-def removed_keys():
-    """The files removed in the Viewer ('a-354', 'b-354'): none unless the
-    shared state was made on the folders loaded now.  The hub reads it to
-    leave a removed fiber's report cells unlinked (2026-10-02)."""
+def _removed_by_src():
+    """{src: {fiber, ...}} the tech removed in the Viewer, each source's only
+    while its span's two folders, and its own, are still the ones the shared
+    state was made on: a state from other folders removes nothing, and a
+    drop that adds span 2 leaves span 1's removed fibers removed."""
     st = viewer_state()
     if not st['removed']:
-        return set()
-    cur = (_norm_dir(CONFIG.get('dir_a')), _norm_dir(CONFIG.get('dir_b')))
-    if (_norm_dir(st['dir_a']), _norm_dir(st['dir_b'])) != cur:
-        return set()
-    return set(st['removed'])
+        return {}
+    then = st.get('folders') or {'a': st['dir_a'], 'b': st['dir_b']}
+
+    def same(src):
+        return _norm_dir(then.get(src)) == _norm_dir(src_dir(src))
+    out = {}
+    for k in st['removed']:
+        src, _, n = k.partition('-')
+        p = parse_src(src)
+        if (p and src_dir(src) and same(src)
+                and same(src_id('a', p[1])) and same(src_id('b', p[1]))):
+            out.setdefault(src, set()).add(int(n))
+    return out
+
+
+def removed_keys():
+    """The files removed in the Viewer ('a-354', 'b-354'): span 1's, the
+    folders the hub's reports run on, and none unless the shared state was
+    made on the folders loaded now.  The hub reads it to leave a removed
+    fiber's report cells unlinked (2026-10-02)."""
+    return {f'{src}-{n}' for src, ns in _removed_by_src().items()
+            if src in ('a', 'b') for n in ns}
 
 
 def removed_names(folder):
     """File names in `folder` the tech removed in the Viewer: none unless the
     shared state was made on the folders loaded now and `folder` is one."""
-    keys = removed_keys()
-    if not keys or not folder:
+    if not folder:
         return []
-    cur = (_norm_dir(CONFIG.get('dir_a')), _norm_dir(CONFIG.get('dir_b')))
     f = _norm_dir(folder)
     out = set()
-    for side, d in (('a', cur[0]), ('b', cur[1])):
-        if not d or d != f:
+    for src, want in _removed_by_src().items():
+        if _norm_dir(src_dir(src)) != f:
             continue
-        want = {int(k[2:]) for k in keys if k[0] == side}
         # A copy kept under COPIES_DIR is not one of the folder's own files
         # (no run reads it), and its name is the same as one that is.
         out.update(os.path.basename(p) for n, p in list_fibers(folder)
@@ -1165,8 +1187,9 @@ def _span_store_read():
 def span_decl(dir_a=None, dir_b=None):
     """{'a': {...}|None, 'b': {...}|None} for a folder pair — the tech's own
     span, or empty when they have not set one."""
-    entry = _span_store_read().get(
-        _span_key(dir_a or CONFIG['dir_a'], dir_b or CONFIG['dir_b'])) or {}
+    if dir_a is None and dir_b is None:       # span 1, the folders loaded now
+        dir_a, dir_b = CONFIG['dir_a'], CONFIG['dir_b']
+    entry = _span_store_read().get(_span_key(dir_a, dir_b)) or {}
     return {'a': entry.get('a') or None, 'b': entry.get('b') or None}
 
 
@@ -1176,12 +1199,16 @@ def span_decl_set(direction, edge, km, dir_a=None, dir_b=None):
     `edge` is 'start' | 'end' | 'clear'.  `km` is in that direction's OWN raw
     frame, the frame every event distance is already in.
     """
-    if direction not in ('a', 'b'):
+    # Any side of any span ('a2' = span 2's A): the declaration belongs to
+    # that span's own folder pair, keyed like span 1's.
+    p = parse_src(direction)
+    if not p:
         raise ValueError('direction must be a or b')
     if edge not in ('start', 'end', 'clear'):
         raise ValueError("edge must be start, end or clear")
-    da = dir_a or CONFIG['dir_a']
-    db = dir_b or CONFIG['dir_b']
+    direction, span = p[0], p[1]
+    da = dir_a or src_dir(src_id('a', span))
+    db = dir_b or src_dir(src_id('b', span))
     store = _span_store_read()
     key = _span_key(da, db)
     entry = store.get(key) or {}
@@ -1204,7 +1231,7 @@ def span_decl_set(direction, edge, km, dir_a=None, dir_b=None):
         os.replace(tmp, SPAN_STORE)   # atomic: a killed write must not eat the store
     except OSError as e:
         raise RuntimeError('could not write %s: %s' % (SPAN_STORE, e))
-    return span_decl(da, db)
+    return span_decl(da or '', db or '')
 
 
 def _trace_frame(directory, t):
@@ -1579,7 +1606,7 @@ def decimate_minmax(dist_km, trace_db, max_pts):
 
 
 def load_trace(direction, fiber, max_pts=None):
-    d = CONFIG['dir_a'] if direction == 'a' else CONFIG['dir_b']
+    d = src_dir(direction)            # any source: 'a', 'b', 'a2' (sources())
     fmap = {n: fn for n, fn in list_fibers(d)}
     fn = fmap.get(fiber)
     if fn is None:
@@ -1820,6 +1847,11 @@ class Handler(BaseHTTPRequestHandler):
             # The report's verdicts, or -- opened on its own -- the ones the
             # server's own report run found (end_verdicts), None while pending.
             **end_verdicts(),
+            # Every loaded folder, span 1's included (see sources()): the
+            # fields above stay span 1's, as every caller already reads them.
+            'sources': _list_sources(fa, fb),
+            'spans': _list_spans(),
+            'sources_sig': sources_sig(),
         })
 
     def do_GET(self):
@@ -1863,6 +1895,9 @@ class Handler(BaseHTTPRequestHandler):
                                                else 'suite'),
                              'dir_a': CONFIG.get('dir_a') or '',
                              'dir_b': CONFIG.get('dir_b') or '',
+                             # every source, so a drop that adds a span or a
+                             # copy is seen like a box move (sources_sig)
+                             'sources_sig': sources_sig(),
                              'theme': 'dark' if CONFIG.get('theme') == 'dark' else 'light',
                              # the shared Viewer state's version (viewer_state)
                              'state_ver': VIEWER_STATE['ver'],
@@ -1899,7 +1934,7 @@ class Handler(BaseHTTPRequestHandler):
             # server-side (see decimate_minmax).
             q = parse_qs(u.query)
             direction = (q.get('dir') or [''])[0].lower()
-            if direction not in ('a', 'b'):
+            if not parse_src(direction):
                 self._send_json({'error': 'dir must be a or b'}, status=400)
                 return
             try:
@@ -2011,14 +2046,24 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == '/api/fr_table':
             q = parse_qs(u.query)
+            pairs = None
             try:
                 fibers = [int(x) for x in (q.get('fibers') or [''])[0].split(',')
                           if x.strip()]
+                # 'pairs=241:a:b,100241:a:b,17:a2:b2': each table's own two
+                # sources (a copy row by its id, another span by its ids)
+                if q.get('pairs'):
+                    pairs = []
+                    for item in q['pairs'][0].split(','):
+                        f_, sa, sb = item.split(':')
+                        if not (parse_src(sa) and parse_src(sb)):
+                            raise ValueError(item)
+                        pairs.append((int(f_), sa, sb))
             except ValueError:
                 self._send_json({'error': 'invalid fibers'}, status=400)
                 return
             try:
-                res = fr_tables(fibers)
+                res = fr_tables(fibers, pairs)
             except Exception as exc:                   # noqa: BLE001
                 report_error('viewer /api/fr_table', exc, {'fibers': fibers[:20]})
                 self._send_json({'error': str(exc)}, status=500)
@@ -2033,7 +2078,7 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 self._send_json({'error': 'invalid fiber'}, status=400)
                 return
-            if direction not in ('a', 'b'):
+            if not parse_src(direction):
                 self._send_json({'error': 'dir must be a or b'}, status=400)
                 return
             try:
@@ -2364,7 +2409,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads((self.rfile.read(n) if n else b'{}').decode('utf-8') or '{}')
                 side = str(data.get('dir') or '')
                 path = data.get('path')
-                if path is None and side in ('a', 'b'):
+                if path is None and parse_src(side):
                     found = find_originals(side)
                     if found:
                         out = locate_originals(side, found)
@@ -3476,6 +3521,156 @@ def _add_to_side(target, files, copies, fresh_side=False):
         rels.append(rel)
     return rels
 
+# ─── Which span, and which side, a dropped file belongs to ─────────────
+# Robert and the boss, 2026-10-02:
+#   * every file goes on the side its own Direction stamp names (EXFO's
+#     LocationsDirection, FR's Direction column, what Files > Direction
+#     writes), whatever its name says: "they will always have an A or B
+#     label", and the stamp wins over the name.  A file stamped wrong lands
+#     wrong and the tech fixes it with right-click > Direction;
+#   * a different span is added beside the loaded ones, as a span of its
+#     own (sources()), never into another span's sides.
+# The span is the cable's two ends: the unordered GenParams site pair (one
+# site typed the other way round on a block of fibres reads the same), else
+# the two site codes of the file name.  Files with no stamp (.json, .trc,
+# another make) go by the names, then the fibres (_side_score).
+
+
+def _site_key(path):
+    """The cable's two ends as the file's header names them, in either
+    order, or None when it does not name two."""
+    pair = sor_location_pair(path)
+    if not pair:
+        return None
+    a, b = ((x or '').strip().upper() for x in pair)
+    return tuple(sorted((a, b))) if a and b and a != b else None
+
+
+def _cable_name(path):
+    """The site letters a file name leads with, separators dropped
+    ('ABCDEF0001' -> 'ABCDEF', 'ABC_DEF_0001' -> 'ABCDEF'), or None for a
+    name with none (0001_1550.sor)."""
+    m = re.match(r'([A-Za-z][A-Za-z_\- ]*)', os.path.basename(path))
+    key = re.sub(r'[^A-Za-z]', '', m.group(1)).upper() if m else ''
+    return key or None
+
+
+def _same_cable_names(p, q):
+    """True when two cable names name the same cable: the same letters, the
+    two site codes the other way round (ELMMIL / MILELM), or one spelling of
+    the other (ELMMILLS / ELMMIL, merge_name_variants' NAME_STEM_MIN floor)."""
+    if p == q or len(os.path.commonprefix([p, q])) >= NAME_STEM_MIN:
+        return True
+    h = len(p) // 2
+    return len(p) in (6, 8) and p[h:] + p[:h] == q
+
+
+def _same_cable_sites(k, q):
+    """True when two site pairs name the same two ends allowing a typo on
+    one (a letter dropped from a site name, the engine's uni_sig_is_typo_of):
+    both ends start
+    with the same three letters, and those differ."""
+    a = {x[:3] for x in k}
+    return len(a) == 2 and a == {x[:3] for x in q}
+
+
+def _parse_gone(emptied):
+    """The sources the page has emptied (every file Removed): 'ab' as the
+    page has always sent it, or a comma list of source ids ('a,b2')."""
+    raw = str(emptied or '').lower().strip()
+    if ',' not in raw and all(c in 'ab' for c in raw):
+        return set(raw)
+    return {x.strip() for x in raw.split(',') if parse_src(x.strip())}
+
+
+def _spans_of(files, held):
+    """{file: span} for dropped `files`, and the new spans they start.
+    `held` is {src: folder} of every source loaded and not emptied.
+
+    A file belongs to the loaded span its header's two sites name (as the
+    reports group a folder: uni_load_dir's direction signature, Secret
+    Sauce's location key), else the one its name names, else the one whose
+    sites it names with a typo, where the name does not name another cable.
+    A file with no label at all joins the one span loaded.  The rest start
+    new spans, one per cable they name, numbered from the lowest free."""
+    spans = {}
+    for src, d in held.items():
+        _side, span = parse_src(src)
+        info = spans.setdefault(span, {'keys': {}, 'names': set()})
+        fs = _side_files(d)
+        step = max(1, len(fs) // DROP_DIR_SAMPLE)
+        for p in fs[::step][:DROP_DIR_SAMPLE]:
+            k = _site_key(p)
+            if k:
+                info['keys'][k] = info['keys'].get(k, 0) + 1
+            n = _cable_name(p)
+            if n:
+                info['names'].add(n)
+
+    def names_cable(n, i):
+        return bool(n) and any(_same_cable_names(n, q) for q in i['names'])
+    span_of, rest = {}, []
+    for p in files:
+        k, n = _site_key(p), _cable_name(p)
+        hit = [sp for sp, i in spans.items() if k and k in i['keys']]
+        if not hit:
+            hit = [sp for sp, i in spans.items() if names_cable(n, i)]
+        if not hit and k:
+            hit = [sp for sp, i in spans.items()
+                   if (not n or not i['names'])
+                   and any(_same_cable_sites(k, q) for q in i['keys'])]
+        if not hit and not k and not n and len(spans) == 1:
+            hit = list(spans)
+        if hit:
+            span_of[p] = max(hit, key=lambda sp: (spans[sp]['keys'].get(k, 0), -sp))
+        else:
+            rest.append(p)
+    merged = []
+    for p in rest:
+        k, n = _site_key(p), _cable_name(p)
+        for m in merged:
+            # One drop is one cable unless its sites say otherwise: a site
+            # with a typo on one direction still joins.
+            if ((k and k in m['keys'])
+                    or (n and any(_same_cable_names(n, q) for q in m['names']))
+                    or (k and any(_same_cable_sites(k, q) for q in m['keys']))):
+                break
+        else:
+            m = {'keys': set(), 'names': set(), 'files': []}
+            merged.append(m)
+        if k:
+            m['keys'].add(k)
+        if n:
+            m['names'].add(n)
+        m['files'].append(p)
+    used, new_spans, nxt = set(spans), [], 1
+    for g in sorted((m['files'] for m in merged), key=lambda g: (-len(g), sorted(g)[0])):
+        while nxt in used:
+            nxt += 1
+        used.add(nxt)
+        new_spans.append(nxt)
+        for p in g:
+            span_of[p] = nxt
+    return span_of, new_spans
+
+
+def _against_name(placed, held):
+    """The files of `placed` ({src: files}) whose name reads as the OTHER
+    direction of where their stamp put them (B's site order on an
+    A-stamped file): loaded where the stamp says, named on the readout and
+    in the Files panel so the tech can check them."""
+    out = []
+    for s_, ps in placed.items():
+        keys = [k for k in (_cable_name(f) for f in _side_files(held.get(s_)) + ps) if k]
+        if not keys:
+            continue
+        top = max(sorted(set(keys)), key=keys.count)
+        h = len(top) // 2
+        flip = top[h:] + top[:h] if len(top) in (6, 8) else None
+        out += [os.path.basename(p) for p in ps if flip and _cable_name(p) == flip]
+    return out
+
+
 _DROPS_ENDED = {}                          # token -> drop_end's answer, for a retry
 _DROPS_ENDED_MAX = 16
 
@@ -3534,16 +3729,13 @@ def drop_end(token, retry=False, emptied='', folders=None):
              if f.lower().endswith(DROP_EXTS)]
     if not paths:
         raise ValueError('nothing dropped was a .sor / .json / .trc file (or a zip of them)')
-    # The sides the page has emptied: every file of that folder taken out of
-    # the Viewer with Remove.  The server still points at the folder, but to
-    # the tech that side is empty, so a drop treats it as free and does not
-    # keep it -- a new span's A dropped after removing everything went to B,
+    # The sources the page has emptied: every file of that folder taken out
+    # of the Viewer with Remove.  The server still points at the folder, but
+    # to the tech it is empty, so a drop treats it as free and does not keep
+    # it -- a new span's A dropped after removing everything went to B,
     # beside the removed A it could no longer see.
-    gone = {c for c in str(emptied or '').lower() if c in 'ab'}
-    held = {}
-    for side in ('A', 'B'):
-        d = CONFIG.get('dir_' + side.lower())
-        held[side] = d if side.lower() not in gone and _dir_sig(d) else None
+    gone = _parse_gone(emptied)
+    held = {s_: d for s_, d in sources() if s_ not in gone and _dir_sig(d)}
     # A drop ADDS to what is loaded (Robert 2026-10-02: "drag in as much as we
     # want ... and have it keep adding and nothing gets reset until the person
     # does it").  A file byte for byte one the Viewer already has is not
@@ -3562,135 +3754,183 @@ def drop_end(token, retry=False, emptied='', folders=None):
         else:
             reps.append(f)
     fresh = [f for f, _h in fresh]
-    split = split_directions(fresh) if fresh else None
-    sites_swapped = split['sites_swapped'] if split else 0
-    groups = []                                 # (key, files, the side the split names)
-    if split:
-        keep = split['keep']
-        if len(keep) == 2:
-            groups = [(k, v, sd) for (k, v), sd in zip(keep, split['sides'])]
-        else:
-            d = split['declared']
-            groups = [(keep[0][0], keep[0][1], {'a': 'A', 'b': 'B'}.get(d))]
-        # Groups the split could not seat (their fibres already on both of
-        # its sides) are another span or a reshoot: added all the same.
-        seated = {f for _k, v, _s in groups for f in v}
-        for k, v in sorted(split_paths_by_direction(
-                [f for f in fresh if f not in seated]).items()):
-            groups.append((k, v, None))
-    placed = {'A': [], 'B': []}                 # side -> files this drop puts there
-    first = 0
-    if split and len(split['keep']) == 2:
-        for side, (_k, files, _p) in zip(_choose_sides(groups[:2], held), groups[:2]):
-            placed[side].extend(files)
-        first = 2
-    for key, files, pref in groups[first:]:
-        side = _choose_side(files, pref, held, placed)
-        placed[side].extend(files)
-    # A file that arrived under a name already dropped goes on the OTHER side
-    # when the files say it is the other direction (_place_repeats), else on
-    # its twin's side as a copy of its own.
-    side_of = {os.path.basename(f).lower(): (side, f)
-               for side in placed for f in placed[side]}
+    # Each file's span (_spans_of), then its side in that span: its own
+    # Direction stamp first (the stamp wins over the name, Robert
+    # 2026-10-02); a file with no stamp by its names, then its fibres
+    # (_side_score), as before.
+    span_of, new_spans = _spans_of(fresh + reps, held)
+    placed_by, key_of, placed_names = {}, {}, []
+    notes = {'sites_swapped': 0, 'stamped': None, 'name_variants': [],
+             'kept_whole': [], 'folded': []}
+    split_by, any_unstamped = None, False
     other = {'A': 'B', 'B': 'A'}
-    across = dict(_place_repeats([(1, f, os.path.basename(f).lower()) for f in reps],
-                                 side_of, len(paths)))
-    placed_names = []
-    for f in reps:
-        twin = side_of.get(os.path.basename(f).lower())
-        if f in across:
-            placed[other[across[f]]].append(f)
-            placed_names.append(os.path.basename(f))
-        elif twin:
-            placed[twin[0]].append(f)
-        else:
-            placed[_choose_side([f], None, held, placed)].append(f)
-    # Stage each side.  A side the drop staged before grows where it is, so
+    stamp_of = {f: (_read_stamp(f) if f.lower().endswith('.sor') else None)
+                for f in fresh + reps}
+    for span in sorted(set(span_of.values())):
+        hs = {'A': held.get(src_id('a', span)), 'B': held.get(src_id('b', span))}
+        placed = {'A': [], 'B': []}             # side -> files this drop puts there
+        unstamped = []
+        for f in [f for f in fresh if span_of[f] == span]:
+            st = stamp_of[f]
+            if st in ('a', 'b'):
+                placed[st.upper()].append(f)
+            else:
+                unstamped.append(f)
+        split = split_directions(unstamped) if unstamped else None
+        if split:
+            any_unstamped = True
+            split_by = split_by or split['how']
+            for k_ in ('name_variants', 'kept_whole', 'folded'):
+                notes[k_] += split[k_]
+            if split['sites_swapped']:
+                notes['sites_swapped'] += split['sites_swapped']
+                notes['stamped'] = split['stamps'][0] if split['stamps'] else None
+            keep = split['keep']
+            if len(keep) == 2:
+                groups = [(k, v, sd) for (k, v), sd in zip(keep, split['sides'])]
+            else:
+                d = split['declared']
+                groups = [(keep[0][0], keep[0][1], {'a': 'A', 'b': 'B'}.get(d))]
+            # Groups the split could not seat (their fibres already on both of
+            # its sides) are another direction's shots or a reshoot: added all
+            # the same.
+            seated = {f for _k, v, _s in groups for f in v}
+            for k, v in sorted(split_paths_by_direction(
+                    [f for f in unstamped if f not in seated]).items()):
+                groups.append((k, v, None))
+            for k, v, _s in groups:
+                for f in v:
+                    key_of[f] = k
+            first = 0
+            if len(keep) == 2:
+                for side, (_k, files, _p) in zip(_choose_sides(groups[:2], hs), groups[:2]):
+                    placed[side].extend(files)
+                first = 2
+            for key, files, pref in groups[first:]:
+                placed[_choose_side(files, pref, hs, placed)].extend(files)
+        # A file that arrived under a name already dropped: by its stamp; with
+        # none, on the OTHER side when the files say it is the other direction
+        # (_place_repeats), else on its twin's side as a copy of its own.
+        span_reps = [f for f in reps if span_of[f] == span]
+        side_of = {os.path.basename(f).lower(): (side, f)
+                   for side in placed for f in placed[side]}
+        across = dict(_place_repeats([(1, f, os.path.basename(f).lower()) for f in span_reps
+                                      if stamp_of[f] not in ('a', 'b')],
+                                     side_of, len(paths)))
+        for f in span_reps:
+            twin = side_of.get(os.path.basename(f).lower())
+            if stamp_of[f] in ('a', 'b'):
+                placed[stamp_of[f].upper()].append(f)
+            elif f in across:
+                placed[other[across[f]]].append(f)
+                placed_names.append(os.path.basename(f))
+            elif twin:
+                placed[twin[0]].append(f)
+            else:
+                placed[_choose_side([f], None, hs, placed)].append(f)
+        for side in ('A', 'B'):
+            if placed[side]:
+                placed_by[src_id(side.lower(), span)] = placed[side]
+    against = _against_name(placed_by, held)
+    # Stage each source.  One the drop staged before grows where it is, so
     # its rows keep their ids and the page keeps everything on the chart; a
     # folder picked in the hub is never written to -- the drop makes a copy
-    # of it to grow instead.  A free side gets a folder of its own, named for
-    # the side it lands on (that NAME is what /api/list serves as
-    # dir_a_name / dir_b_name).
+    # of it to grow instead.  A free one gets a folder of its own, named for
+    # the side it lands on ('A', 'B', 'A2'; that NAME is what /api/list
+    # serves when nothing better names it).
+    order = lambda s_: (lambda p_: (p_[1], p_[0]))(parse_src(s_))
     out, named, grown, moved, copies = {}, {}, [], {}, []
-    for side in ('A', 'B'):
-        files = placed[side]
-        if not files:
-            continue
-        cur = held[side]
+    for s_ in sorted(placed_by, key=order):
+        files = placed_by[s_]
+        cur = held.get(s_)
         if cur and is_drop_dir(cur):
             target = cur
-            grown.append(side)
+            grown.append(s_)
         else:
-            target = os.path.join(drop['dir'], side)
+            target = os.path.join(drop['dir'], s_.upper())
             os.makedirs(target, exist_ok=True)
             if cur:
                 _mirror_folder(cur, target)
                 _DROP_NAMES[os.path.normcase(os.path.normpath(target))] = (
-                    drop_name(cur) or os.path.basename(os.path.normpath(cur)) or side)
-                grown.append(side)
+                    drop_name(cur) or os.path.basename(os.path.normpath(cur)) or s_.upper())
+                grown.append(s_)
             else:
-                key = next((k for k, v, _s in groups if v and v[0] in files), '')
+                # The key the split named files with no stamp by (a site code
+                # or a location pair re-reading the folder would not give
+                # back); stamped files go by the folder's own commonest name
+                # (_dir_facts), which folds spellings of one name together.
+                key = key_of.get(files[0])
+                if key is not None:
+                    named[s_] = key or None
                 _DROP_NAMES[os.path.normcase(os.path.normpath(target))] = (
-                    _drop_side_name(files, src, key))
-                named[side] = key or None
-        out[side] = target
-        moved[side] = _add_to_side(target, files, copies, fresh_side=not cur)
-    dir_a = out.get('A') or held['A']
-    dir_b = out.get('B') or held['B']
-    if out or gone:
-        set_dirs(dir_a, dir_b)
-        for side in grown:
-            old = held[side]
-            if old != out[side]:
+                    _drop_side_name(files, src, key if key is not None else (
+                        direction_prefix(files[0]) if _cable_name(files[0]) else '')))
+        out[s_] = target
+        moved[s_] = _add_to_side(target, files, copies, fresh_side=not cur)
+    found = dict(out)
+    for g in gone:
+        found.setdefault(g, None)
+    if found:
+        set_sources(found)
+        for s_ in grown:
+            old = held[s_]
+            if old != out[s_]:
                 # The copy made of a hub folder: what was removed in the
                 # Viewer stays removed, and Rename still finds the originals.
-                _ORIGINALS[side.lower()] = old
+                _ORIGINALS[s_] = old
                 with _VIEWER_STATE_LOCK:
-                    if VIEWER_STATE.get('dir_' + side.lower()) == old:
-                        VIEWER_STATE['dir_' + side.lower()] = out[side]
+                    if s_ in ('a', 'b') and VIEWER_STATE.get('dir_' + s_) == old:
+                        VIEWER_STATE['dir_' + s_] = out[s_]
+                    folders = VIEWER_STATE.get('folders') or {}
+                    if folders.get(s_) == old:
+                        folders[s_] = out[s_]
+    # The hub follows span 1 only (its A/B boxes and every report): it is
+    # told of a drop that wrote to span 1 or let one of its sides go, and of
+    # no other.  A drop that only added span 2 used to throw the hub's report
+    # grids away (app.py _trace_folders_changed) for a span they were still
+    # right about.  Open Viewer windows follow every source through
+    # /api/mode's sources_sig.
+    if any(s_ in ('a', 'b') for s_ in out) or gone & {'a', 'b'}:
         CONFIG['dropped_at'] = time.time()
     new_keys, already_keys = [], []
-    for side, rels in moved.items():
-        ids = {fn: n for n, fn in list_fibers(out[side])}
-        new_keys += [f'{side.lower()}-{ids[r]}' for r in rels if r in ids]
+    for s_, rels in moved.items():
+        ids = {fn: n for n, fn in list_fibers(out[s_])}
+        new_keys += [f'{s_}-{ids[r]}' for r in rels if r in ids]
     # The rows of the files dropped again, so the page can put back one the
     # tech had removed: dragging it in is asking for it.
-    for side in ('A', 'B'):
-        was, now = held[side], CONFIG.get('dir_' + side.lower())
-        if not was or not now:
+    for s_, was in held.items():
+        now = src_dir(s_)
+        if not now:
             continue
         ids = {os.path.normcase(fn): n for n, fn in list_fibers(now)}
         for _f, hit in already:
             rel = os.path.relpath(hit, was) if hit else ''
             if rel and not rel.startswith('..') and os.path.normcase(rel) in ids:
-                already_keys.append(f'{side.lower()}-{ids[os.path.normcase(rel)]}')
+                already_keys.append(f'{s_}-{ids[os.path.normcase(rel)]}')
+    dir_a, dir_b = CONFIG.get('dir_a'), CONFIG.get('dir_b')
     a_key, a_count = _dir_facts(dir_a)
     b_key, b_count = _dir_facts(dir_b)
     a_count += _copies_count(dir_a)
     b_count += _copies_count(dir_b)
-    added = ''.join(sorted(out))
-    declared = split['declared'] if split and len(split['keep']) == 1 else None
-    if split and len(split['keep']) == 2:
-        added_by = split['added_by']
-    else:
-        added_by = 'file' if declared and added == declared.upper() else 'position'
+    added = ''.join(sorted(s_.upper() for s_ in out if s_ in ('a', 'b')))
     answer = {'dir_a': dir_a, 'dir_b': dir_b,
-              'a_prefix': named.get('A', a_key), 'a_count': a_count,
-              'b_prefix': named.get('B', b_key), 'b_count': b_count,
-              'added': added,                   # which side(s) this drop wrote
-              'added_by': added_by,             # 'file' = the files named the side
-              'split_by': split['how'] if split else None,  # 'unnamed' = nothing could split it
-              'sites_swapped': sites_swapped,   # files kept on one side despite a
-              'stamped': (split['stamps'][0] if sites_swapped else None),  # reversed site pair
-              'name_variants': split['name_variants'] if split else [],  # spellings of one name kept together
-              'kept_whole': split['kept_whole'] if split else [],  # name groups that fill the rest's holes
-              'folded': split['folded'] if split else [],  # extra groups put where their fibres fit
+              'a_prefix': named.get('a', a_key), 'a_count': a_count,
+              'b_prefix': named.get('b', b_key), 'b_count': b_count,
+              'added': added,                   # span 1's side(s) this drop wrote
+              # 'file' = the files' own stamps named every side
+              'added_by': 'position' if any_unstamped else 'file',
+              'split_by': split_by,             # how files with no stamp were split
+              **notes,                          # what those rules did
               'ignored': [],                    # nothing dropped is left out any more
               'repeats_placed': placed_names,   # repeated names put on the other side
               'repeated': [],                   # (kept for old pages: every file loads now)
               'already': sorted({os.path.basename(f) for f, _h in already}),
               'copies': copies,                 # files listed as another copy of a fibre
-              'grown': ''.join(sorted(grown)),  # sides that kept what they had
+              'grown': ''.join(sorted(s_.upper() for s_ in grown if s_ in ('a', 'b'))),
+              'grown_srcs': sorted(grown, key=order),   # every source that kept what it had
+              'touched': sorted(out, key=order),        # every source this drop wrote to
+              'new_spans': new_spans,           # the spans this drop started
+              'against_name': against,          # named for the other direction than their stamp
               'new_keys': new_keys,             # the rows this drop added
               'already_keys': sorted(set(already_keys)),  # rows of the files dropped again
               'a_name': drop_name(dir_a), 'b_name': drop_name(dir_b)}
@@ -4047,31 +4287,42 @@ def suite_tables(fibers, direction=None):
     return out
 
 
-def fr_tables(fibers):
+def fr_tables(fibers, pairs=None):
     """{'tables': {'17': rows, ...}, 'missing': [fibers with no .sor/.trc
     pair or no table], 'error': str | None} -- FastReporter's bidirectional table for
-    each fibre of the current span, from the engine runner's --fr-table."""
+    each fibre of the current span, from the engine runner's --fr-table.
+
+    `pairs` names the two sources of each table instead ([(fibre, 'a',
+    'b')], or another span: (17, 'a2', 'b2')), and its tables are keyed
+    '17:a2:b2'.  A fibre is a listed id, so a copy row is one too (100241).  This is the per-fibre table built
+    from the fibre's own two files, in the app's analysis mode, so every
+    trace shows its events and losses whatever report has or has not run
+    (Robert 2026-10-02)."""
     out, missing, jobs = {}, [], []
+    if pairs is not None:
+        want = [(f'{f}:{sa}:{sb}', f, src_dir(sa), src_dir(sb)) for f, sa, sb in pairs]
+    else:
+        want = [(f, f, CONFIG['dir_a'], CONFIG['dir_b']) for f in fibers]
     # FastReporter mode's table.  OTDR Suite mode prints the report's own
     # (suite_tables) and asks for this one only to stand in when the report
     # has no table for the span.
     mode = CONFIG.get('analysis_mode') if CONFIG.get('analysis_mode') in ('suite', 'fr') else 'suite'
-    for f in fibers:
-        pa = _fiber_path(CONFIG['dir_a'], f) if CONFIG['dir_a'] else None
-        pb = _fiber_path(CONFIG['dir_b'], f) if CONFIG['dir_b'] else None
+    for tid, f, da, db in want:
+        pa = _fiber_path(da, f) if da else None
+        pb = _fiber_path(db, f) if db else None
         if (not pa or not pb or not pa.lower().endswith(('.sor', '.trc'))
                 or not pb.lower().endswith(('.sor', '.trc'))):
-            missing.append(f)
+            missing.append(tid)
             continue
         try:
             key = (mode, pa, os.path.getmtime(pa), pb, os.path.getmtime(pb))
         except OSError:
-            missing.append(f)
+            missing.append(tid)
             continue
         if key in _FR_TABLE_CACHE:
-            out[str(f)] = _FR_TABLE_CACHE[key]
+            out[str(tid)] = _FR_TABLE_CACHE[key]
             continue
-        jobs.append((f, pa, pb, key))
+        jobs.append((tid, pa, pb, key))           # the engine keys its answer str(tid)
     error = None
     if jobs:
         # The pairs go to the engine in a file, not on its command line.
@@ -4107,15 +4358,15 @@ def fr_tables(fibers):
                 except OSError:
                     pass
         tables = payload.get('tables') or {}
-        for f, pa, pb, key in jobs:
-            rows = tables.get(str(f))
+        for tid, pa, pb, key in jobs:
+            rows = tables.get(str(tid))
             if rows is None:
-                missing.append(f)
+                missing.append(tid)
                 continue
             if len(_FR_TABLE_CACHE) >= FR_TABLE_CACHE_MAX:
                 _FR_TABLE_CACHE.clear()
             _FR_TABLE_CACHE[key] = rows
-            out[str(f)] = rows
+            out[str(tid)] = rows
         errs = payload.get('errors') or {}
         if errs and not error:
             error = '; '.join(f'F{k}: {v}' for k, v in list(errs.items())[:3])
@@ -4215,22 +4466,165 @@ def unload_sides(sides):
     so the hub's A/B boxes follow on its next run (Robert 2026-09-30: removing
     everything on a side clears that side's box right away) and no other tool
     runs on a folder the Viewer no longer shows."""
-    gone = {c for c in str(sides or '').lower() if c in 'ab'}
+    # 'ab' (span 1's two sides, as the page has always sent it) or a comma
+    # list of source ids ('a,b2').  Only the sources named let go: the
+    # other spans and copies stay (set_sources), unlike set_dirs(None, None).
+    raw = str(sides or '').lower().strip()
+    gone = (set(raw) if raw in ('ab', 'ba')
+            else {x.strip() for x in raw.split(',') if parse_src(x.strip())})
     if gone:
-        set_dirs(None if 'a' in gone else CONFIG['dir_a'],
-                 None if 'b' in gone else CONFIG['dir_b'])
-        CONFIG['dropped_at'] = time.time()
+        set_sources({g: None for g in gone})
+        if gone & {'a', 'b'}:                 # the hub follows span 1 only (see drop_end)
+            CONFIG['dropped_at'] = time.time()
     return {'dir_a': CONFIG['dir_a'], 'dir_b': CONFIG['dir_b']}
+
+
+# ─── Sources: every folder the Viewer holds, span by span ───────────────
+# Robert 2026-10-02: a different span dropped in while both sides are
+# loaded is ADDED to the Viewer, as a span of its own.  One folder per side
+# cannot hold two spans' fibre 17, so each loaded folder is a SOURCE with an
+# id:
+#   'a' / 'b'      span 1's folders -- CONFIG['dir_a'/'dir_b'], the hub's
+#                  boxes, the folders every report and table runs on
+#   'a2' / 'b2'    span 2's sides (the span number after the side letter)
+# A second file of a fibre on a side is a copy row inside its source
+# (COPY_BASE), not a source.  The id is what the page keys a trace by
+# ('a2-17'), so span 2's fiber 17 never collides with span 1's.  Every call that reads a folder resolves its
+# side through src_dir.  Spans 2+ live in the Viewer only (Robert: the hub's
+# reports run on span 1 for now).
+_SRC_RE = re.compile(r'^([ab])([2-9]|[1-9]\d{1,2})?$')
+
+
+def _extra():
+    """CONFIG['extra']: every loaded folder past span 1's, src id -> folder."""
+    return CONFIG.setdefault('extra', {})
+
+
+def parse_src(src):
+    """(side 'a'|'b', span) of a source id, or None for no such id."""
+    m = _SRC_RE.match(str(src or ''))
+    if not m:
+        return None
+    return m.group(1), int(m.group(2) or 1)
+
+
+def src_id(side, span=1):
+    return side + (str(span) if span > 1 else '')
+
+
+def src_side(src):
+    p = parse_src(src)
+    return p[0] if p else None
+
+
+def src_dir(src):
+    """The folder of source `src`, or None."""
+    if src in ('a', 'b'):
+        return CONFIG.get('dir_' + src)
+    return _extra().get(src) if parse_src(src) else None
+
+
+def _folder_of(src, dir_a=None, dir_b=None):
+    """src_dir, with a caller's own span-1 folders standing in for 'a'/'b'
+    (the hub's calls that name the folders they mean)."""
+    if src == 'a' and dir_a:
+        return dir_a
+    if src == 'b' and dir_b:
+        return dir_b
+    return src_dir(src)
+
+
+def sources():
+    """[(src, folder)] of every loaded source, span by span, A before B."""
+    out = [(s, CONFIG.get('dir_' + s)) for s in 'ab' if CONFIG.get('dir_' + s)]
+    out += [(s, d) for s, d in _extra().items() if d and parse_src(s)]
+    return sorted(out, key=lambda t: (lambda p: (p[1], p[0]))(parse_src(t[0])))
+
+
+def spans_loaded():
+    """The span numbers that hold at least one source, in order."""
+    return sorted({parse_src(s)[1] for s, _d in sources()})
+
+
+def sources_sig():
+    """One string that changes whenever any source's folder does: /api/mode
+    serves it, so an open page sees a drop or a box move and reloads."""
+    return json.dumps(sources())
+
+
+def _folder_name(d):
+    """What a folder is called on the page: a drop's own name, else its own."""
+    return drop_name(d) or os.path.basename((d or '').rstrip('/\\')) or '(none)'
+
+
+def _list_sources(fa=None, fb=None):
+    """/api/list's `sources`: one row per loaded folder, span by span.
+    `fa` / `fb` are span 1's listings when the caller already has them."""
+    out = []
+    for src, d in sources():
+        side, span = parse_src(src)
+        fl = (fa if src == 'a' else fb if src == 'b' else None)
+        if fl is None:
+            fl = list_fibers(d)
+        out.append({'src': src, 'span': span, 'side': side,
+                    'dir': d, 'name': _folder_name(d), 'dropped': bool(drop_name(d)),
+                    'fibers': [n for n, _ in fl],
+                    'files': [os.path.basename(p) for _, p in fl],
+                    # its copy rows, as copies_a / copies_b are span 1's
+                    'copies': {str(n): copy_of(n) for n, _ in fl if n >= COPY_BASE}})
+    return out
+
+
+def _list_spans():
+    """/api/list's `spans`: each span's own frame (its A's launch reel, its
+    B's, whether B's far end is known) and its declared span, so the page
+    draws and mirrors every span in its own frame."""
+    out = []
+    for span in spans_loaded():
+        da, db = src_dir(src_id('a', span)), src_dir(src_id('b', span))
+        out.append({'span': span,
+                    'name_a': _folder_name(da) if da else None,
+                    'name_b': _folder_name(db) if db else None,
+                    'launch_a_km': frame_facts(da).get('launch_km') if da else None,
+                    'launch_b_km': frame_facts(db).get('launch_km') if db else None,
+                    'cable_end_known_b': frame_facts(db).get('cable_end_known') if db else None,
+                    'span_decl': span_decl(da or '', db or '')})
+    return out
+
+
+def set_sources(found):
+    """Point every source at once ({src: folder or None}); ids not named keep
+    their folder.  The drop calls this; set_dirs is the hub's span-1 call."""
+    for src, d in found.items():
+        if src in ('a', 'b'):
+            if CONFIG.get('dir_' + src) != (d or None):
+                _ORIGINALS.pop(src, None)
+            CONFIG['dir_' + src] = d or None
+        elif parse_src(src):
+            if _extra().get(src) != (d or None):
+                _ORIGINALS.pop(src, None)
+            if d:
+                _extra()[src] = d
+            else:
+                _extra().pop(src, None)
 
 
 def set_dirs(dir_a, dir_b):
     """Hub calls this when the user picks folders.  Returns True if either
     directory changed.  (Only _load_trace_cached is memoized, and it keys on
-    directory+filename, so a folder swap can't serve stale traces.)"""
+    directory+filename, so a folder swap can't serve stale traces.)
+
+    Span 1's folders only: the other spans a drop added stay, unless both
+    sides are cleared (Clear Traces), which clears every span."""
     changed = (CONFIG['dir_a'] != (dir_a or None)) or (CONFIG['dir_b'] != (dir_b or None))
     for side, new in (('a', dir_a), ('b', dir_b)):
         if CONFIG.get('dir_' + side) != (new or None):
             _ORIGINALS.pop(side, None)       # a new folder has its own originals
+    if not dir_a and not dir_b:
+        changed = changed or bool(_extra())
+        for src in list(_extra()):
+            _ORIGINALS.pop(src, None)
+        _extra().clear()
     CONFIG['dir_a'] = dir_a or None
     CONFIG['dir_b'] = dir_b or None
     return changed
@@ -5089,12 +5483,12 @@ def stored_direction(direction, fiber):
     then.  Shared by /api/trace and the bulk /api/traces so a file reads the
     same way at any load size.  Never raises: the stamp is an optional extra."""
     try:
-        d = CONFIG['dir_a'] if direction == 'a' else CONFIG['dir_b']
+        d = src_dir(direction)
         path = _fiber_path(d, fiber)
         if not (path and path.lower().endswith(('.sor', '.trc'))):
             return None
         stored = read_direction(open(path, 'rb').read())
-        if stored and not folder_stamps_mean_direction(d, direction):
+        if stored and not folder_stamps_mean_direction(d, src_side(direction)):
             return None
         return stored
     except Exception:                                      # noqa: BLE001
@@ -5721,9 +6115,9 @@ def trace_settings(direction, fiber, dir_a=None, dir_b=None):
     than 404ing.  The panel is read even then: it is what the OTDR was told,
     and showing it does not need the file to rebuild.
     """
-    d = (dir_a or CONFIG['dir_a']) if direction == 'a' else (dir_b or CONFIG['dir_b'])
-    if direction not in ('a', 'b') or not d:
-        raise ValueError('direction must be a or b, with a folder loaded')
+    d = _folder_of(direction, dir_a, dir_b)
+    if not d:
+        raise ValueError('direction must be a loaded side (a, b, a2, ...)')
     path = _fiber_path(d, fiber)
     if path is None:
         raise ValueError('no file for fiber %s' % fiber)
@@ -5780,9 +6174,9 @@ def edit_traces(direction, fibers, ior=None, fields=None, dest_name=None,
     Returns {'dest', 'written': [fiber...], 'skipped': [{'fiber','reason'}]}.
     Per-file failures skip that file and say why; they never stop the batch.
     """
-    d = (dir_a or CONFIG['dir_a']) if direction == 'a' else (dir_b or CONFIG['dir_b'])
-    if direction not in ('a', 'b') or not d:
-        raise ValueError('direction must be a or b, with a folder loaded')
+    d = _folder_of(direction, dir_a, dir_b)
+    if not d:
+        raise ValueError('direction must be a loaded side (a, b, a2, ...)')
     fields = {k: str(v) for k, v in (fields or {}).items() if str(v).strip() != ''}
     bad = sorted(set(fields) - set(ALL_STRINGS))
     if bad:
@@ -6012,7 +6406,7 @@ def find_originals(direction, roots=None, seconds=FIND_ORIGINALS_SECONDS):
     `direction` side byte for byte, or None.  Folders are found by NAME
     first (one directory listing each, no file reads) and only a folder that
     has every dropped name has its bytes compared."""
-    d = CONFIG.get('dir_' + direction)
+    d = src_dir(direction)
     if not is_drop_dir(d):
         return None
     want = set(_trace_names(d))
@@ -6057,9 +6451,9 @@ def locate_originals(direction, folder):
     side when every one of its files is in the same folder (both directions
     dragged out of one job folder) -- or {'ok': False, 'missing',
     'different'} when the folder is not the one."""
-    if direction not in ('a', 'b'):
-        raise ValueError('direction must be a or b')
-    d = CONFIG.get('dir_' + direction)
+    if not parse_src(direction):
+        raise ValueError('direction must be a loaded side (a, b, a2, ...)')
+    d = src_dir(direction)
     if not is_drop_dir(d):
         raise ValueError('that side was not dropped in; it is renamed where it is')
     if not folder or not os.path.isdir(folder):
@@ -6089,8 +6483,9 @@ def locate_originals(direction, folder):
                 'different': different[:20], 'n_different': len(different)}
     _ORIGINALS[direction] = folder
     sides = [direction]
-    other = 'b' if direction == 'a' else 'a'
-    od = CONFIG.get('dir_' + other)
+    side, span = parse_src(direction)
+    other = src_id('b' if side == 'a' else 'a', span)
+    od = src_dir(other)
     if other not in _ORIGINALS and is_drop_dir(od) and _trace_names(od):
         m2, d2 = match_originals(od, folder)
         if not m2 and not d2:
@@ -6111,9 +6506,9 @@ def rename_files(direction, pairs, dir_a=None, dir_b=None):
     On a DROPPED side the originals are renamed (see _ORIGINALS above), and
     OriginalsNeeded is raised until the tech has said where they are.
     """
-    d = (dir_a or CONFIG['dir_a']) if direction == 'a' else (dir_b or CONFIG['dir_b'])
-    if direction not in ('a', 'b') or not d:
-        raise ValueError('direction must be a or b, with a folder loaded')
+    d = _folder_of(direction, dir_a, dir_b)
+    if not d:
+        raise ValueError('direction must be a loaded side (a, b, a2, ...)')
     if not is_drop_dir(d):
         return _rename_in(direction, d, pairs)
     orig = _ORIGINALS.get(direction)
@@ -6302,10 +6697,7 @@ def report_dest(dest):
             raise ValueError('save to must be a folder name or a full path')
         out = os.path.join(downloads_dir(), name)
     dst = os.path.normcase(os.path.abspath(out))
-    for side in ('dir_a', 'dir_b'):
-        src = CONFIG.get(side)
-        if not src:
-            continue
+    for _src, src in sources():               # every span's folders, every copy
         s = os.path.normcase(os.path.abspath(src)).rstrip('/\\')
         if dst == s or dst.startswith(s + os.sep):
             raise ValueError('a report cannot be saved in a trace folder; pick another folder')

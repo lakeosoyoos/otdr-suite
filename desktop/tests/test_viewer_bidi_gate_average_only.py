@@ -11,8 +11,9 @@ A->B / B->A loss cell is never red or yellow on its own reading.  What stays:
     connectors are seen separately);
   - a direction's reflectance;
   - the report's own flag on a direction (an event only one direction read).
-A fibre loaded one way among paired ones is left out of the panel
-(noteOneDirFibers), so nothing else reads the single-direction gate.
+A file loaded one way among paired ones is a row of the same table with no
+Average (as FastReporter lists it), so its own row is the one place a
+two-direction table reads the single-direction gate (soloGate).
 No Node here, so the JS is checked at the source, like the other Viewer tests.
 """
 import re
@@ -39,18 +40,21 @@ def test_a_splice_direction_has_no_loss_gate():
 
 def test_both_two_direction_tables_judge_a_direction_by_leg_gate():
     # FR layout: P/F, Warning and the cell colour
-    assert 'return clearsAt(leg.loss, legGateFor(isRefl(x)));' in VIEWER
-    assert 'clearsAt(leg.loss, legWarnFor(isRefl(x)));' in VIEWER
-    assert 'gated ? legGateFor(isRefl(x)) : null,' in VIEWER
-    assert 'judged ? legWarnFor(isRefl(x)) : null))' in VIEWER
+    assert 'return clearsAt(leg.loss, x.row.solo ? soloGate(x) : legGateFor(isRefl(x)));' in VIEWER
+    assert 'clearsAt(leg.loss, x.row.solo ? soloWarn(x) : legWarnFor(isRefl(x)));' in VIEWER
+    assert 'gated ? (x.row.solo ? soloGate(x) : legGateFor(isRefl(x))) : null,' in VIEWER
+    assert 'judged ? (x.row.solo ? soloWarn(x) : legWarnFor(isRefl(x))) : null))' in VIEWER
     # OTDR Suite: the report's own flag first, then the leg gate
     assert ("|| (!c.isEnd && legOk(leg) && clearsAt(leg.loss, "
             "legGateFor(!!x.reflective)));") in VIEWER
     assert 'clearsAt(leg.loss, legWarnFor(!!x.reflective));' in VIEWER
-    # nothing in either table reads the single-direction gate for a leg
-    assert 'gateFor(isRefl(x), true)' not in VIEWER
+    # nothing in either table reads the single-direction gate for a leg of
+    # a paired fibre: only a file with no partner (no Average) does
+    assert VIEWER.count('gateFor(isRefl(x), true)') == 1
+    assert 'const soloGate = x => gateFor(isRefl(x), true);' in VIEWER
     assert 'gateFor(!!x.reflective, true)' not in VIEWER
-    assert 'warnFor(isRefl(x), true)' not in VIEWER
+    assert VIEWER.count('warnFor(isRefl(x), true)') == 1
+    assert 'const soloWarn = x => warnFor(isRefl(x), true);' in VIEWER
     assert 'warnFor(!!x.reflective, true)' not in VIEWER
 
 
