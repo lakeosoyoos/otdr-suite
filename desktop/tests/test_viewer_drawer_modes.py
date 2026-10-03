@@ -129,7 +129,8 @@ def test_clicks_on_drawer_marks():
     assert "else if (gGridGoTo) gGridGoTo(c.hit.t, c.hit.e);" in up
     menu = SRC[SRC.index("canvas.addEventListener('contextmenu'"):]
     menu = menu[:menu.index("\n});")]
-    assert "if (!lh || !lh.t) return;" in menu
+    # every drawer mark and tag names its own picks (test_viewer_drawer_right_click_menu)
+    assert "let picks = lh ? lh.menu || (lh.t && lh.e" in menu
     # the lines and numbers are always drawn, so their menu always works
     assert "gShowEvents" not in menu
 
