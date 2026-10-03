@@ -1077,6 +1077,28 @@ let gTableGoKm = null;                 // a report link's km: the table column t
 // for the traces that asked for them: kind -> {key, res, pending}.  See
 // serverTableKey.
 const gServerTables = new Map();
+// FILES' P/F is the event table's (Robert 2026-10-02: "P/F should always
+// [be the] event table"): each table records each file's verdict here as it
+// judges its rows, keyed as the FILES list keys a file ("a-12").  Only a
+// one-direction row is a file's own verdict; a fibre loaded both ways has one
+// verdict, on its Average row, and its files show none, as FR shows a
+// bidirectional measurement (Robert 2026-10-02).  A file no table has judged
+// (not added) has no P/F either.  One render of the tables is one pass: the first verdict
+// of a new pass starts the map afresh, so a fiber taken out leaves with it.
+let gTableFails = new Map();
+let gTableFailsPass = 0, gTablePass = 0, gFilesPfQueued = false;
+function noteTableVerdict(t, fail) {
+  if (!t || !t.key) return;
+  if (gTableFailsPass !== gTablePass) { gTableFails = new Map(); gTableFailsPass = gTablePass; }
+  gTableFails.set(t.key, !!fail);
+  filesPfChanged();
+}
+function tableFileFails(key) { return gTableFails.has(key) ? gTableFails.get(key) : null; }
+function filesPfChanged() {
+  if (gFilesPfQueued || !(gFileCols.has('pf') || (gFileSort && gFileSort.col === 'pf'))) return;
+  gFilesPfQueued = true;
+  queueMicrotask(() => { gFilesPfQueued = false; renderFilesPanel(); });
+}
 let gTableLive = null;                 // the server-built table on screen, see endVerdictsLanded
 let gHeldNodes = [];                   // the last table, held up while the next one is built
 let gBase = null;                      // the chart without its overlay (keepBase)
@@ -3430,7 +3452,6 @@ function renderFilesPanel() {
   const loaded = new Map(gTraces.map(t => [t.key, t]));
   const cols = shownFileCols();
   const wantFacts = filesNeedFacts();
-  const paired = wantFacts ? pairedFileKeys() : null;
   const rows = [];
   for (const dir of ['a', 'b']) {
     const fibers = (gInfo && gInfo['fibers_' + dir]) || [];
@@ -3440,12 +3461,14 @@ function renderFilesPanel() {
       const t = loaded.get(`${dir}-${f}`);
       const eff = effDir(dir, f);
       const arrow = eff === 'a' ? 'A→B' : 'B→A';
-      // P/F, wavelength and date, once the file's details are read.
-      const tr = wantFacts ? fileTraits(`${dir}-${f}`, paired) : null;
+      // Wavelength and date, once the file's details are read; P/F is the
+      // event table's (see noteTableVerdict).
+      const tr = wantFacts ? fileTraits(`${dir}-${f}`) : null;
+      const pf = tableFileFails(`${dir}-${f}`);
       const acq = tr ? (gFileFacts.get(`${dir}-${f}`) || {}).acq : null;
       const cell = {
-        pf: `<span class="file-pf${tr ? (tr.pf ? ' fpf-fail' : flagsOff() ? '' : ' fpf-pass') : ''}">`
-          + `${tr ? pfMark(tr.pf) : ''}</span>`,
+        pf: `<span class="file-pf${pf == null ? '' : pf ? ' fpf-fail' : flagsOff() ? '' : ' fpf-pass'}">`
+          + `${pf == null ? '' : pfMark(pf)}</span>`,
         name: `<span class="file-name"><bdi>${esc(files[i] || 'F' + f)}</bdi></span>`,
         dir: `<span class="file-dir"${eff !== dir ? ' title="direction changed from the folder\'s"' : ''}>`
           + `${arrow}${eff !== dir ? '*' : ''}</span>`,
@@ -3455,7 +3478,7 @@ function renderFilesPanel() {
           + `${tr && tr.day ? tr.day : ''}</span>`,
       };
       rows.push({
-        order: rows.length, name: files[i] || '', eff, fiber: f, tr, acq,
+        order: rows.length, name: files[i] || '', eff, fiber: f, tr, acq, pf,
         html: `<div class="file-row${t ? ' loaded' : ''}${t && !t.visible ? ' faded' : ''}`
           + `${gSelectedFiles.has(`${dir}-${f}`) ? ' selected' : ''}`
           + `${gFileFocus === `${dir}-${f}` ? ' focus' : ''}" `
@@ -3483,14 +3506,14 @@ function renderFilesPanel() {
 // header to sort by it, again to reverse.  FR has no unsorted state either;
 // Restore Default puts the Viewer's own order back (A then B, by fiber).
 // Ties keep that order, where FR scrambles them.  File Name always shows.
-// P/F, λ and Date need every file's header and events, so they are off
+// λ and Date need every file's header, so they are off
 // until asked for, and then read in the background (ensureFileFacts) while
 // the header counts them in.
 const FILE_COLS = [
   // [key, header, width, header tooltip]
   // Narrow enough that all six fit the panel's 300 px; the name gives way
   // first and says itself in full on hover.
-  ['pf', 'P/F', '30px', 'each file at the gates of the table row it lands in'],
+  ['pf', 'P/F', '30px', "the event table's verdict for a one-direction file; a fiber loaded both ways has its P/F on the table's Average row"],
   ['name', 'File Name', 'minmax(40px, 1fr)', ''],
   ['dir', 'Dir.', '34px', ''],
   ['fiber', 'Fiber', '30px', ''],
@@ -3514,7 +3537,7 @@ function saveFilesView() {
 function shownFileCols() {
   return FILE_COLS.filter(([c]) => c === 'name' || gFileCols.has(c));
 }
-const FACT_COLS = ['pf', 'wl', 'date'];
+const FACT_COLS = ['wl', 'date'];
 function filesNeedFacts() {
   return FACT_COLS.some(c => gFileCols.has(c)) || !!(gFileSort && FACT_COLS.includes(gFileSort.col));
 }
@@ -3526,7 +3549,7 @@ function fileSortValue(r, col) {
     case 'name': return r.name.toLowerCase();
     case 'dir': return r.eff;
     case 'fiber': return r.fiber;
-    case 'pf': return r.tr ? (r.tr.pf ? 1 : 0) : null;
+    case 'pf': return r.pf == null ? null : (r.pf ? 1 : 0);
     case 'wl': return r.tr && r.tr.wl ? r.tr.wl : null;
     case 'date': return r.acq || null;
     default: return null;
@@ -4048,7 +4071,8 @@ function splitFileKey(key) {
 // Type and Date, and Multiple Option Selection, which takes any of them
 // together against the right-clicked file.  Here they sit in the FILES menu,
 // named for what the Viewer calls the same things:
-//   Select Same Pass/Fail Status   every file with the same verdict (fileFails)
+//   Select Same Pass/Fail Status   every file with the same verdict (the
+//                                  event table's, tableFileFails)
 //   Select Same Fiber              FR's Identifiers: both directions of the
 //                                  selected fibers (FR takes one fiber at a
 //                                  time; this takes every fiber selected)
@@ -4082,49 +4106,14 @@ function fileDay(acq) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
        + `-${String(d.getDate()).padStart(2, '0')}`;
 }
-// A file's own verdict, FR's per-measurement P/F, by the gates of the table
-// row the file lands in.  A file whose fibre has its other direction too
-// (`paired`) sits on an A→B or B→A row of the two-direction table: a splice
-// at the single-direction gate, a connector at the one-direction connector
-// gate, a reflection at the report's mid-span reflectance rule.  A file with
-// no partner sits in the one-direction table, which grades every loss at the
-// gate the report grades that view by (activeGateDb: the Uni report's, the
-// loss box's override ...).  Neither judges the launch level or the far end
-// here, and the report's own flags (a break, an end connector) need the
-// report, so a file's row can still carry one this does not.
-function fileFails(events, dir, paired) {
-  if (flagsOff()) return false;
-  if (!paired) {
-    return events.some(e => e.time_of_travel !== 0 && !e.is_end && clearsGate(e.splice_loss));
-  }
-  const own = Number(gInfo && (dir === 'a' ? gInfo.launch_a_km : gInfo.launch_b_km)) || 0;
-  const far = Number(gInfo && (dir === 'a' ? gInfo.launch_b_km : gInfo.launch_a_km)) || 0;
-  const end = events.find(e => e.is_end);
-  const eof = end ? end.dist_km - own - far : null;
-  return events.some(e => {
-    if (e.time_of_travel === 0 || e.is_end) return false;
-    if (clearsAt(e.splice_loss, gateFor(!!e.is_reflective, true))) return true;
-    return !!e.is_reflective && reflFails(e.reflection, e.dist_km - own, eof);
-  });
-}
 // What Select Same compares for one row, or null for a file not read yet.
-// `paired`: the files whose fibre makes a pair (pairedFileKeys), worked out
-// once per pass over the list rather than once per file.
-function fileTraits(key, paired) {
+// Its Pass/Fail is the event table's (tableFileFails): null, never matching,
+// for a file the table has not judged.
+function fileTraits(key) {
   const f = gFileFacts.get(key);
   if (!f) return null;
-  paired = paired || pairedFileKeys();
-  const [dir, fiber] = splitFileKey(key);
-  return { fiber, wl: f.wl, day: fileDay(f.acq), pf: fileFails(f.events, dir, paired.has(key)) };
-}
-// Every file whose fibre has both directions, drawn as opposite ones: the
-// files that sit on a two-direction table's A→B or B→A row.
-function pairedFileKeys() {
-  const out = new Set();
-  for (const r of fiberTable()) {
-    if (fiberPairNote(r, effDir).ok) fiberFileKeys(r).forEach(k => out.add(k));
-  }
-  return out;
+  const [, fiber] = splitFileKey(key);
+  return { fiber, wl: f.wl, day: fileDay(f.acq), pf: tableFileFails(key) };
 }
 // The rows that match `ref` on every one of `kinds` ('pf', 'fiber', 'wl',
 // 'day').  A row not read, or with nothing recorded for a property, never
@@ -4138,8 +4127,7 @@ function fileSameKeys(keys, traits, ref, kinds) {
 // Do the files agree on `p`?  Only the ones read so far can say; a file
 // still loading does not stop the item.
 function filesAgreeOn(keys, p) {
-  const paired = pairedFileKeys();
-  const seen = new Set(keys.map(k => fileTraits(k, paired)).filter(Boolean).map(t => t[p]));
+  const seen = new Set(keys.map(k => fileTraits(k)).filter(Boolean).map(t => t[p]));
   return seen.size <= 1 && !seen.has(null);
 }
 
@@ -4192,10 +4180,9 @@ async function selectSame(kinds, refKey) {
     // read at a time, so the columns and this never ask for the list twice.
     if (gFactsLoading) await gFactsLoading;
     await ensureFileFacts(true);
-    const paired = pairedFileKeys();
-    const ref = fileTraits(refKey, paired);
+    const ref = fileTraits(refKey);
     if (!ref) { setReadout(`could not read ${fileNameOf(refKey)}`); return; }
-    want = fileSameKeys(keys, k => fileTraits(k, paired), ref, kinds);
+    want = fileSameKeys(keys, fileTraits, ref, kinds);
   }
   if (!want.length) return;
   gFileAnchor = gFileFocus = refKey;
@@ -6180,11 +6167,13 @@ function renderEventTable() {
   gTableExport = null;
   gDrawerMarks = [];                 // the drawer waits for the mode's table
   suiteTableReset();
+  gTablePass++;                      // the verdicts FILES shows start again
 
   syncGateUI();   // the gate follows what is on screen (see oneDirOnly)
   const visible = gTraces.filter(t => t.visible);
   if (visible.length === 0) {
     hint.textContent = gLoadingKeys.size ? 'loading traces…' : 'add a trace to see events';
+    if (gTableFails.size) { gTableFails = new Map(); filesPfChanged(); }
     return;
   }
 
@@ -6376,6 +6365,7 @@ function paintFecGrid(traces, res, host, hint) {
   const fecHi = x => (x && !flagsOff()) ? 'fr-hi' : '';
   // a loss cell: blank when the cell filter drops it or it is a hidden gainer
   const lossTxt = (g, v) => (!kept(g, 'loss') || hideG(v)) ? '' : f3(v);
+  rows.forEach(({ t, g }) => { if (g && g.found) noteTableVerdict(t, g.fail_loss || g.fail_refl); });
   const body = rows.map(({ t, side, g }, ti) => {
     const dot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;`
       + `background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>`;
@@ -7254,6 +7244,7 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   // difference between reading the grid and scrolling it.  Arithmetic only, no
   // DOM, so it costs nothing next to the render it saves.
   const rowFails = traces.map((_t, ti) => cols.some(c => overGate(evLoss(c.ev[ti]))));
+  traces.forEach((t, ti) => noteTableVerdict(t, rowFails[ti]));
   const rowKept = traces.map((_t, ti) => cols.some(c => keeps(evLoss(c.ev[ti]))));
   const shown = traces.map((_t, i) => i)
     .filter(i => (!gFlaggedOnly || rowFails[i]) && (!collapse || rowKept[i]));
@@ -7940,16 +7931,17 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
-    const fail = legFails(fi, which);
     const label = which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average';
     const cells = [
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
       + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${p.fiber}</td>`,
-      // Every row carries its own verdict, as FR's do (driven 2026-09-25).
-      `<td class="${pfClass(fail)}" title="${which === 'avg'
-        ? `A+B average at the report's gates (${gateLabel()})`
-        : "this direction at the report's single-direction, connector and reflectance gates"}`
-      + `, this is OUR verdict, not FastReporter's">${pfMark(fail)}</td>`,
+      // One verdict per fibre, on its Average row, as FR shows a
+      // bidirectional measurement (Robert 2026-10-02, from FR): the
+      // direction rows' P/F is blank, their failing cells still red.
+      which === 'avg'
+        ? `<td class="${pfClass(rowFails[fi])}" title="the fiber at the report's gates (${gateLabel()})`
+          + `, this is OUR verdict, not FastReporter's">${pfMark(rowFails[fi])}</td>`
+        : '<td></td>',
       `<td>${t.data.wavelength_nm || '---'}</td>`,
       `<td>${label}</td>`,
     ];
@@ -8544,6 +8536,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   };
   const legFails = (fi, which) => cols.some(c => c.ev[fi] && cellFails(c, c.ev[fi], which));
   const rowFails = have.map((_p, fi) => LEGS.some(w => legFails(fi, w)));
+  if (oneDir) have.forEach((p, fi) => noteTableVerdict(legOf(p), rowFails[fi]));
   // What the cell filters keep of a loss (the boss, 2026-09-29: "we only
   // need to see if it's failing Bidi Average"): the Average row's verdict
   // alone, never a direction at the single-direction gate.  A direction
@@ -8675,15 +8668,19 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
-    const fail = legFails(fi, which);
     const label = which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average';
+    // An A+B table carries one verdict per fibre, on its Average row (FR's
+    // bidirectional layout, Robert 2026-10-02); a one-direction table's rows
+    // carry their own.
+    const fail = rowFails[fi];
     const cells = [
       `<td class="fr-rowlab"><span style="display:inline-block;width:8px;height:8px;`
       + `border-radius:50%;background:${t.color};box-shadow:0 0 0 1px rgba(0,0,0,.35);margin-right:6px"></span>F${p.fiber}</td>`,
-      `<td class="${pfClass(fail)}" title="${which === 'avg'
-        ? `the Splice Report's flags, and the A+B value at its gates (${gateLabel()})`
-        : "the Splice Report's flags, and this direction at its single-direction gates"}`
-      + `">${pfMark(fail)}</td>`,
+      (!oneDir && which !== 'avg') ? '<td></td>'
+        : `<td class="${pfClass(fail)}" title="${which === 'avg'
+            ? `the Splice Report's flags, and the fiber at its gates (${gateLabel()})`
+            : "the Splice Report's flags, and this direction at its gates"}`
+          + `">${pfMark(fail)}</td>`,
       `<td>${t.data.wavelength_nm || '---'}</td>`,
       `<td>${label}</td>`,
     ];

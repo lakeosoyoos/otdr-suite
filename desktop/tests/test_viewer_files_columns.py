@@ -6,7 +6,9 @@ reverse, with no unsorted state; the selection is kept through a sort.
 Robert: "build as you suggest".
 
 The Viewer's list gains P/F, Fiber, λ (nm) and Date beside File Name and
-Dir.  P/F, λ and Date need every file's header and events, so they are off
+Dir.  P/F is the event table's verdict (Robert 2026-10-02: "P/F should
+always [be the] event table"), blank for a file not added.  λ and Date need
+every file's header, so they are off
 until asked for and then read in the background, once (a file that cannot
 be read is not asked for again, so a render cannot loop on it).  Ties keep
 the Viewer's own order, A then B by fiber, where FR scrambles them; a file
@@ -55,7 +57,8 @@ var out = {};
 // Rows as the panel builds them: `order` is the Viewer's own (A then B, by fiber).
 function row(order, name, eff, fiber, pf, wl, acq) {
   return { order: order, name: name, eff: eff, fiber: fiber, acq: acq,
-           tr: pf === undefined ? null : { pf: pf, wl: wl } };
+           pf: pf === undefined ? null : pf,
+           tr: pf === undefined ? null : { wl: wl } };
 }
 var R = [
   row(0, 'ZA_0001.sor', 'a', 1,  false, 1550, 300),
@@ -102,7 +105,7 @@ def test_a_header_sorts_up_then_down(rules):
 
 @needs_jsc
 def test_a_file_not_read_yet_sorts_last_both_ways(rules):
-    assert rules['pf_asc'] == [0, 2, 5, 1, 3, 4]         # pass, fail, unread
+    assert rules['pf_asc'] == [0, 2, 5, 1, 3, 4]         # pass, fail, not judged
     assert rules['pf_desc'] == [1, 3, 0, 2, 5, 4]
     assert rules['wl_desc'] == [1, 0, 2, 3, 5, 4]
     assert rules['date_asc'] == [5, 3, 0, 2, 1, 4]        # by when it was shot
@@ -113,7 +116,7 @@ def test_the_columns_and_their_defaults():
     assert [c[0] for c in cols] == ['pf', 'name', 'dir', 'fiber', 'wl', 'date']
     assert [c[1] for c in cols] == ['P/F', 'File Name', 'Dir.', 'Fiber', 'λ (nm)', 'Date']
     assert "const FILE_COLS_DEFAULT = ['dir'];" in SRC     # File Name + Dir., as before
-    assert "const FACT_COLS = ['pf', 'wl', 'date'];" in SRC
+    assert "const FACT_COLS = ['wl', 'date'];" in SRC      # P/F reads the table, not the files
     assert 'grid-template-columns: var(--files-grid, 18px 1fr 40px);' in SRC
     shown = _body('shownFileCols')
     assert "c === 'name' || gFileCols.has(c)" in shown       # File Name always shows
@@ -139,8 +142,8 @@ def test_the_view_is_remembered():
 def test_the_panel_sorts_its_rows_and_reads_details_only_when_shown():
     panel = _body('renderFilesPanel')
     assert 'if (gFileSort) rows.sort(fileRowCompare(gFileSort));' in panel
-    assert "const tr = wantFacts ? fileTraits(`${dir}-${f}`, paired) : null;" in panel
-    assert 'const paired = wantFacts ? pairedFileKeys() : null;' in panel   # once per render
+    assert "const tr = wantFacts ? fileTraits(`${dir}-${f}`) : null;" in panel
+    assert "const pf = tableFileFails(`${dir}-${f}`);" in panel        # the event table's
     assert 'if (wantFacts && rows.length) ensureFileFacts();' in panel
     assert 'renderFilesHeader(cols);' in panel
     need = _body('filesNeedFacts')
