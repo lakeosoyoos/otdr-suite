@@ -218,10 +218,11 @@ def test_viewer_flag_defaults_track_the_engine():
         return float(m.group(1))
 
     html = open(VIEWER_HTML, encoding='utf-8').read()
-    line = next(l for l in html.splitlines() if 'const gViewerSettings' in l)
-    assert f'lossDb: {const("UNI_BEND_THRESHOLD"):.3f}' in line, line
-    assert f'reflLo: {const("UNI_REFL_FLOOR_DB"):.1f}' in line, line
-    assert f'reflHi: {const("UNI_REFL_CEIL_DB"):.1f}' in line, line
+    assert f'uni_bend: {const("UNI_BEND_THRESHOLD"):.3f}' in html
+    # the Reflectance box starts on the report's mid-span floor
+    assert f'refl_floor: {const("MIDSPAN_REFL_WARN_DB"):.1f}' in html
+    assert 'refl_ceil' not in html                    # one number, no ceiling
+    assert f'id="set-refl" type="number" step="1" max="0" value="{const("MIDSPAN_REFL_WARN_DB"):.0f}"' in html
 
 
 def test_flagging_scope_is_documented_not_reimplemented():
@@ -321,7 +322,7 @@ def test_popout_viewer_links_back_to_its_report():
     the Uni or Splice Report page.  The toolbar now carries a Back button."""
     html = open(VIEWER_HTML, encoding='utf-8').read()
     assert 'id="btn-back"' in html and 'function renderBackButton(' in html
-    fn = html[html.index("getElementById('btn-back').addEventListener('click'"):][:1400]
+    fn = html[html.index("function goBackToReport()"):][:1400]
     assert "window.open('', 'otdr_hub')" in fn, 'must reuse the hub tab, not open a second hub'
     for nav in ("'uni'", "'sr'"):
         assert nav in fn

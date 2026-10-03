@@ -396,6 +396,7 @@
      2026-10-01).  The header wraps to a second line instead. */
   #event-panel-header { flex-wrap: wrap; row-gap: 4px; }
   #evt-settings input[type="number"] { width: 62px; font-size: 11px; padding: 1px 3px; }
+  #evt-settings input.overridden { border-color: #9c5a1e; color: #9c5a1e; font-weight: 600; }
   #evt-settings label { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
   .evt-scroll { overflow-y: auto; flex: 1; min-height: 0; background: #ffffff; }
   table.evt-head, table.evt-body { width: 100%; border-collapse: collapse; table-layout: fixed; }
@@ -515,6 +516,20 @@
   #sel-dlg .btns button { font-size: 11px; padding: 4px 12px; border-radius: 3px; border: 1px solid #c9d5e1; background: #fff; cursor: pointer; }
   #sel-dlg .btns button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
   #sel-dlg .btns button:disabled { opacity: .45; cursor: default; }
+
+  /* "← Back" with a loss / Reflectance box changed: the reminder. */
+  #back-dlg-bg { position: fixed; inset: 0; z-index: 50; background: rgba(20,40,70,.35); }
+  #back-dlg {
+    position: fixed; z-index: 51; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    background: #fff; border: 1px solid #c9d5e1; border-radius: 5px; width: 440px;
+    box-shadow: 0 8px 28px rgba(20,40,70,.28); padding: 12px 14px; font-size: 12px; color: var(--text);
+  }
+  #back-dlg h3 { margin: 0 0 6px; font-size: 13px; }
+  #back-dlg ul { margin: 4px 0 8px; padding-left: 18px; font-weight: 600; color: #9c5a1e; }
+  #back-dlg p { margin: 0 0 4px; }
+  #back-dlg .btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+  #back-dlg .btns button { font-size: 11px; padding: 4px 12px; border-radius: 3px; border: 1px solid #c9d5e1; background: #fff; cursor: pointer; }
+  #back-dlg .btns button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 
   /* Report: the event table, then a page per fiber, as a PDF or an Excel workbook. */
   #report-dlg-bg { position: fixed; inset: 0; z-index: 50; background: rgba(20,40,70,.35); }
@@ -802,14 +817,17 @@
   html[data-theme="dark"] .file-row .file-pf.fpf-fail,
   html[data-theme="dark"] .fiber-row .fib-pair.bad { color: #f87171; }
   html[data-theme="dark"] #span-menu,
-  html[data-theme="dark"] #edit-dlg, html[data-theme="dark"] #report-dlg, html[data-theme="dark"] #rn-dlg {
+  html[data-theme="dark"] #edit-dlg, html[data-theme="dark"] #report-dlg, html[data-theme="dark"] #rn-dlg,
+  html[data-theme="dark"] #back-dlg {
     background: #1c1917; border-color: #44403c; color: var(--text); }
   html[data-theme="dark"] #span-menu button:hover { background: #292524; }
   html[data-theme="dark"] #edit-dlg .btns button, html[data-theme="dark"] #report-dlg .row button,
-  html[data-theme="dark"] #report-dlg .btns button, html[data-theme="dark"] #rn-dlg .btns button {
+  html[data-theme="dark"] #report-dlg .btns button, html[data-theme="dark"] #rn-dlg .btns button,
+  html[data-theme="dark"] #back-dlg .btns button:not(.primary) {
     background: #292524; border-color: #44403c; color: var(--text); }
   html[data-theme="dark"] #edit-dlg-bg, html[data-theme="dark"] #report-dlg-bg,
-  html[data-theme="dark"] #rn-dlg-bg { background: rgba(0,0,0,.6); }
+  html[data-theme="dark"] #rn-dlg-bg, html[data-theme="dark"] #back-dlg-bg { background: rgba(0,0,0,.6); }
+  html[data-theme="dark"] #back-dlg ul { color: #fbbf24; }
 </style>
 </head>
 <body>
@@ -918,12 +936,10 @@
       <span class="hint" id="event-hint">add a trace to see events</span>
       <span id="evt-settings">
         <label title="An event at or above this loss is flagged. Seeded from the report that opened this Viewer, so the two agree; edit to explore.">
-          <span id="loss-op">Loss &ge;</span> <input id="set-loss" type="number" step="0.005" min="0" value="0.160"> dB</label>
+          <span id="loss-op">Bidirectional Loss &ge;</span> <input id="set-loss" type="number" step="0.005" min="0" value="0.160"> dB</label>
         <span id="gate-src" class="gate-src" title="Which report's threshold this Viewer is judging by."></span>
-        <label title="Reflectance band low end (engine UNI_REFL_FLOOR_DB). 0 turns the reflectance rule off.">
-          Refl Band <input id="set-refl-lo" type="number" step="1" max="0" value="-80"></label>
-        <label title="Reflectance band high end (engine UNI_REFL_CEIL_DB). 0 = no ceiling.">
-          &hellip; <input id="set-refl-hi" type="number" step="1" max="0" value="0"> dB</label>
+        <label title="A mid-span reflection at or above this number is flagged: with -80, a -75 dB reflection is flagged and a -85 dB one is not. Seeded from the report's mid-span reflectance rule; edit to explore. 0 turns the reflectance rule off; empty follows the report.">
+          <span id="refl-op">Reflectance &ge;</span> <input id="set-refl" type="number" step="1" max="0" value="-80"> dB</label>
       </span>
     </div>
     <div id="event-tbody-wrap"></div>
@@ -994,7 +1010,7 @@ let gFrameWarn = '';               // the B folder is a short shot (see frameWar
 // column follows the engine's threshold rather than the browse filter below.
 let gThresholds = { reburn: 0.160, uni_bend: 0.250, single_dir: 0.200,
                     connector: 0.500, refl: -50.0, refl_floor: -80.0,
-                    refl_ceil: 0.0, dead_km: 3.0, dead_frac: 0.25,
+                    dead_km: 3.0, dead_frac: 0.25,
                     connector_uni: 0.649,
                     // Warning levels (0 = none): the Splice Report's OTDR
                     // Settings Warning column, from the report's manifest
@@ -1017,6 +1033,10 @@ let gAnalysisMode = 'suite';
 const PRODUCT_NAME = document.documentElement.dataset.product || 'OTDR Suite';
 let gDropInFlight = false;          // a drop is going up (see pollAnalysisMode)
 let gGateOverride = null;          // set when the tech types their own
+// The Reflectance box's typed number (dB), or null to follow the report's
+// mid-span reflectance rule.  Like the loss box: typed, anything at or above
+// it is flagged; the report's number typed back follows the report again.
+let gReflOverride = null;
 let gTraces = [];                  // [{key, fiber, dir, color, visible, data}]
 // Files the tech took out of the FILES list ("Remove from viewer").  The list
 // is the selection, so a removed file is neither shown nor loadable until the
@@ -2466,17 +2486,9 @@ async function loadInfo() {
 // after /api/list and again whenever the source report changes.
 function syncGateUI() {
   if (fecTable()) { syncFecGateUI(); return; }
-  // The FEC table's gates leave the boxes when a span comes in after it
-  const hi = document.getElementById('set-refl-hi');
-  if (hi && hi.disabled) {
-    hi.disabled = false;
-    hi.title = '';
-    hi.value = gViewerSettings.reflHi;
-    const lo = document.getElementById('set-refl-lo');
-    if (lo) { lo.value = gViewerSettings.reflLo; lo.step = '1'; }
-    const op = document.getElementById('loss-op');
-    if (op) op.textContent = 'Loss ≥';
-  }
+  // The FEC table's gates leave the boxes when a span comes in after it:
+  // the labels, the Reflectance box's number, step and title are all put
+  // back below.
   const el = document.getElementById('set-loss');
   // Empty, not 1e9, when the report graded no loss at all — typing a number
   // still works and is picked up as an override, the usual escape hatch.
@@ -2495,6 +2507,63 @@ function syncGateUI() {
     lbl.classList.toggle('overridden', gGateOverride != null);
   }
   if (el) el.title = unusual ? gateLabel() : `following ${gateLabel()}`;
+  // The box is the gate on the Average of a two-direction load (Robert
+  // 2026-10-01: "Bidirectional Loss"); with one direction loaded it grades
+  // that direction's readings, and says so.
+  // Also puts the label back after FEC mode wrote its own "Loss >" there.
+  const op = document.getElementById('loss-op');
+  if (op) op.textContent = lossBoxName() + ' ≥';
+  // The Reflectance box shows the number the tables judge by: the report's,
+  // until the tech types their own.
+  const rOp = document.getElementById('refl-op');
+  if (rOp) rOp.textContent = 'Reflectance ≥';
+  const box = document.getElementById('set-refl');
+  if (box) {
+    box.value = String(reflFloor());
+    box.step = '1';
+    box.classList.toggle('overridden', gReflOverride != null);
+    box.title = reflBandLabel();
+  }
+  postViewerChanged();
+}
+// What the tech typed in the loss / Reflectance boxes, beside the report's own
+// values, or null when both follow the report.  The hub reads it (through
+// the server) to remind the tech on the way to a report, and "← Back" here
+// says it too (Robert 2026-10-01): the boxes change what the Viewer flags,
+// never what the report flags.
+function lossBoxName() {
+  return (gSourceReport === 'uni' || oneDirOnly()) ? 'Unidirectional Loss' : 'Bidirectional Loss';
+}
+function viewerChanges() {
+  if (flagsOff() || (gGateOverride == null && gReflOverride == null)) return null;
+  const rep = reportGateDb();
+  return { loss_name: lossBoxName(), loss: gGateOverride,
+           loss_report: rep < GATE_OFF ? rep : null,
+           refl: gReflOverride, refl_report: Number(gThresholds.refl_floor) };
+}
+// The changes as lines for a reader: "Bidirectional Loss: 0.150 dB (the
+// report uses 0.160 dB)".
+function viewerChangeLines(c) {
+  if (!c) return [];
+  const refl = v => !(v < 0) ? 'off' : `${v} dB`;
+  const out = [];
+  if (c.loss != null) {
+    out.push(`${c.loss_name}: ${c.loss.toFixed(3)} dB`
+      + (c.loss_report != null ? ` (the report uses ${c.loss_report.toFixed(3)} dB)` : ''));
+  }
+  if (c.refl != null) {
+    out.push(`Reflectance: ${refl(c.refl)}`
+      + (c.refl_report != null ? ` (the report uses ${refl(c.refl_report)})` : ''));
+  }
+  return out;
+}
+let gChangedSent = '';
+function postViewerChanged() {
+  const body = JSON.stringify({ changed: viewerChanges() });
+  if (body === gChangedSent) return;
+  gChangedSent = body;
+  fetch('/api/viewer_changed', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+    .catch(() => { gChangedSent = ''; });
 }
 
 // ─── Back to the report ───────────────────────────────────────────────
@@ -2510,6 +2579,37 @@ function renderBackButton() {
 }
 document.getElementById('btn-back').addEventListener('click', () => {
   if (!gInfo || !gInfo.hub_url) return;
+  const c = viewerChanges();
+  if (c) showBackReminder(c, goBackToReport);
+  else goBackToReport();
+});
+// "← Back" with a box changed: say what was changed, and that the report
+// did not use it, before going (Robert 2026-10-01).
+function showBackReminder(c, go) {
+  for (const id of ['back-dlg', 'back-dlg-bg']) {
+    const el = document.getElementById(id);
+    if (el) el.remove();
+  }
+  const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const to = gSourceReport === 'uni' ? 'Unidirectional report'
+           : gSourceReport === 'sr' ? 'Splice Report' : 'report';
+  const bg = document.createElement('div'); bg.id = 'back-dlg-bg';
+  const d = document.createElement('div'); d.id = 'back-dlg';
+  d.setAttribute('role', 'dialog');
+  d.innerHTML = `<h3>You changed the Viewer's settings</h3>`
+    + `<ul>${viewerChangeLines(c).map(l => `<li>${esc(l)}</li>`).join('')}</ul>`
+    + `<p>These change only what the Viewer flags. The ${to} still flags at its `
+    + `OTDR Settings. To flag the same way there, change the OTDR Settings and `
+    + `run the report again.</p>`
+    + `<div class="btns"><button id="back-dlg-stay">Stay in Viewer</button>`
+    + `<button id="back-dlg-go" class="primary">Go back</button></div>`;
+  document.body.append(bg, d);
+  const close = () => { bg.remove(); d.remove(); };
+  document.getElementById('back-dlg-stay').onclick = close;
+  document.getElementById('back-dlg-go').onclick = () => { close(); go(); };
+  document.getElementById('back-dlg-go').focus();
+}
+function goBackToReport() {
   const nav = gSourceReport === 'uni' ? 'uni' : gSourceReport === 'sr' ? 'sr' : '';
   const q = new URLSearchParams();
   if (nav) {
@@ -2532,7 +2632,7 @@ document.getElementById('btn-back').addEventListener('click', () => {
   try { blank = w.location.href === 'about:blank'; } catch (e) { blank = false; }
   if (blank) w.location.href = url;
   w.focus();
-});
+}
 
 // The readout line shows failures (bold red) and warnings (bold orange: the
 // FR frame warning, the B-mirrored note) and nothing else; plain notes such
@@ -6002,7 +6102,7 @@ function goToTrace(t) {
 
 // ─── Event table ──────────────────────────────────────────────────────
 // Viewer flag thresholds.  These MIRROR the unidirectional engine's defaults
-// (UNI_BEND_THRESHOLD, UNI_REFL_FLOOR_DB, UNI_REFL_CEIL_DB) so the panel
+// (UNI_BEND_THRESHOLD, UNI_REFL_FLOOR_DB) so the panel
 // highlights what a uni report would flag.
 //
 // SCOPE, stated plainly: these are the per-event rules, which is everything
@@ -6013,7 +6113,6 @@ function goToTrace(t) {
 // splice"; the report remains the authority on classification.  The rules are
 // deliberately NOT reimplemented beyond that, because a second copy of the
 // engine's logic in JavaScript would drift from it.
-const gViewerSettings = { lossDb: 0.250, reflLo: -80.0, reflHi: 0.0 };
 
 // The hub's Settings box did not draw, the threshold table or the Connector
 // & Launch knobs (Robert 2026-09-28: "just not flag"): the Viewer flags
@@ -6145,13 +6244,29 @@ function clearsAt(loss, gate) {
 function reflFails(refl, posKm, eofKm) {
   if (flagsOff()) return false;
   const T = gThresholds;
-  if (refl == null || isNaN(refl) || refl >= 0 || T.refl_floor == null) return false;
   if (!(eofKm > 0) || posKm == null) return false;
   const dead = Math.min(T.dead_km, T.dead_frac * eofKm);
   if (posKm < dead || posKm > eofKm - dead || eofKm - posKm < 1.0) return false;
-  if (refl < T.refl_floor) return false;
-  if (T.refl_ceil < 0 && refl > T.refl_ceil) return false;
-  return true;
+  return reflInBand(refl);
+}
+// The number a reflectance is judged against: the Reflectance box's when
+// the tech typed one, else the report's (MIDSPAN_REFL_WARN_DB).
+function reflFloor() {
+  return gReflOverride != null ? gReflOverride : Number(gThresholds.refl_floor);
+}
+// At or above the number, no ceiling (Robert 2026-10-02: one box, "anything
+// greater than that number gets flagged").  0 is the report's "off":
+// nothing is flagged.
+function reflInBand(refl) {
+  const lo = reflFloor();
+  if (refl == null || isNaN(refl) || refl >= 0 || !(lo < 0)) return false;
+  return refl >= lo;
+}
+function reflBandLabel() {
+  const lo = reflFloor();
+  const src = gReflOverride != null ? 'typed in the Viewer' : 'the report\'s';
+  if (!(lo < 0)) return `reflectance rule off (${src})`;
+  return `flags at or above ${lo} dB (${src})`;
 }
 function clearsGate(loss) {
   if (loss == null || isNaN(loss)) return false;
@@ -6246,43 +6361,82 @@ function flagEvent(e, t) {
     why.push(`loss ${loss.toFixed(3)} \u2265 ${activeGateDb().toFixed(3)} dB`);
   }
   const refl = e.reflection;
-  if (gViewerSettings.reflLo < 0 && refl != null && refl < 0 &&
-      refl >= gViewerSettings.reflLo &&
-      (gViewerSettings.reflHi >= 0 || refl <= gViewerSettings.reflHi)) {
+  if (reflInBand(refl)) {
     why.push(`reflectance ${refl.toFixed(1)} dB in band`);
   }
   return { flag: why.length > 0, why: why.join('; ') };
 }
 
-function wireEventSettings() {
-  const bind = (id, key, onChange) => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.addEventListener('change', () => {
-      const v = parseFloat(el.value);
-      if (Number.isFinite(v)) { gViewerSettings[key] = v; renderEventTable(); }
-    });
-  };
-  const lossEl = document.getElementById('set-loss');
-  if (lossEl) lossEl.addEventListener('change', () => {
-    const v = parseFloat(lossEl.value);
-    if (!Number.isFinite(v)) return;
-    if (fecTable()) { setFecGateOverride('loss', v); return; }
-    // Back to following the report when the tech types its value back in.
-    gGateOverride = (Math.abs(v - reportGateDb()) < 1e-9) ? null : v;
-    syncGateUI();
-    renderEventTable();
+// The boxes repaint the event panel as the tech types (a short pause after
+// the last key, so "0.25" is not painted at "0" and "0.2" on the way), and
+// at once on Enter or leaving the box.  Only that final 'change' puts back
+// a value it refuses; mid-typing ("-", "0.") it just waits.
+function liveBox(el, apply) {
+  let timer = null;
+  el.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => apply(false), 400);
   });
-  // FEC mode comes and goes with the folders loaded (fecShots), so the
-  // Refl Band's low end asks at each change whose gate it is.
-  bind('set-refl-hi', 'reflHi');
-  const reflEl = document.getElementById('set-refl-lo');
-  if (reflEl) reflEl.addEventListener('change', () => {
-    const v = parseFloat(reflEl.value);
-    if (!Number.isFinite(v)) return;
-    if (fecTable()) { setFecGateOverride('refl', v); return; }
-    gViewerSettings.reflLo = v;
+  el.addEventListener('change', () => { clearTimeout(timer); apply(true); });
+}
+function wireEventSettings() {
+  // FEC mode comes and goes with the folders loaded (fecShots), so each box
+  // asks at each change whose gate it is: under the FEC table the two boxes
+  // are the customer profile's FEC gates, set on Enter / leaving the box.
+  const lossEl = document.getElementById('set-loss');
+  if (lossEl) liveBox(lossEl, (final) => {
+    const v = parseFloat(lossEl.value);
+    if (fecTable()) {
+      if (final && Number.isFinite(v)) setFecGateOverride('loss', v);
+      return;
+    }
+    let next;
+    if (lossEl.value.trim() === '') {
+      // An emptied box follows the report again, once the tech is done.
+      if (!final) return;
+      next = null;
+    } else if (!Number.isFinite(v) || v < 0) {
+      // A loss gate is 0 or more: a negative one would fail every event.
+      if (final) lossEl.value = gateIsOff() ? '' : activeGateDb().toFixed(3);
+      return;
+    } else {
+      // Back to following the report when the tech types its value back in.
+      next = (Math.abs(v - reportGateDb()) < 1e-9) ? null : v;
+    }
+    if (next === gGateOverride && !final) return;
+    gGateOverride = next;
+    // while typing, the box keeps what was typed ("0.16" is not made "0.160")
+    const typed = lossEl.value;
+    syncGateUI();
+    if (!final) lossEl.value = typed;
     renderEventTable();
+    renderFilesPanel();
+  });
+  const reflEl = document.getElementById('set-refl');
+  if (reflEl) liveBox(reflEl, (final) => {
+    if (fecTable()) {
+      const v = parseFloat(reflEl.value);
+      if (final && Number.isFinite(v)) setFecGateOverride('refl', v);
+      return;
+    }
+    const T = gThresholds;
+    // An emptied box follows the report again, once the tech is done.
+    if (reflEl.value.trim() === '' && !final) return;
+    const v = reflEl.value.trim() === '' ? Number(T.refl_floor) : parseFloat(reflEl.value);
+    // Reflectance is 0 dB or below; anything else is put back.
+    if (!Number.isFinite(v) || v > 0) {
+      if (final) syncGateUI();
+      return;
+    }
+    const next = Math.abs(v - Number(T.refl_floor)) < 1e-9 ? null : v;
+    if (next === gReflOverride && !final) return;
+    gReflOverride = next;
+    // while typing, leave the box as typed
+    if (final) syncGateUI();
+    else reflEl.classList.toggle('overridden', next != null);
+    postViewerChanged();
+    renderEventTable();
+    renderFilesPanel();
   });
 }
 
@@ -6384,7 +6538,7 @@ function renderEventTable() {
 let gFecSeq = 0;
 // The FEC gates on the Viewer's own boxes (Robert 2026-10-02, "show FEC
 // gates in the boxes"): Loss shows the FEC loss gate (> when strict, as the
-// profile decides), the Refl Band's low end the FEC reflectance gate, and
+// profile decides), the Reflectance box the FEC reflectance gate, and
 // its high end is 0 and fixed, since FEC fails any reflectance above the
 // gate.  Typing in a box overrides that gate for this window only, as the
 // Viewer's Loss box overrides the report's; the customer profile is never
@@ -6413,17 +6567,16 @@ function fecGateLabel() {
 function syncFecGateUI() {
   const g = fecGatesShown();
   const loss = document.getElementById('set-loss');
-  const lo = document.getElementById('set-refl-lo');
-  const hi = document.getElementById('set-refl-hi');
+  const lo = document.getElementById('set-refl');
   const op = document.getElementById('loss-op');
+  const rOp = document.getElementById('refl-op');
   if (loss) loss.value = g ? Number(g.FEC_LOSS_GATE).toFixed(3) : '';
   if (lo) lo.value = g ? Number(g.FEC_REFL_GATE).toFixed(1) : '';
   if (op && g) op.textContent = g.FEC_LOSS_STRICT ? 'Loss >' : 'Loss ≥';
-  if (lo) lo.step = '0.1';
-  if (hi) {
-    hi.value = '0';
-    hi.disabled = true;
-    hi.title = 'FEC fails any reflectance above the low end; there is no high end';
+  if (rOp) rOp.textContent = 'Reflectance >';
+  if (lo) {
+    lo.step = '0.1';
+    lo.title = 'FEC fails any reflectance above this number';
   }
   if (loss) loss.title = `${fecGateLabel()}. Type to override for this window; the profile is not changed.`;
   const lbl = document.getElementById('gate-src');
@@ -7341,10 +7494,24 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   // numbers keep their full-table numbering so a column is findable.
   // "Show warning cells only" collapses the same way around the yellow cells.
   const warnsGate = v => !overGate(v) && clearsAt(v, warnGate);
+  // Reflectance is judged here only once the tech types a Reflectance number (FR's
+  // own one-direction table has no reflectance verdict): a reflective
+  // event in that band, in the report's mid-span window, as fileFails
+  // frames it (past this direction's launch reel, short of the far one).
+  const reflFrame = traces.map(t => {
+    const own = Number(gInfo && (t.dir === 'a' ? gInfo.launch_a_km : gInfo.launch_b_km)) || 0;
+    const far = Number(gInfo && (t.dir === 'a' ? gInfo.launch_b_km : gInfo.launch_a_km)) || 0;
+    const end = (t.data.events || []).find(e => e.is_end);
+    return { own, eof: end ? end.dist_km - own - far : null };
+  });
+  const reflBad = (e, ti) => gReflOverride != null && !!e && !!e.is_reflective && !e.is_end
+    && e.time_of_travel !== 0
+    && reflFails(e.reflection, e.dist_km - reflFrame[ti].own, reflFrame[ti].eof);
   const keeps = v => (gFailCellsOnly && overGate(v)) || (gWarnCellsOnly && warnsGate(v));
+  const keepsAt = (e, ti) => keeps(evLoss(e)) || (gFailCellsOnly && reflBad(e, ti));
   const collapse = cellFilterOn();
   const keepCol = cols.map(c => !collapse
-    || traces.some((_t, ti) => keeps(evLoss(c.ev[ti]))));
+    || traces.some((_t, ti) => keepsAt(c.ev[ti], ti)));
   const showSec = gShowSections && !collapse;
   // The drawer marks this table too, in either mode: a tick on each event a
   // column holds and a tag with its loss, at the same verdicts as the cells
@@ -7445,8 +7612,8 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   // the P/F column, and for "flagged rows", which at a whole cable is the
   // difference between reading the grid and scrolling it.  Arithmetic only, no
   // DOM, so it costs nothing next to the render it saves.
-  const rowFails = traces.map((_t, ti) => cols.some(c => overGate(evLoss(c.ev[ti]))));
-  const rowKept = traces.map((_t, ti) => cols.some(c => keeps(evLoss(c.ev[ti]))));
+  const rowFails = traces.map((_t, ti) => cols.some(c => overGate(evLoss(c.ev[ti])) || reflBad(c.ev[ti], ti)));
+  const rowKept = traces.map((_t, ti) => cols.some(c => keepsAt(c.ev[ti], ti)));
   const shown = traces.map((_t, i) => i)
     .filter(i => (!gFlaggedOnly || rowFails[i]) && (!collapse || rowKept[i]));
 
@@ -7487,16 +7654,19 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
     cols.forEach((c, i) => {
       if (!keepCol[i]) return;
       const e = c.ev[ti];
+      const rBad = reflBad(e, ti);
+      const reflTd = rBad
+        ? `<td class="fr-hi">${gFailCellsOnly ? fmtR(e.reflection) : cellText(fmtR(e.reflection))}</td>`
+        : `<td>${cellText(fmtR(e ? e.reflection : null))}</td>`;
       // `data-km` is the event's OWN raw km, not the displayed one: a declared
       // span is stored in the direction's own frame, which is the only frame
       // that survives the mirror being re-derived.
       if (gainerHidden(evLossRaw(e))) {       // a hidden gainer: blank, unjudged
-        cells.push(`<td data-col="${i}" data-km="${e.dist_km}"></td>`
-                 + `<td>${cellText(fmtR(e.reflection))}</td>`);
+        cells.push(`<td data-col="${i}" data-km="${e.dist_km}"></td>` + reflTd);
       } else
       cells.push(lossCell(evLoss(e), e && e.is_end,
                           e ? ` data-col="${i}" data-km="${e.dist_km}"` : '')
-               + `<td>${cellText(fmtR(e ? e.reflection : null))}</td>`);
+               + reflTd);
       if (showSec && i < cols.length - 1) {
         const s = section(ti, i);
         cells.push(`<td class="fr-sec">${cellText(s ? fmtK(s.len) : '---')}</td>`
@@ -7985,6 +8155,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   const eofOf = new Map();
   cols.forEach(c => c.ev.forEach((x, fi) => {
     if (!x) return;
+    x.ti = fi;                             // legReflFails reads eofOf by it
     for (const w of ['a', 'b']) {
       const L = x.row[w];
       if (L && L.pos_m != null) {
@@ -8019,6 +8190,10 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
   let endBad = endBadNow();
   const legReflFails = (x, which) => {
     if (endBad[which].has(x)) return true;
+    // Mid-span reflectance only once the tech types a Reflectance number: the FR-mode
+    // report has no mid-span reflectance rule, so the default table judges
+    // the two ends alone, as it always has.
+    if (gReflOverride == null) return false;
     const leg = x.row[which];
     if (!legOk(leg) || !isRefl(x)) return false;
     // The report's frame: its events start at the panel, past this
@@ -8803,7 +8978,20 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // A stored reading; a leg the report measured itself is never judged.
   const legOk = leg => !!leg && !leg.grey && leg.loss != null;
   const LEGS = oneDir ? [oneDir] : ['a', 'b', 'avg'];
-  const oneGate = oneDir && res.gate_db != null ? Number(res.gate_db) : null;
+  // The loss box's typed gate replaces the report's on a one-direction
+  // table, as it does on the Average of a two-direction one.
+  const oneGate = !oneDir ? null : flagsOff() ? Infinity
+    : gGateOverride != null ? gGateOverride
+    : res.gate_db != null ? Number(res.gate_db) : null;
+  // A cell whose report verdict is a loss over the gate and nothing else:
+  // the Splice Report's plain two-direction reading ('bidir'), the Uni
+  // report's splice and off-splice readings.  A typed loss gate judges these
+  // alone, up or down; a break, the Splice Report's bend (its wavelength
+  // rule), a connector, a reflective event or damage keep the report's flag.
+  const LOSS_ONLY = oneDir ? new Set(['splice', 'bend', 'passing'])
+                           : new Set(['bidir', 'passing']);
+  const typedGate = (c, x) => gGateOverride != null && !c.isEnd && !x.reflective
+    && !x.is_break && LOSS_ONLY.has(x.category);
 
   // ── Verdicts ──
   // The report's flag first.  A loss is also judged at the report's gates,
@@ -8811,19 +8999,33 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // single-direction gate.  The two ends take the report's verdict only.
   const lossFails = (c, x, which) => {
     if (which === 'avg') {
+      if (typedGate(c, x)) return clearsAt(x.loss, gateFor(false, false));
       return !!x.flag || (!c.isEnd && clearsAt(x.loss, gateFor(!!x.reflective, false)));
     }
     const leg = x[which];
     if (!leg || gainerHidden(leg.loss)) return false;
     if (oneDir) {
+      if (typedGate(c, x)) return legOk(leg) && clearsAt(leg.loss, oneGate);
       return !!leg.flag || (!c.isEnd && !x.reflective && oneGate != null
                             && legOk(leg) && clearsAt(leg.loss, oneGate));
     }
     return !!leg.flag
         || (!c.isEnd && legOk(leg) && clearsAt(leg.loss, gateFor(!!x.reflective, true)));
   };
-  const reflFlagged = (x, which) => which !== 'avg' && !!(x[which] && x[which].flag_refl);
-  const cellFails = (c, x, which) => lossFails(c, x, which) || reflFlagged(x, which);
+  // Reflectance: the report's verdict, until the tech types a Reflectance number.
+  // Then every reading off the two ends is judged by that band with the
+  // report's mid-span window, in the reading's own direction frame; the two
+  // ends keep the report's end-connector verdict.
+  const spanKm = Number(res.span_km) || Math.max(0, ...cols.map(c => c.km));
+  const reflFlagged = (c, x, which) => {
+    if (which === 'avg') return false;
+    const leg = x[which];
+    if (gReflOverride == null || c.isEnd) return !!(leg && leg.flag_refl);
+    if (!leg || leg.grey) return false;
+    const pos = (oneDir || which === 'a') ? c.km : spanKm - c.km;
+    return reflFails(leg.refl, pos, spanKm);
+  };
+  const cellFails = (c, x, which) => lossFails(c, x, which) || reflFlagged(c, x, which);
   const lossWarns = (c, x, which) => {
     if (oneDir || c.isEnd || lossFails(c, x, which)) return false;
     if (which === 'avg') return clearsAt(x.loss, warnFor(!!x.reflective, false));
@@ -8847,7 +9049,7 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     : oneDir ? gFailCellsOnly && lossFails(c, x, which)
     : gFailCellsOnly && (x.reflective ? lossFails(c, x, which)
                                       : !!(x[which] && x[which].flag && !gainerHidden(x[which].loss)));
-  const cellKept = (c, x, which) => lossKept(c, x, which) || (gFailCellsOnly && reflFlagged(x, which));
+  const cellKept = (c, x, which) => lossKept(c, x, which) || (gFailCellsOnly && reflFlagged(c, x, which));
   const legKept = (fi, which) => cols.some(c => c.ev[fi] && cellKept(c, c.ev[fi], which));
   // The cell filters collapse the table to what failed, as in the
   // FastReporter table: a fibre, a column or a direction row with nothing
@@ -8914,16 +9116,17 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
     // a flagged cell with no number prints the report's own words for it
     const txt = (v == null && flagged && x.label)
       ? esc(x.label.replace(/^\d+\s+/, '')) : fmt(v);
-    const said = flagged ? saidOf(c, x, which === 'avg' ? x : leg) : '';
+    // the report's words only on a cell still failing (a typed gate can clear it)
+    const said = flagged && fails ? saidOf(c, x, which === 'avg' ? x : leg) : '';
     return `<td${cls.length ? ` class="${cls.join(' ')}"` : ''}${attrs}`
          + `${said ? ` title="Splice Report: ${esc(said)}"` : ''}>${txt}</td>`;
   };
   const reflCell = (c, x, which) => {
     const leg = x[which];
-    const bad = reflFlagged(x, which);
+    const bad = reflFlagged(c, x, which);
     if (cellFilterOn() && !(gFailCellsOnly && bad)) return '<td></td>';
     const cls = [bad ? 'fr-hi' : '', leg && leg.grey ? 'fr-synth' : ''].filter(Boolean).join(' ');
-    const said = bad ? saidOf(c, x) : '';
+    const said = bad && leg && leg.flag_refl ? saidOf(c, x) : '';
     return `<td${cls ? ` class="${cls}"` : ''}`
          + `${said ? ` title="Splice Report: ${esc(said)}"` : ''}>${fmtR(leg ? leg.refl : null)}</td>`;
   };
@@ -10542,8 +10745,7 @@ async function reportPayload(opt, token, progress) {
       meta.push(['FEC reflectance gate', fg ? `fails > ${Number(fg.FEC_REFL_GATE).toFixed(1)} dB (${src('refl')})` : 'not loaded']);
     } else {
       meta.push(['Loss gate', gateLabel()]);
-      const lo = document.getElementById('set-refl-lo').value, hi = document.getElementById('set-refl-hi').value;
-      meta.push(['Reflectance band', `${lo} to ${hi} dB`]);
+      meta.push(['Reflectance gate', reflBandLabel()]);
     }
     const views = [gFlaggedOnly && 'flagged rows only', gFailCellsOnly && 'failing cells only',
                    gWarnCellsOnly && 'warning cells only', !gShowSections && 'sections off',

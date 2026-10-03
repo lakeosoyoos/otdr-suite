@@ -96,7 +96,8 @@ UNI = SRC.split("function renderFastReporterGrid(", 1)[1].split("\nfunction rend
 
 
 def test_uni_columns_nobody_fails_leave():
-    assert "traces.some((_t, ti) => keeps(evLoss(c.ev[ti])))" in UNI
+    assert "traces.some((_t, ti) => keepsAt(c.ev[ti], ti))" in UNI
+    assert "const keepsAt = (e, ti) => keeps(evLoss(e)) || (gFailCellsOnly && reflBad(e, ti));" in UNI
     assert "const keeps = v => (gFailCellsOnly && overGate(v))" in UNI
     # overGate is the report's gate (clearsGate) unless the table holds the
     # one-way fibres of a mixed load, judged at the single-direction gate
