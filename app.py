@@ -16345,8 +16345,8 @@ def _sp_ready(kp):
         getattr(st, note[0])(note[1])
     link = _sp_link()
     if not link:
-        st.caption('No SharePoint folder yet. Set it once in From SharePoint (the left '
-                   'panel in Quick Analysis, or the Traces tab in a project).')
+        st.caption('No SharePoint folder yet. Set it once in From SharePoint, on the '
+                   'Traces tab (in Quick Analysis or in a project).')
         return None
     sess = spl.load_session()
     if not sess or sess.get('link') != link:
