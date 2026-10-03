@@ -125,7 +125,8 @@ def acted(monkeypatch):
 def test_the_lists_in_this_file_are_the_routes_and_what_they_do():
     assert set(REPORT_ROUTES) <= set(ROUTES) and len(ROUTES) >= 13
     called = {n for n in re.findall(r'\b([A-Za-z_]\w*)\(', DO_POST)
-              if inspect.isfunction(getattr(T, n, None))} - {'urlparse', 'parse_qs'}
+              if inspect.isfunction(getattr(T, n, None))} - {'urlparse', 'parse_qs',
+                                                              'parse_src'}   # reads a side id, acts on nothing
     assert called == set(ACTIONS)
 
 

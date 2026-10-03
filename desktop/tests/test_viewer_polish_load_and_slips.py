@@ -192,7 +192,9 @@ def test_the_progress_leads_the_line_and_is_not_a_plain_note():
     assert 'gTableBusy = true;' in _js_func(SRC, 'renderFrBidiGrid')
     assert 'tableSettled();' in _js_func(SRC, 'renderFrBidiGrid')
     assert 'gTableBusy = true;' in _js_func(SRC, 'renderSuiteBidiGrid')
-    assert _js_func(SRC, 'renderSuiteBidiGrid').count('tableSettled();') == 2
+    # the report's table, a one-direction stand-in, and a stand-in that
+    # could not be built (renderFrBidiGrid settles its own when it is)
+    assert _js_func(SRC, 'renderSuiteBidiGrid').count('tableSettled();') == 3
 
 
 def test_no_add_a_trace_hint_while_loading():

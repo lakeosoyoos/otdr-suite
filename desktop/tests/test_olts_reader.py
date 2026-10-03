@@ -348,7 +348,9 @@ _CASES = r"""
 
 @pytest.fixture(scope='module')
 def page(tmp_path_factory):
-    funcs = '\n'.join(_js_func(n) for n in ('_parentName', '_dropOk', '_dropBatches',
+    funcs = re.search(r'^const SRC_RE = [^\n]+;', SRC, re.M).group(0) + '\n' + '\n'.join(
+        _js_func(n) for n in ('srcParts', 'sideOf', 'srcLabel', 'emptiedList',
+                                            '_parentName', '_dropOk', '_dropBatches',
                                             'handleFilesDrop', 'isOltsFile', 'handleOltsDrop',
                                             'showOltsMeasurements', 'oltsCols', 'oltsValue',
                                             'oltsSortRows'))

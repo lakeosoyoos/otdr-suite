@@ -92,8 +92,10 @@ def test_fec_mode_has_its_own_table_ahead_of_the_pairing_grids():
     body = body[:body.index('\n}\n')]
     assert body.index('renderFecGrid') < body.index('renderSuiteBidiGrid')
     assert "fetch(`/api/fec_table?fibers=" in HTML
-    # the side is the folder a trace came from, never a pairing
-    assert "t.src === 'b' ? 'B' : 'A'" in HTML
+    # the side is the folder a trace came from, never a pairing ('b2', 'br2' are B)
+    assert "t.src[0] === 'b' ? 'B' : 'A'" in HTML
+    # a copy's or another span's file is never given span 1's grade of its fiber
+    assert "const own = t.src === 'a' || t.src === 'b';" in HTML
 
 
 def test_fec_mode_comes_only_from_the_viewer_fec_link():

@@ -42,7 +42,12 @@ def test_fastreporter_mode_uses_fr_s_bidirectional_layout_for_a_pair():
 def test_the_fr_grid_is_fr_s_bidirectional_table():
     body = _fn('paintFrBidiGrid')
     # asked once for the traces on screen (askServerTable, test_viewer_fr_table_once)
-    assert "askServerTable('fr', key, `/api/fr_table?fibers=${pairs.map(p => p.fiber).join(',')}`," in _fn('renderFrBidiGrid')
+    # by fibre for span 1's own A and B, by each pair's two sources otherwise
+    # (a copy, another span: frTableQuery)
+    assert "askServerTable('fr', key, `/api/fr_table?${frTableQuery(pairs)}`," in _fn('renderFrBidiGrid')
+    q = _fn('frTableQuery')
+    assert "`fibers=${pairs.map(p => p.fiber).join(',')}`" in q
+    assert "`pairs=${pairs.map(p => `${p.fiber}:${p.ta.src}:${p.tb.src}`).join(',')}`" in q
     # three rows per fibre, in FR's order
     assert "['a', 'b', 'avg']" in body and "w === 'avg'" in body
     assert "which === 'a' ? 'A→B' : which === 'b' ? 'B→A' : 'Average'" in body

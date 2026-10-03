@@ -310,8 +310,9 @@ def test_files_panel_right_click_sets_direction_like_fr():
     assert 'function showFileDirMenu(' in html and 'function setFilesDirection(' in html
     cm = html[html.index("getElementById('files-list').addEventListener('contextmenu'"):][:400]
     assert 'showFileDirMenu(' in cm and 'ev.ctrlKey' in cm, 'Ctrl+click on a Mac must still select'
-    assert 'src: dir, dir: effDir(dir, fiber)' in html
-    assert 'src: dir, dir: effDir(dir, data.fiber)' in html
+    # a trace keeps its source and its span ('a2' is span 2's A), drawn as effDir
+    assert 'src: dir, span: dir.length > 1 ? spanOf(dir) : 1, dir: effDir(dir, fiber)' in html
+    assert 'src: dir, span: dir.length > 1 ? spanOf(dir) : 1, dir: effDir(dir, data.fiber)' in html
     # Settings edits must go to the file's real folder, not its shown direction.
     assert "showEditDialog(src || dir, fiber)" in html
 
