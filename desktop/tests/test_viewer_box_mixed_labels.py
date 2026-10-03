@@ -104,3 +104,32 @@ def test_the_viewer_says_why_a_fiber_was_left_out(monkeypatch):
     # a fiber the report did not set aside keeps the plain "no table"
     assert TS.suite_tables([9], "b")["error"] is None
     assert TS.suite_tables([1, 3], "b")["error"] is None
+
+
+def test_a_drop_on_the_files_panel_reads_every_b_file(tmp_path, monkeypatch):
+    """What Zach did: both folders dragged onto the Viewer's Files panel.  The
+    drop splits them by name into A and B; B alone then has a table for the
+    fibers whose files carry the other site order too."""
+    import time
+    sys.path.insert(0, str(REPO_ROOT / "viewer"))
+    import trace_server as TS
+    for k in ("dir_a", "dir_b", "suite_table", "end_refl", "analysis_mode", "settings"):
+        monkeypatch.setitem(TS.CONFIG, k, TS.CONFIG.get(k))
+    TS.CONFIG.update({"suite_table": None, "end_refl": None,
+                      "analysis_mode": "suite", "settings": None})
+    monkeypatch.setattr(TS, "_UNI_TABLES", {})
+    monkeypatch.setattr(TS, "_TRACE_SIG", {})
+    b = _folder(tmp_path / "mix", flipped={5, 17})
+    tok = TS.drop_begin()
+    for folder in (FIXTURE_DIR / "splice_A", b):
+        for name in sorted(os.listdir(folder)):
+            TS.drop_file(tok, name, (folder / name).read_bytes())
+    ans = TS.drop_end(tok)
+    assert (ans["a_count"], ans["b_count"]) == (24, 24), ans
+    fibers = list(range(1, 25))
+    for _ in range(3000):
+        out = TS.suite_tables(fibers, "b")
+        if not out["pending"]:
+            break
+        time.sleep(0.1)
+    assert sorted(map(int, out["tables"])) == fibers and not out["missing"], out

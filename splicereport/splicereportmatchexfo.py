@@ -14783,9 +14783,10 @@ def uni_coverage_lines(cov):
 def uni_load_dir(d, direction=None, one_box=False):
     """Load ONE direction's fibers from a folder of .sor/.json/.trc files.
 
-    `one_box`: the folder is one of the Viewer's A/B boxes, and the box, not
-    GenParams, names its direction (the Viewer draws every file in it as that
-    leg).  Every other signature whose fiber numbers are disjoint from the
+    `one_box`: the folder is one side of the Viewer (a sidebar A/B box, or
+    the A or B folder a drop on its Files panel split off), and that side,
+    not GenParams, names its direction (the Viewer draws every file in it as
+    that leg).  Every other signature whose fiber numbers are disjoint from the
     loaded ones is then folded in too, whatever its site codes.  El Paso B
     (2026-10-02): 36 files said ELP->LSC like the A side, the 4 re-shots said
     LSC->ELP; B alone left out fibers 241/245/252/264 while A+B showed them.
