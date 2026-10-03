@@ -84,6 +84,51 @@ def test_span_2_with_folders_enables_generate_and_remove_drops_it():
     _button(at, "Generate Splice Report")
 
 
+def test_span_2_names_a_folder_that_is_not_there(tmp_path):
+    """Both boxes filled in, one with a folder that is not there: the line
+    names that box and its path, the way the left panel names its own, and
+    does not ask for "both" folders the tech already typed (audit
+    2026-10-02)."""
+    gone = str(tmp_path / "no_such_folder")
+    at = _page(view_dir_a_input=str(FIXTURE_SPLICE_A_DIR),
+               view_dir_b_input=str(FIXTURE_SPLICE_B_DIR))
+    _button(at, "➕ Add Span…").click().run()
+    at.session_state["sr2_dir_a"] = str(FIXTURE_SPLICE_A_DIR)
+    at.session_state["sr2_dir_b"] = gone
+    at.run()
+    assert not at.exception, list(at.exception)
+    assert _button(at, "Generate Splice Reports (2 spans)").disabled is True
+    infos = [i.value for i in at.info]
+    assert any(f"Span 2: B folder not found: {gone}" in i for i in infos), infos
+    assert not any("Span 2 needs" in i for i in infos), infos
+    assert not any("A folder not found" in i for i in infos), infos
+
+    # One box empty, the other not there: both are said.
+    at.session_state["sr2_dir_a"] = ""
+    at.run()
+    infos = [i.value for i in at.info]
+    assert any(f"Span 2: B folder not found: {gone}" in i for i in infos), infos
+    assert any("Span 2 needs **both**" in i for i in infos), infos
+
+
+def test_span_2_one_folder_mode_names_a_folder_that_is_not_there(tmp_path):
+    gone = str(tmp_path / "no_such_folder")
+    at = _page(view_dir_a_input=str(FIXTURE_SPLICE_A_DIR),
+               view_dir_b_input=str(FIXTURE_SPLICE_B_DIR))
+    _button(at, "➕ Add Span…").click().run()
+    at.session_state["sr2_input_mode"] = "One folder / zip (both directions)"
+    at.session_state["sr2_one_folder"] = gone
+    at.run()
+    assert not at.exception, list(at.exception)
+    assert _button(at, "Generate Splice Reports (2 spans)").disabled is True
+    infos = [i.value for i in at.info]
+    assert any(f"Span 2: folder not found: {gone}" in i for i in infos), infos
+    assert not any("Span 2 needs" in i for i in infos), infos
+    # ...and under the box itself, in place of "Choose a folder".
+    assert any(f"Folder not found: {gone}" in w.value for w in at.warning)
+    assert not any("Choose a folder" in i for i in infos), infos
+
+
 # ── one click, spans run back to back, one destination ───────────────────
 def test_generate_queues_one_run_per_span_into_the_one_destination():
     page = _fn("page_splice_report")

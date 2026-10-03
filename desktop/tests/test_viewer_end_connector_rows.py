@@ -173,6 +173,6 @@ def test_each_red_row_tells_its_own_reason_in_the_viewer():
     i = VIEWER.index('function paintSuiteBidiGrid(')
     body = VIEWER[i:VIEWER.index('\n}\n', i)]
     assert "const saidOf = (c, x, own) => [own && own.said," in body
-    assert "const said = flagged ? saidOf(c, x, which === 'avg' ? x : leg) : '';" in body
+    assert "const said = flagged && fails ? saidOf(c, x, which === 'avg' ? x : leg) : '';" in body
     # the flag itself still comes from the table, row by row
     assert "return !!leg.flag" in body and "return !!x.flag ||" in body

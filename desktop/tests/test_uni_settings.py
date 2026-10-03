@@ -74,7 +74,7 @@ def test_every_global_is_exposed_exactly_once():
     # Every UNI_* the engine defines and the two boxes are meant to carry.
     expected = {
         'UNI_BEND_THRESHOLD', 'UNI_MIN_POP_SPLICE', 'UNI_CLOSURE_MATCH_KM',
-        'UNI_REFL_FLOOR_DB', 'UNI_REFL_CEIL_DB', 'UNI_BREAK_MIN_KM',
+        'UNI_REFL_FLOOR_DB', 'UNI_BREAK_MIN_KM',
         'UNI_BREAK_PREMATURE_KM', 'UNI_END_REGION_KM',
         'UNI_DAMAGE_ZONE_BREAK_KM', 'UNI_PREBREAK_CONFIRM_DB',
         'UNI_PREBREAK_MEMBER_DB', 'UNI_PREBREAK_STORED_DB',
@@ -82,7 +82,7 @@ def test_every_global_is_exposed_exactly_once():
         'UNI_CONN_LOSS_DB',
     }
     assert set(seen) | shared == expected
-    assert shared == {'UNI_CONN_LOSS_DB', 'UNI_REFL_FLOOR_DB', 'UNI_REFL_CEIL_DB'}
+    assert shared == {'UNI_CONN_LOSS_DB', 'UNI_REFL_FLOOR_DB'}
 
 
 def test_row_kinds_and_slots_agree():
@@ -121,13 +121,12 @@ def test_bounds_and_types_sane():
 
 def test_reflectance_band_comes_from_the_otdr_settings_band():
     """The knob the boss reaches for after a span with many weak
-    reflectances: the Uni band's floor is the OTDR Settings band's weak end
-    (the same floor the bidirectional report flags from) and its ceiling is
-    the ceiling row.  Fail on the band row is the bidirectional FAIL/WARN
-    split, which Uni does not have."""
+    reflectances: the Uni floor is the OTDR Settings Mid-Span Reflectance
+    number (the same one the bidirectional report flags from), one number
+    with no ceiling (Robert 2026-10-02)."""
     m = _from_otdr_settings()
-    assert m['UNI_REFL_FLOOR_DB'] == ('midspan_reflectance', 'warning')
-    assert m['UNI_REFL_CEIL_DB'] == ('midspan_refl_ceiling', 'fail')
+    assert m['UNI_REFL_FLOOR_DB'] == ('midspan_reflectance', 'fail')
+    assert 'UNI_REFL_CEIL_DB' not in m
     assert m['UNI_CONN_LOSS_DB'] == ('unidir_connector_loss', 'fail')
 
 

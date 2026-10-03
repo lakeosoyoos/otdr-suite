@@ -84,7 +84,7 @@ def test_the_viewer_sends_the_side_back():
     # a Unidirectional link's direction is the side its report ran on
     assert ("gUniSide = (t.src === 'uni' && (t.dir === 'a' || t.dir === 'b')) ? t.dir : null;"
             in HTML)
-    back = HTML.split("document.getElementById('btn-back').addEventListener('click'", 1)[1]
+    back = HTML.split("function goBackToReport()", 1)[1]
     back = back.split('\n});', 1)[0]
     assert "if (gInfo.dir_b && (nav !== 'uni' || uniSide)) q.set('srb', gInfo.dir_b);" in back
     assert "if (uniSide) q.set('pside', uniSide);" in back

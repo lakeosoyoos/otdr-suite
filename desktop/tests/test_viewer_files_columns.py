@@ -29,6 +29,7 @@ import subprocess
 import pytest
 
 from conftest import VIEWER_DIR
+from conftest import COPY_HELPERS_JS  # noqa: E402
 
 SRC = (VIEWER_DIR / "viewer.html").read_text(encoding="utf-8")
 JSC = ('/System/Library/Frameworks/JavaScriptCore.framework/'
@@ -87,7 +88,7 @@ print('OUT ' + JSON.stringify(out));
 def rules(tmp_path_factory):
     funcs = '\n'.join(_js_func(n) for n in ('fileSortValue', 'fileRowCompare'))
     path = tmp_path_factory.mktemp('files_columns') / 'rules.js'
-    path.write_text(funcs + '\n' + _CASES, encoding='utf-8')
+    path.write_text(COPY_HELPERS_JS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
     out = r.stdout + r.stderr
     assert r.returncode == 0 and 'OUT ' in out, out[-2000:]

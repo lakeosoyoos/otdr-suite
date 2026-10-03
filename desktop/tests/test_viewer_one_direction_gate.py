@@ -46,7 +46,7 @@ def test_the_warning_band_and_the_override_follow_the_same_gate():
     vw = _viewer_src()
     assert '((leg || oneDirOnly()) ? T.single_dir_warn : T.reburn_warn)' in _fn(vw, 'warnFor')
     # typing the report's own value back into the loss box clears the override
-    assert 'gGateOverride = (Math.abs(v - reportGateDb()) < 1e-9) ? null : v;' in vw
+    assert 'next = (Math.abs(v - reportGateDb()) < 1e-9) ? null : v;' in vw
     assert "', one direction'" in _fn(vw, 'gateLabel')
 
 
@@ -63,12 +63,38 @@ def test_an_unticked_uni_row_reaches_the_viewer_as_off():
     assert TS._gates({'SINGLE_DIR_THRESHOLD': 1e9})['single_dir'] >= 1e6
 
 
+def test_the_boxes_repaint_the_panel_as_the_tech_types():
+    """Robert 2026-10-01: changing the loss box or the Refl Band updates the
+    event panel by itself -- on typing (after a short pause), not only on
+    Enter.  Every box is wired the same way."""
+    vw = _viewer_src()
+    live = _fn(vw, 'liveBox')
+    assert "el.addEventListener('input'" in live and "setTimeout(() => apply(false), 400)" in live
+    assert "el.addEventListener('change', () => { clearTimeout(timer); apply(true); });" in live
+    wire = _fn(vw, 'wireEventSettings')
+    assert 'liveBox(lossEl,' in wire and 'liveBox(reflEl,' in wire
+    assert wire.count('renderEventTable();') == 2 and wire.count('renderFilesPanel();') == 2
+    # the FR-mode two-direction table judges mid-span reflectance only on a typed band
+    assert 'if (gReflOverride == null) return false;' in vw
+    assert 'x.ti = fi;' in vw
+
+
 def test_the_loss_box_is_named_for_what_it_grades():
-    """Robert 2026-10-02: the Viewer showed no Bidi / Uni before the loss
-    box.  Two directions loaded it reads "Bidirectional Loss"; one direction
-    loaded, or opened from the Uni report, "Unidirectional Loss"."""
+    """Robert 2026-10-01: the box reads "Bidirectional Loss" -- the gate on
+    a two-direction load's Average; one direction loaded, "Unidirectional Loss"."""
     vw = _viewer_src()
     assert '<span id="loss-op">Bidirectional Loss &ge;</span> <input id="set-loss"' in vw
+    assert "if (op) op.textContent = lossBoxName() + ' ≥';" in _fn(vw, 'syncGateUI')
+    assert ("return (gSourceReport === 'uni' || oneDirOnly()) ? 'Unidirectional Loss' : 'Bidirectional Loss';"
+            in _fn(vw, 'lossBoxName'))
+
+
+def test_the_reflectance_box_is_one_number():
+    """Robert 2026-10-02: one Reflectance box, showing its number; anything
+    above it is flagged (box -80, a -75 dB reflection is flagged)."""
+    vw = _viewer_src()
+    assert '<span id="refl-op">Reflectance &ge;</span> <input id="set-refl" type="number"' in vw
+    assert 'set-refl-lo' not in vw and 'set-refl-hi' not in vw
     sync = _fn(vw, 'syncGateUI')
-    assert "if (op) op.textContent = (gSourceReport === 'uni' || oneDirOnly())" in sync
-    assert "? 'Unidirectional Loss ≥' : 'Bidirectional Loss ≥';" in sync
+    assert "box.value = String(reflFloor());" in sync and "box.step = '1';" in sync
+    assert 'return refl >= lo;' in _fn(vw, 'reflInBand')

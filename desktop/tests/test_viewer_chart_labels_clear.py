@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from conftest import VIEWER_DIR
+from conftest import COPY_HELPERS_JS  # noqa: E402
 
 SRC = (VIEWER_DIR / "viewer.html").read_text(encoding="utf-8")
 JSC = Path("/System/Library/Frameworks/JavaScriptCore.framework/Versions/"
@@ -135,6 +136,7 @@ function frame(traces, R) {
 
 def _jsc(tmp_path, body):
     code = "\n".join([
+        COPY_HELPERS_JS,
         PRELUDE,
         _const("X_LABEL_GAP_PX"), _const("Y_LABEL_GAP_PX", required=False),
         _const("EVENT_NUM_H", required=False),

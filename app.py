@@ -310,6 +310,8 @@ _MODE_SWITCH_CSS = (
     'box-shadow:0 0 0 2px #22c55e,0 0 8px 2px rgba(34,197,94,.55)}'
     '.st-key-analysis_mode_box .mode-off,.st-key-theme_box .mode-off{display:inline-block;'
     'padding:0 4px;text-align:center;overflow-wrap:normal;word-break:keep-all}'
+    # The name not in use picks its side when clicked (MODE_NAME_CLICK_JS).
+    '.st-key-analysis_mode_box .mode-off,.st-key-theme_box .mode-off{cursor:pointer}'
     '.st-key-analysis_mode_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child,'
     '.st-key-theme_box [data-testid="stCheckbox"] label[data-baseweb="checkbox"]>div:first-child'
     '{background-color:var(--otdr-accent,#2c5b8a) !important}'
@@ -345,6 +347,16 @@ def _render_theme_control(where):
     name = 'light' if _right else 'dark'
     if name != st.session_state.get('ui_theme'):
         st.session_state['ui_theme'] = name
+        # Into the config now, at the end of a run that drew every widget,
+        # so the run below starts in the new theme and the repaint rerun at
+        # the top of the page finds nothing to change.  That rerun comes
+        # before the sidebar is drawn, and Streamlit 1.50 then forgets every
+        # box it did not draw: the Tool list fell back to the Viewer and
+        # "Thresholds Carried Over" opened (2026-10-02).
+        try:
+            apply_streamlit_theme(name)
+        except Exception:
+            pass
         st.rerun()
 
 
@@ -1706,9 +1718,23 @@ try:
     _theme_changed = apply_streamlit_theme(st.session_state['ui_theme'])
 except Exception:
     _theme_changed = False
+# This rerun comes before anything is drawn, and Streamlit 1.50 counts a
+# run stopped for a rerun as finished: every widget it did not draw loses
+# its state (1.64 keeps it).  The Theme switch puts the theme in the config
+# itself, so a flip does not come here; a config changed under this session
+# (another tab flipped it) still does.  The boxes drawn on every page are
+# kept in a slot no widget owns and put back on the next run, only when
+# Streamlit forgot them: a page jump written later in that run (a report
+# link, "← Back") still wins.  Page boxes keep their own (`{key}_saved`,
+# see _seed_box).
+_THEME_KEEP = ('nav_radio', 'view_dir_a_input', 'view_dir_b_input')
 if _theme_changed and st.session_state.get('_theme_rerun_for') != st.session_state['ui_theme']:
     st.session_state['_theme_rerun_for'] = st.session_state['ui_theme']
+    st.session_state['_theme_kept'] = {
+        k: st.session_state[k] for k in _THEME_KEEP if k in st.session_state}
     st.rerun()
+for _k, _v in (st.session_state.pop('_theme_kept', None) or {}).items():
+    st.session_state.setdefault(_k, _v)
 try:
     st.markdown(theme_css_vars(), unsafe_allow_html=True)
 except Exception:
@@ -2024,6 +2050,54 @@ def _keep_box(key):
     st.session_state[key + '_saved'] = st.session_state.get(key)
 
 
+# Names Windows keeps for devices: a folder cannot have one, with or
+# without an extension.
+_WIN_RESERVED_NAMES = frozenset(
+    ['CON', 'PRN', 'AUX', 'NUL']
+    + [f'{d}{n}' for d in ('COM', 'LPT') for n in range(1, 10)])
+
+
+def _report_dir_problem(path, pathmod=os.path):
+    """Why reports cannot go to the folder `path`, in plain words, or None
+    when they can: it is a folder already, or one a report run can make.
+    Every run makes the whole missing path before it writes (os.makedirs),
+    so a new folder any number of levels deep is fine as long as the
+    nearest folder above it that is there can be written in.  Only "the
+    folder above is there" was checked before, so a new job folder two
+    levels down (Reports/Job 1, neither there yet) was refused as one that
+    "cannot be created" and the report went to Downloads (2026-10-02).
+
+    Nothing is made here: the box is checked as the tech types, and a
+    folder is only made when a report is written.  `pathmod` is os.path;
+    a test hands it ntpath to try Windows paths (drive letters, a missing
+    drive, \\\\server\\share) on a Mac."""
+    p = pathmod.abspath(path)
+    missing = []                     # the folders a run would have to make
+    while not pathmod.isdir(p):
+        if pathmod.exists(p):
+            return f'{p} is a file, not a folder'
+        up = pathmod.dirname(p)
+        if up == p:                  # a drive or network share that is not there
+            return 'that drive or network share cannot be reached'
+        missing.append(pathmod.basename(p))
+        p = up
+    if not missing:
+        # A folder already.  As before: no write check on it (on Windows,
+        # os.access says every folder can be written in anyway).
+        return None
+    for name in missing:
+        if '\0' in name:
+            return f'"{name}" is not a folder name that can be used'
+        if pathmod.sep == '\\':
+            if any(c in '<>:"|?*' or ord(c) < 32 for c in name):
+                return 'a folder name cannot contain < > : " | ? *'
+            if name.split('.')[0].strip().upper() in _WIN_RESERVED_NAMES:
+                return f'"{name}" is a name Windows keeps for itself'
+    if not os.access(p, os.W_OK):
+        return f'there is no permission to make a folder in {p}'
+    return None
+
+
 def _report_dest_row(key, default_dir):
     """The 'Save reports to' row every report page shows: a Browse button that
     opens the native folder picker, and a path box the tech can paste into.
@@ -2063,9 +2137,10 @@ def _report_dest_row(key, default_dir):
     st.session_state[saved] = st.session_state.get(key) or ''
     chosen = (st.session_state.get(key) or '').strip().strip('"')
     if chosen:
-        parent = os.path.dirname(os.path.abspath(chosen)) or chosen
-        if not os.path.isdir(chosen) and not os.path.isdir(parent):
-            st.warning(f'That folder cannot be created: {chosen}. Reports will go to {default_dir}')
+        problem = _report_dir_problem(chosen)
+        if problem:
+            st.warning(f'Reports cannot be saved to {chosen}: {problem}. '
+                       f'They will go to {default_dir} instead.')
             return default_dir
         return os.path.abspath(chosen)
     return default_dir
@@ -2267,6 +2342,11 @@ def _resolve_bidir_from_single(folder, zip_file):
         key = _sig('drop', zip_uploads + trace_uploads)
     elif folder and os.path.isdir(folder):
         key = f"dir:{os.path.abspath(folder)}"
+    elif folder:
+        # Typed, but not a folder: say so, not "choose a folder" (audit
+        # 2026-10-02).  The left panel names its own the same way.
+        st.warning(f'Folder not found: {folder}')
+        return ('', '')
     else:
         st.info('👆 Choose a folder that contains **both** directions, or '
                 'drop it here: its traces, a .zip, or .bdr files, which '
@@ -2531,8 +2611,10 @@ def _handle_nav():
 
     # Splice Report FEC row click: ?nav=viewerfec&fiber=&km=&dir=a|b&fa=&fb=
     # (the run's resolved folders) &ra=&rb= (what the FEC page's boxes held).
-    # Viewer FEC reads the left panel's folders, so they point at the run's;
-    # the tech's own come back on leaving (pa/pb -> _panel_restore).
+    # It opens the Viewer, which knows FEC shots by itself (Robert 2026-10-02:
+    # no separate Viewer FEC).  The Viewer reads the left panel's folders, so
+    # they point at the run's; the tech's own come back on leaving (pa/pb ->
+    # _panel_restore).
     if qp.get('nav') == 'viewerfec' and qp.get('fiber'):
         _fa, _fb = qp.get('fa') or '', qp.get('fb') or ''
         st.session_state['view_dir_a_input'] = _fa if os.path.isdir(_fa) else ''
@@ -2547,7 +2629,7 @@ def _handle_nav():
             'dir': qp.get('dir') if qp.get('dir') in ('a', 'b') else 'a'}
         st.session_state['viewer_jump_announce'] = True
         st.session_state['came_from_fec'] = True
-        st.session_state['nav_radio'] = 'Viewer FEC'   # BEFORE the radio widget
+        st.session_state['nav_radio'] = 'Viewer'   # BEFORE the radio widget
         st.query_params.clear()
         return
     if qp.get('nav') == 'viewer' and qp.get('fiber'):
@@ -2718,10 +2800,57 @@ def _install_title_keep():
         pass
 
 
+# Clicking a name beside a sidebar switch (Dark | Light, FR Mode | OTDR
+# Mode) did nothing: the names are text, and only the knob is the switch.
+# This makes a click on the name not in use click the switch, so the switch
+# itself does the rest, exactly as a click on the knob.  The switches stay
+# keyless (see _render_theme_control) and nothing new runs in Python.  One
+# listener on the page, put back by each load of this frame, which leaves
+# it working whatever Streamlit redraws.  The name's side, not a flip, picks
+# the knob's place, so a second click before the run lands does nothing.
+MODE_NAME_CLICK_JS = """
+<script>
+(function () {
+  var w; try { w = window.parent; void w.document; } catch (e) { return; }
+  var d = w.document;
+  if (w.__otdrModeNameClick) d.removeEventListener('click', w.__otdrModeNameClick);
+  w.__otdrModeNameClick = function (e) {
+    var t = e.target;
+    var name = t && t.closest && t.closest('.mode-off');
+    if (!name) return;
+    var box = name.closest('.st-key-theme_box, .st-key-analysis_mode_box');
+    var sw = box && box.querySelector('[data-testid="stCheckbox"] input[type="checkbox"]');
+    if (!sw || sw.disabled) return;
+    // The name left of the switch wants the knob left (off), the name
+    // right of it wants the knob right (on).
+    var left = !!(name.compareDocumentPosition(sw) & 4);
+    if (sw.checked === left) sw.click();
+  };
+  d.addEventListener('click', w.__otdrModeNameClick);
+})();
+</script>
+"""
+
+
+def _install_mode_name_click():
+    """Render the script above out of the page's flow, as the theme clear
+    does (best effort, never fatal)."""
+    try:
+        box = st.container(key='mode_name_click')
+        box.markdown('<style>[data-testid="stLayoutWrapper"]:has(> .st-key-mode_name_click)'
+                     '{position:absolute;width:0;height:0;overflow:hidden}</style>',
+                     unsafe_allow_html=True)
+        with box:
+            st_components_html(MODE_NAME_CLICK_JS, height=0)
+    except Exception:
+        pass
+
+
 _install_sidebar_drag_fix()
 _install_hub_drop_catch()
 _install_theme_pick_clear()
 _install_title_keep()
+_install_mode_name_click()
 
 # No "Deploy" button in the header (Robert, 2026-09-29): it is Streamlit's
 # developer menu and means nothing to a tech.  New builds turn the whole
@@ -3509,7 +3638,7 @@ def _drop_report(which):
 def _forget_fec_report():
     """Take the Splice Report FEC report off the page and delete its saved
     copy, which is filed under the pair of folders it ran on: the report's
-    own record of them, the pair a Viewer FEC row link brought into this
+    own record of them, the pair an FEC row link to the Viewer brought into this
     session, and the boxes when they hold plain folders (a .zip's folder is
     only known once the page resolves it).  Never raises."""
     ss = st.session_state
@@ -3749,6 +3878,42 @@ _CARRY_PROFILE_BOX = (
     '{name}</span></div>')
 
 
+# The Viewer's own boxes changed (Robert 2026-10-01: "if we leave viewer to
+# go to splice report or uni we need a window that reminds the tech they had
+# changed the setting").  Amber, the colour the Viewer marks a typed box in.
+_CARRY_VIEWER_BOX = (
+    '<div style="background:#fff4e5;border:1px solid #f0b46a;'
+    'border-radius:6px;padding:8px 12px;font-size:1rem;color:#7a3e00;margin-top:8px;'
+    'margin-bottom:8px">'
+    '<div style="font-weight:600">You changed these in the Viewer:</div>'
+    '<ul style="margin:4px 0 6px 0;padding-left:20px">{lines}</ul>'
+    '<div>They changed only what the Viewer flagged. <b>{to}</b> flags at its '
+    'OTDR Settings, so it will not flag the same way. To match, click '
+    '<b>Edit Settings</b> and change them there.</div></div>')
+
+
+def _viewer_change_lines(c):
+    """The Viewer's typed boxes (trace_server.viewer_changed()) as lines:
+    "Bidirectional Loss: 0.150 dB (the report uses 0.160 dB)"."""
+    if not isinstance(c, dict):
+        return []
+
+    def refl(v):
+        return 'off' if not v < 0 else f'{v:g} dB'
+    out = []
+    if c.get('loss') is not None:
+        line = f"{c.get('loss_name') or 'Loss'}: {c['loss']:.3f} dB"
+        if c.get('loss_report') is not None:
+            line += f" (the report uses {c['loss_report']:.3f} dB)"
+        out.append(line)
+    if c.get('refl') is not None:
+        line = f"Reflectance: {refl(c['refl'])}"
+        if c.get('refl_report') is not None:
+            line += f" (the report uses {refl(c['refl_report'])})"
+        out.append(line)
+    return out
+
+
 def _carry_ok():
     st.session_state.pop('_carry_popup', None)
 
@@ -3774,6 +3939,11 @@ def _thresholds_carried_dialog(info):
     _prof = st.session_state.get('otdr_profile') or next(iter(CUSTOMER_PROFILES))
     st.markdown(_CARRY_PROFILE_BOX.format(name=html.escape(_profile_label(_prof))),
                 unsafe_allow_html=True)
+    _lines = _viewer_change_lines(info.get('viewer_changed'))
+    if _lines:
+        st.markdown(_CARRY_VIEWER_BOX.format(
+            lines=''.join(f'<li>{html.escape(l)}</li>' for l in _lines),
+            to=html.escape(str(info.get('to')))), unsafe_allow_html=True)
     st.markdown(_CARRY_OK_CSS, unsafe_allow_html=True)
     _c1, _c2 = st.columns(2)
     if _c1.button('Edit Settings', key='carry_edit', use_container_width=True,
@@ -3799,8 +3969,21 @@ def _note_tool_change(page):
     # on (Viewer -> Secret Sauce -> Viewer), or with no Settings tool before
     # it, nothing is carried and the pop-up stays away.
     _from = ss.get('_last_settings_tool')
+    _popup = None
     if page in SETTINGS_TOOLS and _from and _from != page:
-        ss['_carry_popup'] = {'to': page, 'from': _from}
+        _popup = {'to': page, 'from': _from}
+    # Leaving the Viewer for a report with one of its boxes changed: the
+    # pop-up says so (the report never sees the Viewer's boxes).
+    if page in SETTINGS_TOOLS and _prev == 'Viewer':
+        try:
+            _changed = trace_server.viewer_changed()
+        except Exception:
+            _changed = None
+        if _changed:
+            _popup = _popup or {'to': page, 'from': None}
+            _popup['viewer_changed'] = _changed
+    if _popup:
+        ss['_carry_popup'] = _popup
     else:
         ss.pop('_carry_popup', None)
 
@@ -3931,7 +4114,7 @@ with st.sidebar:
     # folder the Viewer had to read: the tech's own A and B come back.  No
     # report is dropped, it is the same span.
     if ('_panel_restore' in st.session_state
-            and st.session_state.get('nav_radio') not in ('Viewer', 'Viewer FEC')):
+            and st.session_state.get('nav_radio') != 'Viewer'):
         (st.session_state['view_dir_a_input'],
          st.session_state['view_dir_b_input']) = st.session_state.pop('_panel_restore')
         st.session_state.pop('_ss_nav_folder', None)
@@ -3984,7 +4167,7 @@ with st.sidebar:
     # 2026-09-28): the regular Suite lists the four trace tools.  The App's
     # launcher exports OTDR_SUITE_EDITION; this one does not.  The two pages
     # and their files stay in the tree, so an update's file set is unchanged.
-    _tools = ['Viewer', 'Splice Report', 'Splice Report FEC', 'Viewer FEC',
+    _tools = ['Viewer', 'Splice Report', 'Splice Report FEC',
               'Unidirectional', 'Secret Sauce']
     if os.environ.get('OTDR_SUITE_EDITION'):
         _tools += ['FQA Builder', 'Field Capture']
@@ -4383,9 +4566,10 @@ def _same_folder(p, q):
                 == os.path.normcase(os.path.realpath(q)))
 
 
-def page_viewer(fec=False):
-    """The Trace Viewer.  fec=True is the Viewer FEC tool (Robert 2026-10-01):
-    the same Viewer, opened in FEC mode (?fec=1), which it cannot leave."""
+def page_viewer():
+    """The Trace Viewer.  FEC shots load here too: the Viewer tells them from
+    the files and draws each trace as shot (Robert 2026-10-02, "not have a
+    separate viewer")."""
     port = ensure_trace_server()
 
     with st.sidebar:
@@ -4443,7 +4627,7 @@ def page_viewer(fec=False):
             st.session_state['nav_radio'] = 'Splice Report'
         st.button('← Back to Splice Report', key='view_back_sr',
                   on_click=_back_to_sr)
-    if fec and st.session_state.get('came_from_fec'):
+    if st.session_state.get('came_from_fec'):
         def _back_to_fec():
             st.session_state['came_from_fec'] = False
             st.session_state['nav_radio'] = 'Splice Report FEC'
@@ -4458,21 +4642,11 @@ def page_viewer(fec=False):
 
     # No "Trace Viewer" heading: the sidebar already says where you are
     # (Robert 2026-10-01), and it pushed the Viewer further down the page.
-    # The Viewer FEC page keeps its heading, at half the old size (Robert
-    # 2026-10-01: 0.75rem, the #### was 1.5rem), and its line on FEC mode.
-    if fec:
-        st.markdown('<p style="font-size:0.75rem;font-weight:600;margin:0">'
-                    'Viewer FEC</p>', unsafe_allow_html=True)
-        st.caption('Facility entrance (FEC) shots: the short traces from '
-                   'each end. A and B are drawn as shot and never paired; '
-                   'each trace’s panel connector is graded at the customer '
-                   'profile’s FEC gates, as Splice Report FEC does.')
     # Pop the Viewer into its own window from HERE too — a tech who came to
     # the Viewer page first (rather than clicking a report cell) had no way
     # to detach it.  Same window NAME as the report grids' button, so the two
     # entry points share ONE window: opening from here and then clicking
     # report cells drives this same window instead of spawning a second.
-    # From Viewer FEC it opens in FEC mode (?fec=1).
     _pop_doc = """
 <style>body{margin:0;padding:3px 0}</style>
 <button id="vpop2" style="padding:4px 10px;border:1px solid #c9d5e1;border-radius:4px;
@@ -4483,11 +4657,11 @@ def page_viewer(fec=False):
 <script>
 try { window.top.name = "otdr_hub"; } catch (e) {}
 document.getElementById("vpop2").addEventListener("click", function(){
-  var w = window.open("__ORIGIN__/__POPQ__", "otdr_viewer", "width=1400,height=900");
+  var w = window.open("__ORIGIN__/", "otdr_viewer", "width=1400,height=900");
   if (w) w.focus();
 });
 </script>
-""".replace('__ORIGIN__', f'http://127.0.0.1:{port}').replace('__POPQ__', '?fec=1' if fec else '')
+""".replace('__ORIGIN__', f'http://127.0.0.1:{port}')
     # The OTDR Settings, same box as the report pages and sharing their
     # values (Robert 2026-09-28).  With no report behind it the Viewer judges
     # pass/fail at these and runs its own report with them; a report on
@@ -4539,8 +4713,6 @@ document.getElementById("vpop2").addEventListener("click", function(){
         _b = abs(hash(_key)) % 100000
     st.session_state['_viewer_b'] = _b
     q = {'b': _b}
-    if fec:
-        q['fec'] = 1
     # PERSISTENT deep-link target (read, NOT consumed).  Keeping the last
     # clicked/loaded fiber in the iframe URL makes the src STABLE across
     # Streamlit reruns.  Consuming it with .pop made the very next rerun rebuild
@@ -4624,8 +4796,14 @@ def page_duplicate_check():
     st.session_state.pop('_ss_removed_note', None)     # a slot from an earlier run
     # The line that tells the tech to pick a folder is for the page's own
     # loader, which is not drawn when the left panel holds the traces.
-    st.caption(('' if any(_panel_traces()) else
-                'Pick a folder of `.sor` / `.trc` / `.json` files. ')
+    # What the tool does first, as every other tool page says it (audit
+    # 2026-10-02: the page never said it looks for duplicates).
+    st.caption('Finds traces that are copies of each other: one fiber shot '
+               'twice and saved under two fiber numbers, or one file saved '
+               'twice. Every pair of traces is compared by the shape of its '
+               'trace and ranked by how likely it is a duplicate. '
+               + ('' if any(_panel_traces()) else
+                  'Pick a folder of `.sor` / `.trc` / `.json` files. ')
                + 'Reports are saved to the folder you choose below (Downloads '
                'by default) and offered for download.')
 
@@ -5266,13 +5444,10 @@ OTDR_ROWS = [
     ("bidir_connector_loss",      "Bidir Connector Loss",       0.500,        "dB",    True),
     ("splitter_loss",             "Splitter Loss",              4.500,        "dB",    False),
     ("reflectance",               "Reflectance",                -50.0,        "dB",    True),
-    ("reflectance_ceiling",       "Reflectance Ceiling",        0.0,          "dB",    True),
-    ("midspan_reflectance",       "Mid-Span Reflectance Band",  -50.0,        "dB",    True),
-    # Optional BAND ceiling for the row above: tick it to flag ONLY the
-    # band [warn floor, ceiling] — e.g. -80..-40 isolates faint fusion
-    # glints while connector-grade reflections stay with the connector
-    # rules.  Unticked (default) = no ceiling, shipped behavior.
-    ("midspan_refl_ceiling",      "Mid-Span Refl Ceiling",      -40.0,        "dB",    True),
+    ("midspan_reflectance",       "Mid-Span Reflectance",       -80.0,        "dB",    True),
+    # Mid-span reflectance is one number, no ceiling (Robert 2026-10-02):
+    # the optional "Mid-Span Refl Ceiling" row is gone.  A saved setting
+    # that still names it is ignored (nothing maps it any more).
     # NOTE: the launch-connector loss gates used to live here as two rows.
     # They moved to the 'Connector & launch' knobs panel below, which carries
     # per-knob help text and holds the REST of the connector path beside them
@@ -5304,35 +5479,19 @@ OTDR_ROWS = [
 # Pre-checked rows (match what the splice report flags out of the box):
 OTDR_DEFAULT_APPLY = {"unidir_splice_loss", "bidir_splice_loss",
                        "unidir_connector_loss", "bidir_connector_loss", "reflectance",
-                       "reflectance_ceiling",
                        "midspan_reflectance", "bend_fold_distance"}
 
 # Rows whose Warning threshold differs from Fail (most rows use a single
-# threshold, warning == fail).  Mid-span reflectance is a BAND: Fail at the
-# strong end (-50 dB), Warning floor at the weak end (-80 dB).
-_OTDR_WARN_DEFAULT = {"midspan_reflectance": -80.0}
+# threshold, warning == fail).  None since Robert 2026-10-02: mid-span
+# reflectance was a WARN floor (-80) .. FAIL (-50) band and is now one number.
+_OTDR_WARN_DEFAULT = {}
 
-# Rows that are really a BAND rather than a fail/warning pair, and the label
-# each end carries in the panel.  The values stay in their semantic columns
-# — the strong end IS the fail threshold, the weak end IS the warning floor
-# — so nothing about the profiles, the key->global maps or the override path
-# changes.  What changes is that the panel now SAYS it is a band, which is
-# how the engine has described it since the row was introduced (see the
-# comment above) and how the unidirectional panel renders its own bands.
+# Rows that render as a BAND (two ends of one range) instead of a Fail /
+# Warning pair, with the label each end carries in the panel:
 #   ("weak end label", "strong end label")
-_OTDR_BAND_ROWS = {
-    "midspan_reflectance": ("Band Low", "Band High"),
-    # Launch/tailbox reflectance reads as a band for the same reason: a
-    # connector has an acceptable WINDOW, not a single edge.  -49.9 was
-    # calibrated for a fusion-spliced launch pigtail (Tulsa measures -51.8
-    # median, 0 of 60 flagged).  A mechanical connector legitimately reflects
-    # near -45 — two polished ferrules always leave an index step — so a
-    # tie-panel job reads -44.9 across every fiber (Reubensville: 60 fibers
-    # inside 0.15 dB) and every one of them trips a fusion-splice threshold.
-    # With a band the panel job sets the low end to -40 and only genuinely bad
-    # mates flag; FTH's -39.2 outliers still stand out at 12x the floor.
-    "reflectance": ("Band Low", "Band High"),
-}
+# None since Robert 2026-10-02 ("we don't need the band high/low"): both
+# reflectance rules are one number, at or above it is flagged.
+_OTDR_BAND_ROWS = {}
 
 # ── Customer threshold profiles ──────────────────────────────────────
 # Each entry is a named preset that overrides the per-row 'fail' values
@@ -5376,7 +5535,6 @@ CUSTOMER_PROFILES = {
         # Bidir splice 0.160, not the template's 0.15 (Robert 2026-09-26).
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -5396,7 +5554,6 @@ CUSTOMER_PROFILES = {
         # reflectance rows unticked.
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -5414,7 +5571,6 @@ CUSTOMER_PROFILES = {
         # bidir connector 0.5, reflectance -40, ORL 30, span end kept.
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -5433,7 +5589,6 @@ CUSTOMER_PROFILES = {
         # Only template with a 4th macrobend pair: 1550/1625 at 0.3 dB.
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -5452,7 +5607,6 @@ CUSTOMER_PROFILES = {
         # template of the set (rotary/mechanical splicing).
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -5470,7 +5624,6 @@ CUSTOMER_PROFILES = {
         # 0.5, reflectance -50, ORL 30, span end kept.
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -5488,7 +5641,6 @@ CUSTOMER_PROFILES = {
         # bidir splice 0.15, connectors 0.5, reflectance -50, ORL 30).
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -5508,7 +5660,6 @@ CUSTOMER_PROFILES = {
         # Widest warn-to-fail gaps of the set; the fail values grade here.
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -5532,7 +5683,6 @@ CUSTOMER_PROFILES = {
         # for MT.1085 deliverables; this one reproduces the FR template.
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -5550,7 +5700,6 @@ CUSTOMER_PROFILES = {
         # -50, ORL 30, span end kept.
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -5568,7 +5717,6 @@ CUSTOMER_PROFILES = {
         # -50, ORL 29, IncludeSpanEnd=False.
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "span_orl"},
         "thresholds": {
@@ -5627,7 +5775,6 @@ CUSTOMER_PROFILES = {
     "AWS / IIG MT.1085": {
         "apply":      {"unidir_splice_loss", "bidir_splice_loss",
                         "bidir_connector_loss", "reflectance",
-                        "reflectance_ceiling",
                         "midspan_reflectance", "bend_fold_distance",
                         "avg_splice_loss", "fiber_section_atten", "span_orl"},
         "thresholds": {
@@ -5739,18 +5886,15 @@ _OTDR_KEY_TO_ENGINE_GLOBAL = {
     "unidir_connector_loss": "LAUNCH_CONN_UNI_MIN_DB",
     "bidir_connector_loss": "BIDIR_CONNECTOR_LOSS",
     "reflectance":          "LAUNCH_BAD_REFL_DB",
-    "reflectance_ceiling":  "LAUNCH_REFL_CEIL_DB",
-    "midspan_reflectance":  "MIDSPAN_REFL_FAIL_DB",
-    "midspan_refl_ceiling": "MIDSPAN_REFL_CEIL_DB",
+    "midspan_reflectance":  "MIDSPAN_REFL_WARN_DB",   # one number: at or above flags
     "bend_fold_distance":   "BEND_SPLICE_FOLD_KM",
     "avg_splice_loss":      "AVG_SPLICE_LOSS_DB",
     "fiber_section_atten":  "FIBER_ATTEN_DB_KM",
     "span_orl":             "SPAN_ORL_MIN_DB",
 }
 # Rows that ALSO push a separate Warning-threshold global to the engine.
-_OTDR_KEY_TO_WARN_GLOBAL = {
-    "midspan_reflectance":  "MIDSPAN_REFL_WARN_DB",
-}
+# None since mid-span reflectance became one number (Robert 2026-10-02).
+_OTDR_KEY_TO_WARN_GLOBAL = {}
 # Loss rows whose Warning colours the Viewer's event panel ONLY (Robert
 # 2026-09-26): a reading at or over Warning but under Fail prints bright
 # yellow there.  The report and the uni report never see these -- the engine
@@ -5779,12 +5923,6 @@ _OTDR_DISABLE_SENTINEL = 1.0e9
 # behavior instead (75 m = CLOSURE_MATCH_KM, the pre-panel hard-wired gate).
 _OTDR_KEY_DISABLE_VALUE = {
     "bend_fold_distance": 0.075,
-    # Unticked ceiling = NO ceiling (0.0 sentinel — the engine only applies
-    # the band when the value is negative), NOT the 1e9 detection-off value.
-    "midspan_refl_ceiling": 0.0,
-    # Unticked ceiling = NO ceiling (0.0 sentinel — the engine only applies the
-    # band's top when the value is negative), NOT the 1e9 detection-off value.
-    "reflectance_ceiling": 0.0,
     # Unticked average-splice gate = OFF in the engine (0 = no sheet, no
     # Legend row).  The 1e9 sentinel would still compute and print a sheet
     # of all-PASS averages for every customer, which is not "off".
@@ -6441,19 +6579,16 @@ def _report_overrides():
 # OTDR Settings rows that mean the same thing on a one-direction shot, and
 # the Unidirectional engine global each one drives (Robert 2026-09-28):
 #   row key -> (which value of the row, Uni engine global)
-# An unticked row sends 0, the Uni engine's own "off" for all three: no
-# connector flag, no reflectance band, no ceiling.  The Default profile lands
-# exactly on the Uni engine's defaults (0.649, -80, 0), so a default Uni run
-# is unchanged; a customer profile's one-direction connector gate now reaches
-# Uni too.  These three globals left the Unidirectional box, so each still
-# has one control.
+# An unticked row sends 0, the Uni engine's own "off" for both: no
+# connector flag, no reflectance rule.  The Default profile lands exactly on
+# the Uni engine's defaults (0.649, -80), so a default Uni run is unchanged;
+# a customer profile's one-direction connector gate now reaches Uni too.
+# These globals left the Unidirectional box, so each still has one control.
 _OTDR_KEY_TO_UNI_GLOBAL = {
     'unidir_connector_loss': ('fail',    'UNI_CONN_LOSS_DB'),
-    # The band's weak end (its Warning column) is the floor the
-    # bidirectional report flags from (MIDSPAN_REFL_WARN_DB), and the Uni
-    # rule reads the same floor.
-    'midspan_reflectance':   ('warning', 'UNI_REFL_FLOOR_DB'),
-    'midspan_refl_ceiling':  ('fail',    'UNI_REFL_CEIL_DB'),
+    # The one number the bidirectional report flags from
+    # (MIDSPAN_REFL_WARN_DB); the Uni rule reads the same number.
+    'midspan_reflectance':   ('fail',    'UNI_REFL_FLOOR_DB'),
 }
 
 
@@ -7632,6 +7767,40 @@ def _sr_span_inputs(span):
     return dir_a, dir_b, tech_xlsx
 
 
+def _sr_span_problems(span, dir_a, dir_b):
+    """Why an added span cannot run yet, as the lines to show, or [] when
+    both its folders are there.  Every such span used to get "needs both an
+    A and a B folder", also one whose boxes were both filled in with a
+    folder that is not there (audit 2026-10-02).  A box with a path in it
+    is named the way the left panel names its own ("B folder not found:
+    <path>"); only an empty box is asked for."""
+    if dir_a and os.path.isdir(dir_a) and dir_b and os.path.isdir(dir_b):
+        return []
+    _k = f'sr{span}'
+    ss = st.session_state
+
+    def typed(key):
+        return (ss.get(key) or '').strip().strip('"')
+
+    needs_both = (f'Span {span} needs **both** an A and a B folder too, or '
+                  'remove it to run without it.')
+    if ss.get(f'{_k}_input_mode') == 'One folder / zip (both directions)':
+        one = typed(f'{_k}_one_folder')
+        if one and not os.path.exists(one) and not ss.get(f'{_k}_zip'):
+            return [f'Span {span}: folder not found: {one}']
+        return [needs_both]
+    lines, empty = [], False
+    for side, d in (('A', dir_a), ('B', dir_b)):
+        t = typed(f'{_k}_dir_{side.lower()}')
+        if not t:
+            empty = True
+        elif not d:                         # a .zip that would not open
+            lines.append(f'Span {span}: the {side} folder could not be read.')
+        elif not os.path.isdir(d):
+            lines.append(f'Span {span}: {side} folder not found: {t}')
+    return lines + [needs_both] if empty or not lines else lines
+
+
 def _same_direction_sites(dir_a, dir_b):
     """(origin, far end) when two different folders hold traces shot the
     same way, else None.  Read as the site boxes read a folder (_derive_ila),
@@ -8011,11 +8180,10 @@ def page_splice_report():
         return
     _remove_legacy_caches(dir_a)
     _remove_legacy_caches(dir_b)
-    _not_ready = [n for n, (a, b, *_r) in extra.items()
-                  if not (a and os.path.isdir(a) and b and os.path.isdir(b))]
-    if _not_ready:
-        st.info('Span ' + ', '.join(str(n) for n in _not_ready) + ' needs **both** an '
-                'A and a B folder too, or remove it to run without it.')
+    _problems = {n: _sr_span_problems(n, a, b) for n, (a, b, *_r) in extra.items()}
+    _not_ready = [n for n, p in _problems.items() if p]
+    for _n in _not_ready:
+        st.info('  \n'.join(_problems[_n]))
     _seen = {(dir_a, dir_b): 1}
     for _n, (_da, _db, *_r) in extra.items():
         if _n in _not_ready:
@@ -8312,11 +8480,11 @@ _UNI_ROWS = [
      'int': False,
      'help': 'How close an event must sit to a closure to count as at it.'},
 
-    # The mid-span reflectance band (UNI_REFL_FLOOR_DB / UNI_REFL_CEIL_DB)
+    # The mid-span reflectance number (UNI_REFL_FLOOR_DB)
     # and the one-direction connector gate (UNI_CONN_LOSS_DB) moved to the
     # OTDR Settings on 2026-09-28: the same rows there drive both reports
     # (_OTDR_KEY_TO_UNI_GLOBAL).  What they do on a Uni run is unchanged:
-    # a glint flags at or above the band's floor and below its ceiling, and
+    # a glint flags at or above the number, and
     # is confirmed as a spike in the raw trace; a connector flags at or above
     # the gate in the one direction shot, an upper bound on its true loss
     # because one direction cannot separate the backscatter step between the
@@ -8735,17 +8903,17 @@ def page_unidirectional():
     st.session_state.pop('_uni_removed_note', None)    # a slot from an earlier run
 
     # The OTDR Settings, same box as the Splice Report's and sharing its
-    # values (Robert 2026-09-28).  Three of its rows drive the Uni engine:
-    # the one-direction connector gate and the mid-span reflectance band
-    # with its ceiling (_OTDR_KEY_TO_UNI_GLOBAL).
+    # values (Robert 2026-09-28).  Two of its rows drive the Uni engine:
+    # the one-direction connector gate and the mid-span reflectance number
+    # (_OTDR_KEY_TO_UNI_GLOBAL).
     _render_profile_picker_box('unidirectional')
     # Blocks like the Splice Report (Robert 2026-09-28: "block uni too"): the
-    # three rows below reach the Uni engine, and a report at thresholds the
+    # two rows below reach the Uni engine, and a report at thresholds the
     # tech never saw is worse than no report.  Uni's own settings panel,
     # further down, blocks the same way.
     _settings_exc = _render_settings_box('unidirectional', blocks_report=True)
-    st.caption('Unidirectional reads three of these settings: Connector Loss '
-               '(1 Direction), Mid-Span Reflectance Band and Mid-Span Refl Ceiling. '
+    st.caption('Unidirectional reads two of these settings: Connector Loss '
+               '(1 Direction) and Mid-Span Reflectance. '
                'The others grade the bidirectional report.')
 
     # The page's own boxes keep what they show across a trip to another
@@ -9362,8 +9530,8 @@ def fec_cmd(dir_a, dir_b, out_xlsx, overrides=None):
 def _fec_resync(key):
     """Re-assign a box's value in THIS run, before it is drawn.  Streamlit
     sends a keyed box's value to the browser only when it was set during the
-    run that draws it; a value set on an earlier run (a Viewer FEC link sets
-    the folders on the Viewer FEC run, a carried save folder lands on the
+    run that draws it; a value set on an earlier run (an FEC row link sets
+    the folders on the Viewer's run, a carried save folder lands on the
     first run) is used by the page but shown as an EMPTY box."""
     if key in st.session_state:
         st.session_state[key] = st.session_state[key]
@@ -9419,7 +9587,7 @@ def _fec_same_gates(ran, now):
 
 
 def _fec_rows_html(rows, dir_a, dir_b):
-    """The FEC fails as a table whose rows open Viewer FEC on that fiber,
+    """The FEC fails as a table whose rows open the Viewer on that fiber,
     from its own end, zoomed to the panel connector.  Every cell of a row is
     the same link (Robert 2026-10-01: a click on a row jumps), so the whole
     row is the target, not just the fiber number."""
@@ -9449,7 +9617,7 @@ def _fec_rows_html(rows, dir_a, dir_b):
         comb = '; '.join(f"{c['loss']:.3f} @ {c['km']:.3f} km"
                          for c in r.get('combined') or [])
         link = (f"<a href='{_h.escape(href, quote=True)}' target='_self' "
-                f"title='Open F{r['fiber']} in Viewer FEC'")
+                f"title='Open F{r['fiber']} in the Viewer'")
         cells = [f"<b>{_h.escape(r['fiber_id'])}</b>",
                  r['failing_at'], r['distance'], r['side'],
                  'Reflectance' if r['kind'] == 'refl' else 'Loss',
@@ -9561,7 +9729,7 @@ def page_splice_report_fec():
         if _ran_boxes:
             manifest['_boxes'] = _ran_boxes
         st.session_state['fec_result'] = manifest
-        # A row click into Viewer FEC is a URL nav that wipes session_state:
+        # A row click into the Viewer is a URL nav that wipes session_state:
         # this is how the page shows the report again on the way back.
         try:
             _paths = [_hub_cache_path('fec_result_cache.json', dir_a, dir_b)]
@@ -9622,7 +9790,7 @@ def page_splice_report_fec():
                        'file(s), not graded.')
     rows = [r for s in sides for r in s.get('rows') or []]
     if rows:
-        st.caption('Click a row to open that fiber in Viewer FEC.')
+        st.caption('Click a row to open that fiber in the Viewer.')
         st.markdown(_fec_rows_html(rows, dir_a, dir_b), unsafe_allow_html=True)
     else:
         st.info('No fiber fails.')
@@ -9683,8 +9851,6 @@ try:
         page_splice_report()
     elif page == 'Splice Report FEC':
         page_splice_report_fec()
-    elif page == 'Viewer FEC':
-        page_viewer(fec=True)
     elif page == 'Unidirectional':
         page_unidirectional()
     elif page == 'FQA Builder':

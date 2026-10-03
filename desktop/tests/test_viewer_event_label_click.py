@@ -85,7 +85,9 @@ def test_right_clicking_a_number_opens_the_span_menu_for_that_event():
     fn = SRC.split("canvas.addEventListener('contextmenu'", 1)[1].split("});", 1)[0]
     assert "labelHit(ev.offsetX, ev.offsetY)" in fn
     assert "ev.preventDefault();" in fn
-    assert "showSpanMenu(ev.clientX, ev.clientY, lh.t.dir, lh.e.dist_km, lh.t.fiber, lh.t.src || lh.t.dir)" in fn
+    # a file's event number: its trace's direction at the event's own raw km
+    assert "[{ dir: lh.t.dir, km: lh.e.dist_km, fiber: lh.t.fiber, src: lh.t.src || lh.t.dir }]" in fn
+    assert "if (picks.length === 1) showSpanMenu(ev.clientX, ev.clientY, p.dir, p.km, p.fiber, p.src);" in fn
 
 
 def test_right_clicking_a_file_removes_it_from_the_list_and_the_viewer():

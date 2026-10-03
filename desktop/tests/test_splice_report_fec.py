@@ -217,39 +217,38 @@ def test_the_fec_page_draws_and_asks_for_a_folder():
     assert 'B End FEC (Optional) (Folder or .zip)' in labels
 
 
-# ── Viewer FEC tool (Robert 2026-10-01) ─────────────────────────────────
+# ── FEC shots load in the Viewer (Robert 2026-10-02: no separate Viewer
+#    FEC tool; the Viewer knows FEC shots by itself, "auto only") ──────────
 
 def _viewer_src(at):
     return next(e.proto.src for e in at.get('iframe')
                 if '127.0.0.1' in (e.proto.src or '') and 'host=' not in e.proto.src)
 
 
-def test_the_fec_viewer_is_the_viewer_locked_in_fec_mode():
+def test_there_is_no_separate_viewer_fec_tool():
+    import inspect
+    import app as hub
     from conftest import run_streamlit
     at = run_streamlit().run()
-    at.sidebar.radio[0].set_value('Viewer FEC').run()
     assert not at.exception, at.exception
-    # the heading at half the old #### size (Robert 2026-10-01)
-    assert any('font-size:0.75rem' in m.value and 'Viewer FEC</p>' in m.value
-               for m in at.markdown)
-    assert 'fec=1' in _viewer_src(at)
-    pop = [e.proto.srcdoc for e in at.get('iframe') if 'vpop2' in (e.proto.srcdoc or '')]
-    assert pop and '/?fec=1"' in pop[0]       # the pop-out window stays in FEC mode
-    at.sidebar.radio[0].set_value('Viewer').run()
-    assert not at.exception, at.exception
+    assert 'Viewer FEC' not in at.sidebar.radio[0].options
     assert 'fec=1' not in _viewer_src(at)
+    pop = [e.proto.srcdoc for e in at.get('iframe') if 'vpop2' in (e.proto.srcdoc or '')]
+    assert pop and 'fec=1' not in pop[0]
+    assert list(inspect.signature(hub.page_viewer).parameters) == []
 
 
-def test_only_the_fec_link_turns_fec_mode_on():
+def test_fec_mode_comes_from_the_files_not_an_address_or_a_switch():
     from conftest import VIEWER_DIR
     html = (VIEWER_DIR / 'viewer.html').read_text(encoding='utf-8')
-    assert "gFecMode = new URLSearchParams(location.search).get('fec') === '1';" in html
+    assert "get('fec')" not in html
     assert 'id="set-fec"' not in html
+    assert 'gFecMode = fecShots(gInfo);' in html
 
 
-# ── FEC report rows link into Viewer FEC ────────────────────────────────
+# ── FEC report rows link into the Viewer ────────────────────────────────
 
-def test_a_fec_row_click_opens_viewer_fec_on_that_fibre_and_end(tmp_path):
+def test_a_fec_row_click_opens_the_viewer_on_that_fibre_and_end(tmp_path):
     from conftest import run_streamlit
     fa, fb = tmp_path / 'endA', tmp_path / 'endB'
     fa.mkdir(); fb.mkdir()
@@ -264,11 +263,12 @@ def test_a_fec_row_click_opens_viewer_fec_on_that_fibre_and_end(tmp_path):
     at.run()
     assert not at.exception, at.exception
     ss = at.session_state
-    assert ss['nav_radio'] == 'Viewer FEC'
+    assert ss['nav_radio'] == 'Viewer'
     assert ss['view_dir_a_input'] == str(fa) and ss['view_dir_b_input'] == str(fb)
     assert ss['fec_dir_a'] == str(fa) + '.zip' and ss['fec_dir_b'] == str(fb)
     src = _viewer_src(at)
-    assert 'fec=1' in src and 'fiber=324' in src and 'dir=b' in src and 'km=1.006' in src
+    assert 'fec=1' not in src
+    assert 'fiber=324' in src and 'dir=b' in src and 'km=1.006' in src
     assert any(b.label == '← Back to Splice Report FEC' for b in at.button)
 
 
@@ -299,7 +299,7 @@ def test_fec_links_keep_the_traces_own_km():
 
 
 def test_the_fec_boxes_show_values_set_on_an_earlier_run():
-    """A Viewer FEC link sets the FEC folders on the Viewer FEC run, and a
+    """An FEC row link sets the FEC folders on the Viewer's run, and a
     carried save folder lands on the first run.  Streamlit sends a keyed
     box's value to the browser only when it was set in the run that draws
     it, so the page re-assigns all three right before drawing them (the
@@ -534,7 +534,7 @@ def test_clear_traces_clears_the_fec_page(tmp_path, monkeypatch):
 
 
 def test_clear_traces_after_a_row_click_forgets_the_fec_report(tmp_path, monkeypatch):
-    """A row click starts a new session on Viewer FEC; the report's saved
+    """A row click starts a new session on the Viewer; the report's saved
     copy is filed under the run's folders, which the link brings."""
     import json as _json
     import os
