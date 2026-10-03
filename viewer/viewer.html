@@ -875,10 +875,12 @@
           title="More controls to the right">&raquo;</button>
   </div>
 
-  <!-- Summary Report, then the chart's settings behind the gear, at the
-       bar's right end (Robert 2026-10-01). -->
+  <!-- Generate Report, then the chart's settings behind the gear, at the
+       bar's right end (Robert 2026-10-01).  One button for both reports
+       (Robert 2026-10-02): the Summary Report of the traces, or the OLTS
+       Report of a dropped PMT (.olts) file, by what is loaded. -->
   <div class="group" id="tb-right">
-    <button id="btn-report" title="Summary Report: the event table, then a page per fiber, as a PDF or an Excel workbook">Summary Report…</button>
+    <button id="btn-report" title="The Summary Report of the traces on the chart, or the OLTS Report of the PMT (.olts) file on the Measurements tab, as a PDF or an Excel workbook">Generate Report…</button>
     <button id="tb-gear" type="button" title="Chart settings"
             aria-haspopup="true" aria-expanded="false">&#9881;</button>
     <span id="tb-gear-menu" role="menu" hidden>
@@ -3921,7 +3923,9 @@ function ensureFileFacts(now) {
 let gFilesView = 'files';            // 'files' | 'fibers' | 'meas' (a dropped .olts)
 let gOlts = null;                    // the .olts the Measurements tab lists (olts_load's answer)
 let gOltsSort = null;                // { col, desc }
-let gOltsSel = null;                 // the identifier of the row clicked
+let gOltsSel = new Set();            // the rows selected (their `n`, as strings)
+let gOltsAnchor = null;              // where a Shift+click range starts
+const gOltsGone = new Set();         // rows removed from the tab (their `n`)
 try { if (localStorage.getItem('otdr_viewer_files_tab') === 'fibers') gFilesView = 'fibers'; } catch (e) {}
 let gFiberAnchor = null;             // as gFileAnchor / gFileFocus, a fibre at a time
 let gFiberFocus = null;
@@ -10959,6 +10963,18 @@ function closeReportDialog() {
 // above twice and stacked two dialogs; Cancel shut only the top one (audit
 // 2026-10-01).  Only the latest click builds one.
 let gReportDlgSeq = 0;
+// Generate Report (Robert 2026-10-02: "that button needs to know which
+// report to create based on what is loaded (traces or PMTs)").  PMTs alone:
+// the OLTS Report.  Traces alone, or nothing: the Summary Report (which says
+// what to load).  Both: the one the panel on the right is showing.
+function generateReportKind() {
+  if (!gOlts) return 'summary';
+  const traces = gTraces.some(t => t.visible) || gLoadingKeys.size > 0;
+  return !traces || gFilesView === 'meas' ? 'olts' : 'summary';
+}
+function generateReport() {
+  return generateReportKind() === 'olts' ? showOltsDialog(gOlts) : showReportDialog();
+}
 async function showReportDialog() {
   const seq = ++gReportDlgSeq;
   closeReportDialog();
@@ -10968,7 +10984,7 @@ async function showReportDialog() {
   if (!vis.length) {
     setReadout('', { warn: gLoadingKeys.size
       ? 'the traces are still loading: Summary Report opens once they are on the chart'
-      : 'load a trace first: the Summary Report is the event table on screen' });
+      : 'load a trace first (or drop a PMT .olts file): the Summary Report is the event table on screen' });
     return;
   }
   let dest = '';
@@ -11127,7 +11143,7 @@ async function handleOltsDrop(files) {
   if (!loaded.length) return;
   // The boss, 2026-10-02: the values on screen, in the panel on the right,
   // as FastReporter's Measurements panel shows them, and sortable.  The last
-  // .olts dropped is the one listed; Save Report… there writes the files.
+  // .olts dropped is the one listed; Generate Report… writes the files.
   showOltsMeasurements(loaded[loaded.length - 1]);
   if (loaded.length > 1) {
     setReadout(`${loaded.length} .olts files dropped: Measurements lists the last one, `
@@ -11137,7 +11153,9 @@ async function handleOltsDrop(files) {
 function showOltsMeasurements(info) {
   gOlts = info;
   gOltsSort = null;
-  gOltsSel = null;
+  gOltsSel = new Set();
+  gOltsAnchor = null;
+  gOltsGone.clear();
   gFilesView = 'meas';
   if (window.filesPanelAtLeast) window.filesPanelAtLeast(640);
   renderFilesPanel();
@@ -11210,31 +11228,74 @@ function oltsCell(c, r, graded, esc) {
 function renderMeasView(list, esc) {
   const info = gOlts;
   const cols = oltsCols(info);
-  const rows = oltsSortRows(info.rows || [], cols, gOltsSort);
+  const rows = oltsSortRows(oltsRowsLeft(info), cols, gOltsSort);
   const graded = !!info.status;
+  const status = oltsStatusLeft(info, rows);
   const mark = c => gOltsSort && gOltsSort.col === c.k ? (gOltsSort.desc ? ' ▼' : ' ▲') : '';
   const tip = c => c.kind === 'text' ? 'click to sort A to Z, again for Z to A; right-click for both'
                                      : 'click to sort highest first, again for lowest first; right-click for both';
   list.innerHTML = `<div class="olts-bar"><span class="olts-file" title="${esc(info.job || '')}">${esc(info.file)}</span>`
-    + (info.status ? `<span class="olts-${info.status.toLowerCase()}">${esc(info.status)}</span>` : '')
-    + `<button type="button" data-olts="save" title="Save these results as an Excel workbook or a PDF">Save Report…</button>`
-    + `<button type="button" data-olts="close" title="Close this .olts">Close</button></div>`
+    + (status ? `<span class="olts-${status.toLowerCase()}">${esc(status)}</span>` : '')
+    + `<button type="button" data-olts="close" title="Empty the Measurements tab">Close</button></div>`
     + `<table class="olts-meas"><thead><tr>`
     + cols.map(c => `<th data-col="${c.k}" data-kind="${c.kind}"${gOltsSort && gOltsSort.col === c.k ? ' class="sorted"' : ''}`
                     + ` title="${tip(c)}">${esc(c.t)}${mark(c)}</th>`).join('')
     + `</tr></thead><tbody>`
-    + rows.map(r => `<tr data-id="${esc(r.id)}"${r.id === gOltsSel ? ' class="sel"' : ''}>`
+    + rows.map(r => `<tr data-id="${esc(r.id)}" data-n="${r.n}"${gOltsSel.has(String(r.n)) ? ' class="sel"' : ''}>`
                     + cols.map(c => oltsCell(c, r, graded, esc)).join('') + `</tr>`).join('')
     + `</tbody></table>`;
   document.getElementById('files-count').textContent =
-    `${rows.length} fiber${rows.length === 1 ? '' : 's'}`;
+    `${rows.length} fiber${rows.length === 1 ? '' : 's'}`
+    + (gOltsSel.size ? `, ${gOltsSel.size} selected` : '')
+    + (gOltsGone.size ? ` (${gOltsGone.size} removed)` : '');
+}
+// The rows still on the tab, and the verdict of those alone: a failing
+// fiber removed takes its Fail with it, as the report it saves does.
+function oltsRowsLeft(info) {
+  return (info.rows || []).filter(r => !gOltsGone.has(r.n));
+}
+function oltsStatusLeft(info, rows) {
+  if (!info.status) return '';
+  return rows.some(r => r.pf === 'fail') ? 'Fail' : 'Pass';
+}
+// The rows' keys in the order the tab shows them (a Shift+click range runs
+// down the screen, not down the file).
+function oltsRowKeys() {
+  return oltsSortRows(oltsRowsLeft(gOlts), oltsCols(gOlts), gOltsSort).map(r => String(r.n));
+}
+// Empty the Measurements tab (Close, Remove All, Clear All).
+function closeOlts() {
+  gOlts = null;
+  gOltsSort = null;
+  gOltsSel = new Set();
+  gOltsAnchor = null;
+  gOltsGone.clear();
+  if (gFilesView === 'meas') gFilesView = 'files';
+  renderFilesPanel();
+}
+// Take fibers off the tab; the last one gone empties it.
+function removeOltsRows(ns) {
+  if (!gOlts) return;
+  for (const n of ns) gOltsGone.add(+n);
+  const left = oltsRowsLeft(gOlts);
+  if (!left.length) { closeOlts(); setReadout('Measurements emptied'); return; }
+  for (const n of ns) gOltsSel.delete(String(n));
+  if (!gOltsSel.has(gOltsAnchor)) gOltsAnchor = null;
+  renderFilesPanel();
+  setReadout(`${ns.length} fiber${ns.length === 1 ? '' : 's'} removed from Measurements`
+             + ` · ${left.length} left`);
+}
+function putBackOltsRows() {
+  const k = gOltsGone.size;
+  gOltsGone.clear();
+  renderFilesPanel();
+  setReadout(`${k} fiber${k === 1 ? '' : 's'} put back in Measurements`);
 }
 filesList.addEventListener('click', (ev) => {
   if (gFilesView !== 'meas' || !gOlts) return;
   const btn = ev.target.closest('button[data-olts]');
   if (btn) {
-    if (btn.dataset.olts === 'save') showOltsDialog(gOlts);
-    else { gOlts = null; gFilesView = 'files'; renderFilesPanel(); }
+    closeOlts();
     return;
   }
   const th = ev.target.closest('th[data-col]');
@@ -11245,23 +11306,95 @@ filesList.addEventListener('click', (ev) => {
     renderFilesPanel();
     return;
   }
-  const tr = ev.target.closest('tbody tr[data-id]');
+  const tr = ev.target.closest('tbody tr[data-n]');
   if (!tr) return;
-  gOltsSel = gOltsSel === tr.dataset.id ? null : tr.dataset.id;
-  for (const el of filesList.querySelectorAll('tbody tr.sel')) el.classList.remove('sel');
-  if (gOltsSel) tr.classList.add('sel');
+  // The Files tab's rules (Robert 2026-10-02: "select all or some and
+  // remove them"): a click picks one, Ctrl/Cmd+click adds or drops one,
+  // Shift+click a range; a click on the only row picked lets it go.
+  gOltsSel = oltsClickSelection(oltsRowKeys(), gOltsSel, gOltsAnchor, tr.dataset.n,
+                                ev.shiftKey, ev.ctrlKey || ev.metaKey);
+  if (!ev.shiftKey) gOltsAnchor = gOltsSel.has(tr.dataset.n) ? tr.dataset.n : null;
+  renderFilesPanel();
+});
+function oltsClickSelection(keys, sel, anchor, key, shift, ctrl) {
+  if (!shift && sel.size === 1 && sel.has(key)) return new Set();
+  const s = fileClickSelection(keys, sel, shift && keys.includes(anchor) ? anchor : null,
+                               key, shift, ctrl);
+  return s ? s.want : new Set();                 // Ctrl+click on the last one picked
+}
+// Ctrl/Cmd+A picks every row (the window's handler sends it here on this
+// tab); Delete or Backspace removes the rows picked.
+function selectAllOlts() {
+  const keys = oltsRowKeys();
+  gOltsSel = new Set(keys);
+  gOltsAnchor = keys[0] || null;
+  renderFilesPanel();
+}
+filesList.addEventListener('keydown', (ev) => {
+  if (gFilesView !== 'meas' || !gOlts) return;
+  if ((ev.key === 'Delete' || ev.key === 'Backspace') && gOltsSel.size) {
+    ev.preventDefault();
+    removeOltsRows([...gOltsSel].map(Number));
+  }
 });
 // A right-click on a heading: the two sorts by name (the boss, 2026-10-02:
 // "right click on any column header ... sort high to low or sort low to
 // high").  Words sort A to Z / Z to A.
+// Anywhere else on the tab (Robert 2026-10-02: "we dont have right click in
+// power meters and we can't empty them"): the fiber menu, Remove This Fiber,
+// Put Back, Generate Report… and Remove All.  A row right-clicked is selected
+// first, as on the Files tab, so the highlight and the menu agree.
 filesList.addEventListener('contextmenu', (ev) => {
   if (gFilesView !== 'meas' || !gOlts) return;
-  const th = ev.target.closest('th[data-col]');
-  if (!th) return;
   ev.preventDefault();
-  showOltsSortMenu(ev.clientX, ev.clientY, th.dataset.col, th.dataset.kind,
-                   th.textContent.replace(/ [▲▼]$/, ''));
+  const th = ev.target.closest('th[data-col]');
+  if (th) {
+    showOltsSortMenu(ev.clientX, ev.clientY, th.dataset.col, th.dataset.kind,
+                     th.textContent.replace(/ [▲▼]$/, ''));
+    return;
+  }
+  const tr = ev.target.closest('tbody tr[data-n]');
+  if (tr && !gOltsSel.has(tr.dataset.n)) {
+    gOltsSel = new Set([tr.dataset.n]);
+    gOltsAnchor = tr.dataset.n;
+    renderFilesPanel();
+  }
+  showOltsRowMenu(ev.clientX, ev.clientY, tr ? +tr.dataset.n : null, tr ? tr.dataset.id : '');
 });
+function showOltsRowMenu(x, y, n, id) {
+  closeSpanMenu();
+  const m = document.createElement('div');
+  m.id = 'span-menu';
+  const left = oltsRowsLeft(gOlts).length;
+  const gone = gOltsGone.size;
+  const picked = [...gOltsSel].map(Number);
+  const clean = s => String(s).replace(/[&<>"]/g, '');
+  m.innerHTML = `<div class="span-menu-hd">${clean(gOlts.file || 'Measurements')}`
+    + `${picked.length > 1 ? ` (${picked.length} Selected)` : ''}</div>`
+    + (picked.length > 1
+       ? `<button data-act="remove">Remove ${picked.length} Selected Fibers</button>`
+       : n != null ? `<button data-act="remove">Remove This Fiber (${clean(id)})</button>` : '')
+    + (picked.length < left ? `<button data-act="selall">Select All ${left} Fibers</button>` : '')
+    + (gone ? `<button data-act="putback">Put Back ${gone} Removed Fiber${gone === 1 ? '' : 's'}</button>` : '')
+    + `<button data-act="save">Generate Report…</button>`
+    + `<button data-act="all" title="empty the Measurements tab">`
+    + `Remove All ${left} Fiber${left === 1 ? '' : 's'}</button>`;
+  document.body.appendChild(m);
+  m.style.left = Math.max(8, Math.min(x, window.innerWidth - m.offsetWidth - 8)) + 'px';
+  m.style.top = Math.max(8, Math.min(y, window.innerHeight - m.offsetHeight - 8)) + 'px';
+  m.querySelectorAll('button[data-act]').forEach(b => {
+    b.onclick = () => {
+      closeSpanMenu();
+      const act = b.dataset.act;
+      if (act === 'remove') removeOltsRows(picked.length > 1 ? picked : [n]);
+      else if (act === 'selall') selectAllOlts();
+      else if (act === 'putback') putBackOltsRows();
+      else if (act === 'save') showOltsDialog(gOlts);
+      else { closeOlts(); setReadout('Measurements emptied'); }
+    };
+  });
+  setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
+}
 function showOltsSortMenu(x, y, col, kind, label) {
   closeSpanMenu();
   const text = kind === 'text';
@@ -11284,23 +11417,34 @@ function showOltsSortMenu(x, y, col, kind, label) {
   setTimeout(() => document.addEventListener('click', closeSpanMenu, { once: true }), 0);
 }
 function showOltsDialog(info) {
+  const seq = ++gReportDlgSeq;
   closeReportDialog();
   return new Promise(async (resolve) => {
     let dest = '';
     try { dest = (await (await fetch('/api/report_defaults')).json()).dest || ''; } catch (e) {}
+    if (seq !== gReportDlgSeq) { resolve(); return; }   // a later click builds it
     const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
     const bg = document.createElement('div'); bg.id = 'report-dlg-bg';
     const d = document.createElement('div'); d.id = 'report-dlg';
     const wls = (info.wavelengths || []).join(' / ');
     const mins = Object.values(info.orl_min || {}).filter(v => v != null);
+    // What the report will hold: the fibers still on the Measurements tab.
+    const rows = info.rows ? oltsRowsLeft(info) : null;
+    const nFibers = rows ? rows.length : info.fibers;
+    const status = rows ? oltsStatusLeft(info, rows) : info.status;
+    const fails = rows
+      ? rows.reduce((k, r) => k + Object.values(r.wl || {}).reduce(
+          (j, w) => j + (w.orl_a_fail ? 1 : 0) + (w.orl_b_fail ? 1 : 0), 0), 0)
+      : info.orl_fails;
     const orlLine = mins.length
-      ? `ORL below ${Number(mins[0]).toFixed(2)} dB: ${info.orl_fails} reading${info.orl_fails === 1 ? '' : 's'}`
+      ? `ORL below ${Number(mins[0]).toFixed(2)} dB: ${fails} reading${fails === 1 ? '' : 's'}`
       : 'no ORL threshold in the file';
     const stem = String(info.file || 'OLTS').replace(/\.olts$/i, '');
     d.innerHTML = `<h3>OLTS Report</h3>`
-      + `<div class="sub">${esc(info.file)}: ${info.fibers} fiber${info.fibers === 1 ? '' : 's'}`
+      + `<div class="sub">${esc(info.file)}: ${nFibers} fiber${nFibers === 1 ? '' : 's'}`
+      + (rows && gOltsGone.size ? ` (${gOltsGone.size} removed, left out)` : '')
       + (wls ? `, ${esc(wls)} nm` : '') + (info.job ? `, ${esc(info.job)}` : '') + `</div>`
-      + `<div class="sub">${esc(orlLine)}${info.status ? `, ${esc(info.status)}` : ''}</div>`
+      + `<div class="sub">${esc(orlLine)}${status ? `, ${esc(status)}` : ''}</div>`
       + `<div class="scope"><label title="one row per fiber with a filter on every column, to sort">`
       + `<input type="radio" name="olts-fmt" value="xlsx" checked> Excel</label>`
       + `<label title="laid out like EXFO's OLTS Report"><input type="radio" name="olts-fmt" value="pdf"> PDF</label></div>`
@@ -11338,7 +11482,8 @@ function showOltsDialog(info) {
     const write = async (fmt, name, where) => {
       const r = await fetch('/api/olts_report', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: info.token, format: fmt, name, dest: where }),
+        body: JSON.stringify({ token: info.token, format: fmt, name, dest: where,
+                               leave_out: [...gOltsGone] }),
       });
       const j = await r.json();
       if (!r.ok || j.error) throw new Error(j.error || ('server said ' + r.status));
@@ -11699,7 +11844,8 @@ window.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape' && document.getElementById('span-menu')) { closeSpanMenu(); return; }
   if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'a' || ev.key === 'A')) {
     ev.preventDefault();
-    selectAllFiles();
+    if (gFilesView === 'meas' && gOlts) selectAllOlts();   // the fibers on show
+    else selectAllFiles();
     return;
   }
   const r = plotRect();
@@ -11726,7 +11872,12 @@ function clearMarkers() {
 
 // ─── Toolbar wiring ───────────────────────────────────────────────────
 document.getElementById('btn-add').onclick = addFibers;
-document.getElementById('btn-clear').onclick = clearAll;
+// Clear All empties the Measurements tab too (Robert 2026-10-02: "we can't
+// empty them"); the tab's own Close and Remove All do it alone.
+document.getElementById('btn-clear').onclick = () => {
+  clearAll();
+  if (gOlts) closeOlts();
+};
 document.getElementById('btn-fit').onclick = fit;
 document.getElementById('btn-fit-x').onclick = fitX;
 document.getElementById('btn-fit-y').onclick = fitY;
@@ -11734,7 +11885,7 @@ document.getElementById('btn-zoom-in').onclick  = () => { const r = plotRect(); 
 document.getElementById('btn-zoom-out').onclick = () => { const r = plotRect(); zoomAt(r.x + r.w/2, 1.25); };
 document.getElementById('btn-markers').onclick = toggleMarkerMode;
 document.getElementById('btn-markers-clear').onclick = clearMarkers;
-document.getElementById('btn-report').onclick = showReportDialog;
+document.getElementById('btn-report').onclick = generateReport;
 // Not counted on the gear, like the pin: they hide nothing in the table.
 // One or the other: ticking one unticks the other.
 function setEventLabels(all, failed) {
