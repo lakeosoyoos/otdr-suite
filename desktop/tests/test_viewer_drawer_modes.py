@@ -197,12 +197,12 @@ def test_bidi_chart_numbers_print_on_the_a_trace():
     on the A->B reading only; a B->A tick keeps it for the hover tip."""
     assert "function bidiMarkTip(dir) { return dir === 'b'; }" in SRC
     fr = _fn("paintFrBidiGrid")
-    assert "tableMark(t, Number(leg.pos_m) / 1000, `Event ${i + 1}`, bidiMarkTip(w));" in fr
+    assert "tableMark(t, Number(leg.pos_m) / 1000, `Event ${i + 1}`, bidiMarkTip(w), true);" in fr
     suite = _fn("paintSuiteBidiGrid")
     # the Unidirectional report's B-only table has no A->B trace: B keeps it
-    assert "tableMark(have[fi].tb, x.b.km, c.title, !!have[fi].ta && bidiMarkTip('b'));" in suite
+    assert "tableMark(have[fi].tb, x.b.km, c.title, !!have[fi].ta && bidiMarkTip('b'), bidi);" in suite
     draw = _fn("drawEventMarkers")
-    assert "if (col && col.tipOnly) {" in draw
+    assert "if (col && (col.tipOnly || (numKey && t.key !== numKey))) {" in draw
 
 
 # ─── the real functions, in JavaScriptCore ───────────────────────────────
@@ -576,3 +576,28 @@ print(JSON.stringify({aRight: a.x0 > ax, aAbove: a.y1 <= yToPx(-1.0, R),   // th
                       bRight: b.x0 > bx}));
 """)
     assert res == {"aRight": True, "aAbove": True, "bRight": True}
+
+
+def test_bidi_chart_numbers_print_on_one_fibres_a_trace():
+    """Robert 2026-10-03: FastReporter numbers the current fibre's A->B events
+    only (drop audit S01, S05, S08: its chart's numbers are exactly fibre 1's
+    A->B events).  The current fibre is the picked one, from either of its
+    rows or directions, else the first the table lists that is shown."""
+    num = _fn("bidiNumberKey")
+    assert "const row = shown.find(ks => ks.some(k => k && isPicked(k))) || shown[0];" in num
+    for name in ("paintFrBidiGrid", "paintSuiteBidiGrid"):
+        assert "gBidiNumberKeys = shown.filter(fi => have[fi].ta).map(fi => [have[fi].ta.key, have[fi].tb ? have[fi].tb.key : null]);" in _fn(name), name
+    # no table set yet: nothing is held back (every trace numbers its own)
+    assert "const numKey = col && col.bidi ? bidiNumberKey() : null;" in _fn("drawEventMarkers")
+    assert "gBidiNumberKeys = null;" in _fn("tableMarkReset")
+
+
+def test_an_unpaired_row_prints_frs_own_section():
+    """Robert 2026-10-03: a file listed with no partner prints FastReporter's
+    stored Section record (S08 fibre 3: 1.029, where length x the rounded
+    slope gave 1.031); a mirrored trace's section starts at the next row's
+    event in its own frame."""
+    fr = _fn("paintFrBidiGrid")
+    assert "const own = isFlipped(t) ? n.e : e;" in fr
+    assert "if (own.sec_loss != null && own.sec_len_km > 0) {" in fr
+    assert "[w]: { loss: own.sec_loss, att_db_km: own.sec_loss / own.sec_len_km } };" in fr

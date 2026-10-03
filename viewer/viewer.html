@@ -5569,6 +5569,7 @@ function upperBound(arr, v) {
 function tableKmKey(km) { return Math.round(Number(km) * 1e4); }
 function tableMarkReset(traces) {
   gTableKm = new Map();
+  gBidiNumberKeys = null;
   for (const t of traces) if (t) gTableKm.set(t, new Map());
 }
 function tableColumnNumber(title) {
@@ -5577,12 +5578,12 @@ function tableColumnNumber(title) {
 }
 // `tipOnly`: the column's number is the A->B reading's to print (see
 // bidiMarkTip); this trace's tick keeps it for the hover tip only.
-function tableMark(t, km, title, tipOnly = false) {
+function tableMark(t, km, title, tipOnly = false, bidi = false) {
   if (!t || km == null || !Number.isFinite(Number(km))) return;
   let s = gTableKm.get(t);
   if (!s) gTableKm.set(t, s = new Map());
   const k = tableKmKey(km);
-  if (!s.has(k)) s.set(k, { title: title == null ? '' : String(title), num: tableColumnNumber(title), tipOnly });
+  if (!s.has(k)) s.set(k, { title: title == null ? '' : String(title), num: tableColumnNumber(title), tipOnly, bidi });
 }
 // In a two-direction table a column's number prints on the A->B trace only,
 // as FastReporter prints it (Robert 2026-10-02: "only show numbers from the
@@ -5590,6 +5591,21 @@ function tableMark(t, km, title, tipOnly = false) {
 // its tick, with the number on its hover tip, even in a column no A->B
 // reading shares.
 function bidiMarkTip(dir) { return dir === 'b'; }
+// And of the A->B traces, ONE fibre's: FastReporter numbers the current
+// measurement's own events (drop audit S05 and S08: its chart's numbers are
+// exactly fibre 1's A->B events, 10 of S05's 23 columns), every other tick
+// keeping its number on the hover tip.  The current fibre is the picked one,
+// else the first the table lists that is shown; a pick of either direction
+// of a fibre numbers its A->B.  `gBidiNumberKeys` is the table's rows in
+// order, each [A->B key, B->A key or null]; null when no two-direction table
+// is up (every trace then numbers its own, as before).
+let gBidiNumberKeys = null;
+function bidiNumberKey() {
+  if (!gBidiNumberKeys || !gBidiNumberKeys.length) return null;
+  const shown = gBidiNumberKeys.filter(([k]) => { const t = gTraces.find(x => x.key === k); return t && t.visible; });
+  const row = shown.find(ks => ks.some(k => k && isPicked(k))) || shown[0];
+  return row ? row[0] : null;
+}
 function inTable(t, e) {
   const s = gTableKm && gTableKm.get(t);
   return !s || s.has(tableKmKey(e.dist_km));
@@ -5765,7 +5781,8 @@ function drawEventMarkers(t, r) {
     // trace or per fibre): the first trace to place it keeps it, A->B before
     // B->A; every other trace's tick at that column keeps the number for the
     // hover tip.  A trace no table has taken counts, and prints, its own.
-    if (col && col.tipOnly) {
+    const numKey = col && col.bidi ? bidiNumberKey() : null;
+    if (col && (col.tipOnly || (numKey && t.key !== numKey))) {
       gLabelHits.push({ x0: px - 4, x1: px + 4, y0: py - 10, y1: py + 10, t, e,
                         hiddenText: label, hiddenColor: color });
       continue;
@@ -6146,30 +6163,39 @@ function drawPairing(sets, r, failedOnly = false) {
   return covered;
 }
 
-// The A+B pairs of one span's traces: per listed fibre id, its A with its B
-// (a copy row, "12 (copy 2)", has an id of its own and pairs with the
-// other side's same copy).  A file set to the other direction than its
-// folder's meets the folder's own file there: the folder's own pairs first,
-// and every trace left over is a single, listed in the same table in fibre
-// order with no Average row (paintFrBidiGrid) -- every trace shows its
-// events and losses, in one panel, as FastReporter shows them (Robert
-// 2026-10-02).  `tkey` names the pair's table: the fibre for span 1's own A
-// and B, as ever, else 'fibre:srcA:srcB'.
+// The A+B pairs of one span's traces: per FIBRE, its A->B files with its
+// B->A files, the folder's own first and then in copy order (a copy row,
+// "12 (copy 2)", has an id of its own).  Pairing by the fibre, not the id,
+// is what lets a file the tech sets to its right direction meet its partner,
+// as FastReporter re-pairs the moment Direction is changed (drop audit S05;
+// Robert 2026-10-03): fibre 3's B file loaded on A as "3 (copy 2)" and set
+// back to B->A pairs with the A folder's own fibre 3.  Every trace left over
+// is a single, listed in the same table in fibre order with no Average row
+// (paintFrBidiGrid).  `tkey` names the pair's table: the fibre for span 1's
+// own A and B of one id, as ever, else 'idA:srcA:srcB' plus ':idB' when the
+// two ids differ.
 function pairTraces(traces) {
   const by = new Map();
   for (const t of traces) {
-    const g = by.get(t.fiber) || { a: [], b: [] };
+    const f = realFiber(t.fiber);
+    const g = by.get(f) || { a: [], b: [] };
     g[t.dir].push(t);
-    by.set(t.fiber, g);
+    by.set(f, g);
   }
+  const own = (w, t) => t.src[0] !== w;
+  const ord = (w) => (x, y) => (own(w, x) - own(w, y)) || (Number(x.fiber) - Number(y.fiber));
   const pairs = [], singles = [];
-  for (const [fiber, g] of by) {
-    g.a.sort((x, y) => (x.src[0] !== 'a') - (y.src[0] !== 'a'));
-    g.b.sort((x, y) => (x.src[0] !== 'b') - (y.src[0] !== 'b'));
+  for (const g of by.values()) {
+    g.a.sort(ord('a'));
+    g.b.sort(ord('b'));
     const n = Math.min(g.a.length, g.b.length);
     for (let k = 0; k < n; k++) {
       const ta = g.a[k], tb = g.b[k];
-      const tkey = (ta.src === 'a' && tb.src === 'b') ? String(fiber) : `${fiber}:${ta.src}:${tb.src}`;
+      // the row is the fibre's own when either file is (F3, not F3 (copy 2))
+      const fiber = ta.fiber === tb.fiber ? ta.fiber
+        : (Number(ta.fiber) <= Number(tb.fiber) ? ta.fiber : tb.fiber);
+      const tkey = (ta.src === 'a' && tb.src === 'b' && ta.fiber === tb.fiber) ? String(fiber)
+        : `${ta.fiber}:${ta.src}:${tb.src}` + (ta.fiber === tb.fiber ? '' : `:${tb.fiber}`);
       pairs.push({ fiber, ta, tb, tkey });
     }
     singles.push(...g.a.slice(n), ...g.b.slice(n));
@@ -6177,11 +6203,11 @@ function pairTraces(traces) {
   return { pairs, singles };
 }
 // The /api/fr_table query for `pairs`: by fibre when every pair is span 1's
-// own A and B, else each pair's two sources.
+// own A and B, else each pair's two sources (and B's id when it differs).
 function frTableQuery(pairs) {
   return pairs.every(p => p.tkey === String(p.fiber))
     ? `fibers=${pairs.map(p => p.fiber).join(',')}`
-    : `pairs=${pairs.map(p => `${p.fiber}:${p.ta.src}:${p.tb.src}`).join(',')}`;
+    : `pairs=${pairs.map(p => p.tkey === String(p.fiber) ? `${p.fiber}:a:b` : p.tkey).join(',')}`;
 }
 
 // Take the panel to one cell: row `fi`'s line for `which` ('a', 'b' or
@@ -8599,10 +8625,23 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       const n = evs[k + 1];
       let section = null;
       if (n) {
+        // FastReporter's own Section record (sec_loss, sec_len_km: see the
+        // trace server), the one that STARTS at the nearer event in the
+        // file's own frame -- a mirrored trace runs the other way, so that
+        // is the next row's event.  FR prints it: fibre 3's B file in the
+        // drop audit's S08 reads 1.029 there, where length x the stored
+        // slope (rounded to 0.001 dB/km) gave 1.031.  Without EXFO's block
+        // the slope stands in, as before.
+        const own = isFlipped(t) ? n.e : e;
         const len = Math.abs(n.e.dist_km - e.dist_km);
-        const att = isFlipped(t) ? e.slope : n.e.slope;
-        const ok = len > 0 && att != null && !isNaN(att) && att !== 0;
-        section = { length_m: len * 1000, [w]: { loss: ok ? len * att : null, att_db_km: ok ? att : null } };
+        if (own.sec_loss != null && own.sec_len_km > 0) {
+          section = { length_m: own.sec_len_km * 1000,
+                      [w]: { loss: own.sec_loss, att_db_km: own.sec_loss / own.sec_len_km } };
+        } else {
+          const att = isFlipped(t) ? e.slope : n.e.slope;
+          const ok = len > 0 && att != null && !isNaN(att) && att !== 0;
+          section = { length_m: len * 1000, [w]: { loss: ok ? len * att : null, att_db_km: ok ? att : null } };
+        }
       }
       return { mean_pos_m: km * 1000, type, loss: null, solo: w, [w]: leg, section };
     });
@@ -8632,7 +8671,7 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     for (const [w, t] of [['a', have[fi].ta], ['b', have[fi].tb]]) {
       const leg = x.row[w];
       if (leg && !leg.synthetic && leg.pos_m != null) {
-        tableMark(t, Number(leg.pos_m) / 1000, `Event ${i + 1}`, bidiMarkTip(w));
+        tableMark(t, Number(leg.pos_m) / 1000, `Event ${i + 1}`, bidiMarkTip(w), true);
       }
     }
   }));
@@ -8864,6 +8903,8 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
     ? ((!collapse || legKept(fi, have[fi].solo)) ? [[fi, have[fi].solo]] : [])
     : ['a', 'b', 'avg'].filter(w => (!collapse || w === 'avg' || legKept(fi, w))
                                  && (collapse || !gAvgOnly || w === 'avg')).map(w => [fi, w]));
+  // The chart numbers one fibre's A->B trace, in this order (bidiNumberKey).
+  gBidiNumberKeys = shown.filter(fi => have[fi].ta).map(fi => [have[fi].ta.key, have[fi].tb ? have[fi].tb.key : null]);
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;
@@ -9539,8 +9580,9 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   // number prints on the A->B trace (bidiMarkTip).
   cols.forEach(c => c.ev.forEach((x, fi) => {
     if (!x) return;
-    if (x.a && x.a.km != null) tableMark(have[fi].ta, x.a.km, c.title);
-    if (x.b && x.b.km != null) tableMark(have[fi].tb, x.b.km, c.title, !!have[fi].ta && bidiMarkTip('b'));
+    const bidi = !!have[fi].ta && !!have[fi].tb;
+    if (x.a && x.a.km != null) tableMark(have[fi].ta, x.a.km, c.title, false, bidi);
+    if (x.b && x.b.km != null) tableMark(have[fi].tb, x.b.km, c.title, !!have[fi].ta && bidiMarkTip('b'), bidi);
   }));
   draw();                                  // painted after a fetch: the chart follows
   const fmt  = v => (v == null || isNaN(v)) ? '---' : v.toFixed(3);
@@ -9746,6 +9788,8 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
   const descs = shown.flatMap(fi => LEGS
     .filter(w => oneDir || ((!collapse || w === 'avg' || legKept(fi, w))
               && (collapse || !gAvgOnly || w === 'avg'))).map(w => [fi, w]));
+  // The chart numbers one fibre's A->B trace, in this order (bidiNumberKey).
+  if (!oneDir) gBidiNumberKeys = shown.filter(fi => have[fi].ta).map(fi => [have[fi].ta.key, have[fi].tb ? have[fi].tb.key : null]);
   const rowHtml = ([fi, which]) => {
     const p = have[fi];
     const t = which === 'b' ? p.tb : p.ta;

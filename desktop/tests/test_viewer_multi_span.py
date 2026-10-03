@@ -96,6 +96,20 @@ var p = pairTraces([T('a', 241), T('a', 100241), T('b', 241), T('b', 100241), T(
 out.pairs = p.pairs.map(function (x) { return [x.fiber, x.ta.src, x.tb.src, x.tkey]; });
 out.singles = p.singles.map(function (t) { return t.key; });
 out.q_span1 = frTableQuery(p.pairs);
+// a file set to its right direction meets its partner by the FIBRE: fibre
+// 3's B file loaded on A as "3 (copy 2)" and set back to B->A (drop audit
+// S05), and the A file loaded on B and set back to A->B (S08)
+gCopies = { '100003': [3, 2], '100241': [241, 2] };
+var p3 = pairTraces([T('a', 1), T('b', 1), T('a', 3), T('a', 100003, 'b')]);
+out.fix_s05 = p3.pairs.map(function (x) { return [x.fiber, x.ta.key, x.tb.key, x.tkey]; });
+out.fix_s05_singles = p3.singles.length;
+out.fix_s05_q = frTableQuery(p3.pairs);
+var p4 = pairTraces([T('b', 3, 'a'), T('b', 100003)]);
+out.fix_s08 = p4.pairs.map(function (x) { return [x.fiber, x.ta.key, x.tb.key, x.tkey]; });
+// copies on both sides still pair copy with copy
+var p5 = pairTraces([T('a', 241), T('a', 100241), T('b', 241), T('b', 100241)]);
+out.copies = p5.pairs.map(function (x) { return [x.ta.key, x.tb.key, x.tkey]; });
+gCopies = {};
 var p2 = pairTraces([T('a2', 17), T('b2', 17)]);
 out.pairs2 = p2.pairs.map(function (x) { return x.tkey; });
 out.q_pairs = frTableQuery(p2.pairs);
@@ -121,8 +135,8 @@ def res(tmp_path_factory):
                           'launchAOf', 'spanDeclOf', 'isFlipped', 'yOffsetFor', 'reelOriginKm',
                           'measuredDeltas', 'measuredDelta', 'refreshMirrorFrame', 'spanIsDeclared',
                           'declaredOriginKm', 'declaredEdgeKm', 'mirrorOriginKm',
-                          'renderEventTable', 'pairTraces', 'frTableQuery')])
-    funcs += '\nconst gMirrorDeltas = new Map();\n'
+                          'renderEventTable', 'realFiber', 'pairTraces', 'frTableQuery')])
+    funcs += '\nconst gMirrorDeltas = new Map();\nvar gCopies = {};\n'
     path = tmp_path_factory.mktemp('multi_span') / 'ms.js'
     path.write_text(_STUBS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
@@ -154,6 +168,19 @@ def test_a_copy_pairs_with_the_other_sides_same_copy_and_the_rest_stand_alone(re
     # another span: each pair asked by its two sources
     assert res['pairs2'] == ['17:a2:b2']
     assert res['q_pairs'] == 'pairs=17:a2:b2'
+
+
+@needs_jsc
+def test_a_file_set_to_its_right_direction_pairs_with_its_partner(res):
+    """Robert 2026-10-03, as FastReporter re-pairs on Files > Direction (drop
+    audit S05: after the fix FR's table is S01's exactly).  Pairing goes by
+    the fibre, so the corrected copy meets the other folder's own file."""
+    assert res['fix_s05'] == [[1, 'a-1', 'b-1', '1'], [3, 'a-3', 'a-100003', '3:a:a:100003']]
+    assert res['fix_s05_singles'] == 0
+    # span 1's own pair spelt out beside the other, so one query holds both
+    assert res['fix_s05_q'] == 'pairs=1:a:b,3:a:a:100003'
+    assert res['fix_s08'] == [[3, 'b-3', 'b-100003', '3:b:b:100003']]
+    assert res['copies'] == [['a-241', 'b-241', '241'], ['a-100241', 'b-100241', '100241']]
 
 
 @needs_jsc
