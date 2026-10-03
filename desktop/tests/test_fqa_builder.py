@@ -1125,7 +1125,7 @@ def test_the_app_offers_the_fqa_builder_and_the_suite_does_not(monkeypatch):
     assert not at.exception
     assert _tabs(at) == ['Traces', 'Splice Report', 'Unidirectional',
                          'Splice Report FEC', 'Secret Sauce', 'Viewer',
-                         'Viewer FEC', 'FQA Builder', 'Field Capture']
+                         'FQA Builder', 'Field Capture']
     monkeypatch.delenv('OTDR_SUITE_EDITION')
     at = run_streamlit(default_timeout=180).run()
     assert not at.exception

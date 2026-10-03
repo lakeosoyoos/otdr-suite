@@ -128,7 +128,7 @@ def test_the_default_profile_leaves_a_uni_run_unchanged():
 
     got = hub._uni_overrides_from_settings(hub._otdr_settings_from_profile(DEFAULT))
     assert got == {g: const(g) for g in
-                   ("UNI_CONN_LOSS_DB", "UNI_REFL_FLOOR_DB", "UNI_REFL_CEIL_DB")}
+                   ("UNI_CONN_LOSS_DB", "UNI_REFL_FLOOR_DB")}
 
 
 def test_a_customer_profile_s_connector_gate_reaches_uni():
@@ -148,11 +148,8 @@ def test_unticked_rows_switch_uni_off_and_a_missing_row_adds_nothing():
     import app as hub
     s = hub._otdr_settings_from_profile(DEFAULT)
     s["midspan_reflectance"]["apply"] = False
-    s["midspan_refl_ceiling"]["apply"] = True
-    s["midspan_refl_ceiling"]["fail"] = -40.0
     got = hub._uni_overrides_from_settings(s)
-    assert got["UNI_REFL_FLOOR_DB"] == 0.0          # 0 = the band is off
-    assert got["UNI_REFL_CEIL_DB"] == -40.0
+    assert got["UNI_REFL_FLOOR_DB"] == 0.0          # 0 = the rule is off
     del s["unidir_connector_loss"]
     assert "UNI_CONN_LOSS_DB" not in hub._uni_overrides_from_settings(s)
     assert hub._uni_overrides_from_settings(None) == {}
@@ -226,7 +223,7 @@ def test_the_viewer_says_so_when_the_settings_moved_after_a_splice_report():
     # A Uni report's loss gate is the Uni box's, not the settings'.
     TS.set_thresholds({"REBURN_THRESHOLD": 0.160}, source="uni")
     assert not TS.settings_differ_from_report()
-    assert "settings_differ_from_report()" in SRC.split("def page_viewer(fec=False):", 1)[1]
+    assert "settings_differ_from_report()" in SRC.split("def page_viewer():", 1)[1]
 
 
 def test_the_viewer_s_own_report_runs_with_the_settings(monkeypatch, tmp_path):
@@ -451,8 +448,10 @@ def test_the_viewer_flags_nothing_while_flags_off_is_served():
         assert first_line(fn) == "if (flagsOff()) " + off, fn
     assert "if (e.is_end || flagsOff()) return { flag: false, why: '' };" in html
     assert "if (isBreak && !flagsOff()) cls = ' class=\"fr-brk\"';" in html
-    # every P/F mark goes blank (Suite, FR, one-direction and FEC grids)
-    assert html.count("${pfClass(fail)}") == 4 and html.count("${pfMark(fail)}") == 4
+    # every P/F mark goes blank (Suite, one-direction and FEC grids; the FR
+    # layout's sits on the Average row, for the whole fibre)
+    assert html.count("${pfClass(fail)}") == 3 and html.count("${pfMark(fail)}") == 3
+    assert html.count("${pfClass(fibreFails(fi))}") == 1 and html.count("${pfMark(fibreFails(fi))}") == 1
     assert "const fecHi = x => (x && !flagsOff()) ? 'fr-hi' : '';" in html
     assert "'fr-pf-fail' : 'fr-pf-pass'}\" title=" not in html
     ts = (REPO_ROOT / "viewer" / "trace_server.py").read_text(encoding="utf-8")

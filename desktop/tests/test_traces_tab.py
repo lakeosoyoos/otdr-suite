@@ -52,7 +52,7 @@ def test_the_span_box_is_gone_and_a_b_loaders_take_its_place():
 
 
 TRACE_TOOLS = ['Splice Report', 'Unidirectional', 'Splice Report FEC',
-               'Secret Sauce', 'Viewer', 'Viewer FEC']
+               'Secret Sauce', 'Viewer']
 TABS = ['Traces'] + TRACE_TOOLS
 APP_TOOLS = ['FQA Builder', 'Field Capture']
 

@@ -48,6 +48,20 @@ REPO_ROOT = DESKTOP_DIR.parent
 
 APP_PATH: Path = REPO_ROOT / "app.py"
 VIEWER_DIR: Path = REPO_ROOT / "viewer"
+
+# The page's copy helpers (realFiber / fiberLabel, viewer.html): a JS harness
+# that lifts single functions out of the page puts these in front of them, as
+# any of them may name a fibre's copy (trace_server.COPY_BASE).
+_VIEWER_SRC = (VIEWER_DIR / "viewer.html").read_text(encoding="utf-8")
+_cs = _VIEWER_SRC.index("const COPY_BASE = 100000;")
+_ce = _VIEWER_SRC.index("\n}", _VIEWER_SRC.index("function fiberLabel(id)")) + 2
+COPY_HELPERS_JS = _VIEWER_SRC[_cs:_ce] + "\n"
+
+
+def with_copy_helpers(js):
+    """`js` with COPY_HELPERS_JS in front, unless it carries the page's whole
+    script (and so the helpers) already."""
+    return js if "const COPY_BASE = 100000;" in js else COPY_HELPERS_JS + js
 SECRETSAUCE_DIR: Path = REPO_ROOT / "secretsauce"
 FIXTURE_DIR: Path = HERE / "fixtures"
 FIXTURE_A_DIR: Path = FIXTURE_DIR / "span_A"

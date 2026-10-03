@@ -27,6 +27,7 @@ import urllib.request
 import pytest
 
 from conftest import VIEWER_DIR, import_trace_server
+from conftest import COPY_HELPERS_JS  # noqa: E402
 
 SRC = (VIEWER_DIR / "viewer.html").read_text(encoding="utf-8")
 JSC = ('/System/Library/Frameworks/JavaScriptCore.framework/'
@@ -56,6 +57,7 @@ function pollEndVerdicts() {}
 function syncGateUI() {}
 function renderFilesPanel() {}
 function renderBackButton() {}
+function refreshMirrorFrame() {}
 function setReadout() {}
 function renderEventTable() { calls.table++; }
 function draw() { calls.draw++; }
@@ -117,9 +119,9 @@ _CASES = r"""
 
 @pytest.fixture(scope='module')
 def res(tmp_path_factory):
-    funcs = '\n'.join(_js_func(n) for n in ('loadInfo', 'pollAnalysisMode', 'frameWarnText'))
+    funcs = '\n'.join(_js_func(n) for n in ('loadInfo', 'pollAnalysisMode', 'frameWarnText', 'fecShots'))
     path = tmp_path_factory.mktemp('mode_switch') / 'mode.js'
-    path.write_text(_STUBS + funcs + '\n' + _CASES, encoding='utf-8')
+    path.write_text(_STUBS + COPY_HELPERS_JS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
     out = r.stdout + r.stderr
     assert r.returncode == 0 and 'OUT ' in out, out[-2000:]

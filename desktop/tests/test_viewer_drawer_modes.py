@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 
 from conftest import VIEWER_DIR
+from conftest import with_copy_helpers  # noqa: E402
 
 SRC = (VIEWER_DIR / "viewer.html").read_text(encoding="utf-8")
 JSC = Path("/System/Library/Frameworks/JavaScriptCore.framework/Versions/"
@@ -110,8 +111,8 @@ def test_both_tables_name_their_rows_and_wire_the_drawer():
         assert "marks.goCell = (fi, which, col) => gridGoCell(" in fn, name
         # a click anywhere on a row, its fibre name included, picks it
         assert "pickRow(tr.dataset.avg ? [p.ta.key, p.tb.key]" in fn, name
-        # a fibre loaded one way among paired ones gets its own table
-        assert "appendOneDirGrid(singles, host);" in fn, name
+        # a fibre loaded one way among paired ones is named, not tabled
+        assert "noteOneDirFibers(singles, host);" in fn, name
     one = _fn("renderFastReporterGrid")
     assert 'data-row="${ti}-${t.dir}"' in one
     assert "marks.goCell = (ti, which, col) => gridGoCell(" in one
@@ -128,7 +129,8 @@ def test_clicks_on_drawer_marks():
     assert "else if (gGridGoTo) gGridGoTo(c.hit.t, c.hit.e);" in up
     menu = SRC[SRC.index("canvas.addEventListener('contextmenu'"):]
     menu = menu[:menu.index("\n});")]
-    assert "if (!lh || !lh.t) return;" in menu
+    # every drawer mark and tag names its own picks (test_viewer_drawer_right_click_menu)
+    assert "let picks = lh ? lh.menu || (lh.t && lh.e" in menu
     # the lines and numbers are always drawn, so their menu always works
     assert "gShowEvents" not in menu
 
@@ -157,17 +159,18 @@ def test_one_direction_is_marked_in_either_mode():
         assert cell in fn, cell
 
 
-def test_one_way_fibres_among_pairs_are_judged_one_way():
+def test_one_way_fibres_among_pairs_are_left_out_on_one_line():
+    """Robert 2026-10-02: "we don't get two event panels".  A fibre loaded
+    one way among paired ones gets no table of its own under the A+B one; it
+    is named on one line over that table, and its trace keeps its own event
+    numbers (no table holds it)."""
+    note = _fn("noteOneDirFibers")
+    assert "cap.textContent = `One direction only, not in the table: F${fibers.map(fiberLabel).join(', F')}`;" in note
+    assert "host.insertBefore(cap, host.firstChild);" in note
+    assert "renderFastReporterGrid" not in note
+    assert "function appendOneDirGrid(" not in SRC
     fn = _fn("renderFastReporterGrid")
-    assert "const overGate = opts.oneDir ? (v => clearsAt(v, gateFor(false, true))) : clearsGate;" in fn
-    assert "const warnGate = warnFor(false, !!opts.oneDir);" in fn
-    assert "clearsGate(" not in fn.replace("opts.oneDir ? (v => clearsAt(v, gateFor(false, true))) : clearsGate;", "")
-    # the A+B table keeps the event-number clicks and the Report's rows
-    assert "if (!opts.oneDir) gGridGoTo = (t, e) => {" in fn
-    assert "if (!opts.oneDir) gTableExport = " in fn
-    app = _fn("appendOneDirGrid")
-    assert "renderFastReporterGrid(traces, box, document.createElement('div'), { oneDir: true })" in app
-    assert "One direction only: F" in app
+    assert "const overGate = clearsGate;" in fn and "opts" not in fn.split("\n", 1)[0]
 
 
 # ─── the real functions, in JavaScriptCore ───────────────────────────────
@@ -228,11 +231,12 @@ var R = {x: 56, y: 12, w: 1100, h: 600};
         _const("DRAWER_DETAIL_MAX"), _const("DRAWER_TICK_MAX"), _const("DRAWER_LANES"),
         _const("DRAWER_COLOR"),
         _fn("lowerBound"), _fn("drawerColumnSummary"), _fn("drawerCellFailed"), _fn("layoutDrawerTags"),
+        "var gReportColumnNames = null;", _fn("chartColumnTitle"),
         _fn("chartLabels"), _fn("drawPairing"),
         body,
     ])
     p = tmp_path / "drawer.js"
-    p.write_text(code, encoding="utf-8")
+    p.write_text(with_copy_helpers(code), encoding="utf-8")
     out = subprocess.run([str(JSC), str(p)], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr + out.stdout
     return json.loads(out.stdout.strip().splitlines()[-1])

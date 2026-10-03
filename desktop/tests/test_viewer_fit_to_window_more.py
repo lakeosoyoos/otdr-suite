@@ -27,6 +27,7 @@ import subprocess
 import pytest
 
 from conftest import APP_PATH, VIEWER_DIR
+from conftest import with_copy_helpers  # noqa: E402
 
 SRC = (VIEWER_DIR / 'viewer.html').read_text(encoding='utf-8')
 APP = APP_PATH.read_text(encoding='utf-8')
@@ -49,7 +50,7 @@ def _js_func(name):
 
 def _run(tmp_path, js):
     path = tmp_path / 'fit.js'
-    path.write_text(js, encoding='utf-8')
+    path.write_text(with_copy_helpers(js), encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
     out = r.stdout + r.stderr
     assert r.returncode == 0 and 'OUT ' in out, out[-2000:]
@@ -79,9 +80,8 @@ def test_profile_and_pop_out_share_one_row_above_settings():
     assert row < pick < pop < box
     # the line beside the button is its tooltip now
     assert 'title="Keeps this page free for the report.' in page
-    # Viewer FEC keeps a heading, half the old size, and opens the pop-out in FEC mode
-    assert '<p style="font-size:0.75rem;font-weight:600;margin:0">' in page
-    assert ".replace('__POPQ__', '?fec=1' if fec else '')" in page
+    # no Viewer FEC heading or FEC pop-out: FEC shots load in this Viewer
+    assert 'Viewer FEC</p>' not in page and '__POPQ__' not in page
     assert 'keeps this page free for the report &middot;' not in page
 
 
@@ -219,4 +219,4 @@ def test_every_grid_repaints_its_rows_when_its_box_changes_size():
 # ── File names cut from the front ───────────────────────────────────────────
 def test_long_file_names_are_cut_from_the_front():
     assert '.file-row .file-name { direction: rtl; text-align: left; }' in SRC
-    assert 'name: `<span class="file-name"><bdi>${esc(files[i] || \'F\' + f)}</bdi></span>`,' in SRC
+    assert 'name: `<span class="file-name"><bdi>${esc(files[i] || \'F\' + fiberLabel(f))}`' in SRC

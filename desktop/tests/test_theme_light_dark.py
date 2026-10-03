@@ -114,8 +114,13 @@ def test_theme_switch_is_dark_left_light_right_and_keyless():
     assert "where.container(key='theme_box', width=130, horizontal=True" in body
     assert body.index("'Dark'") < body.index('m.toggle(') < body.index("'Light'")
     assert "m.toggle('Theme', value=not dark, label_visibility='collapsed')" in body
+    # its place in the bar, filled after the page: a flip's rerun then comes
+    # at the end of a run that drew every box (Streamlit 1.50 forgets the
+    # boxes a stopped run had not drawn)
     bar = SRC.split('\ndef _render_top_nav(', 1)[1].split('\ndef ', 1)[0]
-    assert '_render_theme_control(st)' in bar
+    assert "_THEME_SLOT = st.container(key='theme_slot'" in bar
+    route = SRC.split('\n_after_page(page)\n', 1)[1]
+    assert route.index('_render_theme_control(_THEME_SLOT or st)') < route.index('maybe_report_update()')
 
 
 def _get_viewer(monkeypatch, theme):

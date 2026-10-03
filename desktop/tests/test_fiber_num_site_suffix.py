@@ -77,7 +77,8 @@ def test_viewer_lists_collapsed_folder_by_internal_id(tmp_path):
 
 def test_multi_wavelength_folder_does_not_trip_the_fallback(tmp_path):
     """Same fiber at two wavelengths collides on the filename AND the internal
-    id, so the fallback must stay off and keep-first stands."""
+    id, so the fallback must stay off: 24 fibres, each wavelength its own row
+    (the second file of a fibre is listed as its copy, trace_server.COPY_BASE)."""
     d = tmp_path / "A"
     d.mkdir()
     for src in sorted(FIXTURE_SPLICE_A_DIR.glob("*.sor")):
@@ -90,4 +91,5 @@ def test_multi_wavelength_folder_does_not_trip_the_fallback(tmp_path):
                        capture_output=True, text=True, timeout=120)
     assert p.returncode == 0, p.stderr[-800:]
     out = eval(p.stdout.strip().splitlines()[-1])
-    assert len(out) == 48 and len({n for n, _fn in out}) == 24
+    assert len(out) == 48 and len({n for n, _fn in out}) == 48
+    assert len({n % 100000 for n, _fn in out}) == 24

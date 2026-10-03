@@ -61,7 +61,10 @@ def test_markers_number_from_the_start_and_dim_the_rest():
     assert "const nums = spanEventNumbers(t);" in fn
     # the span number is what is printed, at the first clear spot round its
     # tick (test_viewer_chart_labels_clear)
-    assert "const txt = String(n);" in fn and "ctx.fillText(txt, spot.tx, spot.ty);" in fn
+    # (with no table in; a table's column number wins once it is:
+    # test_viewer_chart_numbers_match_table)
+    assert "col === undefined ? String(n)" in fn and "const txt = label;" in fn
+    assert "ctx.fillText(txt, spot.tx, spot.ty);" in fn
     assert "fillText(String(e.number)" not in fn
     # the dimA factor folds in the picked-trace dimming; the 0.35 / 0.55 split
     # between an unnumbered tick and a numbered one is what this pins

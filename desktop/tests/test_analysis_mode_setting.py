@@ -163,7 +163,9 @@ def test_the_halo_styling_stays_on_the_switch():
     # along with the switch's own: the ribbon grids' cells wrapped.  Only the
     # two switch names keep words whole; the grid cells stay on one line.
     assert SRC.count("word-break:keep-all") == 2
-    assert SRC.count(".st-key-analysis_mode_box .mode-o") == 2
+    # The two halo rules, and (2026-10-02) the pointer on the name not in
+    # use, which picks its side when clicked (test_mode_switch_name_click).
+    assert SRC.count(".st-key-analysis_mode_box .mode-o") == 3
     assert "f\"white-space:nowrap'>F{f0}–{f1}</td>\")" in SRC
     assert "\"white-space:nowrap'>\" + \"<br>\".join(links)" in SRC
 

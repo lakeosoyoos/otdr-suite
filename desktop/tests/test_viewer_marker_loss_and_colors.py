@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 from conftest import VIEWER_DIR
+from conftest import with_copy_helpers  # noqa: E402
 
 SRC = (VIEWER_DIR / "viewer.html").read_text(encoding="utf-8")
 JSC = Path("/System/Library/Frameworks/JavaScriptCore.framework/Versions/"
@@ -108,7 +109,7 @@ var out = {};
                          "effDir", "splitFileKey", "setFilesDirection")
     ] + [body, "print(JSON.stringify(out));"])
     p = tmp_path / "marker.js"
-    p.write_text(code, encoding="utf-8")
+    p.write_text(with_copy_helpers(code), encoding="utf-8")
     res = subprocess.run([str(JSC), str(p)], capture_output=True, text=True, timeout=60)
     assert res.returncode == 0, res.stderr + res.stdout
     return json.loads(res.stdout.strip().splitlines()[-1])

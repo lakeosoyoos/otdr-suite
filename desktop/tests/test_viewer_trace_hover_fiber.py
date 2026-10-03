@@ -31,6 +31,7 @@ import subprocess
 import pytest
 
 from conftest import VIEWER_DIR
+from conftest import COPY_HELPERS_JS  # noqa: E402
 
 SRC = (VIEWER_DIR / "viewer.html").read_text(encoding="utf-8")
 JSC = ('/System/Library/Frameworks/JavaScriptCore.framework/'
@@ -134,7 +135,7 @@ def hits(tmp_path_factory):
                                                'upperBound', 'segDist', 'traceHits',
                                                'goToTrace')])
     path = tmp_path_factory.mktemp('trace_hover') / 'hits.js'
-    path.write_text(funcs + '\n' + _CASES, encoding='utf-8')
+    path.write_text(COPY_HELPERS_JS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
     out = r.stdout + r.stderr
     assert r.returncode == 0 and 'OUT ' in out, out[-2000:]
@@ -192,7 +193,7 @@ def test_a_click_picks_the_trace_and_goes_to_its_row(hits):
 
 def test_the_box_names_one_fiber_and_nothing_else():
     box = _js_func('drawHoverBox')
-    assert "const text = `F${t.fiber} ${t.dir === 'a' ? 'A→B' : 'B→A'}`;" in box
+    assert "const text = `F${fiberLabel(t.fiber)} ${t.dir === 'a' ? 'A→B' : 'B→A'}`;" in box
     assert 'more' not in box and 'forEach' not in box      # one fiber, never a list
     assert 'km' not in box.replace('ctx.', '') and 'dB' not in box
     draw = _js_func('draw')

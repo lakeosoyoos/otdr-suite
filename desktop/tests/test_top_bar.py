@@ -39,8 +39,7 @@ APP_SRC = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
 
 SUITE_TABS = [('Traces', 'Traces'), ('Splice Report', 'Splice Report'),
               ('Uni', 'Unidirectional'), ('Splice Report FEC', 'Splice Report FEC'),
-              ('Secret Sauce', 'Secret Sauce'), ('Viewer', 'Viewer'),
-              ('Viewer FEC', 'Viewer FEC')]
+              ('Secret Sauce', 'Secret Sauce'), ('Viewer', 'Viewer')]
 APP_TABS = SUITE_TABS + [('FQA Builder', 'FQA Builder'),
                          ('Field Capture', 'Field Capture')]
 APP_NAME = 'OTDR Suite App'
@@ -94,10 +93,15 @@ def test_the_app_edition_adds_its_two_tools_at_the_end(monkeypatch):
     assert next(b for b in at.button if b.key == 'nav_logo_btn').label == APP_NAME
 
 
-def test_viewer_fec_has_its_own_tab():
-    at = go_tab(_hub(), 'Viewer FEC')
+def test_no_viewer_fec_tab_and_its_old_page_opens_the_viewer():
+    """FEC shots load in the Viewer itself (main #589, Robert 2026-10-02):
+    no Viewer FEC tab, and a page name left from before opens the Viewer."""
+    at = _hub()
+    assert 'Viewer FEC' not in [p for _l, p in _tabs(at)]
+    at.session_state['nav_radio'] = 'Viewer FEC'
+    at.run()
     assert not at.exception, at.exception
-    assert page_of(at) == 'Viewer FEC'
+    assert page_of(at) == 'Viewer'
 
 
 def test_the_app_opens_on_the_viewer():
@@ -440,8 +444,8 @@ def test_the_bar_width_follows_the_name_and_the_tabs():
     assert logo_s >= 9.5 * len('OTDR Suite') and logo_a > logo_s
     # the App's bar holds more, so it folds into the menu at a wider window
     assert menu_a > menu_s
-    # the Suite's bar comes to about 1,345 px
-    assert 1300 <= menu_s <= 1400, menu_s
+    # the Suite's bar comes to about 1,258 px
+    assert 1200 <= menu_s <= 1300, menu_s
     # a longer name alone, or a tab more, moves it
     assert _bar_sizes('OTDR Suite XX', None)[2] > menu_s
     assert _bar_sizes('OTDR Suite', 'x')[2] > menu_s

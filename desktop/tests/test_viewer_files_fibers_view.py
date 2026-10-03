@@ -33,6 +33,7 @@ import subprocess
 import pytest
 
 from conftest import VIEWER_DIR
+from conftest import COPY_HELPERS_JS  # noqa: E402
 
 SRC = (VIEWER_DIR / "viewer.html").read_text(encoding="utf-8")
 JSC = ('/System/Library/Frameworks/JavaScriptCore.framework/'
@@ -82,7 +83,7 @@ print('OUT ' + JSON.stringify(out));
 def rules(tmp_path_factory):
     funcs = '\n'.join(_js_func(n) for n in ('fiberTable', 'fiberPairNote', 'fiberFileKeys', 'fiberState'))
     path = tmp_path_factory.mktemp('fibers_view') / 'rules.js'
-    path.write_text(funcs + '\n' + _CASES, encoding='utf-8')
+    path.write_text(COPY_HELPERS_JS + funcs + '\n' + _CASES, encoding='utf-8')
     r = subprocess.run([JSC, str(path)], capture_output=True, text=True, timeout=60)
     out = r.stdout + r.stderr
     assert r.returncode == 0 and 'OUT ' in out, out[-2000:]
@@ -153,7 +154,7 @@ def test_ctrl_a_select_same_and_remove_still_see_every_file_from_the_fibers_tab(
     assert "if (gFilesView === 'fibers') return fiberTable().flatMap(fiberFileKeys);" in keys
     # a name comes from the listing, not from a row that may not be drawn
     name = _body('fileNameOf')
-    assert "gInfo['files_' + d]" in name and '`F${f}`' in name
+    assert "gInfo['files_' + d]" in name and '`F${fiberLabel(f)}`' in name
     # and the Files tab's arrow keys stand down while the Fibers tab has them
     kd = SRC.split("filesList.addEventListener('keydown', (ev) => {", 1)[1].split('\n});', 1)[0]
     assert "if (gFilesView !== 'files') return;" in kd     # not on Fibers, nor Measurements
