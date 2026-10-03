@@ -6174,6 +6174,17 @@ function drawPairing(sets, r, failedOnly = false) {
 // (paintFrBidiGrid).  `tkey` names the pair's table: the fibre for span 1's
 // own A and B of one id, as ever, else 'idA:srcA:srcB' plus ':idB' when the
 // two ids differ.
+//
+// Within a fibre, an A->B file pairs only with a B->A file that states the
+// same Cable ID and Fiber ID, as FastReporter pairs (drop audit, Robert
+// 2026-10-03: a B file with Fiber ID 0033 or Cable ID OTHER stays unpaired,
+// and a span whose A and B files carry different Fiber IDs pairs nothing).
+// A file whose IDs cannot be read (a JSON export) pairs by the fibre alone.
+function idsMatch(ta, tb) {
+  const a = ta.data, b = tb.data;
+  if (!a || !b || a.fiber_id == null || b.fiber_id == null) return true;
+  return a.fiber_id === b.fiber_id && (a.cable_id || '') === (b.cable_id || '');
+}
 function pairTraces(traces) {
   const by = new Map();
   for (const t of traces) {
@@ -6188,9 +6199,11 @@ function pairTraces(traces) {
   for (const g of by.values()) {
     g.a.sort(ord('a'));
     g.b.sort(ord('b'));
-    const n = Math.min(g.a.length, g.b.length);
-    for (let k = 0; k < n; k++) {
-      const ta = g.a[k], tb = g.b[k];
+    const used = new Set();
+    for (const ta of g.a) {
+      const tb = g.b.find(x => !used.has(x) && idsMatch(ta, x));
+      if (!tb) { singles.push(ta); continue; }
+      used.add(tb);
       // the row is the fibre's own when either file is (F3, not F3 (copy 2))
       const fiber = ta.fiber === tb.fiber ? ta.fiber
         : (Number(ta.fiber) <= Number(tb.fiber) ? ta.fiber : tb.fiber);
@@ -6198,7 +6211,7 @@ function pairTraces(traces) {
         : `${ta.fiber}:${ta.src}:${tb.src}` + (ta.fiber === tb.fiber ? '' : `:${tb.fiber}`);
       pairs.push({ fiber, ta, tb, tkey });
     }
-    singles.push(...g.a.slice(n), ...g.b.slice(n));
+    singles.push(...g.b.filter(x => !used.has(x)));
   }
   return { pairs, singles };
 }

@@ -169,6 +169,18 @@ def test_a_pair_of_two_ids_reads_each_file_and_span_1s_pair_keeps_its_key(monkey
     TS._FR_TABLE_CACHE.clear()
 
 
+def test_each_trace_carries_the_ids_it_states(tmp_path):
+    """/api/trace carries the file's Cable ID and Fiber ID: FastReporter's
+    pairing key (the page pairs on them, pairTraces / idsMatch)."""
+    d = tmp_path / 'ids'
+    d.mkdir()
+    (d / 'AAABBB003_1550.sor').write_bytes(
+        TS.set_identifiers(make_sor(), cable_id='CAB1', fiber_id='0003'))
+    assert TS._file_ids(str(d), 'AAABBB003_1550.sor') == ('CAB1', '0003')
+    (d / 'x.json').write_text('{}')
+    assert TS._file_ids(str(d), 'x.json') == (None, None)
+
+
 def _drop_at(sites, names, ior=1.47):
     tok = TS.drop_begin()
     for n in names:
