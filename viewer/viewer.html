@@ -8007,10 +8007,15 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
   const LEAD = [['Identifiers', 'fr-rowlab'], ['P/F', ''], ['λ (nm)', ''], ['Dir.', '']];
   let h1 = LEAD.map(([l, c]) => `<th rowspan="3" class="fr-rowlab ${c}">${l}</th>`).join('');
   let h2 = '', h3 = '';
+  // How many of the table's rows have an event in the column, and a section
+  // after it, of how many rows: "Event 5 (6/12)", "Section (6/12)", as
+  // FastReporter heads its columns (Robert 2026-10-02).
+  const occ = n => `(${n}/${traces.length})`;
   cols.forEach((c, i) => {
     if (!keepCol[i]) return;
     h1 += `<th colspan="${colW(i)}" class="fr-evhdr" data-km="${c.km}" data-col="${i}" `
-        + `title="zoom to ${c.km.toFixed(3)} km, span and settings">${colTitle(c, i)}`
+        + `title="zoom to ${c.km.toFixed(3)} km, span and settings">${colTitle(c, i)} `
+        + occ(c.ev.filter(x => x).length)
         + `<button class="fr-evmenu" data-col="${i}" title="span and settings">⋯</button></th>`;
     h2 += `<th colspan="${colW(i)}" class="fr-evsub" data-col="${i}">${colLay[i].mixed ? '' : colKind(c)}<br>`
         + `<span class="fr-km">${kmFt(headKm[i] - zeroKm)}</span></th>`;
@@ -8021,7 +8026,8 @@ function renderFastReporterGrid(traces, host, hint, opts = {}) {
       // The heading's length is heading to heading, as FR's is (its 0.0491
       // km after the panel is 1.0541 - 1.0050, though one fiber of twelve has
       // an event at 1.0541); each row's own length is in its Length cell.
-      h1 += '<th colspan="3" class="fr-sechdr">Section</th>';
+      h1 += `<th colspan="3" class="fr-sechdr">Section `
+          + `${occ(traces.filter((_t, ti) => section(ti, i)).length)}</th>`;
       h2 += `<th colspan="3" class="fr-sechdr fr-evsub">`
           + `<span class="fr-km">${fmtDist(Math.abs(headKm[i + 1] - headKm[i]))}</span></th>`;
       h3 += `<th class="fr-sub fr-sec">Length<br>(${distU().label})</th>`
@@ -8836,7 +8842,9 @@ function paintFrBidiGrid(pairs, singles, res, host, hint) {
       const lens = have.map((_p, fi) => secOf(fi, i)).filter(s => s && s.length_m != null)
                        .map(s => s.length_m / 1000);
       const len = lens.length ? lens.reduce((a, b) => a + b, 0) / lens.length : null;
-      h1 += '<th colspan="2" class="fr-sechdr">Section</th>';
+      // FR counts the fibers with a section here too: "Section (4/4)"
+      const nSec = have.filter((_p, fi) => secOf(fi, i)).length;
+      h1 += `<th colspan="2" class="fr-sechdr">Section (${nSec}/${have.length})</th>`;
       h2 += `<th colspan="2" class="fr-sechdr fr-evsub"><span class="fr-km">${len != null ? fmtDist(len) : ''}</span></th>`;
       h3 += '<th class="fr-sub fr-sec">Loss<br>(dB)</th><th class="fr-sub fr-sec">Att.<br>(dB/km)</th>';
     }
@@ -9723,7 +9731,9 @@ function paintSuiteBidiGrid(pairs, singles, res, host, hint) {
       const lens = have.map((_p, fi) => secOf(fi, i)).filter(s => s && s.length_m != null)
                        .map(s => s.length_m / 1000);
       const len = lens.length ? lens.reduce((a, b) => a + b, 0) / lens.length : null;
-      h1 += '<th colspan="2" class="fr-sechdr">Section</th>';
+      // FR counts the fibers with a section here too: "Section (4/4)"
+      const nSec = have.filter((_p, fi) => secOf(fi, i)).length;
+      h1 += `<th colspan="2" class="fr-sechdr">Section (${nSec}/${have.length})</th>`;
       h2 += `<th colspan="2" class="fr-sechdr fr-evsub"><span class="fr-km">${len != null ? fmtDist(len) : ''}</span></th>`;
       h3 += '<th class="fr-sub fr-sec">Loss<br>(dB)</th><th class="fr-sub fr-sec">Att.<br>(dB/km)</th>';
     }
