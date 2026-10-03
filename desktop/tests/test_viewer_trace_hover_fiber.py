@@ -193,7 +193,8 @@ def test_a_click_picks_the_trace_and_goes_to_its_row(hits):
 
 def test_the_box_names_one_fiber_and_nothing_else():
     box = _js_func('drawHoverBox')
-    assert "const text = `F${fiberLabel(t.fiber)} ${t.dir === 'a' ? 'A→B' : 'B→A'}`;" in box
+    assert "const text = `F${fiberLabel(t.fiber)} ${t.dir === 'a' ? 'A→B' : 'B→A'}`" in box
+    assert "+ (t.src && t.src.length > 1 ? srcTag(t.src) : '');" in box   # another span's
     assert 'more' not in box and 'forEach' not in box      # one fiber, never a list
     assert 'km' not in box.replace('ctx.', '') and 'dB' not in box
     draw = _js_func('draw')
