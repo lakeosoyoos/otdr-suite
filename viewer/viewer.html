@@ -368,14 +368,16 @@
   }
   #event-panel-header h2 { font-size: 12px; color: var(--accent); }
   #evt-title { flex-shrink: 0; }
+  /* A word, not a gear glyph (Robert 2026-10-02: the gear was too small
+     to see); it opens the same menu the gear did. */
   #evt-view-btn {
-    font-size: 15px; line-height: 1; padding: 2px 6px; cursor: pointer;
+    font-size: 13px; font-weight: 600; line-height: 1; padding: 4px 10px; cursor: pointer;
     background: #ffffff; border: 1px solid var(--border); border-radius: 4px;
-    color: #000000; position: relative;
+    color: #000000; position: relative; white-space: nowrap;
   }
   #evt-view-btn:hover, #evt-view-btn[aria-expanded="true"] { background: #dde7f1; }
   #evt-view-btn.on { border-color: var(--accent); color: var(--accent); }
-  #evt-view-on { font-size: 10px; font-weight: 600; margin-left: 3px; vertical-align: 2px; }
+  #evt-view-on { font-size: 11px; font-weight: 700; margin-left: 4px; }
   /* Fixed, not absolute: the event panel clips its overflow, and a short
      panel would cut the menu off. */
   #evt-view-menu {
@@ -905,13 +907,14 @@
   <div id="event-panel">
     <div id="event-panel-header">
       <div id="evt-title">
-        <!-- The table's view switches, behind the gear at the panel's top left
-             (Robert 2026-09-29: the check boxes took a column of their own).
-             The gear is lit while any of them is on, so a filtered table is
-             never a mystery; the ⋯ / right-click View menu toggles the same
-             state. -->
+        <!-- The table's view switches, behind the Settings button at the
+             panel's top left (Robert 2026-09-29: the check boxes took a column
+             of their own; 2026-10-02: the word Settings in place of the gear,
+             which was too small to see).  The button is lit, with a count,
+             while any of them is on, so a filtered table is never a mystery;
+             the ⋯ / right-click View menu toggles the same state. -->
         <button id="evt-view-btn" type="button" title="View options"
-                aria-haspopup="true" aria-expanded="false">&#9881;<span id="evt-view-on"></span></button>
+                aria-haspopup="true" aria-expanded="false">Settings<span id="evt-view-on"></span></button>
         <span id="evt-view-menu" role="menu" hidden>
         <label title="Blank every cell that is not a failure: only the flagged figures stay on screen.">
           <input id="set-failcells" type="checkbox"> Show Failing Cells Only</label>
@@ -11934,7 +11937,7 @@ document.getElementById('set-gainers').checked = gShowGainers;
 document.getElementById('set-gainers').onchange = (e) => {
   if (e.target.checked !== gShowGainers) toggleView('gainers');
 };
-// The gear: opens the view switches under itself; a click anywhere else or
+// The Settings button (the gear until 2026-10-02): opens the view switches under itself; a click anywhere else or
 // Escape shuts them.  Lit, with a count, while any switch is on.
 function syncViewBtn() {
   const btn = document.getElementById('evt-view-btn');
